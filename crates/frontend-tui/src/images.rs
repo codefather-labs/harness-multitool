@@ -192,28 +192,29 @@ pub fn rasterize(g: &Graphic, t: &Theme, width: u32, height: u32) -> RgbaImage {
 /// The logo drawn by hand as pixel art for terminals without graphics: 50 x 8 pixels, two per
 /// cell (half blocks), so 50 x 4 cells. T tool, O handle, H highlight, X rivet hole, . empty.
 /// Regular on purpose: three equal 2-px tines, a symmetric rounded handle in the middle, identical
-/// saw teeth; fork and saw are both 11 px, so the tool is centred on its handle.
+/// saw teeth; fork and saw are both 11 x 8 px, so the tool is centred on its handle and both
+/// ends span the same height.
 pub const LOGO_ART: [&str; 8] = [
-    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
-    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
-    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO....T..T..T.",
+    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...TT.TT.TT",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
     "TTTTTTTTTTTOOOWXOOOOOOOOOOOOOOOOOOWXOOOTTTTTTTTTTT",
     "TTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
     ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
-    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
-    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
+    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTTT",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO...TTTTTTTT.",
 ];
 
 /// `LOGO_ART` with the eyes shut: only the lower lid line is left.
 pub const LOGO_ART_CLOSED: [&str; 8] = [
-    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
-    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
-    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO....T..T..T.",
+    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...TT.TT.TT",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
     "TTTTTTTTTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
     "TTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
     ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
-    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
-    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
+    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTTT",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO...TTTTTTTT.",
 ];
 
 /// Whether the multitool's eyes (the handle's two rivets) are open.
