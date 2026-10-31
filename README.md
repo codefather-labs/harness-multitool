@@ -1,6 +1,4 @@
-# vladcraft-multitool
-
-> Working name. The final name is an open question (see [docs/spec/open-questions.md](docs/spec/open-questions.md)).
+# harness-multitool
 
 **A plugin-first, open-source agent harness in Rust.** An agent that writes code, runs tools and works with other agents — where almost every part is an interface you can replace with your own implementation, and where "done" means proven.
 
@@ -27,6 +25,7 @@ Status: **specification**. No code yet. This repository starts with its spec, bu
 | [Decisions](docs/decisions/) | why the project is the way it is (ADRs) |
 | [Roadmap](docs/spec/roadmap.md) | the order of work |
 | [Open questions](docs/spec/open-questions.md) | what is not decided yet |
+| [References](docs/references.md) | projects we learn from |
 
 Every rule in these documents has an id (`P-…`, `INV-…`, `CON-…`, `IF-…`). Code, tests and decisions cite them.
 

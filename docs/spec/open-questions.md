@@ -2,7 +2,7 @@
 
 | Id | Question | Needs |
 |---|---|---|
-| **Q-1** | The name. `vladcraft-multitool` is the working name; candidates considered so far include polyphase, nikola-multitool, engineering-multitool, multiforge. A name with "Tesla" was set aside over the trademark risk. | the owner |
+| ~~**Q-1**~~ | ~~The name.~~ Settled: **harness-multitool** ([ADR 0008](../decisions/0008-name.md)). | — |
 | **Q-2** | The license (MIT, Apache-2.0, or both). | the owner |
 | **Q-3** | Configuration format and location (TOML in the project and in the user's config directory?). | design |
 | **Q-4** | Do the chosen providers accept direct requests from a browser (CORS), and with which headers? | a check per provider |

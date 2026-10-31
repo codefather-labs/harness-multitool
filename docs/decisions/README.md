@@ -11,3 +11,4 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0005](0005-own-repository.md) | A new, self-contained repository; the memory backend is carried over | accepted |
 | [0006](0006-providers.md) | Anthropic API, OpenAI-compatible and local models from v1 | accepted |
 | [0007](0007-features-after-mvp.md) | After the MVP: proof, memory-based context, rewind and branches, agent mesh | accepted |
+| [0008](0008-name.md) | The name is harness-multitool | accepted |
