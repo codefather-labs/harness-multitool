@@ -504,10 +504,11 @@ fn inbound(width: u16, t: &Theme, m: &Inbound) -> Drawn {
     let mut body: Vec<Vec<Span<'static>>> = Vec::new();
     match &m.kind {
         InboundKind::Voice { duration } => {
-            head.push(Span::styled("  ▶ ", plain(t.text)));
-            // The waveform as separate thin bars, like the mockup's.
-            let wave = "╻╹┃╻│┃╹┃│╻┃╹";
-            head.push(Span::styled(wave, plain(t.text)));
+            // The waveform: lower block elements rising from one baseline, like a voice
+            // message's bars (operator: the earlier mixed line glyphs looked crooked).
+            let wave = "▃ ▅ ▇ ▄ ▆ ▃ ▅ ▇ ▄ ▂";
+            head.push(Span::styled("  ▶ ", plain(color)));
+            head.push(Span::styled(wave, plain(t.text_muted)));
             head.push(Span::styled(format!("  {duration}  "), plain(t.text_muted)));
             x += 4 + wave.chars().count() as u16 + duration.chars().count() as u16 + 4;
             let first = "Transcript: ".len() as u16;
