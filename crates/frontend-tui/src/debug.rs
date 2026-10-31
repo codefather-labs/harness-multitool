@@ -5,7 +5,7 @@
 //! `/help` lists the commands. The sample content mirrors the mockups in docs/design/concept.
 
 use crate::model::{
-    Diff, DiffLine, FlowEdge, FlowMap, FlowNode, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapEvent, MapKind, NodeShape, NodeStatus, Role,
+    Diff, DiffLine, FlowEdge, FlowMap, FlowNode, HookEvent, HookOutcome, HookRun, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapEvent, MapKind, NodeShape, NodeStatus, Role,
     SessionView, Tab, TabIcon, TabMark, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 
@@ -24,6 +24,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/flow", "every flowchart symbol and gate"),
     ("/mind", "every mind-map node kind"),
     ("/tool read|edit|cat|tg|a2a|journal|fail|run", "tool call"),
+    ("/hook start|compact|block|fail|timeout|run", "hooks firing on a loop event"),
+    ("/hooks", "every hook outcome"),
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
     ("/clear", "empty the transcript"),
@@ -351,6 +353,55 @@ pub fn sample_mind_gallery() -> FlowMap {
     }
 }
 
+/// Hooks on a loop event: `start` and `compact` run the two example scripts, the others show
+/// the remaining outcomes.
+pub fn sample_hook(kind: &str, time: &str) -> Option<HookEvent> {
+    let run = |script: &str, outcome: HookOutcome, duration: &str| HookRun { script: script.into(), outcome, duration: duration.into() };
+    let fact = "fact-check-cognitive-protocol.sh";
+    let lookup = "harness-lookup.sh";
+    let ev = |event: &str, subject: Option<&str>, runs: Vec<HookRun>| HookEvent {
+        event: event.into(),
+        subject: subject.map(String::from),
+        time: time.into(),
+        runs,
+    };
+    Some(match kind {
+        "start" => ev(
+            "SessionStart",
+            None,
+            vec![
+                run(fact, HookOutcome::Context(vec!["[self-check] run the three cognitive self-check protocols: inbound, facts, decisions".into()]), "38 ms"),
+                run(
+                    lookup,
+                    HookOutcome::Context(vec!["project: harness-multitool · journal: 234 entries · shared map #1".into(), "open: 6 todos, 3 questions".into()]),
+                    "112 ms",
+                ),
+            ],
+        ),
+        "compact" => ev(
+            "PreCompact",
+            Some("context 182k / 200k"),
+            vec![
+                run(fact, HookOutcome::Ok, "31 ms"),
+                run(lookup, HookOutcome::Context(vec!["kept: 12 specifications, 4 constraints, map #1 (open nodes)".into()]), "96 ms"),
+            ],
+        ),
+        "block" => ev(
+            "PreToolUse",
+            Some("shell · git push --force origin main"),
+            vec![run("guard-force-push.sh", HookOutcome::Blocked("force-push to main is not allowed; push a branch and open a PR".into()), "14 ms")],
+        ),
+        "fail" => ev(
+            "PostToolUse",
+            Some("edit_file · src/router/mod.rs"),
+            vec![run("format-on-save.sh", HookOutcome::Failed { code: 1, stderr: vec!["rustfmt: error: expected one of `,` or `}` at src/router/mod.rs:121".into()] }, "220 ms")],
+        ),
+        "timeout" => ev("Stop", None, vec![run("notify-telegram.sh", HookOutcome::Timeout, "10.0 s")]),
+        "run" => ev("UserPromptSubmit", None, vec![run(fact, HookOutcome::Ok, "29 ms"), run("index-attachments.sh", HookOutcome::Running, "1.4 s")]),
+        _ => return None,
+    })
+}
+
 pub fn sample_journal() -> JournalEvent {
     JournalEvent {
         id: 137,
@@ -419,6 +470,21 @@ fn command(w: &mut Workspace, cmd: &str) {
             v,
             Item::Map(MapEvent { id: 3, change: "+node n4, +edge n2->n4 (ref #137)".into(), date: "2026-10-28 14:28".into(), map: sample_map() }),
         ),
+        "hook" => {
+            let time = now(v);
+            match sample_hook(or(arg, "start"), &time) {
+                Some(h) => v.transcript.push(Item::Hook(h)),
+                None => v.transcript.push(Item::Tips { label: "UNKNOWN HOOK".into(), lines: vec!["/hook start|compact|block|fail|timeout|run".into()] }),
+            }
+        }
+        "hooks" => {
+            for k in ["start", "compact", "block", "fail", "timeout", "run"] {
+                let time = now(v);
+                if let Some(h) = sample_hook(k, &time) {
+                    v.transcript.push(Item::Hook(h));
+                }
+            }
+        }
         "flow" => attach(
             v,
             Item::Map(MapEvent { id: 4, change: "every flowchart symbol and logic gate".into(), date: "2026-11-01 01:20".into(), map: sample_flow_gallery() }),
@@ -484,7 +550,7 @@ mod tests {
     #[test]
     fn every_debug_command_publishes_its_item() {
         let mut w = workspace();
-        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/map-new", "/map", "/flow", "/mind", "/help"] {
+        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/map-new", "/map", "/flow", "/mind", "/hook", "/hooks", "/help"] {
             let before = w.view().transcript.len();
             let attached_before: usize = w.view().transcript.iter().map(|i| if let Item::Turn { attached, .. } = i { attached.len() } else { 0 }).sum();
             send(&mut w, cmd);

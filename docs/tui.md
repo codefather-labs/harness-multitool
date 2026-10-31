@@ -49,6 +49,7 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/map-new` · `/map` | a map created (empty) · a flowchart updated, drawn |
 | `/flow` · `/mind` | every flowchart symbol and logic gate · every mind-map node kind and status |
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
+| `/hook start\|compact\|block\|fail\|timeout\|run` · `/hooks` | hooks firing on a loop event (session start and compaction run `fact-check-cognitive-protocol.sh` and `harness-lookup.sh`) · every hook outcome |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
 | `/exit`, `/quit` | quit |
 
@@ -65,6 +66,7 @@ multitool screen tool-calls --no-graphics --size 160x45 --png out.png  # text mo
 multitool screen startup --compare --png cmp.png                     # side by side with the mockup
 multitool screen splash --eyes-closed --png blink.png                # the logo's blink frame
 multitool screen maps --no-graphics --size 160x70 --png maps.png    # every map component
+multitool screen hooks --no-graphics --size 160x50 --png hooks.png  # every hook outcome
 ```
 
 ## Layout rules
@@ -80,3 +82,7 @@ Settled with the project owner while matching the mockups; the journal holds eac
 ## Maps
 
 Two kinds, as in the journal's mind maps. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches. A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.
+
+## Hooks
+
+A HOOK card shows the loop event the hooks ran on (SessionStart, PreCompact, PreToolUse with the call it saw, PostToolUse, Stop, UserPromptSubmit, ...) and one row per script: ✓ ok, ✓ with the lines it added to the context, ⊘ blocked with the reason (a veto, IF-6), ✗ failed with the exit code and stderr tail, ◷ timed out, ◌ running, and how long it took. The frame takes the colour of the worst outcome: warning for a veto or a timeout, error for a failure.

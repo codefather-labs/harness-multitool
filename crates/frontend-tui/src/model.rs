@@ -205,6 +205,40 @@ pub enum Item {
     MapCreated(MapCreated),
     /// A mind map changed: the event line and the map itself.
     Map(MapEvent),
+    /// Hooks that ran on a loop event (IF-6): session start, compaction, before a tool, ...
+    Hook(HookEvent),
+}
+
+#[derive(Debug, Clone)]
+pub struct HookEvent {
+    /// The loop event the hooks ran on, e.g. `SessionStart`, `PreCompact`, `PreToolUse`.
+    pub event: String,
+    /// What the event was about, e.g. the tool call a `PreToolUse` hook saw.
+    pub subject: Option<String>,
+    pub time: String,
+    pub runs: Vec<HookRun>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HookRun {
+    pub script: String,
+    pub outcome: HookOutcome,
+    pub duration: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookOutcome {
+    /// Ran and changed nothing.
+    Ok,
+    /// Added text to the agent's context (its first lines are shown).
+    Context(Vec<String>),
+    /// Vetoed the event (a before-event hook), with its reason.
+    Blocked(String),
+    /// Exited non-zero: the exit code and the stderr tail.
+    Failed { code: i32, stderr: Vec<String> },
+    /// Killed after the time limit.
+    Timeout,
+    Running,
 }
 
 #[derive(Debug, Clone)]

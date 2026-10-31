@@ -240,7 +240,79 @@ pub fn item(it: &Item, width: u16, t: &Theme, generating: bool) -> Drawn {
             let h = map(&mut cv, 0, 0, width, m, t.background);
             cv.finish(h)
         }
+        Item::Hook(e) => {
+            let mut cv = Canvas::new(width, t);
+            let h = hook(&mut cv, 0, 0, width, e, t.background);
+            cv.finish(h)
+        }
     }
+}
+
+/// Hooks that ran on a loop event: a framed card, `HOOK event`, one row per script with its
+/// outcome; context a hook added is shown under it, a veto in the warning colour and a failure
+/// in the error colour (and the frame takes the colour of the worst outcome).
+fn hook(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &crate::model::HookEvent, bg: Color) -> u16 {
+    use crate::model::HookOutcome as O;
+    let t = cv.t;
+    let (ix, iw) = (x + 2, w.saturating_sub(4));
+    let frame = if e.runs.iter().any(|r| matches!(r.outcome, O::Failed { .. })) {
+        t.error
+    } else if e.runs.iter().any(|r| matches!(r.outcome, O::Blocked(_) | O::Timeout)) {
+        t.warning
+    } else {
+        t.border_subtle
+    };
+    // Rows under the header: per run its line, then its detail lines.
+    let mut rows: Vec<(Vec<Span<'static>>, Vec<Span<'static>>)> = Vec::new();
+    let name_w = e.runs.iter().map(|r| r.script.chars().count()).max().unwrap_or(0);
+    for r in &e.runs {
+        let (mark, mark_c, what, what_c) = match &r.outcome {
+            O::Ok => ("✓", t.success, "ok".to_string(), t.text_muted),
+            O::Context(lines) => ("✓", t.success, format!("added {} line{} to the context", lines.len(), if lines.len() == 1 { "" } else { "s" }), t.text_muted),
+            O::Blocked(_) => ("⊘", t.warning, "blocked".to_string(), t.warning),
+            O::Failed { code, .. } => ("✗", t.error, format!("failed (exit {code})"), t.error),
+            O::Timeout => ("◷", t.warning, "timed out".to_string(), t.warning),
+            O::Running => ("◌", t.info, "running".to_string(), t.info),
+        };
+        rows.push((
+            vec![
+                Span::styled(format!("  {mark}  "), plain(mark_c)),
+                Span::styled(format!("{:<name_w$}", r.script), bold(t.text)),
+                Span::styled(format!("   {what}"), plain(what_c)),
+            ],
+            vec![Span::styled(r.duration.clone(), plain(t.text_muted))],
+        ));
+        let detail: Vec<(String, Color)> = match &r.outcome {
+            O::Context(lines) => lines.iter().map(|l| (l.clone(), t.text_muted)).collect(),
+            O::Blocked(reason) => vec![(reason.clone(), t.warning)],
+            O::Failed { stderr, .. } => stderr.iter().map(|l| (l.clone(), t.error)).collect(),
+            _ => vec![],
+        };
+        for (i, (l, c)) in detail.into_iter().enumerate() {
+            let lead = if i == 0 { "↳ " } else { "  " };
+            for wl in wrap(&l, iw.saturating_sub(9)) {
+                rows.push((vec![Span::raw("     "), Span::styled(lead, plain(t.text_muted)), Span::styled(wl, plain(c))], vec![]));
+            }
+        }
+    }
+    let h = 3 + rows.len() as u16;
+    cv.frame(Rect::new(x, y, w, h), frame, bg);
+    cv.icon(ix, y + 1, 2, 1, Icon::Bolt, Tint::Info);
+    let mut head = vec![Span::styled("HOOK", bold(t.info)), Span::styled(format!("   {}", e.event), bold(t.text))];
+    if let Some(s) = &e.subject {
+        head.push(Span::styled(format!("  {s}"), plain(t.text_muted)));
+    }
+    head.push(Span::styled(format!("   {} script{}", e.runs.len(), if e.runs.len() == 1 { "" } else { "s" }), plain(t.text_muted)));
+    cv.line(ix + 3, y + 1, iw.saturating_sub(3), head, bg);
+    cv.line_right(ix + iw, y + 1, vec![Span::styled(e.time.clone(), plain(t.text_muted))], bg);
+    for (i, (left, right)) in rows.into_iter().enumerate() {
+        let ry = y + 2 + i as u16;
+        cv.line(ix, ry, iw, left, bg);
+        if !right.is_empty() {
+            cv.line_right(ix + iw, ry, right, bg);
+        }
+    }
+    h
 }
 
 /// A plain card: stripe, a label row, body rows (wrapped), on the surface.
@@ -310,6 +382,7 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
         Item::Journal(j) => journal(cv, x, y, w, j, bg),
         Item::MapCreated(m) => map_created(cv, x, y, w, m, bg),
         Item::Map(m) => map(cv, x, y, w, m, bg),
+        Item::Hook(e) => hook(cv, x, y, w, e, bg),
         other => {
             let d = item(other, w, t, false);
             cv.embed(x, y, d)

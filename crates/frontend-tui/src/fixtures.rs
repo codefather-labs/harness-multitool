@@ -26,6 +26,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
     Fixture { name: "session-tabs", mockup: "session-tabs", build: session_tabs },
     Fixture { name: "maps", mockup: "journal-mindmap-events", build: maps },
+    Fixture { name: "hooks", mockup: "tool-calls", build: hooks },
 ];
 
 pub fn by_name(name: &str) -> Option<&'static Fixture> {
@@ -450,5 +451,18 @@ pub fn maps() -> AppState {
         composer: composer("Type a message, / for commands, @ to mention...", session_hints()),
         ..Default::default()
     };
+    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+}
+
+/// Every hook outcome: session start and compaction with the two example scripts, a veto, a
+/// failure, a timeout, a hook still running.
+pub fn hooks() -> AppState {
+    let mut transcript = Vec::new();
+    for (k, time) in [("start", "14:20"), ("compact", "14:41"), ("block", "14:42"), ("fail", "14:43"), ("timeout", "14:44"), ("run", "14:45")] {
+        if let Some(h) = crate::debug::sample_hook(k, time) {
+            transcript.push(Item::Hook(h));
+        }
+    }
+    let view = SessionView { transcript, status: router_status(), composer: composer("Type a message, / for commands, @ to mention...", session_hints()), ..Default::default() };
     AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
 }
