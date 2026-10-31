@@ -19,6 +19,10 @@ use crate::model::{
 };
 use crate::theme::Theme;
 
+/// A card's stripe: a whole cell wide, so its ends can follow the quarter-row padding and gap
+/// between cards (a cell holds two colours; a half-cell stripe could not end with them).
+const STRIPE: &str = "█";
+
 /// Where a card's text starts: the stripe, then two cells of air.
 const CX: u16 = 3;
 /// Rows between two items: none; every item ends with a half-row separator instead (see
@@ -140,7 +144,7 @@ impl<'a> Canvas<'a> {
     fn stripe(&mut self, y: u16, h: u16, color: Color, bg: Color) {
         self.grow(y + h);
         for row in y..y + h {
-            self.buf[(0, row)].set_symbol("▌").set_fg(color).set_bg(bg);
+            self.buf[(0, row)].set_symbol(STRIPE).set_fg(color).set_bg(bg);
         }
     }
 
@@ -743,7 +747,7 @@ fn edge(d: &Drawn, row: u16, t: &Theme) -> Edge {
     let bg = d.buf[(1.min(w - 1), row)].bg;
     let surface = (bg != Color::Reset && bg != t.background).then_some(bg);
     let first = &d.buf[(0, row)];
-    let stripe = (first.symbol() == "▌").then_some(first.fg);
+    let stripe = (first.symbol() == STRIPE).then_some(first.fg);
     Edge { surface, stripe }
 }
 
@@ -758,26 +762,14 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
     let (ta, tb) = (above.as_ref().and_then(|e| e.stripe), below.as_ref().and_then(|e| e.stripe));
     for x in 0..width {
         let cell = &mut buf[(x, 0)];
-        let (left, right) = (x == 0, x + 1 == width);
-        if left && (ta.is_some() || tb.is_some()) {
-            // The stripe ends round: a quadrant of the card above or below, never both.
-            match (ta, tb) {
-                (Some(_), Some(_)) => cell.set_symbol(" ").set_bg(page),
-                (Some(c), None) => cell.set_symbol("▘").set_fg(c).set_bg(page),
-                (None, Some(c)) => cell.set_symbol("▖").set_fg(c).set_bg(page),
-                (None, None) => unreachable!(),
-            };
-            continue;
-        }
-        // No cut corners at the card edges: in a real terminal a one-cell notch at the edge of
-        // the transcript reads as a glitch, not as a rounded corner (operator's screenshot,
-        // 2026-11-01). Only the stripes end round.
-        let _ = (left, right);
-        let (sym, fg, bg) = match (sa, sb) {
-            (Some(a), Some(b)) if a == b => ("━", page, a),
-            (Some(a), Some(b)) => ("▀", a, b),
-            (Some(a), None) => ("▀", a, page),
-            (None, Some(b)) => ("▄", b, page),
+        // Quarter rows: a card's padding is three quarters of this row, the gap the other quarter;
+        // two spacer rows between cards make a half-row gap (operator, 2026-11-01). The stripe
+        // column ends the same way, so each stripe is exactly as tall as its card.
+        let striped = x == 0 && (ta.is_some() || tb.is_some());
+        let (above_c, below_c) = if striped { (ta, tb) } else { (sa, sb) };
+        let (sym, fg, bg) = match (above_c, below_c) {
+            (Some(a), _) => ("▂", page, a),
+            (None, Some(b)) => ("▆", b, page),
             (None, None) => (" ", page, page),
         };
         cell.set_symbol(sym).set_fg(fg).set_bg(bg);

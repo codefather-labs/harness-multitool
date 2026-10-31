@@ -88,7 +88,7 @@ multitool screen hooks --no-graphics --size 160x50 --png hooks.png  # every hook
 
 Settled with the project owner while matching the mockups; the journal holds each with its reason.
 
-- Every transcript card has half a row of padding above and below, and its stripe runs through it: the stripe is as tall as the card. Two cards are a row of page colour apart. (A shared row with a hairline was tighter, but a cell has two colours, so the stripes had to stop short of the card: the owner chose full stripes.)
+- Two rows separate transcript cards, split in quarter rows (▂ ▆): three quarters of a row of padding under one card, a half-row gap of page colour, three quarters of a row above the next. The stripe is a whole cell wide and ends the same way, so it is exactly as tall as its card. (A half-cell stripe could not end with a quarter-row gap: a cell holds two colours.)
 - Tool cards: only a file edit's diff has a background; tool output, notes and sent messages are plain text under the tool's name.
 - The startup page selection is an accent outline without a fill, shown only in the focused panel.
 - The one-row header shows the logo only when the terminal draws pictures.
