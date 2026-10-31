@@ -25,14 +25,29 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
     ("/clear", "empty the transcript"),
+    ("/exit, /quit", "close the harness (also Ctrl+C)"),
 ];
 
-/// Sends the active session's composer text. Returns false when there was nothing to send.
-pub fn submit(w: &mut Workspace) -> bool {
+/// What sending the composer's line led to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    /// The line was empty.
+    Nothing,
+    /// A message or a command was handled.
+    Done,
+    /// `/exit` or `/quit`: the app closes.
+    Quit,
+}
+
+/// Sends the active session's composer text.
+pub fn submit(w: &mut Workspace) -> Sent {
     let text = std::mem::take(&mut w.view_mut().composer.text);
     let text = text.trim().to_string();
     if text.is_empty() {
-        return false;
+        return Sent::Nothing;
+    }
+    if matches!(text.as_str(), "/exit" | "/quit" | "/q") {
+        return Sent::Quit;
     }
     w.view_mut().scroll = 0;
     if let Some(cmd) = text.strip_prefix('/') {
@@ -42,7 +57,7 @@ pub fn submit(w: &mut Workspace) -> bool {
         let time = now(v);
         v.transcript.push(Item::Turn { role: Role::User, time, lines: vec![text], attached: vec![] });
     }
-    true
+    Sent::Done
 }
 
 /// The time stamp of the next message (`HH:MM`); every message moves the clock a minute on.
@@ -329,7 +344,7 @@ mod tests {
 
     fn send(w: &mut Workspace, text: &str) {
         w.view_mut().composer.text = text.into();
-        assert!(submit(w));
+        assert_eq!(submit(w), Sent::Done);
     }
 
     #[test]
@@ -354,6 +369,17 @@ mod tests {
             assert!(sample_tool(kind).is_some(), "{kind}");
         }
         assert!(w.toast.is_some(), "/tg shows a toast");
+    }
+
+    #[test]
+    fn exit_and_quit_close_the_harness() {
+        let mut w = workspace();
+        for cmd in ["/exit", "/quit", " /exit "] {
+            w.view_mut().composer.text = cmd.into();
+            assert_eq!(submit(&mut w), Sent::Quit, "{cmd:?}");
+        }
+        w.view_mut().composer.text = String::new();
+        assert_eq!(submit(&mut w), Sent::Nothing);
     }
 
     #[test]

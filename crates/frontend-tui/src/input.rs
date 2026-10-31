@@ -84,7 +84,9 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
         Mode::Session(w) => {
             match k {
                 Key::Enter => {
-                    crate::debug::submit(w);
+                    if crate::debug::submit(w) == crate::debug::Sent::Quit {
+                        return Outcome::Quit;
+                    }
                 }
                 Key::Backspace => {
                     w.view_mut().composer.text.pop();
@@ -210,6 +212,10 @@ mod tests {
         key(&mut s, Key::Ctrl('w'));
         assert_eq!(tabs(&s), (1, 0), "the last tab stays");
         assert_eq!(key(&mut s, Key::Esc), Outcome::Stay, "Esc does not quit a session");
+        for c in "/exit".chars() {
+            key(&mut s, Key::Char(c));
+        }
+        assert_eq!(key(&mut s, Key::Enter), Outcome::Quit, "/exit quits");
         key(&mut s, Key::PageUp);
         if let Mode::Session(w) = &s.mode {
             assert_eq!(w.view().scroll, 10);
