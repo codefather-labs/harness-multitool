@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand};
 use frontend_tui::{Theme, fixtures};
 use tui_snapshot::{Raster, side_by_side};
 
+mod config;
+
 #[derive(Parser)]
 #[command(name = "multitool", version, about = "harness-multitool")]
 struct Cli {
@@ -23,6 +25,12 @@ enum Command {
         name: String,
         #[arg(long, default_value = "dark")]
         theme: String,
+    },
+    /// Write the user's configuration (config.toml in the OS's config directory).
+    Setup {
+        /// How pictures (logo, icons, big text) are drawn: auto, sixel, kitty, iterm2 or off.
+        #[arg(long, value_enum)]
+        graphics: Option<config::Graphics>,
     },
     /// Render the logo to PNG at a given size, coloured for a theme, on its background.
     Logo {
@@ -76,6 +84,15 @@ fn main() -> Result<()> {
     let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into() });
     match command {
         Command::Preview { name, theme } => preview(&name, &theme),
+        Command::Setup { graphics } => {
+            let mut c = config::load()?;
+            if let Some(g) = graphics {
+                c.terminal.graphics = g;
+            }
+            let p = config::save(&c)?;
+            println!("{}\n{}", p.display(), toml::to_string_pretty(&c)?);
+            Ok(())
+        }
         Command::Logo { theme, width, png } => {
             let theme = Theme::builtin(&theme)?;
             let height = width * 82 / 530;
@@ -154,8 +171,19 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
     // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
     // text fallback the view already drew.
-    let forced = forced_protocol();
-    let picker = (forced.is_some() || graphics_terminal())
+    let mode = config::graphics();
+    let forced = match mode {
+        config::Graphics::Sixel => Some(ProtocolType::Sixel),
+        config::Graphics::Kitty => Some(ProtocolType::Kitty),
+        config::Graphics::Iterm2 => Some(ProtocolType::Iterm2),
+        _ => None,
+    };
+    let ask = match mode {
+        config::Graphics::Off => false,
+        config::Graphics::Auto => graphics_terminal(),
+        _ => true,
+    };
+    let picker = ask
         .then(|| Picker::from_query_stdio().ok())
         .flatten()
         .map(|mut p| {
@@ -244,28 +272,12 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     result
 }
 
-/// MULTITOOL_GRAPHICS=sixel|kitty|iterm2 forces that protocol whatever the terminal reports
-/// (to find out whether a terminal draws it, e.g. GNOME Terminal with sixel switched on).
-fn forced_protocol() -> Option<ratatui_image::picker::ProtocolType> {
-    use ratatui_image::picker::ProtocolType;
-    match std::env::var("MULTITOOL_GRAPHICS").unwrap_or_default().as_str() {
-        "sixel" => Some(ProtocolType::Sixel),
-        "kitty" => Some(ProtocolType::Kitty),
-        "iterm2" => Some(ProtocolType::Iterm2),
-        _ => None,
-    }
-}
-
-/// Whether to ask the terminal about graphics at all. ratatui-image 11's query leaves a thread
-/// reading stdin after its timeout (it eats the next key and later turns raw mode off), so only
-/// terminals that say they have graphics are asked. MULTITOOL_GRAPHICS=1 or 0 overrides.
+/// In `auto` mode, whether to ask the terminal about graphics at all. ratatui-image 11's query
+/// leaves a thread reading stdin after its timeout (it eats the next key and later turns raw
+/// mode off), so only terminals whose environment says they have graphics are asked; the config
+/// (`multitool setup --graphics`) or MULTITOOL_GRAPHICS decide for the rest.
 fn graphics_terminal() -> bool {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
-    match env("MULTITOOL_GRAPHICS").as_str() {
-        "1" => return true,
-        "0" => return false,
-        _ => {}
-    }
     let term = env("TERM");
     let program = env("TERM_PROGRAM");
     !env("KITTY_WINDOW_ID").is_empty()
