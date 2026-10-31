@@ -146,6 +146,37 @@ fn card(f: &mut Frame, area: Rect, t: &Theme, line: Option<Color>) -> (Rect, Col
     }
 }
 
+/// A filled box outlined by a thin line that sits flush on the fill, as the mockups draw the
+/// selection: the line is drawn with one-eighth blocks on the edge of each border cell that
+/// touches the inside (▁ above, ▔ below, ▕ left, ▏ right), never through the cell middle, so
+/// no strip of the outer colour shows between line and fill. The corner cells stay empty: the
+/// lines meet at a point there, which reads as a rounded corner. Returns the inside.
+fn outlined(f: &mut Frame, area: Rect, line: Color, outer: Color, inner: Color) -> Rect {
+    let buf = f.buffer_mut();
+    let a = area.intersection(buf.area);
+    if a.width < 3 || a.height < 3 {
+        return a;
+    }
+    let (r, b) = (a.x + a.width - 1, a.y + a.height - 1);
+    for y in a.y..=b {
+        for x in a.x..=r {
+            let edge_x = x == a.x || x == r;
+            let edge_y = y == a.y || y == b;
+            let sym = match (edge_x, edge_y) {
+                (true, true) => " ",
+                (false, true) => if y == a.y { "▁" } else { "▔" },
+                (true, false) => if x == a.x { "▕" } else { "▏" },
+                (false, false) => {
+                    buf[(x, y)].set_symbol(" ").set_bg(inner);
+                    continue;
+                }
+            };
+            buf[(x, y)].set_symbol(sym).set_fg(line).set_bg(outer);
+        }
+    }
+    Rect { x: a.x + 1, y: a.y + 1, width: a.width - 2, height: a.height - 2 }
+}
+
 fn rounded(color: Color, bg: Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -203,7 +234,7 @@ fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: 
     }
     if let Some(i) = selected.filter(|i| *i < count) {
         let r = Rect { y: area.y + i as u16 * 3, height: 4, ..area };
-        boxed(f, r, t.accent_line, fill, t.selection);
+        outlined(f, r, t.accent_line, fill, t.selection);
     }
     rects
 }
