@@ -111,6 +111,23 @@ fn panel(f: &mut Frame, area: Rect, outer: Color, inner: Color) -> Rect {
     Rect { x: a.x + 1, y: a.y + 1, width: a.width - 2, height: a.height - 2 }
 }
 
+/// A card drawn with a rounded line (╭─╮) on the colour around it. Unfilled on purpose: the
+/// line runs through the middle of its cells, so a fill would stick out half a cell past the
+/// line and square off the corners. Returns the inside.
+fn lined(f: &mut Frame, area: Rect, line: Color, bg: Color) -> Rect {
+    boxed(f, area, line, bg, bg)
+}
+
+/// A page card as the mockups draw it: light themes outline it (thin rounded line), dark themes
+/// fill it without a line. `line` overrides the outline colour (e.g. the accent for the tip).
+fn card(f: &mut Frame, area: Rect, t: &Theme, line: Option<Color>) -> (Rect, Color) {
+    if t.dark {
+        (panel(f, area, t.background, t.surface), t.surface)
+    } else {
+        (lined(f, area, line.unwrap_or(t.border_subtle), t.background), t.background)
+    }
+}
+
 fn rounded(color: Color, bg: Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -129,13 +146,15 @@ pub fn splash(f: &mut Frame, area: Rect, v: &SplashView, t: &Theme, out: &mut Dr
     let longest = v.lines.iter().chain(std::iter::once(&v.heading)).map(|l| l.chars().count()).max().unwrap_or(0) as u16;
     let card = Rect { y: area.y + y, height: card_h, ..centred(area, longest + 6) };
     let mut lines = vec![
-        Line::from(Span::styled(v.heading.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD))),
+        // The light mockup writes the heading in the accent, the dark one in the text colour.
+        Line::from(Span::styled(v.heading.clone(), Style::default().fg(if t.dark { t.text } else { t.accent }).add_modifier(Modifier::BOLD))),
         Line::default(),
     ];
     lines.extend(v.lines.iter().map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(t.text)))));
-    let inside = panel(f, card, t.background, t.surface);
+    let card_line = if t.dark { t.border_subtle } else { t.accent_line };
+    let inside = lined(f, card, card_line, t.background);
     let text = Rect { x: inside.x + 2, width: inside.width.saturating_sub(4), ..inside };
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.surface)), text);
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), text);
     y += card_h + 1;
 
     let button = Rect { y: area.y + y, height: 3, ..centred(area, 10) };
@@ -154,77 +173,99 @@ pub fn splash(f: &mut Frame, area: Rect, v: &SplashView, t: &Theme, out: &mut Dr
 
 /// A list of two-line entries with a rule between them; the selected one is outlined, its
 /// outline drawn on the rule rows above and below it. Returns each entry's two-row rect.
-fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: &Theme) -> Vec<Rect> {
+fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: &Theme, fill: Color) -> Vec<Rect> {
     let mut rects = Vec::new();
     for i in 0..count {
         let sep = row(area, i as u16 * 3);
         f.render_widget(
-            Paragraph::new("─".repeat(sep.width as usize)).style(Style::default().fg(t.border_subtle).bg(t.surface)),
+            Paragraph::new("─".repeat(sep.width as usize)).style(Style::default().fg(t.border_subtle).bg(fill)),
             Rect { x: sep.x + 1, width: sep.width.saturating_sub(2), ..sep },
         );
         rects.push(Rect { y: area.y + i as u16 * 3 + 1, height: 2, ..area });
     }
     if let Some(i) = selected.filter(|i| *i < count) {
         let r = Rect { y: area.y + i as u16 * 3, height: 4, ..area };
-        boxed(f, r, t.accent_line, t.surface, t.selection);
+        boxed(f, r, t.accent_line, fill, t.selection);
     }
     rects
 }
 
 pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, out: &mut Drawn) {
-    // Panels are as tall as their lists (border, title, three rows per entry, closing rule);
-    // what is left over goes above the logo, so the page sits low like the mockup.
-    let entries_n = v.sessions.len().max(v.actions.len()) as u16;
-    let panel_h = 2 + 1 + entries_n * 3 + 1;
-    let brand_h = LOGO_H + 2 + 2;
-    let fixed = brand_h + 1 + panel_h + 1 + 1 + 1 + 3;
-    let top = area.height.saturating_sub(fixed).min(2);
-    let used = brand(f, area, top, &v.brand, t, out);
-    let [_, panels, _, rule, status, tip] = Layout::vertical([
-        Constraint::Length(top + used + 1),
-        Constraint::Length(panel_h),
+    // Bottom block as in the mockup: rule, status line, rule, tip card. Above it the brand and
+    // the two panels, as one group centred in the space left (a tall terminal gets even
+    // margins instead of a hole between the panels and the status line).
+    let [top_area, rule1, status, rule2, tip] = Layout::vertical([
         Constraint::Fill(1),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(3),
     ])
     .areas(area);
+    let entries_n = v.sessions.len().max(v.actions.len()) as u16;
+    let panel_h = 2 + 1 + entries_n * 3 + 1;
+    let brand_h = LOGO_H + 2 + 2;
+    let group = brand_h + 1 + panel_h;
+    let top = top_area.height.saturating_sub(group + 1) / 2 + 1;
+    let top = top.min(top_area.height.saturating_sub(group));
+    let used = brand(f, top_area, top, &v.brand, t, out);
+    let panels = Rect { y: top_area.y + top + used + 1, height: panel_h.min(top_area.height.saturating_sub(top + used + 1)), ..top_area };
     let inset = |r: Rect| Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..r };
-    // Quick actions are as wide as their longest description needs (key chip, icon, text,
-    // borders), but never more than 40% of the screen; the sessions take the rest.
-    let longest = v.actions.iter().map(|a| a.description.chars().count().max(a.title.chars().count())).max().unwrap_or(0) as u16;
-    let actions_w = (longest + 12 + 4).min(area.width * 2 / 5);
+
+    // Column widths from the content. Sessions: icon, title/path, branch chip, age, model.
+    let w = |it: &mut dyn Iterator<Item = usize>| it.max().unwrap_or(0) as u16;
+    let text_w = w(&mut v.sessions.iter().map(|s| s.title.chars().count().max(s.path.chars().count())));
+    let chip_w = w(&mut v.sessions.iter().map(|s| s.branch.chars().count())) + 5;
+    let age_w = w(&mut v.sessions.iter().map(|s| s.age.chars().count()));
+    let model_w = w(&mut v.sessions.iter().map(|s| s.model.chars().count()));
+    // Quick actions: card edges (2), entry insets (2), the 11-cell indent (key chip, icon), the
+    // text and one cell of air before the selection outline.
+    let act_text = w(&mut v.actions.iter().map(|a| a.description.chars().count().max(a.title.chars().count())));
+    let actions_need = 2 + 2 + 11 + act_text + 1;
+    let sessions_need = 4 + text_w + 3 + chip_w + 3 + age_w + 3 + model_w + 2 + 4;
+    let room = inset(panels).width.saturating_sub(2);
+    let actions_w = actions_need.min(room * 2 / 5).max(room.saturating_sub(sessions_need).min(room * 2 / 5).min(actions_need));
     let [left, _, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(2), Constraint::Length(actions_w)]).areas(inset(panels));
 
-    // Recent sessions
-    let inner = panel(f, left, t.background, t.surface);
-    let title = |text: &str| {
+    let heading = |text: &str| {
         Line::from(vec![
             Span::raw("     "),
             Span::styled(text.to_string(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
         ])
     };
-    f.render_widget(Paragraph::new(title("Recent sessions")), row(inner, 0));
+
+    // Recent sessions
+    let (inner, fill) = card(f, left, t, None);
+    f.render_widget(Paragraph::new(heading("Recent sessions")).style(Style::default().bg(fill)), row(inner, 0));
     icon(out, Rect { x: inner.x + 1, ..row(inner, 0) }, Icon::Clock, Tint::Text);
     let list = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
     // Both panels show their selection, as in the mockup; the focused one takes the keys.
     let sel = Some(v.selected_session);
-    let rects = entries(f, list, v.sessions.len(), sel, t);
+    let rects = entries(f, list, v.sessions.len(), sel, t, fill);
     for (i, (s, r)) in v.sessions.iter().zip(&rects).enumerate() {
-        let bg = if sel == Some(i) { t.selection } else { t.surface };
+        let bg = if sel == Some(i) { t.selection } else { fill };
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
-        let [icon_r, text, branch, age, model] = Layout::horizontal([
-            Constraint::Length(5),
-            Constraint::Fill(1),
-            Constraint::Length(18),
-            Constraint::Length(12),
-            Constraint::Length(18),
+        // Spare width is shared by the three gaps between the columns, like the mockup's
+        // evenly spread columns; a narrow panel shortens the title column instead.
+        let fixed = 4 + chip_w + age_w + model_w + 1;
+        let spare = r.width.saturating_sub(fixed + text_w);
+        let gap = (spare / 3).clamp(1, 12);
+        let text_col = r.width.saturating_sub(fixed + gap * 3).min(text_w + spare.saturating_sub(gap * 3));
+        let [icon_r, text, _, branch, _, age, _, model] = Layout::horizontal([
+            Constraint::Length(4),
+            Constraint::Length(text_col),
+            Constraint::Length(gap),
+            Constraint::Length(chip_w),
+            Constraint::Length(gap),
+            Constraint::Length(age_w),
+            Constraint::Length(gap),
+            Constraint::Length(model_w),
         ])
         .areas(r);
         let st = Style::default().bg(bg);
-        f.render_widget(Paragraph::new("").style(st), icon_r);
-        big_icon(out, icon_r.x + 1, icon_r.y, Icon::File, Tint::Muted);
+        f.render_widget(Paragraph::new("").style(st), r);
+        big_icon(out, icon_r.x, icon_r.y, Icon::File, Tint::Muted);
         f.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(fit(&s.title, text.width), st.fg(t.text).add_modifier(Modifier::BOLD))),
@@ -233,61 +274,67 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, out: &mut 
             .style(st),
             text,
         );
-        // The chip is as wide as its text, centred on the first row of the entry.
+        // The chip is as wide as its text, on the middle of the entry like the mockup's pill.
         let chip = format!("    {} ", s.branch);
-        let chip_w = (chip.chars().count() as u16).min(branch.width);
-        f.render_widget(Paragraph::new("").style(st), branch);
-        let chip_r = Rect { y: branch.y, height: 1, width: chip_w, ..branch };
+        let cw = (chip.chars().count() as u16).min(branch.width);
+        let chip_r = Rect { y: branch.y, height: 1, width: cw, ..branch };
         f.render_widget(Paragraph::new(Span::styled(chip, Style::default().fg(t.info).bg(t.surface_raised).add_modifier(Modifier::BOLD))), chip_r);
         icon(out, Rect { x: chip_r.x + 1, ..chip_r }, Icon::Branch, Tint::Info);
-        f.render_widget(Paragraph::new(Span::styled(s.age.clone(), st.fg(t.text))).style(st), age);
-        f.render_widget(Paragraph::new(Span::styled(format!("{} ", s.model), st.fg(t.text))).right_aligned().style(st), model);
+        f.render_widget(Paragraph::new(Span::styled(s.age.clone(), st.fg(t.text))).style(st), Rect { height: 1, ..age });
+        f.render_widget(Paragraph::new(Span::styled(s.model.clone(), st.fg(t.text))).style(st), Rect { height: 1, ..model });
         out.hits.push(Hit { rect: r, target: Target::Session(i) });
     }
 
     // Quick actions
-    let inner = panel(f, right, t.background, t.surface);
-    f.render_widget(Paragraph::new(title("Quick actions")), row(inner, 0));
+    let (inner, fill) = card(f, right, t, None);
+    f.render_widget(Paragraph::new(heading("Quick actions")).style(Style::default().bg(fill)), row(inner, 0));
     icon(out, Rect { x: inner.x + 1, ..row(inner, 0) }, Icon::Bolt, Tint::Accent);
     let list = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
     let sel = Some(v.selected_action);
-    let rects = entries(f, list, v.actions.len(), sel, t);
+    let rects = entries(f, list, v.actions.len(), sel, t, fill);
     for (i, (a, r)) in v.actions.iter().zip(&rects).enumerate() {
         let on = sel == Some(i);
-        let bg = if on { t.selection } else { t.surface };
+        let bg = if on { t.selection } else { fill };
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
         let st = Style::default().bg(bg);
         let key_style = if on {
             Style::default().fg(t.accent).bg(t.surface_raised).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(t.text).bg(t.surface_raised)
+            Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD)
         };
+        let indent = 11u16;
         let lines = vec![
             Line::from(vec![
                 Span::styled(" ", st),
                 Span::styled(format!(" {} ", a.key), key_style),
-                Span::styled("        ", st),
+                Span::styled(" ".repeat(indent as usize - 4), st),
                 Span::styled(a.title.clone(), st.fg(t.text).add_modifier(Modifier::BOLD)),
             ]),
-            Line::from(vec![Span::styled("            ", st), Span::styled(fit(&a.description, r.width.saturating_sub(12)), st.fg(t.text_muted))]),
+            Line::from(vec![
+                Span::styled(" ".repeat(indent as usize), st),
+                Span::styled(fit(&a.description, r.width.saturating_sub(indent)), st.fg(t.text_muted)),
+            ]),
         ];
         f.render_widget(Paragraph::new(lines).style(st), r);
         big_icon(out, r.x + 6, r.y, a.icon, Tint::Text);
         out.hits.push(Hit { rect: r, target: Target::Action(i) });
     }
 
-    // Status line and tip
-    widgets::rule(f, inset(rule), t);
+    // Status line between two rules, then the tip
+    widgets::rule(f, inset(rule1), t);
+    widgets::rule(f, inset(rule2), t);
+    let status = inset(status);
     widgets::status_line(f, status, t, &v.status);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("● ", Style::default().fg(t.success)),
-            Span::styled(format!("{}  ", v.ready), Style::default().fg(t.text)),
+            Span::styled(format!("{} ", v.ready), Style::default().fg(t.text)),
         ]))
         .right_aligned(),
         status,
     );
     if let Some(parts) = v.tips.get(v.tip) {
+        let (inner, fill) = card(f, inset(tip), t, Some(t.accent_line));
         let mut spans = vec![Span::raw("    "), Span::styled("Tip:  ", Style::default().fg(t.accent).add_modifier(Modifier::BOLD))];
         for p in parts {
             if p.code {
@@ -296,9 +343,7 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, out: &mut 
                 spans.push(Span::styled(p.text.clone(), Style::default().fg(t.text)));
             }
         }
-        let tip_box = inset(tip);
-        let inner = panel(f, tip_box, t.background, t.surface);
-        f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.surface)), inner);
+        f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(fill)), inner);
         icon(out, Rect { x: inner.x + 1, ..row(inner, 0) }, Icon::Info, Tint::Accent);
         f.render_widget(
             Paragraph::new(Span::styled(format!("{} / {} ", v.tip + 1, v.tips.len()), Style::default().fg(t.text_muted))).right_aligned(),

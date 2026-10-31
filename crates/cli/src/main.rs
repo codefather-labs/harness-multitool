@@ -205,6 +205,14 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let result = (|| -> Result<()> {
         loop {
             state.pictures = picker.is_some();
+            // The status line names the theme on screen, which F2 changes.
+            if let Mode::Startup(v) = &mut state.mode {
+                for (k, val) in &mut v.status.fields {
+                    if k == "THEME" {
+                        *val = current.id.clone();
+                    }
+                }
+            }
             let mut drawn = Drawn::default();
             terminal.draw(|f| {
                 drawn = frontend_tui::draw(f, &state, &current);
