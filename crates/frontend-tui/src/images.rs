@@ -51,7 +51,7 @@ impl Icon {
     pub fn fallback(self) -> &'static str {
         match self {
             Icon::Clock => "◷",
-            Icon::Bolt => "⚡",
+            Icon::Bolt => "↯",
             Icon::File => "▤",
             Icon::FilePlus => "+",
             Icon::Branch => "⑂",
@@ -178,54 +178,31 @@ pub fn rasterize(g: &Graphic, t: &Theme, width: u32, height: u32) -> RgbaImage {
     }
 }
 
-/// The text fallback written into a placement's cells, for terminals without graphics.
-/// Pictures taller than one row become half blocks (two pixels per cell: upper as foreground,
-/// lower as background), each pixel snapped to the nearest theme colour so the shape stays
-/// recognisable and the palette clean. One-row pictures get a glyph or plain bold text.
+/// The text fallback written into a placement's cells, for terminals without graphics: an
+/// icon becomes its glyph, text becomes bold text on the middle row, the logo becomes its text
+/// mark on the middle row. Never pixel art: half blocks in real terminal fonts show seams and
+/// turn text into noise (operator's GNOME Terminal screenshots, 2026-10-31).
 pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
     let r = p.rect.intersection(buf.area);
     if r.is_empty() {
         return;
     }
-    let bg = match buf[(r.x, r.y)].bg {
-        Color::Reset => t.background,
-        c => c,
-    };
+    let mid = r.y + r.height.saturating_sub(1) / 2;
     match &p.graphic {
         Graphic::Icon(i, tint) => {
-            buf[(r.x, r.y)].set_symbol(i.fallback()).set_fg(tint.color(t)).set_bg(bg);
+            let y = r.y + (r.height.saturating_sub(1)) / 2;
+            let x = r.x + r.width.saturating_sub(1) / 2;
+            buf[(x, y)].set_symbol(i.fallback()).set_fg(tint.color(t));
         }
-        Graphic::Text(s, tint) if r.height < 2 => {
+        Graphic::Text(s, tint) => {
             let x = r.x + r.width.saturating_sub(s.chars().count() as u16) / 2;
-            let style = ratatui::style::Style::default().fg(tint.color(t)).bg(bg).add_modifier(ratatui::style::Modifier::BOLD);
-            buf.set_string(x, r.y, s, style);
+            let style = ratatui::style::Style::default().fg(tint.color(t)).add_modifier(ratatui::style::Modifier::BOLD);
+            buf.set_stringn(x, mid, s, r.width as usize, style);
         }
-        Graphic::Logo if r.height < 2 => {
+        Graphic::Logo => {
             let line = ratatui::text::Line::from(crate::widgets::logo_mark(t));
-            buf.set_line(r.x, r.y, &line, r.width);
-        }
-        _ => {
-            let pic = rasterize(&p.graphic, t, r.width as u32, r.height as u32 * 2);
-            let palette = [bg, t.text, t.brand, t.background, t.text_muted, t.accent];
-            let snap = |px: Rgba<u8>| -> Color {
-                if px[3] < 110 {
-                    return bg;
-                }
-                *palette
-                    .iter()
-                    .min_by_key(|c| {
-                        let [r, g, b] = rgb(**c);
-                        (r as i32 - px[0] as i32).pow(2) + (g as i32 - px[1] as i32).pow(2) + (b as i32 - px[2] as i32).pow(2)
-                    })
-                    .unwrap()
-            };
-            for y in 0..r.height {
-                for x in 0..r.width {
-                    let up = snap(*pic.get_pixel(x as u32, y as u32 * 2));
-                    let down = snap(*pic.get_pixel(x as u32, y as u32 * 2 + 1));
-                    buf[(r.x + x, r.y + y)].set_symbol("▀").set_fg(up).set_bg(down);
-                }
-            }
+            let w = line.width() as u16;
+            buf.set_line(r.x + r.width.saturating_sub(w) / 2, mid, &line, r.width);
         }
     }
 }

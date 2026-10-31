@@ -51,6 +51,9 @@ enum Command {
         /// Put the reference mockup next to the render (docs/design/concept/<mockup>-<theme>.png).
         #[arg(long)]
         compare: bool,
+        /// Show the text fallbacks, as a terminal without graphics does.
+        #[arg(long)]
+        no_graphics: bool,
         /// Where the mockups live.
         #[arg(long, default_value = "docs/design/concept")]
         mockups: PathBuf,
@@ -87,7 +90,7 @@ fn main() -> Result<()> {
             println!("{} {width}x{height}", png.display());
             Ok(())
         }
-        Command::Screen { name, list, theme, size, png, compare, mockups, font, font_bold, px, cell_h } => {
+        Command::Screen { name, list, theme, size, png, compare, no_graphics, mockups, font, font_bold, px, cell_h } => {
             if list {
                 for f in fixtures::ALL {
                     println!("{}\t{}", f.name, f.mockup);
@@ -107,7 +110,7 @@ fn main() -> Result<()> {
                 (Some(r), Some(b)) => Raster::with_fonts(r, b, px, cell_h)?,
                 _ => Raster::new(px, cell_h)?,
             };
-            let mut img = raster.render(&(fixture.build)(), &theme, cols, rows);
+            let mut img = raster.render_with(&(fixture.build)(), &theme, cols, rows, !no_graphics);
             if compare {
                 let path = mockups.join(format!("{}-{}.png", fixture.mockup, theme.id));
                 let mockup = image::open(&path).with_context(|| format!("mockup {}", path.display()))?.to_rgb8();
@@ -151,9 +154,16 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
     // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
     // text fallback the view already drew.
-    let picker = graphics_terminal()
+    let forced = forced_protocol();
+    let picker = (forced.is_some() || graphics_terminal())
         .then(|| Picker::from_query_stdio().ok())
         .flatten()
+        .map(|mut p| {
+            if let Some(proto) = forced {
+                p.set_protocol_type(proto);
+            }
+            p
+        })
         .filter(|p| p.protocol_type() != ProtocolType::Halfblocks);
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
@@ -232,6 +242,18 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
+}
+
+/// MULTITOOL_GRAPHICS=sixel|kitty|iterm2 forces that protocol whatever the terminal reports
+/// (to find out whether a terminal draws it, e.g. GNOME Terminal with sixel switched on).
+fn forced_protocol() -> Option<ratatui_image::picker::ProtocolType> {
+    use ratatui_image::picker::ProtocolType;
+    match std::env::var("MULTITOOL_GRAPHICS").unwrap_or_default().as_str() {
+        "sixel" => Some(ProtocolType::Sixel),
+        "kitty" => Some(ProtocolType::Kitty),
+        "iterm2" => Some(ProtocolType::Iterm2),
+        _ => None,
+    }
 }
 
 /// Whether to ask the terminal about graphics at all. ratatui-image 11's query leaves a thread

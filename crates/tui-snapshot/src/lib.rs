@@ -72,14 +72,22 @@ impl Raster {
     }
 
     /// Draws the state at `cols x rows` cells and returns the picture.
+    /// As a terminal with graphics shows it (pictures pasted over their cells).
     pub fn render(&self, state: &AppState, theme: &Theme, cols: u16, rows: u16) -> RgbImage {
+        self.render_with(state, theme, cols, rows, true)
+    }
+
+    /// `graphics: false` shows the text fallbacks, as a terminal without graphics does.
+    pub fn render_with(&self, state: &AppState, theme: &Theme, cols: u16, rows: u16, graphics: bool) -> RgbImage {
         let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
         let mut placements = Vec::new();
         term.draw(|f| placements = frontend_tui::draw(f, state, theme).placements).expect("draw");
         let buf = term.backend().buffer();
         let mut img = self.rasterise(buf, theme);
-        for p in &placements {
-            self.paste(&mut img, buf, theme, p);
+        if graphics {
+            for p in &placements {
+                self.paste(&mut img, buf, theme, p);
+            }
         }
         img
     }
