@@ -211,7 +211,7 @@ pub enum Item {
 
 #[derive(Debug, Clone)]
 pub struct HookEvent {
-    /// The loop event the hooks ran on, e.g. `SessionStart`, `PreCompact`, `PreToolUse`.
+    /// The loop event the hooks ran on, e.g. `SessionStart`, `PostCompact`, `PreToolUse`.
     pub event: String,
     /// What the event was about, e.g. the tool call a `PreToolUse` hook saw.
     pub subject: Option<String>,

@@ -378,12 +378,13 @@ pub fn sample_hook(kind: &str, time: &str) -> Option<HookEvent> {
                 ),
             ],
         ),
+        // After compaction: the hooks put back what the summary must not lose.
         "compact" => ev(
-            "PreCompact",
-            Some("context 182k / 200k"),
+            "PostCompact",
+            Some("context 182k → 41k"),
             vec![
-                run(fact, HookOutcome::Ok, "31 ms"),
-                run(lookup, HookOutcome::Context(vec!["kept: 12 specifications, 4 constraints, map #1 (open nodes)".into()]), "96 ms"),
+                run(fact, HookOutcome::Context(vec!["[self-check] run the three cognitive self-check protocols: inbound, facts, decisions".into()]), "31 ms"),
+                run(lookup, HookOutcome::Context(vec!["restored: 12 specifications, 4 constraints, open nodes of map #1".into()]), "96 ms"),
             ],
         ),
         "block" => ev(

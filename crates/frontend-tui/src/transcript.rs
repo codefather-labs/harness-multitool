@@ -762,20 +762,19 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u1
             break;
         }
         let d = item(it, width, t, generating && Some(i) == last_assistant);
-        acc = acc.saturating_add(d.buf.area.height + 1);
+        acc = acc.saturating_add(d.buf.area.height + 2);
         drawn.push(d);
     }
     drawn.reverse();
     let mut out = Vec::with_capacity(drawn.len() * 2 + 1);
-    let mut prev: Option<Edge> = None;
+    // Every card gets its own half-row padding above and below, which its stripe runs through,
+    // so the stripe is as tall as the card; two cards are a row of page colour apart
+    // (operator's choice 2026-11-01 over a shared row, where the stripes had to stop short).
     for d in drawn {
-        let top = edge(&d, 0, t);
-        out.push(spacer(prev.take(), Some(top), width, t));
-        prev = Some(edge(&d, d.buf.area.height - 1, t));
+        out.push(spacer(None, Some(edge(&d, 0, t)), width, t));
+        let bottom = edge(&d, d.buf.area.height - 1, t);
         out.push(d);
-    }
-    if prev.is_some() {
-        out.push(spacer(prev, None, width, t));
+        out.push(spacer(Some(bottom), None, width, t));
     }
     (out, whole)
 }

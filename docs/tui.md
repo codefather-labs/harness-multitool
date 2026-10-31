@@ -87,7 +87,7 @@ multitool screen hooks --no-graphics --size 160x50 --png hooks.png  # every hook
 
 Settled with the project owner while matching the mockups; the journal holds each with its reason.
 
-- Between two transcript cards is one row: its upper half pads the card above, its lower half the card below, and a thin line in the page colour separates them.
+- Every transcript card has half a row of padding above and below, and its stripe runs through it: the stripe is as tall as the card. Two cards are a row of page colour apart. (A shared row with a hairline was tighter, but a cell has two colours, so the stripes had to stop short of the card: the owner chose full stripes.)
 - Tool cards: only a file edit's diff has a background; tool output, notes and sent messages are plain text under the tool's name.
 - The startup page selection is an accent outline without a fill, shown only in the focused panel.
 - The one-row header shows the logo only when the terminal draws pictures.
@@ -100,4 +100,4 @@ Two kinds, as in the journal's mind maps. A **mind map** is a tree from its root
 
 ## Hooks
 
-A HOOK card shows the loop event the hooks ran on (SessionStart, PreCompact, PreToolUse with the call it saw, PostToolUse, Stop, UserPromptSubmit, ...) and one row per script: ✓ ok, ✓ with the lines it added to the context, ⊘ blocked with the reason (a veto, IF-6), ✗ failed with the exit code and stderr tail, ◷ timed out, ◌ running, and how long it took. The frame takes the colour of the worst outcome: warning for a veto or a timeout, error for a failure.
+A HOOK card shows the loop event the hooks ran on (SessionStart, PostCompact, PreToolUse with the call it saw, PostToolUse, Stop, UserPromptSubmit, ...) and one row per script: ✓ ok, ✓ with the lines it added to the context, ⊘ blocked with the reason (a veto, IF-6), ✗ failed with the exit code and stderr tail, ◷ timed out, ◌ running, and how long it took. The frame takes the colour of the worst outcome: warning for a veto or a timeout, error for a failure.
