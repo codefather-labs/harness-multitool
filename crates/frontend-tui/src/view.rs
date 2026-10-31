@@ -52,8 +52,8 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
     widgets::fill(f, area, t.background);
     let mut out = Drawn::default();
     match &s.mode {
-        Mode::Splash(v) => crate::home::splash(f, area, v, t, &mut out),
-        Mode::Startup(v) => crate::home::startup(f, area, v, t, &mut out),
+        Mode::Splash(v) => crate::home::splash(f, area, v, t, s.pictures, &mut out),
+        Mode::Startup(v) => crate::home::startup(f, area, v, t, s.pictures, &mut out),
         Mode::Session(v) => {
             let [head, rule, body] =
                 Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);

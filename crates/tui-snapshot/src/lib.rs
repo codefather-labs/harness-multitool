@@ -129,6 +129,15 @@ impl Raster {
                         img.put_pixel(px, py, bg);
                     }
                 }
+                // Underline: two pixels just under the baseline, as terminals draw it.
+                if cell.modifier.contains(Modifier::UNDERLINED) {
+                    let uy = oy + (baseline as u32 + 2).min(ch - 2);
+                    for py in uy..uy + 2 {
+                        for px in ox..ox + cw {
+                            img.put_pixel(px, py, fg);
+                        }
+                    }
+                }
                 let sym = cell.symbol();
                 let Some(c) = sym.chars().next() else { continue };
                 if c == ' ' {

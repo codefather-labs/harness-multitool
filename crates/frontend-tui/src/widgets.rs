@@ -72,7 +72,8 @@ pub fn status_line(f: &mut Frame, area: Rect, t: &Theme, s: &StatusLine) {
         if i > 0 {
             spans.push(Span::styled("  ·  ", Style::default().fg(t.text_muted)));
         }
-        spans.push(Span::styled(k.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
+        // Labels bold and underlined, as every mockup's status line has them.
+        spans.push(Span::styled(k.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)));
         spans.push(Span::raw("  "));
         spans.push(Span::styled(v.clone(), Style::default().fg(t.text)));
     }
