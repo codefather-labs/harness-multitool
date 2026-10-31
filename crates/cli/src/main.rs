@@ -24,6 +24,15 @@ enum Command {
         #[arg(long, default_value = "dark")]
         theme: String,
     },
+    /// Render the logo to PNG at a given size, coloured for a theme, on its background.
+    Logo {
+        #[arg(long, default_value = "light")]
+        theme: String,
+        #[arg(long, default_value_t = 1080)]
+        width: u32,
+        #[arg(long)]
+        png: PathBuf,
+    },
     /// Render a named UI state to PNG, as the CLI would show it.
     Screen {
         /// Fixture name; omit with --list.
@@ -62,6 +71,20 @@ fn main() -> Result<()> {
     let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into() });
     match command {
         Command::Preview { name, theme } => preview(&name, &theme),
+        Command::Logo { theme, width, png } => {
+            let theme = Theme::builtin(&theme)?;
+            let height = width * 82 / 530;
+            let pic = frontend_tui::images::rasterize(frontend_tui::images::Graphic::Logo, &theme, width, height);
+            let bg = match theme.background {
+                ratatui::style::Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
+                _ => image::Rgba([0, 0, 0, 255]),
+            };
+            let mut out = image::RgbaImage::from_pixel(width, height, bg);
+            image::imageops::overlay(&mut out, &pic, 0, 0);
+            out.save(&png)?;
+            println!("{} {width}x{height}", png.display());
+            Ok(())
+        }
         Command::Screen { name, list, theme, size, png, compare, mockups, font, font_bold, px, cell_h } => {
             if list {
                 for f in fixtures::ALL {

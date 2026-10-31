@@ -10,7 +10,7 @@ use resvg::{tiny_skia, usvg};
 
 use crate::theme::Theme;
 
-const MARK_SVG: &str = include_str!("../../../docs/design/logo/multitool-mark.svg");
+const LOGO_SVG: &str = include_str!("../../../docs/design/logo/multitool.svg");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Graphic {
@@ -32,11 +32,16 @@ fn hex(c: Color) -> String {
     }
 }
 
-/// The SVG source of a graphic, coloured for the theme. The header mark is one colour, the brand
-/// orange (as in the mockups); its rivets are cut out in the theme's background.
+/// The SVG source of a graphic, coloured for the theme (the logo, traced from the startup mockup
+/// the operator picked): tools in the text colour, the handle in the brand orange, its outline
+/// and rivets in a dark ink - the text colour on light themes, the background on dark ones.
 pub fn svg(g: Graphic, t: &Theme) -> String {
+    let ink = if t.dark { t.background } else { t.text };
     match g {
-        Graphic::Logo => MARK_SVG.replace("BACKGROUND", &hex(t.background)).replace("#F5A623", &hex(t.brand)),
+        Graphic::Logo => LOGO_SVG
+            .replace("#20242A", &hex(t.text))
+            .replace("#1A1D22", &hex(ink))
+            .replace("#F5A623", &hex(t.brand)),
     }
 }
 
