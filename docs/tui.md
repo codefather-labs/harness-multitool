@@ -46,8 +46,9 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/callback [text]` | an HTTP callback with its status |
 | `/reminder [text]` | a journal reminder |
 | `/journal` | a JOURNAL event |
-| `/map-new` · `/map` | a map created (empty) · a flowchart updated, drawn |
-| `/flow` · `/mind` | every flowchart symbol and logic gate · every mind-map node kind and status |
+| `/mindmap-new` · `/flowchart-new` | a mind map / a flowchart created (empty) |
+| `/mindmap` · `/flowchart [down]` | a mind map (a node linked to a flowchart) / a flowchart, left to right or top to bottom |
+| `/mind` · `/flow` | every mind-map node kind and status, flowchart links / every flowchart symbol and logic gate |
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
 | `/hook start\|compact\|block\|fail\|timeout\|run` · `/hooks` | hooks firing on a loop event (session start and compaction run `fact-check-cognitive-protocol.sh` and `harness-lookup.sh`) · every hook outcome |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
@@ -96,7 +97,7 @@ Settled with the project owner while matching the mockups; the journal holds eac
 
 ## Maps
 
-Two kinds, as in the journal's mind maps. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches. A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.
+Two separate tools ([ADR 0011](decisions/0011-mind-maps-and-flowcharts.md)): a mind map maps what is known, a flowchart shows how something flows. Their events are MINDMAP and FLOWCHART cards. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches; a node, a branch or a link can point at flowcharts (`▸ flow #3`). A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). A flowchart runs left to right or top to bottom (its direction). The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.
 
 ## Hooks
 

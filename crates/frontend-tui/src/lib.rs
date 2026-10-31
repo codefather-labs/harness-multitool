@@ -6,9 +6,11 @@
 
 pub mod debug;
 pub mod fixtures;
-pub mod flowmap;
+pub mod flowchart;
 pub mod home;
 pub mod images;
+pub mod maps;
+pub mod mindmap;
 pub mod input;
 pub mod model;
 pub mod theme;

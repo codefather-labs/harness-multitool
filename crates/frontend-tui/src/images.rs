@@ -125,7 +125,7 @@ pub enum Graphic {
     Icon(Icon, Tint),
     /// A line of bold text, as large as its cells allow.
     Text(String, Tint),
-    /// A vector picture made for its cells (a mind map: flowmap::svg). Its text fallback is
+    /// A vector picture made for its cells (a mind map or a flowchart: mindmap::svg, flowchart::svg). Its text fallback is
     /// drawn by whoever places it; `fallback` leaves the cells alone.
     Svg(String),
 }

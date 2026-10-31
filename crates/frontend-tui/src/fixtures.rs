@@ -3,11 +3,11 @@
 
 use crate::images::{Eyes, Icon};
 use crate::model::{
-    ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Inbound, InboundKind, Item, KeyHint, MapCreated, MapEvent,
+    ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Inbound, InboundKind, Item, KeyHint, FlowchartEvent, MapCreated, MapTool, MindMapEvent,
     Mode, QuickAction, RecentSession, Role, SessionView, SplashView, StartupPanel, StartupView, StatusLine, Tab, TabIcon, TabMark,
     TipPart, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
-use crate::debug::{sample_journal, sample_map, sample_tool};
+use crate::debug::{sample_flowchart, sample_journal, sample_tool};
 
 pub struct Fixture {
     pub name: &'static str,
@@ -366,14 +366,19 @@ pub fn journal_mindmap_events() -> AppState {
                 &["Done. I've recorded the decision in the journal and started a mind map for the fallback flow."],
                 vec![
                     Item::Journal(sample_journal()),
-                    Item::MapCreated(MapCreated { id: 3, title: "Router fallback".into(), kind: "flowchart, shared".into() }),
+                    Item::MapCreated(MapCreated { tool: MapTool::Flowchart, id: 3, title: "Router fallback".into(), shared: true }),
                 ],
             ),
             turn_with(
                 Role::Assistant,
                 "14:28",
                 &["Added the initial flow with the decision and fallback paths."],
-                vec![Item::Map(MapEvent { id: 3, change: "+node n4, +edge n2->n4 (ref #137)".into(), date: "2026-10-28 14:28".into(), map: sample_map() })],
+                vec![Item::Flowchart(FlowchartEvent {
+                    id: 3,
+                    change: "+node n4, +arrow n2->n4 (ref #137)".into(),
+                    date: "2026-10-28 14:28".into(),
+                    chart: sample_flowchart(),
+                })],
             ),
             turn(Role::User, "14:28", &["Looks good. Let's continue with the implementation."]),
         ],
@@ -443,8 +448,24 @@ pub fn maps() -> AppState {
             "01:20",
             &["Every block and component of both map types."],
             vec![
-                Item::Map(MapEvent { id: 4, change: "every flowchart symbol and logic gate".into(), date: "2026-11-01 01:20".into(), map: crate::debug::sample_flow_gallery() }),
-                Item::Map(MapEvent { id: 5, change: "every mind-map node kind and status".into(), date: "2026-11-01 01:20".into(), map: crate::debug::sample_mind_gallery() }),
+                Item::Flowchart(FlowchartEvent {
+                    id: 4,
+                    change: "every symbol and logic gate".into(),
+                    date: "2026-11-01 01:20".into(),
+                    chart: crate::debug::sample_flow_gallery(),
+                }),
+                Item::Flowchart(FlowchartEvent {
+                    id: 3,
+                    change: "the same flow top to bottom".into(),
+                    date: "2026-11-01 01:20".into(),
+                    chart: crate::debug::sample_flowchart_down(),
+                }),
+                Item::MindMap(MindMapEvent {
+                    id: 5,
+                    change: "every node kind and status; flowcharts linked from n6 and a branch".into(),
+                    date: "2026-11-01 01:20".into(),
+                    map: crate::debug::sample_mind_gallery(),
+                }),
             ],
         )],
         status: router_status(),

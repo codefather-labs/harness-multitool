@@ -201,10 +201,12 @@ pub enum Item {
     Inbound(Inbound),
     /// A journal entry the agent wrote (journal#136).
     Journal(JournalEvent),
-    /// A mind map was created; it has no nodes yet, so only the event shows.
+    /// A mind map or a flowchart was created (no nodes yet: only the event shows).
     MapCreated(MapCreated),
-    /// A mind map changed: the event line and the map itself.
-    Map(MapEvent),
+    /// A mind map changed: the event and the map.
+    MindMap(MindMapEvent),
+    /// A flowchart changed: the event and the chart.
+    Flowchart(FlowchartEvent),
     /// Hooks that ran on a loop event (IF-6): session start, compaction, before a tool, ...
     Hook(HookEvent),
 }
@@ -272,69 +274,139 @@ pub struct JournalEvent {
     pub text: String,
 }
 
+/// The two map tools (ADR 0011): a mind map maps what is known about a topic, a flowchart
+/// shows how something flows from one point to another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MapTool {
+    MindMap,
+    Flowchart,
+}
+
+/// A map was created; it has no nodes yet, so only the event shows.
 #[derive(Debug, Clone)]
 pub struct MapCreated {
+    pub tool: MapTool,
     pub id: u32,
     pub title: String,
-    /// `flowchart` or `mindmap`, and `shared` or `private`.
-    pub kind: String,
+    pub shared: bool,
 }
 
+/// A mind map changed: the event line and the map itself.
 #[derive(Debug, Clone)]
-pub struct MapEvent {
+pub struct MindMapEvent {
     pub id: u32,
-    /// What changed, e.g. `+node n4, +edge n2->n4 (ref #137)`.
+    /// What changed, e.g. `+node n6 (ref #137)`.
     pub change: String,
     pub date: String,
-    pub map: FlowMap,
+    pub map: MindMap,
 }
 
-/// A map as the transcript draws it: a mind map (a tree of thoughts) or a flowchart (a block
-/// diagram by the canon). Nodes in reading order and the arrows or links between them.
+/// A flowchart changed: the event line and the chart itself.
+#[derive(Debug, Clone)]
+pub struct FlowchartEvent {
+    pub id: u32,
+    /// What changed, e.g. `+node n4, +arrow n2->n4 (ref #137)`.
+    pub change: String,
+    pub date: String,
+    pub chart: Flowchart,
+}
+
+/// A tree of what is known about one topic: the first node is the root; branches join a parent
+/// to a child, links join any two nodes with a label (e.g. "contradicts").
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FlowMap {
-    pub kind: MapKind,
-    pub nodes: Vec<FlowNode>,
-    pub edges: Vec<FlowEdge>,
+pub struct MindMap {
+    pub nodes: Vec<MindNode>,
+    pub branches: Vec<Branch>,
+    pub links: Vec<MindLink>,
 }
 
+/// A parent -> child branch of a mind map.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Branch {
+    pub from: String,
+    pub to: String,
+    /// Flowcharts this branch points at (how the step from parent to child goes).
+    pub flows: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MindNode {
+    pub id: String,
+    pub text: String,
+    pub kind: MindKind,
+    pub status: NodeStatus,
+    /// Journal entries the node points at.
+    pub refs: Vec<u32>,
+    /// Flowcharts the node points at (how the thing it names works).
+    pub flows: Vec<u32>,
+    /// Changed by the event being shown.
+    pub changed: bool,
+}
+
+/// The node kinds of a mind map (`claudebase mindmap add --kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MapKind {
-    /// A tree: the first node is the root, an unlabelled edge is a parent -> child branch,
-    /// edges with `link` are cross links between branches.
-    Mindmap,
-    /// A block diagram: edges are arrows, ranked left to right.
-    Flowchart,
+pub enum MindKind {
+    Topic,
+    Goal,
+    Decision,
+    Fact,
+    Hypothesis,
+    Question,
+    Task,
+    Idea,
+    DeadEnd,
+    Note,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum NodeStatus {
+    #[default]
+    Open,
+    Done,
+    Dropped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MindLink {
+    pub from: String,
+    pub to: String,
+    pub label: String,
+    /// Flowcharts this link points at.
+    pub flows: Vec<u32>,
+}
+
+/// A directed flow from a start to an end, by the canon: ISO 5807 symbols and logic gates
+/// joined by arrows that may carry a condition.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Flowchart {
+    pub direction: FlowDirection,
+    pub nodes: Vec<FlowNode>,
+    pub arrows: Vec<Arrow>,
+}
+
+/// Which way the flow runs on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FlowDirection {
+    /// Top to bottom (the backend's default).
+    Down,
+    /// Left to right.
+    #[default]
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FlowNode {
     pub id: String,
     pub text: String,
-    pub shape: NodeShape,
+    pub symbol: Symbol,
+    pub refs: Vec<u32>,
     /// Changed by the event being shown.
     pub changed: bool,
-    pub status: NodeStatus,
-    /// Journal entries the node points at.
-    pub refs: Vec<u32>,
 }
 
-/// What a node is. Mind-map kinds and flowchart symbols are the kinds the journal's mind maps
-/// have (`claudebase mindmap add --kind ...`).
+/// ISO 5807 symbols and logic gates (`claudebase mindmap add --kind` of a flowchart).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NodeShape {
-    // Mind map
-    Topic,
-    Goal,
-    Fact,
-    Hypothesis,
-    Question,
-    Choice,
-    Task,
-    Idea,
-    DeadEnd,
-    Remark,
-    // Flowchart
+pub enum Symbol {
     Start,
     End,
     Process,
@@ -362,21 +434,12 @@ pub enum Gate {
     Xnor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum NodeStatus {
-    #[default]
-    Open,
-    Done,
-    Dropped,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FlowEdge {
+pub struct Arrow {
     pub from: String,
     pub to: String,
+    /// A condition, e.g. "yes" or "no".
     pub label: Option<String>,
-    /// A mind map's cross link (drawn dashed), not a branch of the tree.
-    pub link: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

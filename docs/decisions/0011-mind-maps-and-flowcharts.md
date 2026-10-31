@@ -14,7 +14,9 @@ Both document the work, but they answer different questions, so they are two too
 | Nodes | topic, goal, decision, fact, hypothesis, question, task, idea, dead end, note; open / done / dropped | ISO 5807 symbols: start, end, process, decision, input/output, subprocess, document, data, manual input, preparation, connector, delay, note; logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR |
 | Edges | parent → child branches; labelled cross links ("contradicts") | arrows with conditions ("yes", "no"), loops allowed |
 | Typical use | working memory of a task, research, the project's architecture | a request path, an algorithm, a release procedure, the logic of a check |
-| Operations | `mindmap_new`, `mindmap_add --parent`, `mindmap_link`, `mindmap_done` / `drop`, `mindmap_show` | `flowchart_new --direction down\|right`, `flowchart_add --after <node> --label <cond>`, `flowchart_link`, `flowchart_show` |
+| Operations | `mindmap_new`, `mindmap_add --parent`, `mindmap_link`, `mindmap_flow <node\|branch\|link> <flowchart>`, `mindmap_done` / `drop`, `mindmap_show` | `flowchart_new --direction down\|right`, `flowchart_add --after <node> --label <cond>`, `flowchart_link`, `flowchart_show` |
+
+A mind map can point at flowcharts: any node, branch or cross link may link to one or more flowcharts (the map says *what*, the linked flowchart says *how* that part works). Shown as `▸ flow #N` on the node, and under the tree for a branch or a link.
 
 Both live in `Memory` (IF-7), point their nodes at journal entries, are drawn by frontends in text and as SVG (journal#140), and show in the transcript as their own events (MINDMAP, FLOWCHART).
 

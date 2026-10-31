@@ -13,10 +13,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
-use crate::flowmap;
 use crate::images::{Graphic, Icon, Placement, Tint};
 use crate::model::{
-    DiffLine, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
+    DiffLine, FlowchartEvent, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapTool, MindMapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
 };
 use crate::theme::Theme;
 
@@ -235,9 +234,14 @@ pub fn item(it: &Item, width: u16, t: &Theme, generating: bool) -> Drawn {
             let h = map_created(&mut cv, 0, 0, width, m, t.background);
             cv.finish(h)
         }
-        Item::Map(m) => {
+        Item::MindMap(e) => {
             let mut cv = Canvas::new(width, t);
-            let h = map(&mut cv, 0, 0, width, m, t.background);
+            let h = mind_map(&mut cv, 0, 0, width, e, t.background);
+            cv.finish(h)
+        }
+        Item::Flowchart(e) => {
+            let mut cv = Canvas::new(width, t);
+            let h = flowchart(&mut cv, 0, 0, width, e, t.background);
             cv.finish(h)
         }
         Item::Hook(e) => {
@@ -381,7 +385,8 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
         Item::Tool(c) => tool(cv, x, y, w, c, bg),
         Item::Journal(j) => journal(cv, x, y, w, j, bg),
         Item::MapCreated(m) => map_created(cv, x, y, w, m, bg),
-        Item::Map(m) => map(cv, x, y, w, m, bg),
+        Item::MindMap(e) => mind_map(cv, x, y, w, e, bg),
+        Item::Flowchart(e) => flowchart(cv, x, y, w, e, bg),
         Item::Hook(e) => hook(cv, x, y, w, e, bg),
         other => {
             let d = item(other, w, t, false);
@@ -652,43 +657,77 @@ fn journal(cv: &mut Canvas, x: u16, y: u16, w: u16, j: &JournalEvent, bg: Color)
 }
 
 /// MINDMAP created: one framed line; the map has no nodes yet, so nothing is drawn.
+/// The two map tools' names and what they call their maps.
+fn tool_names(tool: MapTool) -> (&'static str, &'static str, Icon) {
+    match tool {
+        MapTool::MindMap => ("MINDMAP", "mind map", Icon::Map),
+        MapTool::Flowchart => ("FLOWCHART", "flowchart", Icon::Play),
+    }
+}
+
+/// A map was created: one framed line; it has no nodes yet, so nothing is drawn.
 fn map_created(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapCreated, bg: Color) -> u16 {
     let t = cv.t;
     let (ix, iw) = (x + 2, w.saturating_sub(4));
+    let (label, noun, icon) = tool_names(m.tool);
     cv.frame(Rect::new(x, y, w, 3), t.border_subtle, bg);
-    cv.icon(ix, y + 1, 2, 1, Icon::Map, Tint::Accent);
+    cv.icon(ix, y + 1, 2, 1, icon, Tint::Accent);
+    let scope = if m.shared { "shared" } else { "private" };
     cv.line(
         ix + 3,
         y + 1,
         iw,
-        vec![Span::styled("MINDMAP", bold(t.accent)), Span::styled(format!("   created map #{} “{}” ({})", m.id, m.title, m.kind), plain(t.text))],
+        vec![Span::styled(label, bold(t.accent)), Span::styled(format!("   created {noun} #{} “{}” ({scope})", m.id, m.title), plain(t.text))],
         bg,
     );
     cv.line_right(ix + iw, y + 1, vec![Span::styled("(empty)", plain(t.text_muted).add_modifier(Modifier::ITALIC))], bg);
     3
 }
 
-/// MINDMAP updated: the event line, then the map. With pictures the map is an SVG made for its
-/// cells; without, the same layout in box-drawing characters.
-fn map(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapEvent, bg: Color) -> u16 {
+/// A map that changed: the event line, then the map - a mind map as a tree, a flowchart as a
+/// block diagram. With pictures it is an SVG made for its cells; without, the same layout in
+/// block and box-drawing characters.
+fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, date): (u32, &str, &str), body: MapBody, bg: Color) -> u16 {
     let t = cv.t;
     let (ix, iw) = (x + 2, w.saturating_sub(4));
-    let l = flowmap::layout(&m.map);
-    let map_h = l.height + 2;
+    let (label, noun, icon) = tool_names(tool);
+    let map_h = match body {
+        MapBody::Mind(m) => crate::mindmap::layout(m).height,
+        MapBody::Flow(f) => crate::flowchart::layout(f).height,
+    } + 2;
     let h = 3 + map_h;
     cv.frame(Rect::new(x, y, w, h), t.border_subtle, bg);
-    cv.icon(ix, y + 1, 2, 1, Icon::Map, Tint::Accent);
-    let kind = match m.map.kind {
-        crate::model::MapKind::Mindmap => "MINDMAP",
-        crate::model::MapKind::Flowchart => "FLOWCHART",
-    };
-    cv.line(ix + 3, y + 1, iw, vec![Span::styled(kind, bold(t.accent)), Span::styled(format!("   map #{} updated: {}", m.id, m.change), plain(t.text))], bg);
-    cv.line_right(ix + iw, y + 1, vec![Span::styled(m.date.clone(), plain(t.text_muted))], bg);
+    cv.icon(ix, y + 1, 2, 1, icon, Tint::Accent);
+    cv.line(ix + 3, y + 1, iw, vec![Span::styled(label, bold(t.accent)), Span::styled(format!("   {noun} #{id} updated: {change}"), plain(t.text))], bg);
+    cv.line_right(ix + iw, y + 1, vec![Span::styled(date.to_string(), plain(t.text_muted))], bg);
     let area = Rect::new(ix, y + 2, iw, map_h);
     cv.grow(y + h);
-    flowmap::draw_text(&mut cv.buf, area, &m.map, t, bg);
-    cv.placements.push(Placement { rect: area, graphic: Graphic::Svg(flowmap::svg(&m.map, t, area.width, area.height)) });
+    let svg = match body {
+        MapBody::Mind(m) => {
+            crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg);
+            crate::mindmap::svg(m, t, area.width, area.height)
+        }
+        MapBody::Flow(f) => {
+            crate::flowchart::draw_text(&mut cv.buf, area, f, t, bg);
+            crate::flowchart::svg(f, t, area.width, area.height)
+        }
+    };
+    cv.placements.push(Placement { rect: area, graphic: Graphic::Svg(svg) });
     h
+}
+
+#[derive(Clone, Copy)]
+enum MapBody<'a> {
+    Mind(&'a crate::model::MindMap),
+    Flow(&'a crate::model::Flowchart),
+}
+
+fn mind_map(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &MindMapEvent, bg: Color) -> u16 {
+    map(cv, (x, y, w), MapTool::MindMap, (e.id, &e.change, &e.date), MapBody::Mind(&e.map), bg)
+}
+
+fn flowchart(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &FlowchartEvent, bg: Color) -> u16 {
+    map(cv, (x, y, w), MapTool::Flowchart, (e.id, &e.change, &e.date), MapBody::Flow(&e.chart), bg)
 }
 
 /// What a spacer row needs to know about the card on one side of it.
