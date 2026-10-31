@@ -1,0 +1,17 @@
+# Invariants
+
+What must hold at all times. Each invariant names how it is checked; an invariant without a check is a wish. A change to an invariant needs a decision record.
+
+| Id | Invariant | Checked by |
+|---|---|---|
+| **INV-1** | **The core touches no platform directly.** The core crate and the interface crates use no `std::fs`, `std::process`, `std::net`, OS threads or async runtime I/O; every file, process, network, clock, storage and terminal access goes through a Platform interface. | CI builds the core for `wasm32-unknown-unknown`; a lint denies the listed paths in core crates. |
+| **INV-2** | **The loop holds no concrete implementation.** Every component the loop uses is resolved from the registry by interface and the name given in the configuration. | Test: a configuration that names a test double for every interface runs the loop with no default plugin linked. |
+| **INV-3** | **A tool runs only within what it declared and was allowed.** Before a tool executes, `Policy` has approved every capability it declares (paths read or written, commands, hosts); a use outside the declaration fails the call. | Tests per built-in tool; a capability-escape test suite run against every tool plugin. |
+| **INV-4** | **Done means proven.** A task reaches `done` only when `Verifier` reports pass: its verification protocol ran in this session and the evidence is recorded. A model's claim alone never completes a task. | Loop tests: a task whose verifier fails or did not run cannot reach `done`. |
+| **INV-5** | **The session log is append-only.** Every model turn, tool call, tool result, approval and state change is an event appended to the session log; nothing in it is rewritten. Session state is a fold over the events. | Property test: replaying the log reproduces the state; rewind to event N equals the fold of the first N events. |
+| **INV-6** | **Secrets never leave the auth boundary.** API keys, tokens and credentials are never written to the session log, memory, telemetry, error messages or plugin events; they appear only inside `Auth` and the outgoing request. | Redaction tests on every sink; a canary-secret test fails if the canary appears in any output. |
+| **INV-7** | **Plugins meet only through interfaces and events.** A plugin cannot read or change another plugin's state except through that plugin's interface or the event bus. | Architecture test: plugin crates depend only on interface crates, never on each other. |
+| **INV-8** | **Interfaces are versioned.** Every interface crate follows semver; a breaking change is a major version, with a migration note. | CI: semver check on interface crates. |
+| **INV-9** | **No subscription login is shipped.** The project contains no `Auth` implementation that signs in with a vendor's consumer subscription. | Review rule; listed in the release checklist. |
+| **INV-10** | **In the browser, keys go only to the provider.** The WebAssembly build sends a user's key to the provider endpoint the user chose and to no other host, including the project's own. | Test: the browser build's network layer refuses any host other than the configured provider for authenticated requests. |
+| **INV-11** | **Specifications bind.** Code that contradicts a specification is a defect, settled by fixing the code or by a decision that replaces the specification — never by leaving both. | Each spec item maps to at least one test; review checks the mapping. |
