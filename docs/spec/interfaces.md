@@ -33,7 +33,7 @@ The names are illustrative; the configuration format itself is an open question.
 
 | Id | Interface | Behaviour | Boundary | Default |
 |---|---|---|---|---|
-| **IF-4** | `Tool` | Declares a name, a description, a JSON schema for its arguments and the capabilities it needs; executes a call and returns a result (text, structured data, files). Users write their own. | Only the capabilities it declared and `Policy` approved (INV-3); platform access through Platform interfaces (INV-1). | read, edit, shell, search, web fetch |
+| **IF-4** | `Tool` | Declares a name, a description, a JSON schema for its arguments and the capabilities it needs; executes a call and returns a result (text, structured data, files). Users write their own. | Only the capabilities it declared and `Policy` approved (INV-3); platform access through Platform interfaces (INV-1). | read, edit, shell, search, web fetch; journal, mind map and flowchart tools over `Memory` |
 | **IF-5** | `Policy` | Decides whether a tool call may run: allow, deny, or ask the user; per tool, per path, per command, per host; remembers answers within a scope. | Sees calls and declarations, not secrets. | Ask for writes, shell and network; allow reads inside the project |
 | **IF-6** | `Hook` | Runs on loop events; may veto or amend a before-event (e.g. block a commit without a test run). Every run is itself an event, so frontends show which hooks ran on which event and what each did: ok, context added, blocked with its reason, failed, timed out, running. | Through events only (INV-7). | none |
 
@@ -41,7 +41,7 @@ The names are illustrative; the configuration format itself is an open question.
 
 | Id | Interface | Behaviour | Boundary | Default |
 |---|---|---|---|---|
-| **IF-7** | `Memory` | Project journal: add, search (lexical + semantic), list by category, tag and flag, link entries, close work items; mind maps and flowcharts: create, change, read, draw. | Its own store; never sees secrets. | Local daemon (CON-20) |
+| **IF-7** | `Memory` | Project journal: add, search (lexical + semantic), list by category, tag and flag, link entries, close work items. Mind maps (a tree of what is known about a topic) and flowcharts (how something flows from a start to an end: ISO 5807 symbols, logic gates, labelled arrows) are separate stores with their own operations — create, change, read, draw ([ADR 0011](../decisions/0011-mind-maps-and-flowcharts.md)). | Its own store; never sees secrets. | Local daemon (CON-20) |
 | **IF-8** | `ContextStrategy` | Builds the context for a turn from the task, the session's recent events, and memory (specifications and constraints that bind the files in play, the task's mind map, related journal entries); compacts without losing what memory holds. | Reads memory and the session log; writes nothing but the context. | Journal- and map-aware compaction |
 | **IF-9** | `SessionStore` | Persists the append-only session log (INV-5); lists, resumes, rewinds to event N, branches from event N. | Its own store. | Local files / browser storage |
 
