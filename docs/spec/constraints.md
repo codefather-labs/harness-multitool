@@ -27,7 +27,7 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-20** | The default `Memory` implementation is a local daemon that owns a project journal (entries with categories, tags, flags and links, hybrid lexical + semantic search) and mind maps. In the browser, the same interface is implemented over browser storage. |
 | **CON-21** | Journal flags include work items (todo, question, problem, bugreport, reminder, unverified, disputed) and marks (specification, constraint, important, idea, concept, comment, verified, deprecated); an entry carries any number of them. |
 | **CON-22** | One journal per project; a project is identified by its repository remote, or its directory when it has none. |
-| **CON-23** | Callback triggers (IF-13) are configuration of the project, versioned with it; the shipped kinds are `message`, `skill` and `journal`. A callback that matches no trigger is delivered as a `message`. A `journal` trigger never starts a model turn. |
+| **CON-23** | Callback triggers (IF-13) are configuration of the project, versioned with it; the shipped kinds are `message`, `skill`, `journal` and `flow`; a flowchart's binding to a process and to its watching sessions is configuration too. A callback that matches no trigger is delivered as a `message`. Neither a `journal` nor a `flow` trigger starts a model turn. |
 
 ## Browser build
 

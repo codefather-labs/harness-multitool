@@ -1,0 +1,34 @@
+# 0012 — Flowcharts are live: flow callbacks, runs, run history
+
+- **Status:** accepted, open to additions — the owner described the goal and may extend it; the mechanism is open (Q-11, Q-12, Q-13) · **Decided by:** the project owner, 2026-11-01
+- **Specs:** IF-7, IF-11, IF-13, CON-23, INV-12, INV-13; builds on [ADR 0009](0009-callback-triggers.md) and [ADR 0011](0011-mind-maps-and-flowcharts.md)
+
+## Decision
+
+A flowchart is not only documentation: it can be bound to a real process or pipeline of the project the agent works on (a CI job, a deploy, a data pipeline, a release procedure, a service's request path) and show it **live**. A fourth kind of callback trigger, **`flow`**, exists for this.
+
+**Binding.** A flowchart is bound to the process it describes, and to the windows that watch it: a specific session (tab) of a specific agent. The binding is configuration, like other triggers (CON-23).
+
+**Flow events.** A `flow` callback names the bound flowchart, a **run** (one pass of the process through the chart: a deploy, a CI build, one request), and a step: a node or an arrow of the chart, with a state — `entered`, `passed`, `failed`, `skipped`, `waiting` — and optional data (a duration, a short message, a link to a log).
+
+**Live state.** Every watching window shows the chart's current run: the active node highlighted, the path already taken marked, a failed node in the error colour, the time spent per node. The chart is updated in place, not appended to the transcript on every event; the transcript shows when a run starts and how it ends.
+
+**Run history.** Every event of every run is kept, in order, with its time (INV-13). Runs can be listed, opened and replayed step by step; two runs can be compared. This makes a chart a tool for **retrospective validation**: did the callbacks fire as designed, did the process take the path the chart says, where does it stall or fail, which runs differed.
+
+**Checks the chart enables.** An event naming a node or an arrow that is not in the chart, or a step that does not follow an arrow from the run's current node, is recorded as an **off-chart** event and shown as such — the process and its chart disagree. A run that reaches an end node is complete; a run without events for longer than its node allows is stalled.
+
+So the agent can document a pipeline as a flowchart, instrument the pipeline to send flow callbacks at its steps, and then watch and debug it as it runs, and afterwards from its history: event-driven, live debugging of any process of the project.
+
+## Boundaries
+
+- A `flow` callback changes only the run's state and history. It runs no tool and starts no agent turn; a process that must also wake the agent uses a `message` or `skill` trigger as well (IF-13).
+- INV-12 holds: the event's payload is data. It cannot change the chart, the binding or the trigger configuration; an unknown step is recorded as off-chart, never added to the chart.
+- Callers are authenticated per caller like every trigger (IF-13).
+
+## Why
+
+The owner wants charts to serve beyond documentation: as the live view and the flight recorder of the processes the agent builds and runs. A chart already holds the intended flow; checking real events against it turns every deviation into something visible and every past run into evidence.
+
+## Open
+
+How a run is identified across events, how arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.

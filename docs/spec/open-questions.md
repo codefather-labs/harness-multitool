@@ -12,3 +12,6 @@
 | **Q-8** | Is "no harness runs in the browser" true? Check before saying it publicly. | research |
 | **Q-9** | Trigger configuration: the match syntax (label globs, payload field conditions), how a payload maps onto a journal entry or a skill's input (templates?), and per-trigger rate limits. | design |
 | **Q-10** | How a `skill` run started by a callback reports back to the caller: the callback's result URL, a reply callback, or a message to the user's channel? | design |
+| **Q-11** | Flow callbacks: how a run is identified across events (an id the caller sends, or one the harness hands out on the first event), and the event schema (node or arrow, state, data). | design |
+| **Q-12** | How events of an existing process map onto a chart's nodes without changing the process: a mapping table in the binding, labels, payload fields? | design |
+| **Q-13** | Run history: retention, size limits, and which windows watch a chart (a named session, every session of the project, the one that created it). | design |

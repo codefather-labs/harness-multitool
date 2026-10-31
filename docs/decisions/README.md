@@ -15,3 +15,4 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0009](0009-callback-triggers.md) | Callbacks are triggers: `message`, `skill`, `journal` | accepted |
 | [0010](0010-hook-runs-are-visible.md) | Hook runs are events, and frontends show every one | accepted |
 | [0011](0011-mind-maps-and-flowcharts.md) | Mind maps and flowcharts are separate tools | accepted |
+| [0012](0012-flowcharts-as-live-pipelines.md) | Flowcharts are live: `flow` callbacks, runs, run history | accepted, open to additions |
