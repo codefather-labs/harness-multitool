@@ -85,17 +85,20 @@ pub fn status_line(f: &mut Frame, area: Rect, t: &Theme, s: &StatusLine) {
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);
 }
 
-/// A bordered button: `[ Label ]` in a rounded box.
-pub fn button(f: &mut Frame, area: Rect, t: &Theme, text: &str) {
+/// A button beside the composer: the same height and rounded border, its label on the row of
+/// the composer's text and its shortcut on the row of the composer's hints, so both boxes read
+/// as one bar.
+pub fn button(f: &mut Frame, area: Rect, t: &Theme, label: &str, shortcut: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.border_subtle))
         .style(Style::default().bg(t.background));
-    f.render_widget(
-        Paragraph::new(Span::styled(format!("[ {text} ]"), Style::default().fg(t.text))).centered().block(block),
-        area,
-    );
+    let lines = vec![
+        Line::from(Span::styled(label.to_string(), Style::default().fg(t.text))),
+        Line::from(Span::styled(shortcut.to_string(), Style::default().fg(t.text_muted))),
+    ];
+    f.render_widget(Paragraph::new(lines).centered().block(block), area);
 }
 
 /// The input box: accent border, placeholder in muted text, a block cursor.

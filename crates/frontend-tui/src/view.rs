@@ -41,9 +41,9 @@ fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme) {
     widgets::rule(f, rule, t);
     widgets::status_line(f, status, t, &v.status);
     let [input, _, button] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(2), Constraint::Length(14)]).areas(inset(bottom));
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);
-    widgets::button(f, Rect { y: button.y, height: 3, ..button }, t, "Settings");
+    widgets::button(f, button, t, "⚙ Settings", "Ctrl+,");
 }
 
 /// Height in rows an item takes: label row, body rows, one bottom padding row.
