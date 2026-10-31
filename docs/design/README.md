@@ -2,17 +2,20 @@
 
 ## Logo
 
-`logo/` holds the multitool logo as four SVG frames of one animation, all with the same handle and the same pivot (66,190):
+`logo/multitool.svg` is the logo: a fork, an orange handle with two eyes, a saw — traced from `concept/startup-light.png`, the owner's pick. The TUI recolours it per theme (tools in the text colour, the handle in the brand orange `#F5A623`, ink for the eyes and outline) and shows it as a picture in terminals with a graphics protocol.
 
-| Frame | Saw | Fork |
-|---|---|---|
-| `multitool-1-closed.svg` | folded | folded |
-| `multitool-2-saw-rising.svg` | 35° | folded |
-| `multitool-3-saw-open-fork-rising.svg` | 60° | 50° |
-| `multitool-4-open.svg` | 60° | 108° |
+In text mode the logo is pixel art in half blocks, 50 × 8 pixels in 4 rows (`LOGO_ART` in `crates/frontend-tui/src/images.rs`): fork and saw 11 px each and as tall as each other, the handle centred, eyes with a glint. On launch the eyes blink twice (`--eyes-closed` renders the closed frame). The one-row header carries no text-mode logo: one row is too small for the tool to read.
 
-The handle lies horizontal, the tools unfold upward from the pivot at its left end, fanning out from left to right; only two tools, a saw and a fork. Outlines use `currentColor`, so the same file works on light and dark backgrounds; fills are three colours (orange handle `#F5A623`, highlight `#FFE0A0`, tools `#F2F2ED`). The tools are drawn behind the handle, so a folded tool is hidden inside it.
+`multitool-mono.svg`, `multitool-16.svg` and the four `multitool-1..4-*.svg` unfolding frames are earlier drafts, kept for history.
 
-The style came out of a design session with ChatGPT; the geometry of the saw and the fork was redrawn here.
+## Icons
 
-To do: the terminal version for the start screen (block characters, a few frames of the same unfolding), and the TUI screens.
+`icons/*.svg`: 24 × 24 strokes in `#000000`, recoloured per use. Each has a text glyph for terminals without pictures (`Icon::fallback`).
+
+## Themes
+
+`../../themes/*.toml`: dark, light, nord, monokai, cyan — sixteen semantic roles, the brand colour, and the optional `accent_line` and `agent` roles.
+
+## Mockups
+
+[`concept/`](concept/README.md) holds the reference screens; [`../tui.md`](../tui.md) lists the named states that render them and the layout rules settled while matching them.

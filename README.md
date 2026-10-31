@@ -2,7 +2,7 @@
 
 **A plugin-first, open-source agent harness in Rust.** An agent that writes code, runs tools and works with other agents — where almost every part is an interface you can replace with your own implementation, and where "done" means proven.
 
-Status: **specification**. No code yet. This repository starts with its spec, built and checked against from the first line of code.
+Status: **specification, terminal UI in progress.** The spec comes first and the code is checked against it. The terminal frontend runs today on design states and debug commands, ahead of the agent loop: `./run.sh` opens it ([how to use it](docs/tui.md)).
 
 ## What it is meant to be
 
@@ -22,6 +22,8 @@ Status: **specification**. No code yet. This repository starts with its spec, bu
 | [Constraints](docs/spec/constraints.md) | rules, limits and constants |
 | [Interfaces](docs/spec/interfaces.md) | every pluggable component: its contract and its boundaries |
 | [Architecture](docs/architecture/overview.md) | how the pieces fit, with a map |
+| [Terminal UI](docs/tui.md) | running it, keys, debug commands, screens as images |
+| [Design](docs/design/README.md) | the logo, icons, themes and the mockups the UI is built against |
 | [Decisions](docs/decisions/) | why the project is the way it is (ADRs) |
 | [Roadmap](docs/spec/roadmap.md) | the order of work |
 | [Open questions](docs/spec/open-questions.md) | what is not decided yet |

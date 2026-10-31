@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the terminal UI on a named state (default: welcome). F2 cycles themes, Esc quits.
+    /// Open the terminal UI on a named state (default: welcome). F2 cycles themes; /exit or Ctrl+C quits (docs/tui.md).
     Preview {
         #[arg(default_value = "welcome")]
         name: String,

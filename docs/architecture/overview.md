@@ -25,6 +25,8 @@ flowchart TB
         SES["SessionStore (IF-9)"]
         VER["Verifier (IF-10)"]
         TRANS["Transport (IF-12)"]
+        TRIG["Trigger (IF-13)"]
+        SKILL["Skill (IF-14)"]
     end
     subgraph Platform["Platform (IF-20..25)"]
         FS["Fs"] --- PROC["Process"] --- NET["Net"] --- CLK["Clock"] --- STO["Storage"] --- TERM["Terminal"]
@@ -38,6 +40,9 @@ flowchart TB
     LOOP --> CTX --> MEM
     LOOP --> VER --> MEM
     LOOP --> SES
+    TRANS --> TRIG
+    TRIG -->|skill| SKILL --> LOOP
+    TRIG -->|journal| MEM
     BUS --> HOOK
     BUS --> TRANS
     Plugins --> Platform
