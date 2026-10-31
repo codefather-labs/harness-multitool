@@ -22,8 +22,9 @@ use crate::theme::Theme;
 
 /// Where a card's text starts: the stripe, then two cells of air.
 const CX: u16 = 3;
-/// Rows between two items.
-pub const GAP: u16 = 1;
+/// Rows between two items: none; every item ends with a half-row separator instead (see
+/// `separate`), so cards sit as close as the mockups draw them.
+pub const GAP: u16 = 0;
 /// The tallest an item may draw.
 const MAX_H: u16 = 400;
 
@@ -80,10 +81,21 @@ struct Canvas<'a> {
 
 impl<'a> Canvas<'a> {
     fn new(width: u16, t: &'a Theme) -> Canvas<'a> {
-        Canvas { buf: Buffer::empty(Rect::new(0, 0, width, MAX_H)), placements: Vec::new(), width, t }
+        Canvas { buf: Buffer::empty(Rect::new(0, 0, width, 4)), placements: Vec::new(), width, t }
+    }
+
+    /// Makes the buffer at least `h` rows tall (it starts small and doubles: most items are a
+    /// few rows, and a frame redraws every visible item).
+    fn grow(&mut self, h: u16) {
+        let h = h.min(MAX_H);
+        let cur = self.buf.area.height;
+        if h > cur {
+            self.buf.resize(Rect::new(0, 0, self.width, h.max(cur * 2).min(MAX_H)));
+        }
     }
 
     fn fill(&mut self, r: Rect, bg: Color) {
+        self.grow(r.y + r.height);
         let r = r.intersection(self.buf.area);
         for y in r.y..r.y + r.height {
             for x in r.x..r.x + r.width {
@@ -97,6 +109,7 @@ impl<'a> Canvas<'a> {
         if y >= MAX_H {
             return;
         }
+        self.grow(y + 1);
         let line = Line::from(spans).style(Style::default().bg(bg));
         self.buf.set_line(x, y, &line, w);
     }
@@ -118,6 +131,7 @@ impl<'a> Canvas<'a> {
     }
 
     fn icon(&mut self, x: u16, y: u16, w: u16, h: u16, icon: Icon, tint: Tint) {
+        self.grow(y + h);
         let p = Placement { rect: Rect::new(x, y, w, h), graphic: Graphic::Icon(icon, tint) };
         crate::images::fallback(&mut self.buf, &p, self.t);
         self.placements.push(p);
@@ -125,6 +139,7 @@ impl<'a> Canvas<'a> {
 
     /// A card's stripe: a half block in `color` down the first column.
     fn stripe(&mut self, y: u16, h: u16, color: Color, bg: Color) {
+        self.grow(y + h);
         for row in y..y + h {
             self.buf[(0, row)].set_symbol("▌").set_fg(color).set_bg(bg);
         }
@@ -132,6 +147,7 @@ impl<'a> Canvas<'a> {
 
     /// A rounded frame in `line` around `r`, on `bg` inside and out.
     fn frame(&mut self, r: Rect, line: Color, bg: Color) {
+        self.grow(r.y + r.height);
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -143,6 +159,7 @@ impl<'a> Canvas<'a> {
     /// Another item drawn into this one at (x, y). Returns its height.
     fn embed(&mut self, x: u16, y: u16, d: Drawn) -> u16 {
         let h = d.buf.area.height;
+        self.grow(y + h);
         for row in 0..h {
             for col in 0..d.buf.area.width {
                 if y + row < MAX_H && x + col < self.width {
@@ -158,8 +175,9 @@ impl<'a> Canvas<'a> {
         h
     }
 
-    fn finish(self, height: u16) -> Drawn {
+    fn finish(mut self, height: u16) -> Drawn {
         let h = height.clamp(1, MAX_H);
+        self.grow(h);
         let mut buf = Buffer::empty(Rect::new(0, 0, self.width, h));
         for y in 0..h {
             for x in 0..self.width {
@@ -258,7 +276,6 @@ fn turn(width: u16, t: &Theme, role: Role, time: &str, lines: &[String], attache
         Role::Assistant => "ASSISTANT",
     };
     let bg = t.surface;
-    cv.fill(Rect::new(0, 0, width, MAX_H), bg);
     cv.line(CX, 0, tw, vec![Span::styled(name, bold(t.accent)), Span::styled(format!("  {time}"), plain(t.text_muted))], bg);
     if generating {
         cv.line_right(width - 2, 0, vec![Span::styled("◌ ", plain(t.accent)), Span::styled("generating…", plain(t.text_muted))], bg);
@@ -274,8 +291,15 @@ fn turn(width: u16, t: &Theme, role: Role, time: &str, lines: &[String], attache
         y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
     }
     cv.stripe(0, y, t.accent_line, bg);
-    // Clear what the fill left below the card.
-    cv.fill(Rect::new(0, y, width, MAX_H - y), t.background);
+    // Everything not drawn on yet takes the card's surface.
+    cv.grow(y);
+    for row in 0..y {
+        for col in 0..width {
+            if cv.buf[(col, row)].bg == Color::Reset {
+                cv.buf[(col, row)].set_bg(bg);
+            }
+        }
+    }
     cv.finish(y)
 }
 
@@ -595,15 +619,62 @@ fn map(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapEvent, bg: Color) -> u16 
     cv.line(ix + 3, y + 1, iw, vec![Span::styled("MINDMAP", bold(t.accent)), Span::styled(format!("   map #{} updated: {}", m.id, m.change), plain(t.text))], bg);
     cv.line_right(ix + iw, y + 1, vec![Span::styled(m.date.clone(), plain(t.text_muted))], bg);
     let area = Rect::new(ix, y + 2, iw, map_h);
+    cv.grow(y + h);
     flowmap::draw_text(&mut cv.buf, area, &m.map, t, bg);
     cv.placements.push(Placement { rect: area, graphic: Graphic::Svg(flowmap::svg(&m.map, t, area.width, area.height)) });
     h
 }
 
-/// Every item drawn at `width`, with the newest assistant turn marked busy when `generating`.
-pub fn all(items: &[Item], width: u16, t: &Theme, generating: bool) -> Vec<Drawn> {
+/// Adds a half-row separator under an item: each cell's top half keeps the colour of the
+/// cell above it (the card's surface, its stripe), the bottom half is the page background.
+/// So a card ends with a little padding and the next starts after half a row, as in the
+/// mockups, instead of a whole empty row.
+fn separate(d: Drawn, t: &Theme) -> Drawn {
+    let (w, h) = (d.buf.area.width, d.buf.area.height);
+    let mut buf = Buffer::empty(Rect::new(0, 0, w, h + 1));
+    for y in 0..h {
+        for x in 0..w {
+            buf[(x, y)] = d.buf[(x, y)].clone();
+        }
+    }
+    for x in 0..w {
+        let above = d.buf[(x, h - 1)].clone();
+        let bg = if above.bg == Color::Reset { t.background } else { above.bg };
+        let cell = &mut buf[(x, h)];
+        if above.symbol() == "▌" {
+            cell.set_symbol("▘").set_fg(above.fg).set_bg(t.background);
+        } else {
+            cell.set_symbol("▀").set_fg(bg).set_bg(t.background);
+        }
+    }
+    Drawn { buf, placements: d.placements }
+}
+
+/// The items that reach into a view `rows` tall (the transcript's height plus the rows
+/// scrolled back), drawn at `width`, oldest first; the newest assistant turn is marked busy
+/// when `generating`. The second value says whether the first item was reached, i.e. the
+/// whole transcript is in the stack. Older items are not drawn at all, so a frame costs what
+/// is on screen, not the length of the session.
+pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u16) -> (Vec<Drawn>, bool) {
     let last_assistant = items.iter().rposition(|i| matches!(i, Item::Turn { role: Role::Assistant, .. }));
-    items.iter().enumerate().map(|(i, it)| item(it, width, t, generating && Some(i) == last_assistant)).collect()
+    let mut out = Vec::new();
+    let mut acc = 0u16;
+    for (i, it) in items.iter().enumerate().rev() {
+        if acc >= rows {
+            out.reverse();
+            return (out, false);
+        }
+        let d = separate(item(it, width, t, generating && Some(i) == last_assistant), t);
+        acc = acc.saturating_add(d.buf.area.height + GAP);
+        out.push(d);
+    }
+    out.reverse();
+    (out, true)
+}
+
+/// Every item drawn at `width` (tests and tools; the view draws only what is visible).
+pub fn all(items: &[Item], width: u16, t: &Theme, generating: bool) -> Vec<Drawn> {
+    visible(items, width, t, generating, u16::MAX).0
 }
 
 /// The transcript's total height in rows: items plus the gaps between them.
@@ -648,6 +719,23 @@ pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn bench_frame() {
+        let t = Theme::builtin("dark").unwrap();
+        let mut w = match crate::fixtures::welcome().mode { crate::model::Mode::Session(w) => w, _ => unreachable!() };
+        for c in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/journal", "/map", "/tool cat", "/tool fail"].iter().cycle().take(40) {
+            w.view_mut().composer.text = c.to_string();
+            crate::debug::submit(&mut w);
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let d = all(&w.view().transcript, 186, &t, false);
+            std::hint::black_box(d);
+        }
+        eprintln!("items {} frame {:?}", w.view().transcript.len(), start.elapsed() / 10);
+    }
 
     #[test]
     fn wrap_breaks_at_spaces_and_splits_long_words() {

@@ -253,43 +253,72 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, map: &FlowMap, t: &Theme, bg: Col
         }
         put(buf, x1.saturating_sub(1), y1, "▶", edge);
         if let Some(lb) = label {
+            // The label as a pill sitting on the arrow.
+            let pill = t.surface_raised;
             let lx = mid + 2;
+            put(buf, lx, y1, "▐", Style::default().fg(pill));
             for (i, ch) in lb.chars().enumerate() {
-                put(buf, lx + i as u16, y1, &ch.to_string(), Style::default().fg(t.text));
+                let pos = (ox + lx + 1 + i as u16, oy + y1);
+                if area.contains(pos.into()) {
+                    buf[pos].set_symbol(&ch.to_string()).set_style(Style::default().fg(t.text)).set_bg(pill);
+                }
             }
+            put(buf, lx + 1 + lb.chars().count() as u16, y1, "▌", Style::default().fg(pill));
         }
     }
     for p in &l.nodes {
-        let colour = if p.changed || p.shape == NodeShape::Decision { t.accent_line } else { t.border_subtle };
-        let st = Style::default().fg(colour);
-        let (r, b) = (p.x + p.w - 1, p.y + p.h - 1);
-        let (tl, tr, bl, br, hz, vt) = match p.shape {
-            NodeShape::Box => ("╭", "╮", "╰", "╯", "─", "│"),
-            NodeShape::Decision => ("╱", "╲", "╲", "╱", "─", "◇"),
+        // A node is a filled card: half blocks on its edges in the fill colour, so the fill
+        // starts right at the edge, quarter blocks in the corners; a decision gets triangle
+        // ends instead, reading as a diamond. The changed node is tinted with the accent.
+        let fill = if p.changed {
+            mix(t.accent_line, bg, 0.30)
+        } else if p.shape == NodeShape::Decision {
+            mix(t.accent_line, bg, 0.14)
+        } else {
+            t.surface_raised
         };
-        for x in p.x..=r {
-            for y in p.y..=b {
-                let s = match (x == p.x, x == r, y == p.y, y == b) {
-                    (true, _, true, _) => tl,
-                    (_, true, true, _) => tr,
-                    (true, _, _, true) => bl,
-                    (_, true, _, true) => br,
-                    (_, _, true, _) | (_, _, _, true) => hz,
-                    (true, _, _, _) | (_, true, _, _) => vt,
-                    _ => " ",
+        let (r, b) = (p.x + p.w - 1, p.y + p.h - 1);
+        let mid_top = p.y + p.h / 2 - 1 + p.h % 2;
+        for y in p.y..=b {
+            for x in p.x..=r {
+                let (left, right, top, bottom) = (x == p.x, x == r, y == p.y, y == b);
+                let sym = match p.shape {
+                    NodeShape::Box => match (left, right, top, bottom) {
+                        (true, _, true, _) => "▗",
+                        (_, true, true, _) => "▖",
+                        (true, _, _, true) => "▝",
+                        (_, true, _, true) => "▘",
+                        (_, _, true, _) => "▄",
+                        (_, _, _, true) => "▀",
+                        (true, _, _, _) => "▐",
+                        (_, true, _, _) => "▌",
+                        _ => " ",
+                    },
+                    NodeShape::Decision => match (left, right, top, bottom) {
+                        (true, _, true, _) | (true, _, _, true) | (_, true, true, _) | (_, true, _, true) => "",
+                        (true, _, _, _) => if y <= mid_top { "◢" } else { "◥" },
+                        (_, true, _, _) => if y <= mid_top { "◣" } else { "◤" },
+                        (_, _, true, _) => "▄",
+                        (_, _, _, true) => "▀",
+                        _ => " ",
+                    },
                 };
-                put(buf, x, y, s, st);
-            }
-        }
-        let fill = if p.changed { mix(t.accent_line, bg, 0.22) } else { bg };
-        for (i, ln) in p.lines.iter().enumerate() {
-            let y = p.y + 1 + i as u16;
-            for x in p.x + 1..r {
+                if sym.is_empty() {
+                    continue;
+                }
                 let pos = (ox + x, oy + y);
-                if area.contains(pos.into()) {
+                if !area.contains(pos.into()) {
+                    continue;
+                }
+                if sym == " " {
                     buf[pos].set_symbol(" ").set_bg(fill);
+                } else {
+                    buf[pos].set_symbol(sym).set_style(Style::default().fg(fill).bg(bg));
                 }
             }
+        }
+        for (i, ln) in p.lines.iter().enumerate() {
+            let y = p.y + 1 + i as u16;
             let tx = p.x + (p.w - ln.chars().count() as u16) / 2;
             let style = if i == 0 { Style::default().fg(t.text_muted) } else { Style::default().fg(t.text).add_modifier(Modifier::BOLD) };
             for (j, ch) in ln.chars().enumerate() {

@@ -203,41 +203,45 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let launched = std::time::Instant::now();
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
+        let mut drawn = Drawn::default();
         loop {
             state.pictures = picker.is_some();
-            let mut drawn = Drawn::default();
-            terminal.draw(|f| {
-                drawn = frontend_tui::draw(f, &state, &current);
-                let Some(picker) = &picker else { return };
-                for p in &drawn.placements {
-                    let key = (p.graphic.clone(), current.id.clone(), p.rect.width, p.rect.height);
-                    if !pictures.contains_key(&key) {
-                        let fs = picker.font_size();
-                        let px = images::rasterize(&p.graphic, &current, (p.rect.width * fs.width) as u32, (p.rect.height * fs.height) as u32);
-                        if let Ok(proto) = picker.new_protocol(
-                            image::DynamicImage::ImageRgba8(px),
-                            Size::new(p.rect.width, p.rect.height),
-                            Resize::Fit(None),
-                        ) {
-                            pictures.insert(key.clone(), proto);
+            // Input still queued (a burst of wheel events, fast typing) is handled first and
+            // drawn once after, instead of one frame per event.
+            if !event::poll(std::time::Duration::ZERO)? {
+                terminal.draw(|f| {
+                    drawn = frontend_tui::draw(f, &state, &current);
+                    let Some(picker) = &picker else { return };
+                    for p in &drawn.placements {
+                        let key = (p.graphic.clone(), current.id.clone(), p.rect.width, p.rect.height);
+                        if !pictures.contains_key(&key) {
+                            let fs = picker.font_size();
+                            let px = images::rasterize(&p.graphic, &current, (p.rect.width * fs.width) as u32, (p.rect.height * fs.height) as u32);
+                            if let Ok(proto) = picker.new_protocol(
+                                image::DynamicImage::ImageRgba8(px),
+                                Size::new(p.rect.width, p.rect.height),
+                                Resize::Fit(None),
+                            ) {
+                                pictures.insert(key.clone(), proto);
+                            }
+                        }
+                        if let Some(proto) = pictures.get(&key) {
+                            f.render_widget(Image::new(proto), p.rect);
                         }
                     }
-                    if let Some(proto) = pictures.get(&key) {
-                        f.render_widget(Image::new(proto), p.rect);
-                    }
+                })?;
+                // The launch blink: redraw when the eyes change, otherwise wait for input.
+                let (eyes, next) = images::eyes_at(launched.elapsed().as_millis() as u64);
+                if state.eyes != eyes {
+                    state.eyes = eyes;
+                    continue;
                 }
-            })?;
-            // The launch blink: redraw when the eyes change, otherwise wait for input.
-            let (eyes, next) = images::eyes_at(launched.elapsed().as_millis() as u64);
-            if state.eyes != eyes {
-                state.eyes = eyes;
-                continue;
-            }
-            let wait = next.map(|n| n.saturating_sub(launched.elapsed().as_millis() as u64));
-            if let Some(wait) = wait
-                && !event::poll(std::time::Duration::from_millis(wait))?
-            {
-                continue;
+                let wait = next.map(|n| n.saturating_sub(launched.elapsed().as_millis() as u64));
+                if let Some(wait) = wait
+                    && !event::poll(std::time::Duration::from_millis(wait))?
+                {
+                    continue;
+                }
             }
             let outcome = match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {

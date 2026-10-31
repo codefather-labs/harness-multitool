@@ -106,10 +106,13 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
         Constraint::Length(4),
     ])
     .areas(body);
-    let tr = inset(Rect { y: transcript.y + 1, height: transcript.height.saturating_sub(1), ..transcript });
-    let drawn = crate::transcript::all(&v.transcript, tr.width, t, v.generating);
+    let tr = inset(transcript);
+    let want = (v.scroll as u16).min(5000);
+    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, v.generating, tr.height.saturating_add(want));
     let total = crate::transcript::total_height(&drawn);
-    let scroll = (v.scroll as u16).min(total.saturating_sub(tr.height));
+    // Scrolling stops at the first item; while older items exist beyond the stack, the stack
+    // already covers the rows asked for.
+    let scroll = if whole { want.min(total.saturating_sub(tr.height)) } else { want };
     out.placements.extend(crate::transcript::blit(f.buffer_mut(), tr, drawn, scroll));
     out.hits.push(Hit { rect: tr, target: Target::Transcript });
     if scroll > 0 {
