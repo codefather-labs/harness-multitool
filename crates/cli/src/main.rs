@@ -190,16 +190,20 @@ fn preview(name: &str, theme: &str) -> Result<()> {
         config::Graphics::Auto => graphics_terminal(),
         _ => true,
     };
+    // The terminal's answer decides whether pictures are possible at all: a terminal that
+    // answers no graphics query (Halfblocks) shows the text fallbacks, whatever was forced.
+    // Forcing a protocol on such a terminal printed kitty placeholders as boxes in Ptyxis
+    // (operator, 2026-11-01). A forced protocol only picks among what the terminal supports.
     let picker = ask
         .then(|| Picker::from_query_stdio().ok())
         .flatten()
+        .filter(|p| p.protocol_type() != ProtocolType::Halfblocks)
         .map(|mut p| {
             if let Some(proto) = forced {
                 p.set_protocol_type(proto);
             }
             p
-        })
-        .filter(|p| p.protocol_type() != ProtocolType::Halfblocks);
+        });
     let launched = std::time::Instant::now();
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
