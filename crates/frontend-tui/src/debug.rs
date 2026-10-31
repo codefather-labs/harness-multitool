@@ -21,8 +21,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/reminder [text]", "journal reminder"),
     ("/journal", "journal entry event"),
     ("/mindmap-new · /flowchart-new", "a mind map / flowchart created (empty)"),
-    ("/mindmap · /flowchart [down]", "a mind map / flowchart updated, drawn"),
-    ("/mind · /flow", "every mind-map node kind / flowchart symbol and gate"),
+    ("/mindmap", "a mind map with every node kind, status and flowchart link"),
+    ("/flowchart [down]", "every flowchart symbol and gate / a flow top to bottom"),
+    ("/permission", "a tool call waiting for approval"),
+    ("/settings", "the settings window"),
     ("/tool read|edit|cat|tg|a2a|journal|fail|run", "tool call"),
     ("/hook start|compact|block|fail|timeout|run", "hooks firing on a loop event"),
     ("/hooks", "every hook outcome"),
@@ -362,25 +364,6 @@ pub fn sample_mind_gallery() -> MindMap {
     }
 }
 
-/// A small mind map for `/mindmap`: a topic, two branches, a fact pointing at the fallback
-/// flowchart.
-pub fn sample_mindmap() -> MindMap {
-    let node = |id: &str, text: &str, kind| MindNode { id: id.into(), text: text.into(), kind, status: NodeStatus::Open, refs: vec![], flows: vec![], changed: false };
-    let mut how = node("n4", "Fallback order: primary, model, local", MindKind::Decision);
-    how.flows = vec![3];
-    how.changed = true;
-    MindMap {
-        nodes: vec![
-            node("n1", "Router fallback", MindKind::Topic),
-            node("n2", "Why: never drop a request", MindKind::Goal),
-            node("n3", "Primary fails ~2% at peak", MindKind::Fact),
-            how,
-        ],
-        branches: ["n2", "n3", "n4"].iter().map(|c| Branch { from: "n1".into(), to: c.to_string(), flows: vec![] }).collect(),
-        links: vec![],
-    }
-}
-
 /// Hooks on a loop event: `start` and `compact` run the two example scripts, the others show
 /// the remaining outcomes.
 pub fn sample_hook(kind: &str, time: &str) -> Option<HookEvent> {
@@ -498,22 +481,20 @@ fn command(w: &mut Workspace, cmd: &str) {
         "flowchart-new" | "map-new" => {
             attach(v, Item::MapCreated(MapCreated { tool: MapTool::Flowchart, id: 3, title: "Router fallback".into(), shared: true }))
         }
-        "mindmap" => attach(
+        "mindmap" | "mind" => attach(
             v,
-            Item::MindMap(MindMapEvent { id: 2, change: "+node n4 → flowchart #3".into(), date: "2026-10-28 14:28".into(), map: sample_mindmap() }),
+            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status; flowcharts linked from n6 and a branch".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery() }),
         ),
-        "flowchart" | "map" => {
-            let chart = if arg.trim() == "down" { sample_flowchart_down() } else { sample_flowchart() };
-            attach(v, Item::Flowchart(FlowchartEvent { id: 3, change: "+node n4, +arrow n2->n4 (ref #137)".into(), date: "2026-10-28 14:28".into(), chart }))
+        "flowchart" | "flow" | "map" => {
+            let (change, chart) = if arg.trim() == "down" {
+                ("+node n4, +arrow n2->n4 (ref #137), top to bottom", sample_flowchart_down())
+            } else {
+                ("every symbol and logic gate", sample_flow_gallery())
+            };
+            attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart }))
         }
-        "flow" => attach(
-            v,
-            Item::Flowchart(FlowchartEvent { id: 4, change: "every symbol and logic gate".into(), date: "2026-11-01 01:20".into(), chart: sample_flow_gallery() }),
-        ),
-        "mind" => attach(
-            v,
-            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery() }),
-        ),
+        "permission" => w.overlay = Some(crate::model::Overlay::Permission(crate::overlay::sample_permission())),
+        "settings" => w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings())),
         "tool" | "t" => match sample_tool(or(arg, "read")) {
             Some(c) => attach(v, Item::Tool(c)),
             None => v.transcript.push(Item::Tips { label: "UNKNOWN TOOL".into(), lines: vec!["/tool read|edit|cat|tg|a2a|journal|fail|run".into()] }),
@@ -571,7 +552,7 @@ mod tests {
     #[test]
     fn every_debug_command_publishes_its_item() {
         let mut w = workspace();
-        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/mindmap-new", "/flowchart-new", "/mindmap", "/flowchart", "/flowchart down", "/flow", "/mind", "/hook", "/hooks", "/help"] {
+        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/mindmap-new", "/flowchart-new", "/mindmap", "/flowchart", "/flowchart down", "/hook", "/hooks", "/help"] {
             let before = w.view().transcript.len();
             let attached_before: usize = w.view().transcript.iter().map(|i| if let Item::Turn { attached, .. } = i { attached.len() } else { 0 }).sum();
             send(&mut w, cmd);

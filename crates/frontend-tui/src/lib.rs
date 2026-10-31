@@ -13,6 +13,7 @@ pub mod maps;
 pub mod mindmap;
 pub mod input;
 pub mod model;
+pub mod overlay;
 pub mod theme;
 pub mod transcript;
 pub mod view;

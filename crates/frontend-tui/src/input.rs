@@ -82,6 +82,9 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
             Outcome::Stay
         }
         Mode::Session(w) => {
+            if let Some(o) = crate::overlay::key(w, k) {
+                return o;
+            }
             match k {
                 Key::Enter => {
                     if crate::debug::submit(w) == crate::debug::Sent::Quit {
@@ -157,7 +160,11 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
             v.selected_action = i;
             Outcome::Action(i)
         }
-        (Mode::Session(_), Target::Settings) => Outcome::OpenSettings,
+        (Mode::Session(w), t) if w.overlay.is_some() => crate::overlay::click(w, t),
+        (Mode::Session(w), Target::Settings) => {
+            w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings()));
+            Outcome::Stay
+        }
         (Mode::Session(w), Target::Tab(i)) => {
             switch_tab(w, i);
             Outcome::Stay

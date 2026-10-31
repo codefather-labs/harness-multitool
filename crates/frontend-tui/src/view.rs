@@ -40,6 +40,14 @@ pub enum Target {
     CloseToast,
     /// The transcript (wheel scrolling).
     Transcript,
+    /// A button of the permission prompt: 0 allow once, 1 always allow, 2 deny.
+    Choice(usize),
+    /// A section of the settings window.
+    Section(usize),
+    /// A provider row on the settings window's provider page.
+    Provider(usize),
+    /// The close mark of an overlay.
+    CloseOverlay,
 }
 
 impl Drawn {
@@ -133,6 +141,11 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     widgets::composer(f, input, t, &v.composer);
     widgets::button(f, button, t, "⚙ Settings", "Ctrl+,");
     out.hits.push(Hit { rect: button, target: Target::Settings });
+    // An overlay takes the clicks: only its own targets stay live.
+    if let Some(o) = &w.overlay {
+        out.hits.clear();
+        crate::overlay::draw(f, area, o, t, out);
+    }
 }
 
 /// The tab strip at the right of the header (session-tabs-*, journal#137): one pill per session

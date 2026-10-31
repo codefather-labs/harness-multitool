@@ -44,11 +44,65 @@ pub struct Workspace {
     /// A notification over the top right of the transcript (an inbound message that arrived
     /// while the agent was busy).
     pub toast: Option<Toast>,
+    /// A modal window over the session: it takes the keys until it closes.
+    pub overlay: Option<Overlay>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Overlay {
+    Permission(PermissionView),
+    Settings(SettingsView),
+}
+
+/// A tool call waiting for the user's approval (permission-*; IF-5 Policy asked).
+#[derive(Debug, Clone)]
+pub struct PermissionView {
+    pub tool: String,
+    /// What the agent wants, in a sentence.
+    pub summary: String,
+    pub command: String,
+    pub workdir: String,
+    pub scope: String,
+    pub policy: String,
+    /// The button in focus: 0 allow once, 1 always allow, 2 deny.
+    pub choice: usize,
+}
+
+/// The settings window (settings-overlay-*): sections on the left, the section's page on the
+/// right.
+#[derive(Debug, Clone)]
+pub struct SettingsView {
+    pub sections: Vec<String>,
+    pub section: usize,
+    pub focus: SettingsPane,
+    pub providers: Vec<ProviderOption>,
+    /// The provider chosen.
+    pub provider: usize,
+    /// The row under the cursor in the page: providers first, then the fields.
+    pub cursor: usize,
+    pub model: String,
+    pub timeout_s: u32,
+    pub fallback: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPane {
+    #[default]
+    Sections,
+    Page,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderOption {
+    pub name: String,
+    pub description: String,
+    /// A plugin built into the user's local build rather than shipped with the project.
+    pub local_build: bool,
 }
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None }
+        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None }
     }
 
     pub fn view(&self) -> &SessionView {

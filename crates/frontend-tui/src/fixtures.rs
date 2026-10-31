@@ -27,6 +27,8 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "session-tabs", mockup: "session-tabs", build: session_tabs },
     Fixture { name: "maps", mockup: "journal-mindmap-events", build: maps },
     Fixture { name: "hooks", mockup: "tool-calls", build: hooks },
+    Fixture { name: "permission", mockup: "permission", build: permission },
+    Fixture { name: "settings-overlay", mockup: "settings-overlay", build: settings_overlay },
 ];
 
 pub fn by_name(name: &str) -> Option<&'static Fixture> {
@@ -436,6 +438,7 @@ pub fn session_tabs() -> AppState {
         ],
         active: 0,
         toast: None,
+        overlay: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }
@@ -486,4 +489,22 @@ pub fn hooks() -> AppState {
     }
     let view = SessionView { transcript, status: router_status(), composer: composer("Type a message, / for commands, @ to mention...", session_hints()), ..Default::default() };
     AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+}
+
+fn with_overlay(o: crate::model::Overlay) -> AppState {
+    let mut s = main_session();
+    if let Mode::Session(w) = &mut s.mode {
+        w.overlay = Some(o);
+    }
+    s
+}
+
+/// permission-*: the shell call waiting for approval over the main session.
+pub fn permission() -> AppState {
+    with_overlay(crate::model::Overlay::Permission(crate::overlay::sample_permission()))
+}
+
+/// settings-overlay-*: the settings window on its provider page.
+pub fn settings_overlay() -> AppState {
+    with_overlay(crate::model::Overlay::Settings(crate::overlay::sample_settings()))
 }

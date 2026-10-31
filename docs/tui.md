@@ -30,6 +30,9 @@ splash (OK / Enter) → startup page (recent sessions, quick actions) → sessio
 | session | Esc | close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
+| session | click `⚙ Settings` | open the settings window |
+| permission prompt | 1 · 2 · 3 · ←→ / Tab · Enter · Esc · click a button | allow once · always allow · deny · choose · confirm · deny |
+| settings | Tab · ↑↓ · Space / Enter · Ctrl+S · Esc · click | change pane · move · select (provider, field, box) · save · close |
 | anywhere | F2 | next theme (dark, light, nord, monokai, cyan) |
 
 ## Debug commands
@@ -47,8 +50,9 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/reminder [text]` | a journal reminder |
 | `/journal` | a JOURNAL event |
 | `/mindmap-new` · `/flowchart-new` | a mind map / a flowchart created (empty) |
-| `/mindmap` · `/flowchart [down]` | a mind map (a node linked to a flowchart) / a flowchart, left to right or top to bottom |
-| `/mind` · `/flow` | every mind-map node kind and status, flowchart links / every flowchart symbol and logic gate |
+| `/mindmap` | a mind map with every node kind and status, journal refs, a cross link, flowchart links |
+| `/flowchart` · `/flowchart down` | every flowchart symbol and logic gate · a flow drawn top to bottom |
+| `/permission` · `/settings` | the permission prompt · the settings window |
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
 | `/hook start\|compact\|block\|fail\|timeout\|run` · `/hooks` | hooks firing on a loop event (session start and compaction run `fact-check-cognitive-protocol.sh` and `harness-lookup.sh`) · every hook outcome |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
@@ -72,6 +76,8 @@ Every mockup has a named state that renders through the same `draw` as the live 
 | `session-tabs` | four sessions as tabs with busy / unread / attention marks | `session-tabs-*` |
 | `maps` | every flowchart symbol and gate, every mind-map node kind | none (designed in code) |
 | `hooks` | every hook outcome | none (designed in code) |
+| `permission` | a shell command waiting for approval | `permission-*` |
+| `settings-overlay` | the settings window on its provider page | `settings-overlay-*` |
 
 
 ```bash
