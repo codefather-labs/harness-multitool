@@ -1,0 +1,24 @@
+# themes/dark.toml — harness-multitool theme. Contrast (WCAG 2.x, checked by script):
+#   text on background 17.20:1, text_muted on background 9.62:1, text_muted on surface_raised 7.35:1, accent_text on accent 8.92:1
+name = "Dark"
+kind = "dark"
+note = "Default charcoal theme with warm orange accents."
+
+background = "#0B0E14"
+surface = "#171B23"
+surface_raised = "#232833"
+overlay_scrim = "#06090D"
+border_subtle = "#343B47"
+text = "#F2F2ED"
+text_muted = "#AEB8C5"
+accent = "#F5A623"
+accent_text = "#201400"
+success = "#70DB9B"
+warning = "#FFD071"
+error = "#FF8291"
+info = "#87C3FF"
+diff_add_bg = "#183329"
+diff_del_bg = "#3A2228"
+selection = "#46371F"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

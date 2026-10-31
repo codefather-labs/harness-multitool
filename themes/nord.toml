@@ -1,0 +1,24 @@
+# themes/nord.toml — harness-multitool theme. Contrast (WCAG 2.x, checked by script):
+#   text on background 10.84:1, text_muted on background 9.25:1, text_muted on surface_raised 6.39:1, accent_text on accent 6.24:1
+name = "Nord"
+kind = "dark"
+note = "The Nord palette (nord0-nord15, by Arctic Ice Studio, MIT); scrim, diff backgrounds and selection are derived tints."
+
+background = "#2E3440"
+surface = "#3B4252"
+surface_raised = "#434C5E"
+overlay_scrim = "#242933"
+border_subtle = "#4C566A"
+text = "#ECEFF4"
+text_muted = "#D8DEE9"
+accent = "#88C0D0"
+accent_text = "#2E3440"
+success = "#A3BE8C"
+warning = "#EBCB8B"
+error = "#BF616A"
+info = "#81A1C1"
+diff_add_bg = "#34473F"
+diff_del_bg = "#4A363E"
+selection = "#4B6579"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

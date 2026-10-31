@@ -1,0 +1,24 @@
+# themes/cyan.toml — harness-multitool theme. Contrast (WCAG 2.x, checked by script):
+#   text on background 17.18:1, text_muted on background 10.23:1, text_muted on surface_raised 7.48:1, accent_text on accent 9.36:1
+name = "Cyan"
+kind = "dark"
+note = "Deep blue-black theme with vivid cyan accents."
+
+background = "#07141B"
+surface = "#10242C"
+surface_raised = "#17313B"
+overlay_scrim = "#030B10"
+border_subtle = "#28505B"
+text = "#EAF8FC"
+text_muted = "#A6C5CF"
+accent = "#39D9E8"
+accent_text = "#06252D"
+success = "#55DEA2"
+warning = "#FFCB6B"
+error = "#FF738A"
+info = "#7FAEFF"
+diff_add_bg = "#10372F"
+diff_del_bg = "#39252B"
+selection = "#174551"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

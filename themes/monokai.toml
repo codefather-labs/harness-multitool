@@ -1,0 +1,24 @@
+# themes/monokai.toml — harness-multitool theme. Contrast (WCAG 2.x, checked by script):
+#   text on background 13.94:1, text_muted on background 8.60:1, text_muted on surface_raised 6.33:1, accent_text on accent 10.44:1
+name = "Monokai"
+kind = "dark"
+note = "The classic Monokai palette with yellow UI accents; surfaces and muted text adapted for a terminal UI."
+
+background = "#272822"
+surface = "#30312B"
+surface_raised = "#3E3D32"
+overlay_scrim = "#1A1B17"
+border_subtle = "#555548"
+text = "#F8F8F2"
+text_muted = "#C6C6B5"
+accent = "#E6DB74"
+accent_text = "#272822"
+success = "#A6E22E"
+warning = "#FD971F"
+error = "#F92672"
+info = "#66D9EF"
+diff_add_bg = "#304125"
+diff_del_bg = "#452533"
+selection = "#49483E"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme
