@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use crate::model::{Composer, HeaderInfo, KeyHint};
+use crate::model::{Composer, HeaderInfo, KeyHint, StatusLine};
 use crate::theme::Theme;
 
 /// Fills `area` with one background colour.
@@ -36,10 +36,7 @@ pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) {
     left.push(Span::styled(format!(" / {}", h.location), Style::default().fg(t.text_muted)));
     f.render_widget(Paragraph::new(Line::from(left)), area);
 
-    let parts: Vec<&str> = std::iter::once(h.cwd.as_str())
-        .chain(h.adapter_model.as_deref())
-        .chain(h.branch.as_deref())
-        .collect();
+    let parts: Vec<&str> = std::iter::once(h.cwd.as_str()).chain(h.branch.as_deref()).collect();
     let sep = Span::styled("  |  ", Style::default().fg(t.text_muted));
     let mut right: Vec<Span> = Vec::new();
     for (i, part) in parts.iter().enumerate() {
@@ -61,26 +58,49 @@ pub fn rule(f: &mut Frame, area: Rect, t: &Theme) {
     f.render_widget(Paragraph::new(line).style(Style::default().fg(t.border_subtle).bg(t.background)), area);
 }
 
-/// A card: surface background, an accent stripe on the left, a label in the accent colour,
-/// then body lines. The stripe is a half block so it reads as a bar, not a border.
-pub fn card(f: &mut Frame, area: Rect, t: &Theme, label: &str, body: Vec<Line<'static>>) {
+/// A card: surface background, an accent stripe on the left, a label line (spans), then body
+/// lines, then one padding row. The stripe is a half block so it reads as a bar, not a border.
+pub fn card(f: &mut Frame, area: Rect, t: &Theme, label: Vec<Span<'static>>, body: Vec<Line<'static>>) {
     fill(f, area, t.surface);
     let stripe = Rect { width: 1, ..area };
     let bar = vec![Line::from("▌"); area.height as usize];
-    f.render_widget(Paragraph::new(bar).style(Style::default().fg(t.accent).bg(t.surface)), stripe);
+    f.render_widget(Paragraph::new(bar).style(Style::default().fg(t.accent_line).bg(t.surface)), stripe);
 
-    let inner = Rect { x: area.x + 3, y: area.y + 1, width: area.width.saturating_sub(5), height: area.height.saturating_sub(2) };
-    let mut lines = vec![Line::from(Span::styled(
-        label.to_string(),
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-    ))];
+    let inner = Rect { x: area.x + 3, y: area.y, width: area.width.saturating_sub(5), height: area.height.saturating_sub(1) };
+    let mut lines = vec![Line::from(label)];
     lines.extend(body);
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.surface)), inner);
 }
 
+/// `LABEL value · LABEL value · …` above the composer.
+pub fn status_line(f: &mut Frame, area: Rect, t: &Theme, s: &StatusLine) {
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (k, v)) in s.fields.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", Style::default().fg(t.text_muted)));
+        }
+        spans.push(Span::styled(format!("{k}  "), Style::default().fg(t.text_muted)));
+        spans.push(Span::styled(v.clone(), Style::default().fg(t.text)));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);
+}
+
+/// A bordered button: `[ Label ]` in a rounded box.
+pub fn button(f: &mut Frame, area: Rect, t: &Theme, text: &str) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_subtle))
+        .style(Style::default().bg(t.background));
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("[ {text} ]"), Style::default().fg(t.text))).centered().block(block),
+        area,
+    );
+}
+
 /// The input box: accent border, placeholder in muted text, a block cursor.
 pub fn composer(f: &mut Frame, area: Rect, t: &Theme, c: &Composer) {
-    let border = if c.focused { t.accent } else { t.border_subtle };
+    let border = if c.focused { t.accent_line } else { t.border_subtle };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -93,13 +113,14 @@ pub fn composer(f: &mut Frame, area: Rect, t: &Theme, c: &Composer) {
         spans.push(Span::styled(c.text.clone(), Style::default().fg(t.text)));
     }
     if c.focused {
-        spans.push(Span::styled("█", Style::default().fg(t.accent)));
+        spans.push(Span::styled("█", Style::default().fg(t.accent_line)));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+    let lines = vec![Line::from(spans), hint_line(t, &c.hints)];
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The bottom line of key hints: `key label · key label · …`.
-pub fn hints(f: &mut Frame, area: Rect, t: &Theme, items: &[KeyHint]) {
+/// `key label · key label · …` in muted text, keys a step brighter.
+pub fn hint_line(t: &Theme, items: &[KeyHint]) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (i, h) in items.iter().enumerate() {
         if i > 0 {
@@ -110,5 +131,6 @@ pub fn hints(f: &mut Frame, area: Rect, t: &Theme, items: &[KeyHint]) {
             spans.push(Span::styled(format!(" {}", h.label), Style::default().fg(t.text_muted)));
         }
     }
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);
+    Line::from(spans)
 }
+

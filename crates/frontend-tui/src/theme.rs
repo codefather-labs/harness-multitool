@@ -26,6 +26,8 @@ pub struct Theme {
     pub text_muted: Color,
     pub accent: Color,
     pub accent_text: Color,
+    /// Lines in the accent colour: card stripes, focus borders. Defaults to `accent`.
+    pub accent_line: Color,
     pub success: Color,
     pub warning: Color,
     pub error: Color,
@@ -49,6 +51,8 @@ struct File {
     text_muted: String,
     accent: String,
     accent_text: String,
+    #[serde(default)]
+    accent_line: Option<String>,
     success: String,
     warning: String,
     error: String,
@@ -96,6 +100,7 @@ impl Theme {
             text_muted: hex("text_muted", &f.text_muted)?,
             accent: hex("accent", &f.accent)?,
             accent_text: hex("accent_text", &f.accent_text)?,
+            accent_line: hex("accent_line", f.accent_line.as_deref().unwrap_or(&f.accent))?,
             success: hex("success", &f.success)?,
             warning: hex("warning", &f.warning)?,
             error: hex("error", &f.error)?,
@@ -127,6 +132,13 @@ mod tests {
             let t = Theme::builtin(id).unwrap();
             assert_eq!(t.brand, Color::Rgb(0xF5, 0xA6, 0x23), "{id}: brand is the same in every theme");
         }
+    }
+
+    #[test]
+    fn accent_line_defaults_to_accent_and_light_overrides_it() {
+        let d = Theme::builtin("dark").unwrap();
+        assert_eq!(d.accent_line, d.accent);
+        assert_eq!(Theme::builtin("light").unwrap().accent_line, Color::Rgb(0xC9, 0x74, 0x00));
     }
 
     #[test]
