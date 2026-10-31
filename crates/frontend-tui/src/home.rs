@@ -42,7 +42,7 @@ fn row(area: Rect, y: u16) -> Rect {
 /// Logo, name, version, slogan, centred, starting at `top`. Returns the rows used.
 fn brand(f: &mut Frame, area: Rect, top: u16, b: &Brand, t: &Theme, out: &mut Drawn) -> u16 {
     let logo = Rect { y: area.y + top, height: LOGO_H, ..centred(area, LOGO_W) };
-    out.placements.push(Placement { rect: logo, graphic: Graphic::Logo });
+    out.placements.push(Placement { rect: logo, graphic: Graphic::Logo(crate::images::Eyes::Open) });
     // The name, two rows tall: a picture of bold text (big type is impossible in cells).
     let name = Rect { y: area.y + top + LOGO_H, height: 2, ..centred(area, NAME_W) };
     out.placements.push(Placement { rect: name, graphic: Graphic::Text(b.name.clone(), Tint::Text) });

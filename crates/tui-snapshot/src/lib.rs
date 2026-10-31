@@ -248,6 +248,19 @@ mod shapes {
                 rect(img, hx0 as u32, my - thin / 2, hx1 as u32, my - thin / 2 + thin, c);
                 rect(img, mx - thin / 2, vy0 as u32, mx - thin / 2 + thin, vy1 as u32, c);
             }
+            // Sextants (U+1FB00..U+1FB3B): 2 x 3 blocks; the codes skip empty, ▌, ▐ and full.
+            '\u{1FB00}'..='\u{1FB3B}' => {
+                let i = ch as u32 - 0x1FB00 + 1;
+                let mask = if i < 21 { i } else if i < 41 { i + 1 } else { i + 2 };
+                let xs = [ox, ox + cw / 2, x1];
+                let ys = [oy, oy + chh / 3, oy + chh * 2 / 3, y1];
+                for bit in 0..6 {
+                    if mask & (1 << bit) != 0 {
+                        let (cx, cy) = (bit % 2, bit / 2);
+                        rect(img, xs[cx], ys[cy], xs[cx + 1], ys[cy + 1], c);
+                    }
+                }
+            }
             _ => return false,
         }
         true

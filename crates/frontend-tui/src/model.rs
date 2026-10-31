@@ -7,6 +7,8 @@
 pub struct AppState {
     pub header: HeaderInfo,
     pub mode: Mode,
+    /// The logo's eyes; the live CLI closes them for the launch blink (images::eyes_at).
+    pub eyes: crate::images::Eyes,
 }
 
 #[derive(Debug, Clone)]

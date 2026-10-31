@@ -1,7 +1,7 @@
 //! Named `AppState` scenarios, one per reference mockup in `docs/design/concept`.
 //! They are states of the real CLI, drawn by the real `view::draw`.
 
-use crate::images::Icon;
+use crate::images::{Eyes, Icon};
 use crate::model::{
     ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Item, KeyHint, Mode, QuickAction, RecentSession,
     Role, SessionView, SplashView, StartupPanel, StartupView, StatusLine, TipPart, Tone, ToolBody, ToolCall, ToolState,
@@ -62,6 +62,7 @@ fn session_hints() -> Vec<KeyHint> {
 pub fn welcome() -> AppState {
     AppState {
         header: header(VERSION),
+        eyes: Eyes::Open,
         mode: Mode::Session(SessionView {
             transcript: vec![
                 Item::Welcome {
@@ -128,6 +129,7 @@ pub fn main_session() -> AppState {
     };
     AppState {
         header: header("session/4f7e3c2a"),
+        eyes: Eyes::Open,
         mode: Mode::Session(SessionView {
             transcript: vec![
                 turn(Role::User, "14:32", &["Add a provider router with explicit model fallback."]),
@@ -168,6 +170,7 @@ fn brand() -> Brand {
 pub fn splash() -> AppState {
     AppState {
         header: header(VERSION),
+        eyes: Eyes::Open,
         mode: Mode::Splash(SplashView {
             brand: brand(),
             heading: "Welcome".into(),
@@ -198,6 +201,7 @@ fn tip(parts: &[(&str, bool)]) -> Vec<TipPart> {
 pub fn startup() -> AppState {
     AppState {
         header: header(VERSION),
+        eyes: Eyes::Open,
         mode: Mode::Startup(StartupView {
             brand: brand(),
             sessions: vec![

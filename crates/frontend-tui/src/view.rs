@@ -59,8 +59,14 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
                 Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
             let logo = widgets::header(f, head, t, &s.header);
             widgets::rule(f, rule, t);
-            out.placements.push(Placement { rect: logo, graphic: Graphic::Logo });
+            out.placements.push(Placement { rect: logo, graphic: Graphic::Logo(s.eyes) });
             session(f, body, v, t, &mut out);
+        }
+    }
+    // The logo's eyes are one state for the whole screen (the launch blink).
+    for p in &mut out.placements {
+        if let Graphic::Logo(eyes) = &mut p.graphic {
+            *eyes = s.eyes;
         }
     }
     // Every picture's cells get its text fallback; a graphics terminal draws the picture over it.

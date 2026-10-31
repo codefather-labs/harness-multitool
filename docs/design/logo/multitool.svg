@@ -2,7 +2,7 @@
   <!-- harness-multitool logo, traced from docs/design/concept/startup-light.png (operator's pick).
        Colours as drawn for the light theme. The TUI recolours them per theme:
          #20242A  tools (fork, saw)     -> theme text
-         #1A1D22  ink (outline, rivets) -> theme text on light themes, theme background on dark
+         #1A1D22  ink (outline, eyes) -> theme text on light themes, theme background on dark
          #F5A623  handle                -> brand -->
   <defs>
     <!-- The fork is one silhouette with three rounded slots cut out between the tines. -->
@@ -34,7 +34,10 @@
   <rect x="127" y="23" width="260" height="60" rx="30" fill="#F5A623" stroke="#1A1D22" stroke-width="3"/>
   <rect x="183" y="35" width="147" height="6" rx="3" fill="#FFE3B0" opacity="0.85"/>
 
-  <!-- Rivets -->
+  <!-- Eyes (the two rivets): ink pupils with a white glint. The TUI swaps this group for
+       closed lids while the logo blinks (frontend-tui images::EYES_CLOSED). -->
   <circle cx="155" cy="53" r="11" fill="#1A1D22"/>
   <circle cx="360" cy="53" r="11" fill="#1A1D22"/>
+  <circle cx="151" cy="49" r="3.5" fill="#FFFFFF"/>
+  <circle cx="356" cy="49" r="3.5" fill="#FFFFFF"/>
 </svg>

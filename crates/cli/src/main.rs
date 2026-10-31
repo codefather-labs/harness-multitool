@@ -62,6 +62,9 @@ enum Command {
         /// Show the text fallbacks, as a terminal without graphics does.
         #[arg(long)]
         no_graphics: bool,
+        /// Draw the logo with its eyes shut (the blink frame).
+        #[arg(long)]
+        eyes_closed: bool,
         /// Where the mockups live.
         #[arg(long, default_value = "docs/design/concept")]
         mockups: PathBuf,
@@ -96,7 +99,7 @@ fn main() -> Result<()> {
         Command::Logo { theme, width, png } => {
             let theme = Theme::builtin(&theme)?;
             let height = width * 82 / 530;
-            let pic = frontend_tui::images::rasterize(&frontend_tui::images::Graphic::Logo, &theme, width, height);
+            let pic = frontend_tui::images::rasterize(&frontend_tui::images::Graphic::Logo(frontend_tui::images::Eyes::Open), &theme, width, height);
             let bg = match theme.background {
                 ratatui::style::Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
                 _ => image::Rgba([0, 0, 0, 255]),
@@ -107,7 +110,7 @@ fn main() -> Result<()> {
             println!("{} {width}x{height}", png.display());
             Ok(())
         }
-        Command::Screen { name, list, theme, size, png, compare, no_graphics, mockups, font, font_bold, px, cell_h } => {
+        Command::Screen { name, list, theme, size, png, compare, no_graphics, eyes_closed, mockups, font, font_bold, px, cell_h } => {
             if list {
                 for f in fixtures::ALL {
                     println!("{}\t{}", f.name, f.mockup);
@@ -127,7 +130,11 @@ fn main() -> Result<()> {
                 (Some(r), Some(b)) => Raster::with_fonts(r, b, px, cell_h)?,
                 _ => Raster::new(px, cell_h)?,
             };
-            let mut img = raster.render_with(&(fixture.build)(), &theme, cols, rows, !no_graphics);
+            let mut state = (fixture.build)();
+            if eyes_closed {
+                state.eyes = frontend_tui::images::Eyes::Closed;
+            }
+            let mut img = raster.render_with(&state, &theme, cols, rows, !no_graphics);
             if compare {
                 let path = mockups.join(format!("{}-{}.png", fixture.mockup, theme.id));
                 let mockup = image::open(&path).with_context(|| format!("mockup {}", path.display()))?.to_rgb8();
@@ -193,6 +200,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
             p
         })
         .filter(|p| p.protocol_type() != ProtocolType::Halfblocks);
+    let launched = std::time::Instant::now();
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
         loop {
@@ -218,6 +226,18 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                     }
                 }
             })?;
+            // The launch blink: redraw when the eyes change, otherwise wait for input.
+            let (eyes, next) = images::eyes_at(launched.elapsed().as_millis() as u64);
+            if state.eyes != eyes {
+                state.eyes = eyes;
+                continue;
+            }
+            let wait = next.map(|n| n.saturating_sub(launched.elapsed().as_millis() as u64));
+            if let Some(wait) = wait
+                && !event::poll(std::time::Duration::from_millis(wait))?
+            {
+                continue;
+            }
             let outcome = match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {

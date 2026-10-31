@@ -14,21 +14,8 @@ pub fn fill(f: &mut Frame, area: Rect, bg: ratatui::style::Color) {
     f.render_widget(Block::default().style(Style::default().bg(bg)), area);
 }
 
-/// The small multitool mark drawn in text cells: fork, handle with two rivets, saw.
-/// Ten cells wide. The full-size logo is an image (docs/design/logo); this is its cell form.
-pub fn logo_mark(t: &Theme) -> Vec<Span<'static>> {
-    let tool = Style::default().fg(t.text);
-    let handle = Style::default().fg(t.brand);
-    vec![
-        Span::styled("≡━", tool),
-        Span::styled("◖●━━●◗", handle),
-        Span::styled("◣◣◣", tool),
-        // 11 cells = LOGO_COLS
-    ]
-}
-
-/// Cells the logo occupies at the start of the header (the text mark is its fallback).
-pub const LOGO_COLS: u16 = 11;
+/// Cells the logo occupies at the start of the header (images::LOGO_MARK is its fallback).
+pub const LOGO_COLS: u16 = 12;
 
 /// Top line: mark, product name, a muted location; on the right path, branch, status.
 /// Returns the cells of the mark, where the logo picture goes.
