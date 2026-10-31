@@ -614,68 +614,91 @@ fn map(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapEvent, bg: Color) -> u16 
     h
 }
 
-/// Pads an item with half a row above and below: the first and last rows are half blocks
-/// whose inner half takes the colour of the card's edge row (its surface, its stripe) and
-/// whose outer half is the page. The text then sits in the middle of its card with equal
-/// air above and below, and two cards are a row apart, as in the mockups.
-fn separate(d: Drawn, t: &Theme) -> Drawn {
-    let (w, h) = (d.buf.area.width, d.buf.area.height);
-    let mut buf = Buffer::empty(Rect::new(0, 0, w, h + 2));
-    for y in 0..h {
-        for x in 0..w {
-            buf[(x, y + 1)] = d.buf[(x, y)].clone();
+/// What a spacer row needs to know about the card on one side of it.
+struct Edge {
+    /// The card's colour (the cell after its stripe), or None for an item on the page colour.
+    surface: Option<Color>,
+    /// The stripe's colour, when the card has one.
+    stripe: Option<Color>,
+}
+
+fn edge(d: &Drawn, row: u16, t: &Theme) -> Edge {
+    let w = d.buf.area.width;
+    let bg = d.buf[(1.min(w - 1), row)].bg;
+    let surface = (bg != Color::Reset && bg != t.background).then_some(bg);
+    let first = &d.buf[(0, row)];
+    let stripe = (first.symbol() == "▌").then_some(first.fg);
+    Edge { surface, stripe }
+}
+
+/// The one row between two items (or above the first, below the last). Its top half is the
+/// bottom padding of the card above, its bottom half the top padding of the card below, and a
+/// thin line in the page colour runs between them: text sits off both card edges and cards are
+/// a hair apart, as in the mockups. The card corners are cut with quadrant blocks, so they read
+/// as rounded.
+fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Drawn {
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+    let page = t.background;
+    let (sa, sb) = (above.as_ref().and_then(|e| e.surface), below.as_ref().and_then(|e| e.surface));
+    let (ta, tb) = (above.as_ref().and_then(|e| e.stripe), below.as_ref().and_then(|e| e.stripe));
+    for x in 0..width {
+        let cell = &mut buf[(x, 0)];
+        let (left, right) = (x == 0, x + 1 == width);
+        if left && (ta.is_some() || tb.is_some()) {
+            // The stripe ends round: a quadrant of the card above or below, never both.
+            match (ta, tb) {
+                (Some(_), Some(_)) => cell.set_symbol(" ").set_bg(page),
+                (Some(c), None) => cell.set_symbol("▘").set_fg(c).set_bg(page),
+                (None, Some(c)) => cell.set_symbol("▖").set_fg(c).set_bg(page),
+                (None, None) => unreachable!(),
+            };
+            continue;
         }
+        let (sym, fg, bg) = match (sa, sb) {
+            (Some(_), Some(_)) if left || right => (" ", page, page),
+            (Some(a), Some(b)) if a == b => ("━", page, a),
+            (Some(a), Some(b)) => ("▀", a, b),
+            (Some(a), None) => (if left { "▝" } else if right { "▘" } else { "▀" }, a, page),
+            (None, Some(b)) => (if left { "▗" } else if right { "▖" } else { "▄" }, b, page),
+            (None, None) => (" ", page, page),
+        };
+        cell.set_symbol(sym).set_fg(fg).set_bg(bg);
     }
-    // The card's own colour: the cell after the stripe on its first row (a label row, never a
-    // pill or a nested row). Contents of the edge rows (pills, nested tool rows) do not leak
-    // into the padding.
-    let card = match d.buf[(1.min(w - 1), 0)].bg {
-        Color::Reset => t.background,
-        c => c,
-    };
-    let stripe = d.buf[(0, 0)].clone();
-    let striped = stripe.symbol() == "▌";
-    for (row, top) in [(0, true), (h + 1, false)] {
-        for x in 0..w {
-            let cell = &mut buf[(x, row)];
-            if x == 0 && striped {
-                cell.set_symbol(if top { "▖" } else { "▘" }).set_fg(stripe.fg).set_bg(t.background);
-            } else {
-                cell.set_symbol(if top { "▄" } else { "▀" }).set_fg(card).set_bg(t.background);
-            }
-        }
-    }
-    let placements = d
-        .placements
-        .into_iter()
-        .map(|mut p| {
-            p.rect.y += 1;
-            p
-        })
-        .collect();
-    Drawn { buf, placements }
+    Drawn { buf, placements: Vec::new() }
 }
 
 /// The items that reach into a view `rows` tall (the transcript's height plus the rows
-/// scrolled back), drawn at `width`, oldest first; the newest assistant turn is marked busy
-/// when `generating`. The second value says whether the first item was reached, i.e. the
-/// whole transcript is in the stack. Older items are not drawn at all, so a frame costs what
-/// is on screen, not the length of the session.
+/// scrolled back), drawn at `width`, oldest first, with a spacer row before each and after the
+/// last; the newest assistant turn is marked busy when `generating`. The second value says
+/// whether the first item was reached, i.e. the whole transcript is in the stack. Older items
+/// are not drawn at all, so a frame costs what is on screen, not the length of the session.
 pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u16) -> (Vec<Drawn>, bool) {
     let last_assistant = items.iter().rposition(|i| matches!(i, Item::Turn { role: Role::Assistant, .. }));
-    let mut out = Vec::new();
+    let mut drawn: Vec<Drawn> = Vec::new();
     let mut acc = 0u16;
+    let mut whole = true;
     for (i, it) in items.iter().enumerate().rev() {
         if acc >= rows {
-            out.reverse();
-            return (out, false);
+            whole = false;
+            break;
         }
-        let d = separate(item(it, width, t, generating && Some(i) == last_assistant), t);
-        acc = acc.saturating_add(d.buf.area.height + GAP);
+        let d = item(it, width, t, generating && Some(i) == last_assistant);
+        acc = acc.saturating_add(d.buf.area.height + 1);
+        drawn.push(d);
+    }
+    drawn.reverse();
+    let mut out = Vec::with_capacity(drawn.len() * 2 + 1);
+    let mut prev: Option<Edge> = None;
+    for d in drawn {
+        let top = edge(&d, 0, t);
+        out.push(spacer(prev.take(), Some(top), width, t));
+        prev = Some(edge(&d, d.buf.area.height - 1, t));
         out.push(d);
     }
-    out.reverse();
-    (out, true)
+    if prev.is_some() {
+        out.push(spacer(prev, None, width, t));
+    }
+    (out, whole)
 }
 
 /// Every item drawn at `width` (tests and tools; the view draws only what is visible).

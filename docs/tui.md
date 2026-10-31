@@ -69,7 +69,7 @@ multitool screen splash --eyes-closed --png blink.png                # the logo'
 
 Settled with the project owner while matching the mockups; the journal holds each with its reason.
 
-- Transcript cards have half a row of padding above and below in their own colour; two cards are a row apart.
+- Between two transcript cards is one row: its upper half pads the card above, its lower half the card below, and a thin line in the page colour separates them; card corners are cut with quadrant blocks so they read as rounded.
 - Tool cards: only a file edit's diff has a background; tool output, notes and sent messages are plain text under the tool's name.
 - The startup page selection is an accent outline without a fill, shown only in the focused panel.
 - The one-row header shows the logo only when the terminal draws pictures.
