@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 96 32"
+     fill="none"
+     stroke-linecap="round"
+     stroke-linejoin="round">
+
+  <!-- Simplified fork: four distinct tines -->
+  <path
+    d="M26 17 H19
+       V8 H2
+       M19 12 H2
+       M19 16 H2
+       M19 20 H2
+       M19 17 V23 H26"
+    stroke="currentColor"
+    stroke-width="3"/>
+
+  <!-- Simplified saw: three large teeth -->
+  <path
+    d="M65 13
+       H69
+       L74 5
+       L79 12
+       L84 4
+       L89 12
+       L94 7
+       V22
+       H65 Z"
+    fill="currentColor"/>
+
+  <!-- Compact orange handle -->
+  <rect
+    x="25" y="11"
+    width="49" height="18"
+    rx="9"
+    fill="#F5A623"
+    stroke="currentColor"
+    stroke-width="2"/>
+
+  <!-- Single highlight -->
+  <path
+    d="M38 14 H62"
+    stroke="#FFE0A0"
+    stroke-width="1.5"/>
+
+  <!-- Oversized pivot for small-scale legibility -->
+  <circle cx="36" cy="20" r="3"
+          fill="currentColor"/>
+
+  <!-- Rear rivet -->
+  <circle cx="65" cy="20" r="2.5"
+          fill="currentColor"/>
+</svg>
