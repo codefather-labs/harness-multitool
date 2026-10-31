@@ -13,9 +13,9 @@ use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
 use crate::widgets;
 
-/// Cells of the big logo: 44 columns by 3 rows.
-const LOGO_W: u16 = 44;
-const LOGO_H: u16 = 3;
+/// Cells of the big logo: 52 columns by 4 rows (the size of its hand-drawn text fallback).
+const LOGO_W: u16 = 52;
+const LOGO_H: u16 = 4;
 /// Cells of the big product name: 46 columns by 2 rows.
 const NAME_W: u16 = 46;
 

@@ -178,10 +178,55 @@ pub fn rasterize(g: &Graphic, t: &Theme, width: u32, height: u32) -> RgbaImage {
     }
 }
 
+/// The logo drawn by hand as pixel art for terminals without graphics: 52 x 8 pixels, two per
+/// cell (half blocks), so 52 x 4 cells. T tool, O handle, H highlight, X rivet hole, . empty.
+pub const LOGO_ART: [&str; 8] = [
+    "TTTTTTTTTTTT...........................T............",
+    "........TTTT..OOOOOOOOOOOOOOOOOOOOOOO..T...T..T..T..",
+    "TTTTTTTTTTTT.OOOOHHHHHHHHHHHHHHHOOOOOO.TT.TT.TT.TT..",
+    "........TTTTTOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTTTT.",
+    "TTTTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTTTTT",
+    "........TTTT.OOOXXOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTTTT.",
+    "TTTTTTTTTTTT.OOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTTT..",
+    "..............OOOOOOOOOOOOOOOOOOOOOOO...............",
+];
+
+/// Draws `LOGO_ART` at `(x, y)` with half blocks in the theme's logo colours.
+fn logo_art(buf: &mut Buffer, x: u16, y: u16, t: &Theme, bg: Color) {
+    let ink = if t.dark { t.background } else { t.text };
+    let colour = |c: u8| -> Option<Color> {
+        match c {
+            b'T' => Some(t.text),
+            b'O' => Some(t.brand),
+            b'H' => Some(Color::Rgb(0xFF, 0xE3, 0xB0)),
+            b'X' => Some(ink),
+            _ => None,
+        }
+    };
+    for row in 0..LOGO_ART.len() / 2 {
+        let (up, down) = (LOGO_ART[row * 2].as_bytes(), LOGO_ART[row * 2 + 1].as_bytes());
+        for col in 0..up.len() {
+            let (a, b) = (colour(up[col]), colour(down[col]));
+            let (sym, fg, cell_bg) = match (a, b) {
+                (None, None) => (" ", bg, bg),
+                (Some(a), None) => ("▀", a, bg),
+                (None, Some(b)) => ("▄", b, bg),
+                (Some(a), Some(b)) if a == b => ("█", a, bg),
+                (Some(a), Some(b)) => ("▀", a, b),
+            };
+            let pos = (x + col as u16, y + row as u16);
+            if buf.area.contains(pos.into()) {
+                buf[pos].set_symbol(sym).set_fg(fg).set_bg(cell_bg);
+            }
+        }
+    }
+}
+
 /// The text fallback written into a placement's cells, for terminals without graphics: an
 /// icon becomes its glyph, text becomes bold text on the middle row, the logo becomes its text
-/// mark on the middle row. Never pixel art: half blocks in real terminal fonts show seams and
-/// turn text into noise (operator's GNOME Terminal screenshots, 2026-10-31).
+/// mark (or, where 52 x 4 cells are free, the hand-drawn LOGO_ART). Never pixel art computed
+/// from a picture: that showed seams and turned text into noise (operator's GNOME Terminal
+/// screenshots, 2026-10-31).
 pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
     let r = p.rect.intersection(buf.area);
     if r.is_empty() {
@@ -198,6 +243,14 @@ pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
             let x = r.x + r.width.saturating_sub(s.chars().count() as u16) / 2;
             let style = ratatui::style::Style::default().fg(tint.color(t)).add_modifier(ratatui::style::Modifier::BOLD);
             buf.set_stringn(x, mid, s, r.width as usize, style);
+        }
+        Graphic::Logo if r.width >= LOGO_ART[0].len() as u16 && r.height >= 4 => {
+            let bg = match buf[(r.x, r.y)].bg {
+                Color::Reset => t.background,
+                c => c,
+            };
+            let w = LOGO_ART[0].len() as u16;
+            logo_art(buf, r.x + (r.width - w) / 2, r.y + (r.height - 4) / 2, t, bg);
         }
         Graphic::Logo => {
             let line = ratatui::text::Line::from(crate::widgets::logo_mark(t));
