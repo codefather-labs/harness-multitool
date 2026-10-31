@@ -58,7 +58,7 @@ impl Icon {
             Icon::Bolt => "↯",
             Icon::File => "▤",
             Icon::FilePlus => "+",
-            Icon::Branch => "⑂",
+            Icon::Branch => "⎇",
             Icon::Play => "▶",
             Icon::Gear => "⚙",
             Icon::Map => "▦",

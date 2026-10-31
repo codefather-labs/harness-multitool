@@ -235,7 +235,7 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     // Column widths from the content. Sessions: icon, title/path, branch chip, age, model.
     let w = |it: &mut dyn Iterator<Item = usize>| it.max().unwrap_or(0) as u16;
     let text_w = w(&mut v.sessions.iter().map(|s| s.title.chars().count().max(s.path.chars().count())));
-    // Branch pill: icon (2 cells, from the pill's first cell), a space, the name, a space.
+    // Branch pill: left cap, icon, a space, the name, right cap.
     let chip_w = w(&mut v.sessions.iter().map(|s| s.branch.chars().count())) + 4;
     let age_w = w(&mut v.sessions.iter().map(|s| s.age.chars().count()));
     let model_w = w(&mut v.sessions.iter().map(|s| s.model.chars().count()));
@@ -295,13 +295,28 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
             .style(st),
             text,
         );
-        // The chip is as wide as its text, on the middle of the entry like the mockup's pill.
-        let chip = format!("   {} ", s.branch);
-        let cw = (chip.chars().count() as u16).min(branch.width);
-        let chip_r = Rect { y: branch.y, height: 1, width: cw, ..branch };
+        // A pill: half-block caps in the pill colour (half a cell of padding, softer than a
+        // square box), the branch icon and a space when pictures are on, the name. Without
+        // pictures there is no icon: no text glyph reads as a branch in every font (⑂ came out
+        // as ʮ in GNOME Terminal), so the pill carries the name alone.
         let pill = tint(t.info, bg, 0.16);
-        f.render_widget(Paragraph::new(Span::styled(chip, Style::default().fg(t.info).bg(pill).add_modifier(Modifier::BOLD))), chip_r);
-        icon(out, chip_r, Icon::Branch, Tint::Info);
+        let lead = if pictures { 2 } else { 0 };
+        let cw = (s.branch.chars().count() as u16 + 2 + lead).min(branch.width);
+        let chip_r = Rect { y: branch.y, height: 1, width: cw, ..branch };
+        let cap = Style::default().fg(pill).bg(bg);
+        let body = Style::default().fg(t.info).bg(pill);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("▐", cap),
+                Span::styled(" ".repeat(lead as usize), body),
+                Span::styled(s.branch.clone(), body.add_modifier(Modifier::BOLD)),
+                Span::styled("▌", cap),
+            ])),
+            chip_r,
+        );
+        if pictures {
+            icon(out, Rect { x: chip_r.x + 1, ..chip_r }, Icon::Branch, Tint::Info);
+        }
         f.render_widget(Paragraph::new(Span::styled(s.age.clone(), st.fg(t.text))).style(st), Rect { height: 1, ..age });
         f.render_widget(Paragraph::new(Span::styled(s.model.clone(), st.fg(t.text))).style(st), Rect { height: 1, ..model });
         out.hits.push(Hit { rect: r, target: Target::Session(i) });
