@@ -4,7 +4,8 @@ Reference mockups for the terminal UI. The implementation matches them pixel for
 
 | Screen | Files | What it fixes |
 |---|---|---|
-| Startup | `startup-*` | first screen after launch: logo, recent sessions, quick actions, tip line |
+| Splash | `splash-*` | shown first on launch: big logo, name, version, slogan, welcome text, OK (the logo itself comes from `../logo/multitool.svg`, not from the picture) |
+| Startup | `startup-*` | after the splash: recent sessions, quick actions, status, tip line; its logo is THE logo |
 | Welcome | `welcome-*` | in-session welcome and quick tips |
 | Main session | `main-session-*` (1586×992; nord / monokai / cyan 1560×936) | turns, tool rows, diff, status line, composer, `[ Settings ]` |
 | Themes | `themes-nord-monokai-cyan.png` (2172×724) | the three extra themes side by side |
@@ -17,7 +18,7 @@ Reference mockups for the terminal UI. The implementation matches them pixel for
 | Session tabs | `session-tabs-*` | several sessions in one window, `+` for new, a2a hint |
 | Onboarding tour | `tour-*` | coach mark over `[ Settings ]`, step 3 of 7 |
 
-Logo: `../logo/multitool.svg` (colour), `multitool-mono.svg`, `multitool-16.svg`.
+Logo: `../logo/multitool.svg`, traced from `startup-light.png` (the operator's pick). `multitool-mono.svg` and `multitool-16.svg` are older drafts. Flow on launch: splash -> startup -> session.
 
 `drafts/` keeps rejected or superseded variants (old logo, layouts that drifted from the system). They are history, not reference.
 
