@@ -2,8 +2,8 @@
 //! They are states of the real CLI, drawn by the real `view::draw`.
 
 use crate::model::{
-    AppState, Composer, Diff, DiffLine, HeaderInfo, Item, KeyHint, Mode, Role, SessionView, StatusLine, Tone, ToolBody,
-    ToolCall, ToolState,
+    ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Item, KeyHint, Mode, QuickAction, RecentSession,
+    Role, SessionView, SplashView, StartupPanel, StartupView, StatusLine, TipPart, Tone, ToolBody, ToolCall, ToolState,
 };
 
 pub struct Fixture {
@@ -14,6 +14,8 @@ pub struct Fixture {
 }
 
 pub const ALL: &[Fixture] = &[
+    Fixture { name: "splash", mockup: "splash", build: splash },
+    Fixture { name: "startup", mockup: "startup", build: startup },
     Fixture { name: "welcome", mockup: "welcome", build: welcome },
     Fixture { name: "main-session", mockup: "main-session", build: main_session },
 ];
@@ -56,7 +58,7 @@ fn session_hints() -> Vec<KeyHint> {
     ]
 }
 
-fn welcome() -> AppState {
+pub fn welcome() -> AppState {
     AppState {
         header: header(VERSION),
         mode: Mode::Session(SessionView {
@@ -104,7 +106,7 @@ fn tool(name: &str, args: &str, outcome: &str, tone: Tone, duration: &str) -> To
     }
 }
 
-fn main_session() -> AppState {
+pub fn main_session() -> AppState {
     let edit = ToolCall {
         diffstat: Some((24, 3)),
         expanded: true,
@@ -150,6 +152,84 @@ fn main_session() -> AppState {
                 focused: true,
                 hints: session_hints(),
             },
+        }),
+    }
+}
+
+fn brand() -> Brand {
+    Brand {
+        name: "harness-multitool".into(),
+        version: VERSION.into(),
+        slogan: "AI agent toolkit for development, automation and project knowledge".into(),
+    }
+}
+
+pub fn splash() -> AppState {
+    AppState {
+        header: header(VERSION),
+        mode: Mode::Splash(SplashView {
+            brand: brand(),
+            heading: "Welcome".into(),
+            lines: vec![
+                "A plugin-first coding agent you build to fit your work.".into(),
+                "Every part - providers, tools, policy, memory, frontends - is a plugin you can replace.".into(),
+                "Done means proven: a task finishes only with its checks and evidence.".into(),
+                "Your project journal and mind maps keep what matters across sessions.".into(),
+            ],
+            button: "OK".into(),
+            hint: "Enter to continue".into(),
+        }),
+    }
+}
+
+fn recent(title: &str, path: &str, branch: &str, age: &str, model: &str) -> RecentSession {
+    RecentSession { title: title.into(), path: path.into(), branch: branch.into(), age: age.into(), model: model.into() }
+}
+
+fn action(key: char, icon: &str, title: &str, description: &str, kind: ActionKind) -> QuickAction {
+    QuickAction { key, icon: icon.into(), title: title.into(), description: description.into(), kind }
+}
+
+fn tip(parts: &[(&str, bool)]) -> Vec<TipPart> {
+    parts.iter().map(|(t, c)| TipPart { text: t.to_string(), code: *c }).collect()
+}
+
+pub fn startup() -> AppState {
+    AppState {
+        header: header(VERSION),
+        mode: Mode::Startup(StartupView {
+            brand: brand(),
+            sessions: vec![
+                recent("Router release (v0.1.0-rc.1)", "~/work/harness-multitool", "main", "2 min ago", "claude-sonnet-4.5"),
+                recent("Metrics & dashboards", "~/work/tacticstrade.ai", "feat/metrics", "47 min ago", "claude-sonnet-4.5"),
+                recent("Data collector (Binance)", "~/work/market-data", "collector-v2", "3 h ago", "claude-haiku-4.5"),
+                recent("Android · Pocket Sampler", "~/work/pocket-sampler", "main", "6 h ago", "claude-sonnet-4.5"),
+                recent("Bridge monitor dashboard", "~/work/bridge-monitor", "ui-refactor", "1 day ago", "gpt-4o-mini"),
+            ],
+            actions: vec![
+                action('n', "✎", "New session", "Start a fresh session in this folder", ActionKind::NewSession),
+                action('r', "▶", "Resume session", "Continue a recent session", ActionKind::Resume),
+                action('s', "⚙", "Settings", "Providers, tools, permissions, theme", ActionKind::Settings),
+                action('t', "▦", "Start tour", "A quick guided introduction", ActionKind::Tour),
+                action('?', "?", "Help", "Keybindings and usage reference", ActionKind::Help),
+            ],
+            focus: StartupPanel::Actions,
+            selected_session: 0,
+            selected_action: 0,
+            status: StatusLine {
+                fields: vec![
+                    ("ADAPTER".into(), "anthropic-api".into()),
+                    ("MODEL".into(), "claude-sonnet-4.5".into()),
+                    ("THEME".into(), "dark".into()),
+                ],
+            },
+            ready: "ready".into(),
+            tips: vec![
+                tip(&[("Use ", false), ("/journal", true), (" to add a project note, or ", false), ("/map", true), (" to create a mind map from the current context.", false)]),
+                tip(&[("Press ", false), ("Ctrl+,", true), (" anywhere to open settings.", false)]),
+                tip(&[("Drop files into the terminal to attach them to your message.", false)]),
+            ],
+            tip: 0,
         }),
     }
 }

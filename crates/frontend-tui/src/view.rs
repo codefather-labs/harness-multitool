@@ -12,19 +12,58 @@ use crate::model::{AppState, DiffLine, Item, Mode, Role, SessionView, Tone, Tool
 use crate::theme::Theme;
 use crate::widgets;
 
-/// Draws the state and returns where pictures go (see `images`). Cells under a placement hold a
-/// text fallback, so a terminal without graphics still shows something sensible.
-pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Vec<Placement> {
+/// What a draw produced besides cells: where pictures go and which areas react to the mouse.
+#[derive(Debug, Default)]
+pub struct Drawn {
+    pub placements: Vec<Placement>,
+    pub hits: Vec<Hit>,
+}
+
+/// A clickable area and what it stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    pub rect: Rect,
+    pub target: Target,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    SplashOk,
+    Session(usize),
+    Action(usize),
+    Settings,
+}
+
+impl Drawn {
+    /// The target under a cell, the last drawn first.
+    pub fn hit(&self, col: u16, row: u16) -> Option<Target> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|h| col >= h.rect.x && col < h.rect.x + h.rect.width && row >= h.rect.y && row < h.rect.y + h.rect.height)
+            .map(|h| h.target)
+    }
+}
+
+/// Draws the state. Cells under a placement hold a text fallback, so a terminal without graphics
+/// still shows something sensible.
+pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
     let area = f.area();
     widgets::fill(f, area, t.background);
-    let [head, rule, body] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    let logo = widgets::header(f, head, t, &s.header);
-    widgets::rule(f, rule, t);
+    let mut out = Drawn::default();
     match &s.mode {
-        Mode::Session(v) => session(f, body, v, t),
+        Mode::Splash(v) => crate::home::splash(f, area, v, t, &mut out),
+        Mode::Startup(v) => crate::home::startup(f, area, v, t, &mut out),
+        Mode::Session(v) => {
+            let [head, rule, body] =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+            let logo = widgets::header(f, head, t, &s.header);
+            widgets::rule(f, rule, t);
+            out.placements.push(Placement { rect: logo, graphic: Graphic::Logo });
+            session(f, body, v, t, &mut out);
+        }
     }
-    vec![Placement { rect: logo, graphic: Graphic::Logo }]
+    out
 }
 
 fn inset(r: Rect) -> Rect {
@@ -33,7 +72,7 @@ fn inset(r: Rect) -> Rect {
 
 /// Session chrome (journal: one session chrome): transcript, rule, status line, composer with
 /// key hints inside, and the Settings button to its right.
-fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme) {
+fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme, out: &mut Drawn) {
     let [transcript, rule, status, bottom] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -48,6 +87,7 @@ fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme) {
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);
     widgets::button(f, button, t, "⚙ Settings", "Ctrl+,");
+    out.hits.push(Hit { rect: button, target: Target::Settings });
 }
 
 /// Height in rows an item takes: label row, body rows, one bottom padding row.

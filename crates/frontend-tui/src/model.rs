@@ -22,7 +22,86 @@ pub struct HeaderInfo {
 
 #[derive(Debug, Clone)]
 pub enum Mode {
+    /// Shown first on launch (journal: tui-splash).
+    Splash(SplashView),
+    /// After the splash: recent sessions and quick actions (journal: tui-flow).
+    Startup(StartupView),
     Session(SessionView),
+}
+
+/// The product line shown big on the splash and startup screens.
+#[derive(Debug, Clone, Default)]
+pub struct Brand {
+    pub name: String,
+    pub version: String,
+    pub slogan: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SplashView {
+    pub brand: Brand,
+    pub heading: String,
+    pub lines: Vec<String>,
+    pub button: String,
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupPanel {
+    Sessions,
+    #[default]
+    Actions,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StartupView {
+    pub brand: Brand,
+    pub sessions: Vec<RecentSession>,
+    pub actions: Vec<QuickAction>,
+    pub focus: StartupPanel,
+    pub selected_session: usize,
+    pub selected_action: usize,
+    /// Label/value pairs on the status line, e.g. ("THEME", "dark").
+    pub status: StatusLine,
+    /// The state on the right of the status line, e.g. "ready".
+    pub ready: String,
+    pub tips: Vec<Vec<TipPart>>,
+    pub tip: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentSession {
+    pub title: String,
+    pub path: String,
+    pub branch: String,
+    pub age: String,
+    pub model: String,
+}
+
+/// What a quick action does when chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    NewSession,
+    Resume,
+    Settings,
+    Tour,
+    Help,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickAction {
+    pub key: char,
+    pub icon: String,
+    pub title: String,
+    pub description: String,
+    pub kind: ActionKind,
+}
+
+/// A piece of a tip: plain text or an inline command chip.
+#[derive(Debug, Clone)]
+pub struct TipPart {
+    pub text: String,
+    pub code: bool,
 }
 
 #[derive(Debug, Clone, Default)]

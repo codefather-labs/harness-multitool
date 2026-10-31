@@ -13,10 +13,23 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
+/// Fonts are compiled in, so a render is the same on Linux, macOS and Windows (licences next to
+/// them in `fonts/`). `Raster::with_fonts` takes other files instead.
+const MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+const MONO_BOLD: &[u8] = include_bytes!("../fonts/DejaVuSansMono-Bold.ttf");
+/// Tried in order for characters the monospace font lacks, as a terminal falls back.
+const FALLBACK: &[&[u8]] = &[include_bytes!("../fonts/DejaVuSans.ttf"), include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf")];
+
+fn parse(name: &str, bytes: Vec<u8>) -> Result<Font, Error> {
+    Font::from_bytes(bytes, FontSettings::default()).map_err(|e| Error(format!("{name}: {e}")))
+}
+
 /// Cell geometry and fonts used for rasterising.
 pub struct Raster {
     regular: Font,
     bold: Font,
+    /// Fonts tried in order for characters the monospace font lacks, as a terminal would.
+    fallback: Vec<Font>,
     pub cell_w: u32,
     pub cell_h: u32,
     pub px: f32,
@@ -35,23 +48,34 @@ impl std::error::Error for Error {}
 
 fn load(path: &Path) -> Result<Font, Error> {
     let bytes = std::fs::read(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-    Font::from_bytes(bytes, FontSettings::default()).map_err(|e| Error(format!("{}: {e}", path.display())))
+    parse(&path.display().to_string(), bytes)
 }
 
 impl Raster {
-    /// `px` is the font size; the cell width is the font's advance of `M` at that size, rounded.
-    pub fn new(regular: &Path, bold: &Path, px: f32, cell_h: u32) -> Result<Raster, Error> {
-        let regular = load(regular)?;
-        let bold = load(bold)?;
+    /// The built-in fonts. `px` is the font size; the cell width is the advance of `M` at that
+    /// size, rounded.
+    pub fn new(px: f32, cell_h: u32) -> Result<Raster, Error> {
+        let regular = parse("DejaVuSansMono", MONO.to_vec())?;
+        let bold = parse("DejaVuSansMono-Bold", MONO_BOLD.to_vec())?;
+        Self::build(regular, bold, px, cell_h)
+    }
+
+    /// Other font files for the regular and bold faces; the built-in fallbacks stay.
+    pub fn with_fonts(regular: &Path, bold: &Path, px: f32, cell_h: u32) -> Result<Raster, Error> {
+        Self::build(load(regular)?, load(bold)?, px, cell_h)
+    }
+
+    fn build(regular: Font, bold: Font, px: f32, cell_h: u32) -> Result<Raster, Error> {
         let cell_w = regular.metrics('M', px).advance_width.round() as u32;
-        Ok(Raster { regular, bold, cell_w, cell_h, px })
+        let fallback = FALLBACK.iter().enumerate().map(|(i, b)| parse(&format!("fallback {i}"), b.to_vec())).collect::<Result<_, _>>()?;
+        Ok(Raster { regular, bold, fallback, cell_w, cell_h, px })
     }
 
     /// Draws the state at `cols x rows` cells and returns the picture.
     pub fn render(&self, state: &AppState, theme: &Theme, cols: u16, rows: u16) -> RgbImage {
         let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
         let mut placements = Vec::new();
-        term.draw(|f| placements = frontend_tui::draw(f, state, theme)).expect("draw");
+        term.draw(|f| placements = frontend_tui::draw(f, state, theme).placements).expect("draw");
         let buf = term.backend().buffer();
         let mut img = self.rasterise(buf, theme);
         for p in placements {
@@ -104,7 +128,12 @@ impl Raster {
                 if shapes::draw(&mut img, c, ox, oy, cw, ch, fg) {
                     continue;
                 }
-                let font = if cell.modifier.contains(Modifier::BOLD) { &self.bold } else { &self.regular };
+                let mut font = if cell.modifier.contains(Modifier::BOLD) { &self.bold } else { &self.regular };
+                if font.lookup_glyph_index(c) == 0 {
+                    if let Some(f) = self.fallback.iter().find(|f| f.lookup_glyph_index(c) != 0) {
+                        font = f;
+                    }
+                }
                 let (m, bitmap) = font.rasterize(c, self.px);
                 let gx = ox as i32 + m.xmin;
                 let gy = oy as i32 + baseline as i32 - m.height as i32 - m.ymin;
