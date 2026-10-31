@@ -625,29 +625,46 @@ fn map(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapEvent, bg: Color) -> u16 
     h
 }
 
-/// Adds a half-row separator under an item: each cell's top half keeps the colour of the
-/// cell above it (the card's surface, its stripe), the bottom half is the page background.
-/// So a card ends with a little padding and the next starts after half a row, as in the
-/// mockups, instead of a whole empty row.
+/// Pads an item with half a row above and below: the first and last rows are half blocks
+/// whose inner half takes the colour of the card's edge row (its surface, its stripe) and
+/// whose outer half is the page. The text then sits in the middle of its card with equal
+/// air above and below, and two cards are a row apart, as in the mockups.
 fn separate(d: Drawn, t: &Theme) -> Drawn {
     let (w, h) = (d.buf.area.width, d.buf.area.height);
-    let mut buf = Buffer::empty(Rect::new(0, 0, w, h + 1));
+    let mut buf = Buffer::empty(Rect::new(0, 0, w, h + 2));
     for y in 0..h {
         for x in 0..w {
-            buf[(x, y)] = d.buf[(x, y)].clone();
+            buf[(x, y + 1)] = d.buf[(x, y)].clone();
         }
     }
-    for x in 0..w {
-        let above = d.buf[(x, h - 1)].clone();
-        let bg = if above.bg == Color::Reset { t.background } else { above.bg };
-        let cell = &mut buf[(x, h)];
-        if above.symbol() == "▌" {
-            cell.set_symbol("▘").set_fg(above.fg).set_bg(t.background);
-        } else {
-            cell.set_symbol("▀").set_fg(bg).set_bg(t.background);
+    // The card's own colour: the cell after the stripe on its first row (a label row, never a
+    // pill or a nested row). Contents of the edge rows (pills, nested tool rows) do not leak
+    // into the padding.
+    let card = match d.buf[(1.min(w - 1), 0)].bg {
+        Color::Reset => t.background,
+        c => c,
+    };
+    let stripe = d.buf[(0, 0)].clone();
+    let striped = stripe.symbol() == "▌";
+    for (row, top) in [(0, true), (h + 1, false)] {
+        for x in 0..w {
+            let cell = &mut buf[(x, row)];
+            if x == 0 && striped {
+                cell.set_symbol(if top { "▖" } else { "▘" }).set_fg(stripe.fg).set_bg(t.background);
+            } else {
+                cell.set_symbol(if top { "▄" } else { "▀" }).set_fg(card).set_bg(t.background);
+            }
         }
     }
-    Drawn { buf, placements: d.placements }
+    let placements = d
+        .placements
+        .into_iter()
+        .map(|mut p| {
+            p.rect.y += 1;
+            p
+        })
+        .collect();
+    Drawn { buf, placements }
 }
 
 /// The items that reach into a view `rows` tall (the transcript's height plus the rows
