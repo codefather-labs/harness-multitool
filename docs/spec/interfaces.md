@@ -35,7 +35,7 @@ The names are illustrative; the configuration format itself is an open question.
 |---|---|---|---|---|
 | **IF-4** | `Tool` | Declares a name, a description, a JSON schema for its arguments and the capabilities it needs; executes a call and returns a result (text, structured data, files). Users write their own. | Only the capabilities it declared and `Policy` approved (INV-3); platform access through Platform interfaces (INV-1). | read, edit, shell, search, web fetch |
 | **IF-5** | `Policy` | Decides whether a tool call may run: allow, deny, or ask the user; per tool, per path, per command, per host; remembers answers within a scope. | Sees calls and declarations, not secrets. | Ask for writes, shell and network; allow reads inside the project |
-| **IF-6** | `Hook` | Runs on loop events; may veto or amend a before-event (e.g. block a commit without a test run). | Through events only (INV-7). | none |
+| **IF-6** | `Hook` | Runs on loop events; may veto or amend a before-event (e.g. block a commit without a test run). Every run is itself an event, so frontends show which hooks ran on which event and what each did: ok, context added, blocked with its reason, failed, timed out, running. | Through events only (INV-7). | none |
 
 ## Memory and context
 

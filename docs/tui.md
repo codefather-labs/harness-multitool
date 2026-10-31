@@ -57,7 +57,21 @@ Tool calls, journal and mind-map events attach to the newest assistant turn when
 
 ## Screens as images
 
-Every mockup has a named state that renders through the same `draw` as the live TUI:
+Every mockup has a named state that renders through the same `draw` as the live TUI (`--compare` puts the mockup beside it); a few states show components that have no mockup:
+
+| State | Shows | Mockup |
+|---|---|---|
+| `splash` | logo, name, version, slogan, welcome text, OK | `splash-*` |
+| `startup` | recent sessions, quick actions, status line, tip | `startup-*` |
+| `welcome` | a fresh session: welcome card, quick tips | `welcome-*` |
+| `main-session` | turns, tool rows, an expanded diff, status line, composer | `main-session-*` |
+| `inbound-messages` | Telegram, voice, agent-to-agent, callback, reminder; a toast | `inbound-messages-*` |
+| `tool-calls` | tool cards: numbered output with a fold, Telegram send, agent send, journal write, failure, running | `tool-calls-*` |
+| `journal-mindmap-events` | JOURNAL event, an empty map's creation, a drawn flowchart | `journal-mindmap-events-*` |
+| `session-tabs` | four sessions as tabs with busy / unread / attention marks | `session-tabs-*` |
+| `maps` | every flowchart symbol and gate, every mind-map node kind | none (designed in code) |
+| `hooks` | every hook outcome | none (designed in code) |
+
 
 ```bash
 multitool screen --list
@@ -73,11 +87,12 @@ multitool screen hooks --no-graphics --size 160x50 --png hooks.png  # every hook
 
 Settled with the project owner while matching the mockups; the journal holds each with its reason.
 
-- Between two transcript cards is one row: its upper half pads the card above, its lower half the card below, and a thin line in the page colour separates them; card corners are cut with quadrant blocks so they read as rounded.
+- Between two transcript cards is one row: its upper half pads the card above, its lower half the card below, and a thin line in the page colour separates them.
 - Tool cards: only a file edit's diff has a background; tool output, notes and sent messages are plain text under the tool's name.
 - The startup page selection is an accent outline without a fill, shown only in the focused panel.
 - The one-row header shows the logo only when the terminal draws pictures.
-- Cards end straight at the transcript's edge (cut corners read as glitches there); only the stripes end round.
+- Cards end straight at the transcript's edge: corners cut with quadrant blocks read as glitches in a real terminal; only the stripes end round.
+- Voice messages show their waveform as spaced bars on one baseline.
 
 ## Maps
 

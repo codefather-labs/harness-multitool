@@ -22,6 +22,16 @@ Logo: `../logo/multitool.svg`, traced from `startup-light.png` (the operator's p
 
 `drafts/` keeps rejected or superseded variants (old logo, layouts that drifted from the system). They are history, not reference.
 
+## Designed in code, without a mockup
+
+Settled with the project owner on the live TUI and recorded in the journal; [`../../tui.md`](../../tui.md) lists the rules and the named states that show them.
+
+- **Hook cards** (state `hooks`): the loop event, one row per script with its outcome, the frame in the worst outcome's colour.
+- **Map galleries** (state `maps`): every mind-map node kind and every flowchart symbol and logic gate, in text and as SVG.
+- **Transcript spacing**: one row between cards with a hairline gap; straight card edges.
+- **Startup selection**: an accent outline without a fill, only in the focused panel (the mockup outlines both panels).
+- **Tool card text** has no background; only a diff is shaded.
+
 ## Known differences to settle before implementation
 
 - `permission-light.png` uses a blue ASSISTANT label and a soft shadow; every other screen uses orange and no shadows. Orange and no shadows win.
