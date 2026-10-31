@@ -201,12 +201,12 @@ fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: 
         );
         rects.push(Rect { y: area.y + i as u16 * 3 + 1, height: 2, ..area });
     }
-    // The selected entry: its rows take the selection fill (drawn by the caller) and an accent
-    // bar on the left, like the transcript's cards. No outline (operator, 2026-11-01: an
-    // outline did not read as a selection).
+    // The selected entry: a rounded accent outline on the rule rows above and below it, with
+    // nothing filled (operator, 2026-11-01). Inside stays the panel colour, so the line, which
+    // runs through the middle of its cells, has no strip of another colour beside it.
     if let Some(i) = selected.filter(|i| *i < count) {
-        let bar = Rect { y: area.y + i as u16 * 3 + 1, height: 2, width: 1, ..area };
-        f.render_widget(Paragraph::new(vec![Line::from("▐"), Line::from("▐")]).style(Style::default().fg(t.accent_line).bg(fill)), bar);
+        let r = Rect { y: area.y + i as u16 * 3, height: 4, ..area };
+        boxed(f, r, t.accent_line, fill, fill);
     }
     rects
 }
@@ -265,7 +265,7 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     let sel = (v.focus == StartupPanel::Sessions).then_some(v.selected_session);
     let rects = entries(f, list, v.sessions.len(), sel, t, fill);
     for (i, (s, r)) in v.sessions.iter().zip(&rects).enumerate() {
-        let bg = if sel == Some(i) { t.selection } else { fill };
+        let bg = fill;
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
         // Spare width is shared by the three gaps between the columns, like the mockup's
         // evenly spread columns; a narrow panel shortens the title column instead.
@@ -316,11 +316,11 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     let rects = entries(f, list, v.actions.len(), sel, t, fill);
     for (i, (a, r)) in v.actions.iter().zip(&rects).enumerate() {
         let on = sel == Some(i);
-        let bg = if on { t.selection } else { fill };
+        let bg = fill;
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
         let st = Style::default().bg(bg);
         let key_style = if on {
-            Style::default().fg(t.accent).bg(tint(t.accent, t.selection, 0.22)).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.accent).bg(t.surface_raised).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD)
         };
