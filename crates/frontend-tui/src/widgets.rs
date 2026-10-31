@@ -19,7 +19,8 @@ pub const LOGO_COLS: u16 = 11;
 
 /// Top line: mark, product name, a muted location; on the right path, branch, status.
 /// Returns the cells of the mark, where the logo picture goes.
-pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo, logo: bool) -> Option<Rect> {
+/// `info` puts path, branch and status on the right; off when the tabs take that place.
+pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo, logo: bool, info: bool) -> Option<Rect> {
     fill(f, area, t.background);
     // With `logo`, cells 1..=LOGO_COLS are left for the picture; without, the name leads.
     let lead = if logo { LOGO_COLS as usize + 3 } else { 1 };
@@ -28,20 +29,22 @@ pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo, logo: bool) 
     left.push(Span::styled(format!(" / {}", h.location), Style::default().fg(t.text_muted)));
     f.render_widget(Paragraph::new(Line::from(left)), area);
 
-    let parts: Vec<&str> = std::iter::once(h.cwd.as_str()).chain(h.branch.as_deref()).collect();
-    let sep = Span::styled("  |  ", Style::default().fg(t.text_muted));
-    let mut right: Vec<Span> = Vec::new();
-    for (i, part) in parts.iter().enumerate() {
-        if i > 0 {
-            right.push(sep.clone());
+    if info {
+        let parts: Vec<&str> = std::iter::once(h.cwd.as_str()).chain(h.branch.as_deref()).collect();
+        let sep = Span::styled("  |  ", Style::default().fg(t.text_muted));
+        let mut right: Vec<Span> = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                right.push(sep.clone());
+            }
+            right.push(Span::styled(part.to_string(), Style::default().fg(t.text)));
         }
-        right.push(Span::styled(part.to_string(), Style::default().fg(t.text)));
+        right.push(sep.clone());
+        let (dot, label) = if h.online { (t.success, "online") } else { (t.text_muted, "offline") };
+        right.push(Span::styled("● ", Style::default().fg(dot)));
+        right.push(Span::styled(format!("{label} "), Style::default().fg(t.text)));
+        f.render_widget(Paragraph::new(Line::from(right)).right_aligned(), area);
     }
-    right.push(sep.clone());
-    let (dot, label) = if h.online { (t.success, "online") } else { (t.text_muted, "offline") };
-    right.push(Span::styled("● ", Style::default().fg(dot)));
-    right.push(Span::styled(format!("{label} "), Style::default().fg(t.text)));
-    f.render_widget(Paragraph::new(Line::from(right)).right_aligned(), area);
     logo.then(|| Rect { x: area.x + 1, y: area.y, width: LOGO_COLS.min(area.width.saturating_sub(1)), height: 1 })
 }
 

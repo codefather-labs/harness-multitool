@@ -32,6 +32,9 @@ pub struct Theme {
     pub warning: Color,
     pub error: Color,
     pub info: Color,
+    /// Agent-to-agent messages and reminders (the purple of inbound-messages-*). Optional in a
+    /// theme file; defaults to a violet readable on the theme's background.
+    pub agent: Color,
     pub diff_add_bg: Color,
     pub diff_del_bg: Color,
     pub selection: Color,
@@ -57,6 +60,8 @@ struct File {
     warning: String,
     error: String,
     info: String,
+    #[serde(default)]
+    agent: Option<String>,
     diff_add_bg: String,
     diff_del_bg: String,
     selection: String,
@@ -105,6 +110,11 @@ impl Theme {
             warning: hex("warning", &f.warning)?,
             error: hex("error", &f.error)?,
             info: hex("info", &f.info)?,
+            agent: match &f.agent {
+                Some(v) => hex("agent", v)?,
+                None if f.kind == "dark" => Color::Rgb(0xB9, 0x9C, 0xFF),
+                None => Color::Rgb(0x6E, 0x44, 0xC9),
+            },
             diff_add_bg: hex("diff_add_bg", &f.diff_add_bg)?,
             diff_del_bg: hex("diff_del_bg", &f.diff_del_bg)?,
             selection: hex("selection", &f.selection)?,

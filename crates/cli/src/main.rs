@@ -249,7 +249,15 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                         current = Theme::builtin(BUILTIN[theme_idx].0)?;
                         continue;
                     }
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                    let alt = k.modifiers.contains(KeyModifiers::ALT);
                     let key = match k.code {
+                        KeyCode::Char(c) if ctrl => Key::Ctrl(c.to_ascii_lowercase()),
+                        KeyCode::Char(c) if alt => Key::Alt(c),
+                        KeyCode::PageUp => Key::PageUp,
+                        KeyCode::PageDown => Key::PageDown,
+                        KeyCode::Home => Key::Home,
+                        KeyCode::End => Key::End,
                         KeyCode::Enter => Key::Enter,
                         KeyCode::Esc => Key::Esc,
                         KeyCode::Up => Key::Up,
@@ -265,6 +273,10 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                 }
                 Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                     input::click(&mut state, &drawn, m.column, m.row)
+                }
+                Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
+                    input::scroll(&mut state, if m.kind == MouseEventKind::ScrollUp { 3 } else { -3 });
+                    continue;
                 }
                 _ => continue,
             };
@@ -284,7 +296,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                         _ => {}
                     }
                 }
-                Outcome::Stay | Outcome::OpenSettings | Outcome::Send => {}
+                Outcome::Stay | Outcome::OpenSettings => {}
             }
         }
     })();

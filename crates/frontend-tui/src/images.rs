@@ -33,6 +33,14 @@ pub enum Icon {
     Map,
     Help,
     Info,
+    Send,
+    Bot,
+    Callback,
+    Calendar,
+    Terminal,
+    Swap,
+    Lock,
+    Plus,
 }
 
 impl Icon {
@@ -48,6 +56,14 @@ impl Icon {
             Icon::Map => include_str!("../../../docs/design/icons/map.svg"),
             Icon::Help => include_str!("../../../docs/design/icons/help.svg"),
             Icon::Info => include_str!("../../../docs/design/icons/info.svg"),
+            Icon::Send => include_str!("../../../docs/design/icons/send.svg"),
+            Icon::Bot => include_str!("../../../docs/design/icons/bot.svg"),
+            Icon::Callback => include_str!("../../../docs/design/icons/callback.svg"),
+            Icon::Calendar => include_str!("../../../docs/design/icons/calendar.svg"),
+            Icon::Terminal => include_str!("../../../docs/design/icons/terminal.svg"),
+            Icon::Swap => include_str!("../../../docs/design/icons/swap.svg"),
+            Icon::Lock => include_str!("../../../docs/design/icons/lock.svg"),
+            Icon::Plus => include_str!("../../../docs/design/icons/plus.svg"),
         }
     }
 
@@ -64,6 +80,14 @@ impl Icon {
             Icon::Map => "▦",
             Icon::Help => "?",
             Icon::Info => "i",
+            Icon::Send => "➤",
+            Icon::Bot => "◉",
+            Icon::Callback => "↺",
+            Icon::Calendar => "◷",
+            Icon::Terminal => "›",
+            Icon::Swap => "⇄",
+            Icon::Lock => "■",
+            Icon::Plus => "+",
         }
     }
 }
@@ -75,6 +99,9 @@ pub enum Tint {
     Muted,
     Accent,
     Info,
+    Agent,
+    Success,
+    Error,
 }
 
 impl Tint {
@@ -84,6 +111,9 @@ impl Tint {
             Tint::Muted => t.text_muted,
             Tint::Accent => t.accent,
             Tint::Info => t.info,
+            Tint::Agent => t.agent,
+            Tint::Success => t.success,
+            Tint::Error => t.error,
         }
     }
 }
@@ -95,6 +125,9 @@ pub enum Graphic {
     Icon(Icon, Tint),
     /// A line of bold text, as large as its cells allow.
     Text(String, Tint),
+    /// A vector picture made for its cells (a mind map: flowmap::svg). Its text fallback is
+    /// drawn by whoever places it; `fallback` leaves the cells alone.
+    Svg(String),
 }
 
 /// Where a graphic goes, in cells.
@@ -130,8 +163,26 @@ fn logo_svg(t: &Theme, eyes: Eyes) -> String {
     src.replace("#20242A", &hex(t.text)).replace("#1A1D22", &hex(ink)).replace("#F5A623", &hex(t.brand))
 }
 
+/// SVG options with the fonts compiled into the binary (no system fonts: the same text on every
+/// OS, journal#180), so `<text>` in a picture (mind-map labels) is drawn.
+fn svg_options() -> &'static usvg::Options<'static> {
+    static OPTIONS: std::sync::OnceLock<usvg::Options<'static>> = std::sync::OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        let mut o = usvg::Options { font_family: "DejaVu Sans Mono".into(), ..usvg::Options::default() };
+        let db = o.fontdb_mut();
+        for font in [
+            &include_bytes!("../fonts/DejaVuSansMono.ttf")[..],
+            &include_bytes!("../fonts/DejaVuSansMono-Bold.ttf")[..],
+            &include_bytes!("../fonts/DejaVuSans.ttf")[..],
+        ] {
+            db.load_font_data(font.to_vec());
+        }
+        o
+    })
+}
+
 fn render_svg(src: &str, width: u32, height: u32, inset: f32) -> RgbaImage {
-    let tree = usvg::Tree::from_str(src, &usvg::Options::default()).expect("embedded SVG parses");
+    let tree = usvg::Tree::from_str(src, svg_options()).expect("embedded SVG parses");
     let size = tree.size();
     let (w, h) = (width as f32 * inset, height as f32 * inset);
     let scale = (w / size.width()).min(h / size.height());
@@ -186,6 +237,7 @@ pub fn rasterize(g: &Graphic, t: &Theme, width: u32, height: u32) -> RgbaImage {
         // Icons keep a margin so they sit inside their cells like a glyph.
         Graphic::Icon(i, tint) => render_svg(&i.svg().replace("#000000", &hex(tint.color(t))), width, height, 0.78),
         Graphic::Text(s, tint) => render_text(s, tint.color(t), width, height),
+        Graphic::Svg(src) => render_svg(src, width, height, 1.0),
     }
 }
 
@@ -313,6 +365,7 @@ pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
         // Too small for pixel art to look like the tool (operator, 2026-11-01): no fallback;
         // the header leaves the logo out when pictures are off (AppState.pictures).
         Graphic::Logo(_) => {}
+        Graphic::Svg(_) => {}
     }
 }
 
@@ -361,7 +414,10 @@ mod tests {
     #[test]
     fn every_icon_rasterizes() {
         let t = Theme::builtin("light").unwrap();
-        for i in [Icon::Clock, Icon::Bolt, Icon::File, Icon::FilePlus, Icon::Branch, Icon::Play, Icon::Gear, Icon::Map, Icon::Help, Icon::Info] {
+        for i in [
+            Icon::Clock, Icon::Bolt, Icon::File, Icon::FilePlus, Icon::Branch, Icon::Play, Icon::Gear, Icon::Map, Icon::Help, Icon::Info,
+            Icon::Send, Icon::Bot, Icon::Callback, Icon::Calendar, Icon::Terminal, Icon::Swap, Icon::Lock, Icon::Plus,
+        ] {
             let img = rasterize(&Graphic::Icon(i, Tint::Text), &t, 24, 26);
             assert!(img.pixels().any(|p| p[3] > 200), "{i:?} drew nothing");
         }

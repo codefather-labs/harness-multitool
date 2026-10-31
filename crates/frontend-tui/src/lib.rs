@@ -4,12 +4,15 @@
 //! and the snapshot tool both use them, so the named states in `fixtures` are real CLI screens
 //! (docs/design/concept holds the mockups they are checked against).
 
+pub mod debug;
 pub mod fixtures;
+pub mod flowmap;
 pub mod home;
 pub mod images;
 pub mod input;
 pub mod model;
 pub mod theme;
+pub mod transcript;
 pub mod view;
 pub mod widgets;
 

@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::images::{Graphic, Placement};
-use crate::model::{AppState, DiffLine, Item, Mode, Role, SessionView, Tone, ToolBody, ToolCall, ToolState};
+use crate::model::{AppState, Mode, Workspace};
 use crate::theme::Theme;
 use crate::widgets;
 
@@ -32,6 +32,14 @@ pub enum Target {
     Session(usize),
     Action(usize),
     Settings,
+    /// A session tab of the header.
+    Tab(usize),
+    /// The `+` after the tabs.
+    NewTab,
+    /// The `×` of the toast.
+    CloseToast,
+    /// The transcript (wheel scrolling).
+    Transcript,
 }
 
 impl Drawn {
@@ -54,16 +62,7 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
     match &s.mode {
         Mode::Splash(v) => crate::home::splash(f, area, v, t, s.pictures, &mut out),
         Mode::Startup(v) => crate::home::startup(f, area, v, t, s.pictures, &mut out),
-        Mode::Session(v) => {
-            let [head, rule, body] =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-            let logo = widgets::header(f, head, t, &s.header, s.pictures);
-            widgets::rule(f, rule, t);
-            if let Some(rect) = logo {
-                out.placements.push(Placement { rect, graphic: Graphic::Logo(s.eyes) });
-            }
-            session(f, body, v, t, &mut out);
-        }
+        Mode::Session(w) => workspace(f, area, s, w, t, &mut out),
     }
     // The logo's eyes are one state for the whole screen (the launch blink).
     for p in &mut out.placements {
@@ -82,17 +81,48 @@ fn inset(r: Rect) -> Rect {
     Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..r }
 }
 
-/// Session chrome (journal: one session chrome): transcript, rule, status line, composer with
-/// key hints inside, and the Settings button to its right.
-fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme, out: &mut Drawn) {
+/// Session chrome (journal: one session chrome): header with the tabs, transcript, rule,
+/// status line, composer with key hints inside, the Settings button to its right; a toast over
+/// the top right of the transcript.
+fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, out: &mut Drawn) {
+    let [head, rule, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let v = w.view();
+    let mut header = s.header.clone();
+    if w.tabs.len() > 1 {
+        header.location = format!("session/{}", w.tabs[w.active].title);
+    }
+    let logo = widgets::header(f, head, t, &header, s.pictures, w.tabs.len() <= 1);
+    if w.tabs.len() > 1 {
+        tabs(f, head, w, t, s.pictures, out);
+    }
+    widgets::rule(f, rule, t);
+    if let Some(rect) = logo {
+        out.placements.push(Placement { rect, graphic: Graphic::Logo(s.eyes) });
+    }
     let [transcript, rule, status, bottom] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(4),
     ])
-    .areas(area);
-    draw_transcript(f, inset(transcript), &v.transcript, t);
+    .areas(body);
+    let tr = inset(Rect { y: transcript.y + 1, height: transcript.height.saturating_sub(1), ..transcript });
+    let drawn = crate::transcript::all(&v.transcript, tr.width, t, v.generating);
+    let total = crate::transcript::total_height(&drawn);
+    let scroll = (v.scroll as u16).min(total.saturating_sub(tr.height));
+    out.placements.extend(crate::transcript::blit(f.buffer_mut(), tr, drawn, scroll));
+    out.hits.push(Hit { rect: tr, target: Target::Transcript });
+    if scroll > 0 {
+        let more = Rect { y: tr.y + tr.height.saturating_sub(1), height: 1, ..tr };
+        f.render_widget(
+            Paragraph::new(Span::styled(format!(" ↓ {scroll} more rows · End to jump back "), Style::default().fg(t.accent_text).bg(t.accent)))
+                .right_aligned(),
+            more,
+        );
+    }
+    if let Some(toast) = &w.toast {
+        draw_toast(f, tr, toast, t, out);
+    }
     widgets::rule(f, rule, t);
     widgets::status_line(f, status, t, &v.status);
     let [input, _, button] =
@@ -102,145 +132,108 @@ fn session(f: &mut Frame, area: Rect, v: &SessionView, t: &Theme, out: &mut Draw
     out.hits.push(Hit { rect: button, target: Target::Settings });
 }
 
-/// Height in rows an item takes: label row, body rows, one bottom padding row.
-fn height(item: &Item) -> u16 {
-    match item {
-        Item::Welcome { .. } => 4,
-        Item::Tips { lines, .. } => 2 + lines.len() as u16,
-        Item::Turn { lines, .. } => 2 + lines.len() as u16,
-        Item::Tool(c) => match (&c.body, c.expanded) {
-            (ToolBody::Diff(d), true) => 1 + 1 + d.lines.len() as u16 + 1,
-            _ => 1,
-        },
+/// The tab strip at the right of the header (session-tabs-*, journal#137): one pill per session
+/// with its icon and mark, the active one in the accent, `+` at the end.
+fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out: &mut Drawn) {
+    use crate::images::{Icon, Tint};
+    use crate::model::{TabIcon, TabMark};
+    let bg = t.background;
+    let mut x = head.x + head.width;
+    // Each tab: its pill's spans, its icon picture (offset, icon, tint), its click target.
+    type TabItem = (Vec<Span<'static>>, Option<(u16, Icon, Tint)>, Target);
+    let mut items: Vec<TabItem> = Vec::new();
+    let plus_fill = t.surface_raised;
+    items.push((crate::transcript::pill_spans(" + ", t.text, plus_fill, bg), None, Target::NewTab));
+    for (i, tab) in w.tabs.iter().enumerate().rev() {
+        let active = i == w.active;
+        let fill = if active { crate::transcript::tint(t.accent, bg, 0.2) } else { t.surface_raised };
+        let fg = if active { t.accent } else { t.text };
+        let (icon, glyph) = match tab.icon {
+            TabIcon::Prompt => (Icon::Terminal, ">_"),
+            TabIcon::Agent => (Icon::Swap, "⇄ "),
+            TabIcon::Doc => (Icon::File, "▤ "),
+            TabIcon::Lock => (Icon::Lock, "■ "),
+        };
+        let mark = match tab.mark {
+            TabMark::None => String::new(),
+            TabMark::Busy => " ◌".into(),
+            TabMark::Unread(n) => format!(" ●{n}"),
+            TabMark::Attention => " !".into(),
+        };
+        let lead = if pictures { "    ".to_string() } else { format!(" {glyph} ") };
+        let text = format!("{lead}{}{mark} ", tab.title);
+        let mut spans = crate::transcript::pill_spans(&text, fg, fill, bg);
+        if let Some(m) = spans.get_mut(1) {
+            m.style = m.style.add_modifier(Modifier::BOLD);
+        }
+        let mark_color = match tab.mark {
+            TabMark::Busy => Some(t.info),
+            TabMark::Unread(_) => Some(t.info),
+            TabMark::Attention => Some(t.warning),
+            TabMark::None => None,
+        };
+        if let (Some(c), false) = (mark_color, mark.is_empty()) {
+            // Split the mark off so it takes its own colour.
+            let body = spans[1].content.to_string();
+            let cut = body.len() - mark.len() - 1;
+            let style = spans[1].style;
+            spans[1] = Span::styled(body[..cut].to_string(), style);
+            spans.insert(2, Span::styled(mark.clone(), style.fg(c)));
+            spans.insert(3, Span::styled(" ", style));
+        }
+        items.push((spans, pictures.then_some((2, icon, if active { Tint::Accent } else { Tint::Text })), Target::Tab(i)));
     }
-}
-
-fn draw_transcript(f: &mut Frame, area: Rect, items: &[Item], t: &Theme) {
-    let bottom = area.y + area.height;
-    let mut y = area.y;
-    for item in items {
-        let h = height(item);
-        if y + h > bottom {
+    for (spans, icon, target) in items {
+        let width: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
+        if x < head.x + 40 + width {
             break;
         }
-        let r = Rect { y, height: h, ..area };
-        match item {
-            Item::Welcome { title, tagline } => widgets::card(
-                f,
-                r,
-                t,
-                vec![Span::styled("WELCOME", label(t))],
-                vec![
-                    Line::from(Span::styled(title.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD))),
-                    Line::from(Span::styled(tagline.clone(), Style::default().fg(t.text_muted))),
-                ],
-            ),
-            Item::Tips { label: l, lines } => widgets::card(
-                f,
-                r,
-                t,
-                vec![Span::styled(l.clone(), label(t))],
-                lines
-                    .iter()
-                    .map(|l| {
-                        Line::from(vec![
-                            Span::styled(" • ", Style::default().fg(t.text_muted)),
-                            Span::styled(l.clone(), Style::default().fg(t.text)),
-                        ])
-                    })
-                    .collect(),
-            ),
-            Item::Turn { role, time, lines } => {
-                let name = match role {
-                    Role::User => "USER",
-                    Role::Assistant => "ASSISTANT",
-                };
-                widgets::card(
-                    f,
-                    r,
-                    t,
-                    vec![Span::styled(name, label(t)), Span::styled(format!("  {time}"), Style::default().fg(t.text_muted))],
-                    lines.iter().map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(t.text)))).collect(),
-                )
-            }
-            Item::Tool(c) => tool(f, r, c, t),
+        x -= width + 1;
+        let r = Rect { x, width, ..head };
+        f.render_widget(Paragraph::new(Line::from(spans)), r);
+        if let Some((off, icon, tint)) = icon {
+            out.placements.push(Placement { rect: Rect { x: x + off, width: 2, ..head }, graphic: Graphic::Icon(icon, tint) });
         }
-        y += h + 1;
+        out.hits.push(Hit { rect: r, target });
     }
 }
 
-fn label(t: &Theme) -> Style {
-    Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
-}
-
-/// A tool call: one row (chevron, status, name, arguments … outcome, duration) and, when
-/// expanded, its body below on the same surface.
-fn tool(f: &mut Frame, r: Rect, c: &ToolCall, t: &Theme) {
-    widgets::fill(f, r, t.surface);
-    let row = Rect { height: 1, ..r };
-    let chevron = if c.expanded { "▾" } else { "▸" };
-    let (mark, mark_color) = match c.state {
-        ToolState::Done => ("✔", t.success),
-        ToolState::Running => ("◌", t.accent),
-        ToolState::Failed => ("✘", t.error),
+/// An inbound message that arrived while the agent was busy, over the top right (the toast of
+/// inbound-messages-*): icon, `Channel · sender  now`, the text, `×` to close.
+fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme, out: &mut Drawn) {
+    use crate::images::{Icon, Tint};
+    use crate::model::InboundKind;
+    use ratatui::widgets::{Block, BorderType, Borders};
+    let (name, color, icon, tint) = match toast.kind {
+        InboundKind::Telegram | InboundKind::Voice { .. } => ("Telegram", t.info, Icon::Send, Tint::Info),
+        InboundKind::Agent { .. } => ("Agent", t.agent, Icon::Bot, Tint::Agent),
+        InboundKind::Callback { .. } => ("Callback", t.success, Icon::Callback, Tint::Success),
+        InboundKind::Reminder { .. } => ("Reminder", t.agent, Icon::Calendar, Tint::Agent),
     };
-    let mut left = vec![
-        Span::styled(format!("  {chevron}  "), Style::default().fg(t.text_muted)),
-        Span::styled(mark, Style::default().fg(mark_color)),
-        Span::raw("  "),
-        Span::styled(c.name.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-    ];
-    if let Some(s) = &c.args_strong {
-        left.push(Span::styled(format!(" {s}"), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
-    }
-    left.push(Span::styled(format!("  {}", c.args), Style::default().fg(t.text_muted)));
-    f.render_widget(Paragraph::new(Line::from(left)).style(Style::default().bg(t.surface)), row);
-
-    let tone = match c.outcome_tone {
-        Tone::Success => t.success,
-        Tone::Neutral => t.text,
-        Tone::Error => t.error,
-    };
-    let mut right = vec![Span::styled(c.outcome.clone(), Style::default().fg(tone))];
-    if let Some((add, del)) = c.diffstat {
-        right.push(Span::raw("   "));
-        right.push(Span::styled(format!("+{add}"), Style::default().fg(t.success)));
-        right.push(Span::styled(" / ", Style::default().fg(t.text_muted)));
-        right.push(Span::styled(format!("-{del}"), Style::default().fg(t.error)));
-    }
-    right.push(Span::styled(format!("   {:>5}  ", c.duration), Style::default().fg(t.text)));
-    f.render_widget(Paragraph::new(Line::from(right)).right_aligned(), row);
-
-    if !c.expanded {
-        return;
-    }
-    if let ToolBody::Diff(d) = &c.body {
-        let x = r.x + 3;
-        let w = r.width.saturating_sub(5);
-        let hunk = Rect { x, y: r.y + 1, width: w, height: 1 };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(d.hunk.clone(), Style::default().fg(t.text_muted)),
-                Span::styled(format!("    {}", d.context), Style::default().fg(t.text_muted)),
-            ]))
-            .style(Style::default().bg(t.surface)),
-            hunk,
-        );
-        for (i, l) in d.lines.iter().enumerate() {
-            let (sign, text, bg, sign_fg) = match l {
-                DiffLine::Removed(s) => ("-", s, t.diff_del_bg, t.error),
-                DiffLine::Added(s) => ("+", s, t.diff_add_bg, t.success),
-                DiffLine::Context(s) => (" ", s, t.surface, t.text_muted),
-            };
-            let line = Rect { x, y: r.y + 2 + i as u16, width: w, height: 1 };
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!(" {sign}     "), Style::default().fg(sign_fg)),
-                    Span::styled(text.clone(), Style::default().fg(t.text)),
-                ]))
-                .style(Style::default().bg(bg)),
-                line,
-            );
-        }
-    }
+    let text_w = toast.text.chars().count().max(name.len() + toast.from.len() + 12) as u16;
+    let w = (text_w + 12).min(area.width / 2).max(30.min(area.width));
+    let r = Rect { x: area.x + area.width.saturating_sub(w), y: area.y, width: w, height: 4 };
+    f.render_widget(ratatui::widgets::Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .style(Style::default().bg(t.surface));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    out.placements.push(Placement { rect: Rect { x: inner.x + 1, y: inner.y, width: 3, height: 2 }, graphic: Graphic::Icon(icon, tint) });
+    let text = Rect { x: inner.x + 6, width: inner.width.saturating_sub(9), ..inner };
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(name, Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" · {}  now", toast.from), Style::default().fg(t.text_muted)),
+            ]),
+            Line::from(Span::styled(toast.text.clone(), Style::default().fg(t.text))),
+        ]),
+        text,
+    );
+    let close = Rect { x: inner.x + inner.width.saturating_sub(2), y: inner.y, width: 1, height: 1 };
+    f.render_widget(Paragraph::new(Span::styled("×", Style::default().fg(t.text_muted))), close);
+    out.hits.push(Hit { rect: close, target: Target::CloseToast });
 }

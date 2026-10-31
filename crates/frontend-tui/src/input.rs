@@ -2,7 +2,7 @@
 //! selection, edit the composer) and reports what the app must do next (open a session, leave
 //! the splash); the app fetches the data for the next screen, the view model never does.
 
-use crate::model::{AppState, Mode, StartupPanel};
+use crate::model::{AppState, Mode, StartupPanel, TabMark, Workspace};
 use crate::view::{Drawn, Target};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +15,15 @@ pub enum Key {
     Right,
     Tab,
     Backspace,
+    PageUp,
+    PageDown,
+    Home,
+    End,
     Char(char),
+    /// A letter with Ctrl held.
+    Ctrl(char),
+    /// A key with Alt held.
+    Alt(char),
 }
 
 /// What the app has to do after an input.
@@ -31,12 +39,10 @@ pub enum Outcome {
     /// Run quick action `i` of the startup page.
     Action(usize),
     OpenSettings,
-    /// The composer's text was sent.
-    Send,
 }
 
 pub fn key(s: &mut AppState, k: Key) -> Outcome {
-    if k == Key::Esc {
+    if k == Key::Esc && !matches!(s.mode, Mode::Session(_)) {
         return Outcome::Quit;
     }
     match &mut s.mode {
@@ -75,21 +81,63 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
             }
             Outcome::Stay
         }
-        Mode::Session(v) => {
+        Mode::Session(w) => {
             match k {
                 Key::Enter => {
-                    v.composer.text.clear();
-                    return Outcome::Send;
+                    crate::debug::submit(w);
                 }
                 Key::Backspace => {
-                    v.composer.text.pop();
+                    w.view_mut().composer.text.pop();
                 }
-                Key::Char(c) => v.composer.text.push(c),
+                Key::Char(c) => w.view_mut().composer.text.push(c),
+                // Esc closes the toast; the session itself is left with Ctrl+C.
+                Key::Esc => w.toast = None,
+                Key::PageUp => scroll_view(w, 10),
+                Key::PageDown => scroll_view(w, -10),
+                Key::Home => scroll_view(w, 100_000),
+                Key::End => {
+                    w.view_mut().scroll = 0;
+                }
+                Key::Ctrl('t') => {
+                    let title = format!("session-{}", w.tabs.len() + 1);
+                    crate::debug::open_tab(w, &title);
+                }
+                Key::Ctrl('w') => close_tab(w),
+                Key::Alt(c) if c.is_ascii_digit() && c != '0' => switch_tab(w, c as usize - '1' as usize),
                 _ => {}
             }
             Outcome::Stay
         }
     }
+}
+
+/// Shows tab `i`; its unread mark is cleared because its messages are now in view.
+fn switch_tab(w: &mut Workspace, i: usize) {
+    if i < w.tabs.len() {
+        w.active = i;
+        w.tabs[i].mark = TabMark::None;
+    }
+}
+
+/// Closes the active tab; the last tab stays (closing it would leave no session).
+fn close_tab(w: &mut Workspace) {
+    if w.tabs.len() > 1 {
+        w.tabs.remove(w.active);
+        w.active = w.active.min(w.tabs.len() - 1);
+    }
+}
+
+/// Scrolls the active transcript by `rows` (positive: back in time). The view clamps it to
+/// the transcript's height when drawing.
+pub fn scroll(s: &mut AppState, rows: i32) {
+    if let Mode::Session(w) = &mut s.mode {
+        scroll_view(w, rows);
+    }
+}
+
+fn scroll_view(w: &mut Workspace, rows: i32) {
+    let v = w.view_mut();
+    v.scroll = (v.scroll as i64 + rows as i64).clamp(0, 100_000) as usize;
 }
 
 /// A left click at a cell, against what the last draw reported.
@@ -108,6 +156,19 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
             Outcome::Action(i)
         }
         (Mode::Session(_), Target::Settings) => Outcome::OpenSettings,
+        (Mode::Session(w), Target::Tab(i)) => {
+            switch_tab(w, i);
+            Outcome::Stay
+        }
+        (Mode::Session(w), Target::NewTab) => {
+            let title = format!("session-{}", w.tabs.len() + 1);
+            crate::debug::open_tab(w, &title);
+            Outcome::Stay
+        }
+        (Mode::Session(w), Target::CloseToast) => {
+            w.toast = None;
+            Outcome::Stay
+        }
         _ => Outcome::Stay,
     }
 }
@@ -131,5 +192,31 @@ mod tests {
         assert_eq!(key(&mut s, Key::Tab), Outcome::Stay);
         assert_eq!(key(&mut s, Key::Enter), Outcome::OpenSession(0));
         assert_eq!(key(&mut s, Key::Char('n')), Outcome::Action(0));
+    }
+
+    #[test]
+    fn session_keys_manage_tabs_and_scroll() {
+        let mut s = fixtures::welcome();
+        let tabs = |s: &AppState| match &s.mode {
+            Mode::Session(w) => (w.tabs.len(), w.active),
+            _ => unreachable!(),
+        };
+        key(&mut s, Key::Ctrl('t'));
+        assert_eq!(tabs(&s), (2, 1));
+        key(&mut s, Key::Alt('1'));
+        assert_eq!(tabs(&s), (2, 0));
+        key(&mut s, Key::Ctrl('w'));
+        assert_eq!(tabs(&s), (1, 0));
+        key(&mut s, Key::Ctrl('w'));
+        assert_eq!(tabs(&s), (1, 0), "the last tab stays");
+        assert_eq!(key(&mut s, Key::Esc), Outcome::Stay, "Esc does not quit a session");
+        key(&mut s, Key::PageUp);
+        if let Mode::Session(w) = &s.mode {
+            assert_eq!(w.view().scroll, 10);
+        }
+        key(&mut s, Key::End);
+        if let Mode::Session(w) = &s.mode {
+            assert_eq!(w.view().scroll, 0);
+        }
     }
 }

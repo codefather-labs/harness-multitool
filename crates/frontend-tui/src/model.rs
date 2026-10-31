@@ -31,7 +31,70 @@ pub enum Mode {
     Splash(SplashView),
     /// After the splash: recent sessions and quick actions (journal: tui-flow).
     Startup(StartupView),
-    Session(SessionView),
+    /// Running sessions: one window, many sessions as tabs (journal#137).
+    Session(Workspace),
+}
+
+/// The sessions open in one window. The active tab's session fills the screen; the others
+/// keep running behind their tabs.
+#[derive(Debug, Clone, Default)]
+pub struct Workspace {
+    pub tabs: Vec<Tab>,
+    pub active: usize,
+    /// A notification over the top right of the transcript (an inbound message that arrived
+    /// while the agent was busy).
+    pub toast: Option<Toast>,
+}
+
+impl Workspace {
+    pub fn one(view: SessionView, title: &str) -> Workspace {
+        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None }
+    }
+
+    pub fn view(&self) -> &SessionView {
+        &self.tabs[self.active].view
+    }
+
+    pub fn view_mut(&mut self) -> &mut SessionView {
+        &mut self.tabs[self.active].view
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Tab {
+    pub title: String,
+    pub icon: TabIcon,
+    pub mark: TabMark,
+    pub view: SessionView,
+}
+
+/// The glyph before a tab's title (session-tabs-*: `>_` a coding session, `↔` a peer agent,
+/// a document session, a locked one waiting for permission).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabIcon {
+    Prompt,
+    Agent,
+    Doc,
+    Lock,
+}
+
+/// What a background tab wants the user to notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMark {
+    None,
+    /// The session is generating.
+    Busy,
+    /// Messages arrived since the tab was last shown.
+    Unread(u32),
+    /// The session waits for the user (a permission prompt).
+    Attention,
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub kind: InboundKind,
+    pub from: String,
+    pub text: String,
 }
 
 /// The product line shown big on the splash and startup screens.
@@ -114,6 +177,12 @@ pub struct SessionView {
     pub transcript: Vec<Item>,
     pub status: StatusLine,
     pub composer: Composer,
+    /// Items hidden below the bottom of the transcript (0: the newest item is in view).
+    pub scroll: usize,
+    /// Minutes since midnight for the next message's time stamp (debug feed and fixtures).
+    pub clock: u32,
+    /// The agent is producing a reply (`generating…` on the last assistant turn).
+    pub generating: bool,
 }
 
 /// One entry of the transcript.
@@ -123,10 +192,96 @@ pub enum Item {
     Welcome { title: String, tagline: String },
     /// A card of tips: a label and bullet lines.
     Tips { label: String, lines: Vec<String> },
-    /// A message of the user or the assistant.
-    Turn { role: Role, time: String, lines: Vec<String> },
+    /// A message of the user or the assistant; an assistant turn carries what it did (tool
+    /// calls, journal and mind-map events) drawn inside its card.
+    Turn { role: Role, time: String, lines: Vec<String>, attached: Vec<Item> },
     /// One tool call.
     Tool(ToolCall),
+    /// A message that reached the session from outside (inbound-messages-*).
+    Inbound(Inbound),
+    /// A journal entry the agent wrote (journal#136).
+    Journal(JournalEvent),
+    /// A mind map was created; it has no nodes yet, so only the event shows.
+    MapCreated(MapCreated),
+    /// A mind map changed: the event line and the map itself.
+    Map(MapEvent),
+}
+
+#[derive(Debug, Clone)]
+pub struct Inbound {
+    pub kind: InboundKind,
+    /// Who sent it: the Telegram user, the peer session's nick, the callback label.
+    pub from: String,
+    pub time: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InboundKind {
+    Telegram,
+    /// A dictated message: its length and the transcript in `text`.
+    Voice { duration: String },
+    /// Agent-to-agent: the sending session, and the a2a route when both sessions are open here.
+    Agent { session: String, route: Option<String> },
+    /// An HTTP or socket callback: transport and the reply status.
+    Callback { transport: String, status: String },
+    /// The session's own journal reminder.
+    Reminder { id: u32, every: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct JournalEvent {
+    pub id: u32,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub date: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapCreated {
+    pub id: u32,
+    pub title: String,
+    /// `flowchart` or `mindmap`, and `shared` or `private`.
+    pub kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapEvent {
+    pub id: u32,
+    /// What changed, e.g. `+node n4, +edge n2->n4 (ref #137)`.
+    pub change: String,
+    pub date: String,
+    pub map: FlowMap,
+}
+
+/// A flowchart as the transcript draws it: nodes in reading order and the arrows between them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlowMap {
+    pub nodes: Vec<FlowNode>,
+    pub edges: Vec<FlowEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlowNode {
+    pub id: String,
+    pub text: String,
+    pub shape: NodeShape,
+    /// Changed by the event being shown.
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeShape {
+    Box,
+    Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlowEdge {
+    pub from: String,
+    pub to: String,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +306,7 @@ pub struct ToolCall {
     pub duration: String,
     pub expanded: bool,
     pub body: ToolBody,
+    pub icon: ToolIcon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +329,24 @@ pub enum ToolBody {
     #[default]
     None,
     Diff(Diff),
+    /// Command output: numbered file lines (`cat`), a stderr tail, or live output. Drawn as a
+    /// card (tool-calls-*), folded after `lines` with `+N more lines`.
+    Output { label: Option<String>, lines: Vec<String>, numbered: bool, more: usize },
+    /// An outgoing message shown as what was sent (telegram_send).
+    Bubble(String),
+    /// A one-line result under the card header (agent_send, journal_add).
+    Note(String),
+}
+
+/// The glyph a tool card starts with (tool-calls-*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolIcon {
+    #[default]
+    None,
+    Shell,
+    Send,
+    Agent,
+    Journal,
 }
 
 #[derive(Debug, Clone)]
