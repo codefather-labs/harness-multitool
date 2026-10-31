@@ -399,7 +399,8 @@ fn tool_row(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color) ->
 }
 
 /// The framed card of tool-calls-*: icon, name, arguments, status badge, duration, then the
-/// body. Failed calls are framed in the error colour.
+/// body. Failed calls are framed in the error colour. Body text has no background of its own:
+/// only a file edit's diff is shaded (operator, 2026-11-01).
 fn tool_card(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color, t: &Theme) -> u16 {
     let line = if c.state == ToolState::Failed { t.error } else { t.accent_line };
     let (ix, iw) = (x + 2, w.saturating_sub(4));
@@ -424,20 +425,16 @@ fn tool_card(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color, t
                 if c.state == ToolState::Running && i + 1 == lines.len() {
                     spans.push(Span::styled(" █", plain(t.text)));
                 }
-                body.push((spans, if *numbered { Some(t.background) } else { None }));
+                body.push((spans, None));
             }
             if *more > 0 {
                 body.push((vec![Span::styled(format!("▸ +{more} more lines"), plain(t.text_muted))], None));
             }
         }
-        ToolBody::Bubble(text) => {
-            for l in wrap(text, iw.saturating_sub(4)) {
-                body.push((vec![Span::raw(l)], Some(Color::Reset)));
-            }
-        }
-        ToolBody::Note(text) => {
-            for l in wrap(text, iw.saturating_sub(2)) {
-                body.push((vec![Span::styled(format!(" {l}"), plain(t.text))], Some(t.background)));
+        // A sent message and a note: plain text under the tool's name.
+        ToolBody::Bubble(text) | ToolBody::Note(text) => {
+            for l in wrap(text, iw.saturating_sub(3)) {
+                body.push((vec![Span::raw("   "), Span::styled(l, plain(t.text))], None));
             }
         }
         _ => {}
@@ -464,15 +461,6 @@ fn tool_card(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color, t
     for (i, (spans, row_bg)) in body.into_iter().enumerate() {
         let ry = hy + 1 + i as u16;
         match row_bg {
-            // A bubble: the sent text in an info-tinted pill.
-            Some(Color::Reset) => {
-                let text: String = spans.iter().map(|s| s.content.to_string()).collect();
-                let fill = tint(t.info, bg, 0.14);
-                let mut spans = pill_spans(&format!(" {text} "), t.text, fill, bg);
-                spans[1].style = spans[1].style.remove_modifier(Modifier::BOLD);
-                let w = text.chars().count() as u16 + 4;
-                cv.line(ix + 2, ry, w, spans, bg);
-            }
             Some(rb) => {
                 cv.fill(Rect::new(ix, ry, iw, 1), rb);
                 cv.line(ix, ry, iw, spans, rb);
