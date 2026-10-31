@@ -96,7 +96,14 @@ fn main() -> Result<()> {
 fn preview(name: &str, theme: &str) -> Result<()> {
     use frontend_tui::model::Mode;
     use frontend_tui::theme::BUILTIN;
+    use std::collections::HashMap;
+
+    use frontend_tui::images::{self, Graphic};
     use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use ratatui::layout::Size;
+    use ratatui_image::picker::{Picker, ProtocolType};
+    use ratatui_image::protocol::Protocol;
+    use ratatui_image::{Image, Resize};
 
     let fixture = fixtures::by_name(name).ok_or_else(|| anyhow!("unknown screen {name:?} (see `screen --list`)"))?;
     let mut state = (fixture.build)();
@@ -104,9 +111,34 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let mut current = Theme::builtin(BUILTIN[theme_idx].0)?;
 
     let mut terminal = ratatui::init();
+    // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
+    // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
+    // text fallback the view already drew.
+    let picker = Picker::from_query_stdio().ok().filter(|p| p.protocol_type() != ProtocolType::Halfblocks);
+    let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
         loop {
-            terminal.draw(|f| frontend_tui::draw(f, &state, &current))?;
+            terminal.draw(|f| {
+                let placements = frontend_tui::draw(f, &state, &current);
+                let Some(picker) = &picker else { return };
+                for p in placements {
+                    let key = (p.graphic, current.id.clone(), p.rect.width, p.rect.height);
+                    if !pictures.contains_key(&key) {
+                        let fs = picker.font_size();
+                        let px = images::rasterize(p.graphic, &current, (p.rect.width * fs.width) as u32, (p.rect.height * fs.height) as u32);
+                        if let Ok(proto) = picker.new_protocol(
+                            image::DynamicImage::ImageRgba8(px),
+                            Size::new(p.rect.width, p.rect.height),
+                            Resize::Fit(None),
+                        ) {
+                            pictures.insert(key.clone(), proto);
+                        }
+                    }
+                    if let Some(proto) = pictures.get(&key) {
+                        f.render_widget(Image::new(proto), p.rect);
+                    }
+                }
+            })?;
             let Event::Key(k) = event::read()? else { continue };
             if k.kind != KeyEventKind::Press {
                 continue;

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="1 4 156 36" fill="none"
+     stroke-linecap="round" stroke-linejoin="round">
+  <!-- Header mark: the geometry of multitool.svg in one colour (the brand orange),
+       rivets cut out in the background colour. The renderer replaces BACKGROUND with the
+       theme's background so the holes read on any theme. -->
+
+  <!-- Fork: four tines pointing left, stem into the handle -->
+  <path d="M39 22 H32 Q28 22 28 18 V12 H3 M28 17 H3 M28 22 H3 M28 27 H3 M28 22 Q28 32 39 32"
+        stroke="#F5A623" stroke-width="3.5"/>
+
+  <!-- Saw: blade with triangular teeth on top -->
+  <path d="M101 18 L108 18 L113 9 L118 16 L123 7 L128 15 L133 6 L138 14 L143 7 L148 16 L155 18 L155 28 H101 Z"
+        fill="#F5A623"/>
+
+  <!-- Handle -->
+  <rect x="38" y="15" width="76" height="23" rx="11.5" fill="#F5A623"/>
+
+  <!-- Rivets -->
+  <circle cx="52" cy="26.5" r="3.4" fill="BACKGROUND"/>
+  <circle cx="101" cy="26.5" r="2.8" fill="BACKGROUND"/>
+</svg>

@@ -5,6 +5,7 @@
 //! (docs/design/concept holds the mockups they are checked against).
 
 pub mod fixtures;
+pub mod images;
 pub mod model;
 pub mod theme;
 pub mod view;

@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use frontend_tui::images::{self, Placement};
 use frontend_tui::{AppState, Theme};
 use fontdue::{Font, FontSettings};
 use image::{Rgb, RgbImage, imageops};
@@ -49,8 +50,30 @@ impl Raster {
     /// Draws the state at `cols x rows` cells and returns the picture.
     pub fn render(&self, state: &AppState, theme: &Theme, cols: u16, rows: u16) -> RgbImage {
         let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
-        term.draw(|f| frontend_tui::draw(f, state, theme)).expect("draw");
-        self.rasterise(term.backend().buffer(), theme)
+        let mut placements = Vec::new();
+        term.draw(|f| placements = frontend_tui::draw(f, state, theme)).expect("draw");
+        let buf = term.backend().buffer();
+        let mut img = self.rasterise(buf, theme);
+        for p in placements {
+            self.paste(&mut img, buf, theme, p);
+        }
+        img
+    }
+
+    /// A picture over its cells: the cells' background first (the text fallback is not shown,
+    /// as a graphics-capable terminal would not show it), then the rasterised graphic.
+    fn paste(&self, img: &mut RgbImage, buf: &Buffer, theme: &Theme, p: Placement) {
+        let (cw, ch) = (self.cell_w, self.cell_h);
+        let (x0, y0) = (p.rect.x as u32 * cw, p.rect.y as u32 * ch);
+        let (w, h) = (p.rect.width as u32 * cw, p.rect.height as u32 * ch);
+        let bg = rgb(buf[(p.rect.x, p.rect.y)].bg, theme.background);
+        let pic = images::rasterize(p.graphic, theme, w, h);
+        for (x, y, px) in pic.enumerate_pixels() {
+            let (ix, iy) = (x0 + x, y0 + y);
+            if ix < img.width() && iy < img.height() {
+                img.put_pixel(ix, iy, blend(bg, Rgb([px[0], px[1], px[2]]), px[3]));
+            }
+        }
     }
 
     pub fn rasterise(&self, buf: &Buffer, theme: &Theme) -> RgbImage {

@@ -7,20 +7,24 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::images::{Graphic, Placement};
 use crate::model::{AppState, DiffLine, Item, Mode, Role, SessionView, Tone, ToolBody, ToolCall, ToolState};
 use crate::theme::Theme;
 use crate::widgets;
 
-pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) {
+/// Draws the state and returns where pictures go (see `images`). Cells under a placement hold a
+/// text fallback, so a terminal without graphics still shows something sensible.
+pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Vec<Placement> {
     let area = f.area();
     widgets::fill(f, area, t.background);
     let [head, rule, body] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    widgets::header(f, head, t, &s.header);
+    let logo = widgets::header(f, head, t, &s.header);
     widgets::rule(f, rule, t);
     match &s.mode {
         Mode::Session(v) => session(f, body, v, t),
     }
+    vec![Placement { rect: logo, graphic: Graphic::Logo }]
 }
 
 fn inset(r: Rect) -> Rect {

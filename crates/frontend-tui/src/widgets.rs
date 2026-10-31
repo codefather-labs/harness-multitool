@@ -22,12 +22,17 @@ pub fn logo_mark(t: &Theme) -> Vec<Span<'static>> {
     vec![
         Span::styled("≡━", tool),
         Span::styled("◖●━━●◗", handle),
-        Span::styled("◣◣", tool),
+        Span::styled("◣◣◣", tool),
+        // 11 cells = LOGO_COLS
     ]
 }
 
-/// Top line: mark, product name, a muted location; on the right path, adapter, branch, status.
-pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) {
+/// Cells the logo occupies at the start of the header (the text mark is its fallback).
+pub const LOGO_COLS: u16 = 11;
+
+/// Top line: mark, product name, a muted location; on the right path, branch, status.
+/// Returns the cells of the mark, where the logo picture goes.
+pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) -> Rect {
     fill(f, area, t.background);
     let mut left = vec![Span::raw(" ")];
     left.extend(logo_mark(t));
@@ -50,6 +55,7 @@ pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) {
     right.push(Span::styled("● ", Style::default().fg(dot)));
     right.push(Span::styled(format!("{label} "), Style::default().fg(t.text)));
     f.render_widget(Paragraph::new(Line::from(right)).right_aligned(), area);
+    Rect { x: area.x + 1, y: area.y, width: LOGO_COLS.min(area.width.saturating_sub(1)), height: 1 }
 }
 
 /// A horizontal rule in the subtle border colour.
