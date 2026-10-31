@@ -12,3 +12,4 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0006](0006-providers.md) | Anthropic API, OpenAI-compatible and local models from v1 | accepted |
 | [0007](0007-features-after-mvp.md) | After the MVP: proof, memory-based context, rewind and branches, agent mesh | accepted |
 | [0008](0008-name.md) | The name is harness-multitool | accepted |
+| [0009](0009-callback-triggers.md) | Callbacks are triggers: `message`, `skill`, `journal` | accepted |

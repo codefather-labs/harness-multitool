@@ -10,3 +10,5 @@
 | **Q-6** | Out-of-process plugins in any language: when, and for which interfaces? | after M2 |
 | **Q-7** | A sandbox for third-party plugins (WebAssembly components)? | after M4 |
 | **Q-8** | Is "no harness runs in the browser" true? Check before saying it publicly. | research |
+| **Q-9** | Trigger configuration: the match syntax (label globs, payload field conditions), how a payload maps onto a journal entry or a skill's input (templates?), and per-trigger rate limits. | design |
+| **Q-10** | How a `skill` run started by a callback reports back to the caller: the callback's result URL, a reply callback, or a message to the user's channel? | design |
