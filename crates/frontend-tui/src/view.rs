@@ -57,9 +57,11 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
         Mode::Session(v) => {
             let [head, rule, body] =
                 Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-            let logo = widgets::header(f, head, t, &s.header);
+            let logo = widgets::header(f, head, t, &s.header, s.pictures);
             widgets::rule(f, rule, t);
-            out.placements.push(Placement { rect: logo, graphic: Graphic::Logo(s.eyes) });
+            if let Some(rect) = logo {
+                out.placements.push(Placement { rect, graphic: Graphic::Logo(s.eyes) });
+            }
             session(f, body, v, t, &mut out);
         }
     }

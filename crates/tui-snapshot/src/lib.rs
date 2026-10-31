@@ -81,7 +81,8 @@ impl Raster {
     pub fn render_with(&self, state: &AppState, theme: &Theme, cols: u16, rows: u16, graphics: bool) -> RgbImage {
         let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
         let mut placements = Vec::new();
-        term.draw(|f| placements = frontend_tui::draw(f, state, theme).placements).expect("draw");
+        let state = AppState { pictures: graphics, ..state.clone() };
+        term.draw(|f| placements = frontend_tui::draw(f, &state, theme).placements).expect("draw");
         let buf = term.backend().buffer();
         let mut img = self.rasterise(buf, theme);
         if graphics {

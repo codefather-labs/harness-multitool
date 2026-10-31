@@ -63,6 +63,7 @@ pub fn welcome() -> AppState {
     AppState {
         header: header(VERSION),
         eyes: Eyes::Open,
+        pictures: false,
         mode: Mode::Session(SessionView {
             transcript: vec![
                 Item::Welcome {
@@ -130,6 +131,7 @@ pub fn main_session() -> AppState {
     AppState {
         header: header("session/4f7e3c2a"),
         eyes: Eyes::Open,
+        pictures: false,
         mode: Mode::Session(SessionView {
             transcript: vec![
                 turn(Role::User, "14:32", &["Add a provider router with explicit model fallback."]),
@@ -171,6 +173,7 @@ pub fn splash() -> AppState {
     AppState {
         header: header(VERSION),
         eyes: Eyes::Open,
+        pictures: false,
         mode: Mode::Splash(SplashView {
             brand: brand(),
             heading: "Welcome".into(),
@@ -202,6 +205,7 @@ pub fn startup() -> AppState {
     AppState {
         header: header(VERSION),
         eyes: Eyes::Open,
+        pictures: false,
         mode: Mode::Startup(StartupView {
             brand: brand(),
             sessions: vec![

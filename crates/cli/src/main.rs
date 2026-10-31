@@ -204,6 +204,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
         loop {
+            state.pictures = picker.is_some();
             let mut drawn = Drawn::default();
             terminal.draw(|f| {
                 drawn = frontend_tui::draw(f, &state, &current);

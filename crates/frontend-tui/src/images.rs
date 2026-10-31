@@ -189,45 +189,31 @@ pub fn rasterize(g: &Graphic, t: &Theme, width: u32, height: u32) -> RgbaImage {
     }
 }
 
-/// The logo drawn by hand as pixel art for terminals without graphics: 52 x 8 pixels, two per
-/// cell (half blocks), so 52 x 4 cells. T tool, O handle, H highlight, X rivet hole, . empty.
-/// Regular on purpose: three equal 2-px tines, a symmetric rounded handle, identical saw teeth.
+/// The logo drawn by hand as pixel art for terminals without graphics: 50 x 8 pixels, two per
+/// cell (half blocks), so 50 x 4 cells. T tool, O handle, H highlight, X rivet hole, . empty.
+/// Regular on purpose: three equal 2-px tines, a symmetric rounded handle in the middle, identical
+/// saw teeth; fork and saw are both 11 px, so the tool is centred on its handle.
 pub const LOGO_ART: [&str; 8] = [
-    "TTTTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
-    "TTTTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
-    ".........TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
-    "TTTTTTTTTTTTTOOOWXOOOOOOOOOOOOOOOOOOWXOOOTTTTTTTTTTT",
-    "TTTTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
-    ".........TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
-    "TTTTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
-    "TTTTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
+    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
+    "TTTTTTTTTTTOOOWXOOOOOOOOOOOOOOOOOOWXOOOTTTTTTTTTTT",
+    "TTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
+    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
 ];
 
 /// `LOGO_ART` with the eyes shut: only the lower lid line is left.
 pub const LOGO_ART_CLOSED: [&str; 8] = [
-    "TTTTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
-    "TTTTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
-    ".........TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
-    "TTTTTTTTTTTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
-    "TTTTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
-    ".........TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
-    "TTTTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
-    "TTTTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
-];
-
-/// The same multitool for the one-row header: 24 x 3 pixels in sextants (2 x 3 per cell), so
-/// 12 cells. Every cell holds at most two colours, which is all a cell can show.
-pub const LOGO_MARK: [&str; 3] = [
-    "TTTT...OOOOOOOO..T.T.T.T",
-    "...TTTOOOXOOXOOOTTTTTTTT",
-    "TTTT...OOOOOOOO.TTTTTTT.",
-];
-
-/// `LOGO_MARK` with the eyes shut: each eye a two-pixel slit.
-pub const LOGO_MARK_CLOSED: [&str; 3] = [
-    "TTTT...OOOOOOOO..T.T.T.T",
-    "...TTTOOXXOOXXOOTTTTTTTT",
-    "TTTT...OOOOOOOO.TTTTTTT.",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
+    "TTTTTTTTT..OOOHHHHHHHHHHHHHHHHHHHHHHOOO...T..T..T.",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTT.TT.TT.TT",
+    "TTTTTTTTTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
+    "TTTTTTTTTTTOOOXXOOOOOOOOOOOOOOOOOOXXOOOTTTTTTTTTTT",
+    ".......TTTTOOOOOOOOOOOOOOOOOOOOOOOOOOOOTTTTTTTTTTT",
+    "TTTTTTTTT..OOOOOOOOOOOOOOOOOOOOOOOOOOOO..TTTTTTTT.",
+    "TTTTTTTTT...OOOOOOOOOOOOOOOOOOOOOOOOOO............",
 ];
 
 /// Whether the multitool's eyes (the handle's two rivets) are open.
@@ -265,66 +251,37 @@ fn art_colour(t: &Theme, c: u8) -> Option<Color> {
     }
 }
 
-/// Draws pixel art with `pw` x `ph` pixels per cell: 1 x 2 (half blocks) or 2 x 3 (sextants).
-/// A cell takes the colours of its pixels as fg and bg; empty pixels show `bg`.
-fn pixel_art(buf: &mut Buffer, x: u16, y: u16, art: &[&str], (pw, ph): (usize, usize), t: &Theme, bg: Color) {
-    let rows = art.len() / ph;
-    let cols = art[0].len() / pw;
-    for row in 0..rows {
-        for col in 0..cols {
-            let mut px: Vec<Color> = Vec::with_capacity(pw * ph);
-            for dy in 0..ph {
-                for dx in 0..pw {
-                    px.push(art_colour(t, art[row * ph + dy].as_bytes()[col * pw + dx]).unwrap_or(bg));
-                }
-            }
-            // Background of the cell: the screen's when the cell shows it or is one solid colour
-            // (drawn as █), else the first colour, so a cell never needs more than two.
-            let solid = px.iter().all(|c| *c == px[0]);
-            let back = if px.contains(&bg) || solid { bg } else { px[0] };
-            let fore = px.iter().copied().find(|c| *c != back).unwrap_or(back);
-            let mask: u32 = px.iter().enumerate().filter(|(_, c)| **c == fore && fore != back).map(|(i, _)| 1 << i).sum();
-            let sym = cell_symbol(mask, pw, ph);
+/// Draws half-block pixel art (1 x 2 pixels per cell). A cell takes the colours of its two pixels
+/// as fg and bg; empty pixels and solid cells keep `bg`, so a snapshot reads the screen behind.
+fn pixel_art(buf: &mut Buffer, x: u16, y: u16, art: &[&str], t: &Theme, bg: Color) {
+    for row in 0..art.len() / 2 {
+        let (up, down) = (art[row * 2].as_bytes(), art[row * 2 + 1].as_bytes());
+        for col in 0..up.len() {
+            let (a, b) = (art_colour(t, up[col]), art_colour(t, down[col]));
+            let (sym, fg, cell_bg) = match (a, b) {
+                (None, None) => (" ", bg, bg),
+                (Some(a), None) => ("▀", a, bg),
+                (None, Some(b)) => ("▄", b, bg),
+                (Some(a), Some(b)) if a == b => ("█", a, bg),
+                (Some(a), Some(b)) => ("▀", a, b),
+            };
             let pos = (x + col as u16, y + row as u16);
             if buf.area.contains(pos.into()) {
-                buf[pos].set_symbol(&sym).set_fg(fore).set_bg(back);
+                buf[pos].set_symbol(sym).set_fg(fg).set_bg(cell_bg);
             }
         }
-    }
-}
-
-/// The block glyph whose set pixels are `mask` (bit i = pixel i, row-major).
-fn cell_symbol(mask: u32, pw: usize, ph: usize) -> String {
-    let full = (1u32 << (pw * ph)) - 1;
-    if mask == 0 {
-        return " ".into();
-    }
-    if mask == full {
-        return "█".into();
-    }
-    match (pw, ph) {
-        (1, 2) => if mask == 1 { "▀" } else { "▄" }.into(),
-        _ => match mask {
-            0b010101 => "▌".into(),
-            0b101010 => "▐".into(),
-            // Unicode 13 sextants U+1FB00..U+1FB3B skip the two halves above.
-            m => {
-                let n = if m < 21 { m - 1 } else if m < 42 { m - 2 } else { m - 3 };
-                char::from_u32(0x1FB00 + n).map(String::from).unwrap_or_else(|| "█".into())
-            }
-        },
     }
 }
 
 /// Draws `LOGO_ART` at `(x, y)`.
 fn logo_art(buf: &mut Buffer, x: u16, y: u16, eyes: Eyes, t: &Theme, bg: Color) {
     let art = if eyes == Eyes::Open { &LOGO_ART } else { &LOGO_ART_CLOSED };
-    pixel_art(buf, x, y, art, (1, 2), t, bg);
+    pixel_art(buf, x, y, art, t, bg);
 }
 
 /// The text fallback written into a placement's cells, for terminals without graphics: an
 /// icon becomes its glyph, text becomes bold text on the middle row, the logo becomes its text
-/// LOGO_MARK in sextants (or, where 52 x 4 cells are free, LOGO_ART in half blocks). Never pixel art computed
+/// LOGO_ART in half blocks where 50 x 4 cells are free, and nothing for a smaller logo. Never pixel art computed
 /// from a picture: that showed seams and turned text into noise (operator's GNOME Terminal
 /// screenshots, 2026-10-31).
 pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
@@ -352,15 +309,9 @@ pub fn fallback(buf: &mut Buffer, p: &Placement, t: &Theme) {
             let w = LOGO_ART[0].len() as u16;
             logo_art(buf, r.x + (r.width - w) / 2, r.y + (r.height - 4) / 2, *eyes, t, bg);
         }
-        Graphic::Logo(eyes) => {
-            let mark = if *eyes == Eyes::Open { &LOGO_MARK } else { &LOGO_MARK_CLOSED };
-            let bg = match buf[(r.x, mid)].bg {
-                Color::Reset => t.background,
-                c => c,
-            };
-            let w = (LOGO_MARK[0].len() / 2) as u16;
-            pixel_art(buf, r.x + r.width.saturating_sub(w) / 2, mid, mark, (2, 3), t, bg);
-        }
+        // Too small for pixel art to look like the tool (operator, 2026-11-01): no fallback;
+        // the header leaves the logo out when pictures are off (AppState.pictures).
+        Graphic::Logo(_) => {}
     }
 }
 
@@ -378,18 +329,9 @@ mod tests {
     }
 
     #[test]
-    fn sextant_codes_skip_the_halves() {
-        assert_eq!(cell_symbol(1, 2, 3), "\u{1FB00}");
-        assert_eq!(cell_symbol(0b010101, 2, 3), "▌");
-        assert_eq!(cell_symbol(22, 2, 3), "\u{1FB14}");
-        assert_eq!(cell_symbol(62, 2, 3), "\u{1FB3B}");
-        assert_eq!(cell_symbol(63, 2, 3), "█");
-    }
-
-    #[test]
     fn every_logo_art_cell_needs_at_most_two_colours() {
         let t = Theme::builtin("dark").unwrap();
-        for (art, pw, ph) in [(&LOGO_ART[..], 1, 2), (&LOGO_ART_CLOSED[..], 1, 2), (&LOGO_MARK[..], 2, 3), (&LOGO_MARK_CLOSED[..], 2, 3)] {
+        for (art, pw, ph) in [(&LOGO_ART[..], 1, 2), (&LOGO_ART_CLOSED[..], 1, 2)] {
             for row in 0..art.len() / ph {
                 for col in 0..art[0].len() / pw {
                     let mut c: Vec<Option<Color>> = Vec::new();

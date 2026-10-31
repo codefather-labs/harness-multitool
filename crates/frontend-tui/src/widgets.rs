@@ -14,15 +14,16 @@ pub fn fill(f: &mut Frame, area: Rect, bg: ratatui::style::Color) {
     f.render_widget(Block::default().style(Style::default().bg(bg)), area);
 }
 
-/// Cells the logo occupies at the start of the header (images::LOGO_MARK is its fallback).
-pub const LOGO_COLS: u16 = 12;
+/// Cells the logo occupies at the start of the header (a picture only; no text fallback).
+pub const LOGO_COLS: u16 = 11;
 
 /// Top line: mark, product name, a muted location; on the right path, branch, status.
 /// Returns the cells of the mark, where the logo picture goes.
-pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) -> Rect {
+pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo, logo: bool) -> Option<Rect> {
     fill(f, area, t.background);
-    // The logo's cells (1..=LOGO_COLS) are filled by the picture or its fallback.
-    let mut left = vec![Span::raw(" ".repeat(LOGO_COLS as usize + 3))];
+    // With `logo`, cells 1..=LOGO_COLS are left for the picture; without, the name leads.
+    let lead = if logo { LOGO_COLS as usize + 3 } else { 1 };
+    let mut left = vec![Span::raw(" ".repeat(lead))];
     left.push(Span::styled(h.product.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
     left.push(Span::styled(format!(" / {}", h.location), Style::default().fg(t.text_muted)));
     f.render_widget(Paragraph::new(Line::from(left)), area);
@@ -41,7 +42,7 @@ pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) -> Rect {
     right.push(Span::styled("● ", Style::default().fg(dot)));
     right.push(Span::styled(format!("{label} "), Style::default().fg(t.text)));
     f.render_widget(Paragraph::new(Line::from(right)).right_aligned(), area);
-    Rect { x: area.x + 1, y: area.y, width: LOGO_COLS.min(area.width.saturating_sub(1)), height: 1 }
+    logo.then(|| Rect { x: area.x + 1, y: area.y, width: LOGO_COLS.min(area.width.saturating_sub(1)), height: 1 })
 }
 
 /// A horizontal rule in the subtle border colour.

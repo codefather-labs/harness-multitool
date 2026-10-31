@@ -9,6 +9,9 @@ pub struct AppState {
     pub mode: Mode,
     /// The logo's eyes; the live CLI closes them for the launch blink (images::eyes_at).
     pub eyes: crate::images::Eyes,
+    /// Whether the terminal draws pictures. Without them the header carries no logo: at one
+    /// row the text cells cannot draw the tool well (operator, 2026-11-01).
+    pub pictures: bool,
 }
 
 #[derive(Debug, Clone)]
