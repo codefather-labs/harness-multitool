@@ -233,7 +233,7 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     // Sections.
     let side_w = 24u16;
     for (i, name) in s.sections.iter().enumerate() {
-        let y = body_y + i as u16 * 2;
+        let y = body_y + i as u16;
         if y + 1 >= footer_y {
             break;
         }
@@ -296,9 +296,9 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
         let under = page_focus && s.cursor == i;
         let row_bg = if under { t.surface_raised } else { bg };
         let radio = if s.provider == i {
-            vec![Span::styled(" (", Style::default().fg(t.text)), Span::styled("●", Style::default().fg(t.success)), Span::styled(")  ", Style::default().fg(t.text))]
+            vec![Span::styled(" ( ", Style::default().fg(t.text)), Span::styled("●", Style::default().fg(t.success)), Span::styled(" )  ", Style::default().fg(t.text))]
         } else {
-            vec![Span::styled(" ( )  ", Style::default().fg(t.text_muted))]
+            vec![Span::styled(" (   )  ", Style::default().fg(t.text_muted))]
         };
         let mut spans = radio;
         spans.push(Span::styled(p.name.clone(), Style::default().fg(t.text).add_modifier(if s.provider == i { Modifier::BOLD } else { Modifier::empty() })));

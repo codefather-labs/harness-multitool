@@ -300,6 +300,12 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                     match kind {
                         Some(ActionKind::NewSession) => state = fixtures::welcome(),
                         Some(ActionKind::Resume) => state = fixtures::main_session(),
+                        Some(ActionKind::Settings) => {
+                            state = fixtures::welcome();
+                            if let Mode::Session(w) = &mut state.mode {
+                                w.overlay = Some(frontend_tui::model::Overlay::Settings(frontend_tui::overlay::sample_settings()));
+                            }
+                        }
                         // Settings, tour and help screens come in later stages.
                         _ => {}
                     }
