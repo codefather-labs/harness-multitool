@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::images::{Graphic, Icon, Placement, Tint};
-use crate::model::{Brand, SplashView, StartupView};
+use crate::model::{Brand, SplashView, StartupPanel, StartupView};
 use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
 use crate::widgets;
@@ -146,37 +146,6 @@ fn card(f: &mut Frame, area: Rect, t: &Theme, line: Option<Color>) -> (Rect, Col
     }
 }
 
-/// A filled box outlined by a thin line that sits flush on the fill, as the mockups draw the
-/// selection: the line is drawn with one-eighth blocks on the edge of each border cell that
-/// touches the inside (▁ above, ▔ below, ▕ left, ▏ right), never through the cell middle, so
-/// no strip of the outer colour shows between line and fill. The corner cells stay empty: the
-/// lines meet at a point there, which reads as a rounded corner. Returns the inside.
-fn outlined(f: &mut Frame, area: Rect, line: Color, outer: Color, inner: Color) -> Rect {
-    let buf = f.buffer_mut();
-    let a = area.intersection(buf.area);
-    if a.width < 3 || a.height < 3 {
-        return a;
-    }
-    let (r, b) = (a.x + a.width - 1, a.y + a.height - 1);
-    for y in a.y..=b {
-        for x in a.x..=r {
-            let edge_x = x == a.x || x == r;
-            let edge_y = y == a.y || y == b;
-            let sym = match (edge_x, edge_y) {
-                (true, true) => " ",
-                (false, true) => if y == a.y { "▁" } else { "▔" },
-                (true, false) => if x == a.x { "▕" } else { "▏" },
-                (false, false) => {
-                    buf[(x, y)].set_symbol(" ").set_bg(inner);
-                    continue;
-                }
-            };
-            buf[(x, y)].set_symbol(sym).set_fg(line).set_bg(outer);
-        }
-    }
-    Rect { x: a.x + 1, y: a.y + 1, width: a.width - 2, height: a.height - 2 }
-}
-
 fn rounded(color: Color, bg: Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -232,9 +201,12 @@ fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: 
         );
         rects.push(Rect { y: area.y + i as u16 * 3 + 1, height: 2, ..area });
     }
+    // The selected entry: its rows take the selection fill (drawn by the caller) and an accent
+    // bar on the left, like the transcript's cards. No outline (operator, 2026-11-01: an
+    // outline did not read as a selection).
     if let Some(i) = selected.filter(|i| *i < count) {
-        let r = Rect { y: area.y + i as u16 * 3, height: 4, ..area };
-        outlined(f, r, t.accent_line, fill, t.selection);
+        let bar = Rect { y: area.y + i as u16 * 3 + 1, height: 2, width: 1, ..area };
+        f.render_widget(Paragraph::new(vec![Line::from("▐"), Line::from("▐")]).style(Style::default().fg(t.accent_line).bg(fill)), bar);
     }
     rects
 }
@@ -289,8 +261,8 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     f.render_widget(Paragraph::new(heading("Recent sessions")).style(Style::default().bg(fill)), row(inner, 0));
     icon(out, Rect { x: inner.x + 1, ..row(inner, 0) }, Icon::Clock, Tint::Text);
     let list = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-    // Both panels show their selection, as in the mockup; the focused one takes the keys.
-    let sel = Some(v.selected_session);
+    // Only the focused panel shows its selection, so it is clear which one the keys move.
+    let sel = (v.focus == StartupPanel::Sessions).then_some(v.selected_session);
     let rects = entries(f, list, v.sessions.len(), sel, t, fill);
     for (i, (s, r)) in v.sessions.iter().zip(&rects).enumerate() {
         let bg = if sel == Some(i) { t.selection } else { fill };
@@ -340,7 +312,7 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     f.render_widget(Paragraph::new(heading("Quick actions")).style(Style::default().bg(fill)), row(inner, 0));
     icon(out, Rect { x: inner.x + 1, ..row(inner, 0) }, Icon::Bolt, Tint::Accent);
     let list = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
-    let sel = Some(v.selected_action);
+    let sel = (v.focus == StartupPanel::Actions).then_some(v.selected_action);
     let rects = entries(f, list, v.actions.len(), sel, t, fill);
     for (i, (a, r)) in v.actions.iter().zip(&rects).enumerate() {
         let on = sel == Some(i);
