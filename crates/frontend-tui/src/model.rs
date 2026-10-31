@@ -255,11 +255,22 @@ pub struct MapEvent {
     pub map: FlowMap,
 }
 
-/// A flowchart as the transcript draws it: nodes in reading order and the arrows between them.
+/// A map as the transcript draws it: a mind map (a tree of thoughts) or a flowchart (a block
+/// diagram by the canon). Nodes in reading order and the arrows or links between them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FlowMap {
+    pub kind: MapKind,
     pub nodes: Vec<FlowNode>,
     pub edges: Vec<FlowEdge>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MapKind {
+    /// A tree: the first node is the root, an unlabelled edge is a parent -> child branch,
+    /// edges with `link` are cross links between branches.
+    Mindmap,
+    /// A block diagram: edges are arrows, ranked left to right.
+    Flowchart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -269,12 +280,60 @@ pub struct FlowNode {
     pub shape: NodeShape,
     /// Changed by the event being shown.
     pub changed: bool,
+    pub status: NodeStatus,
+    /// Journal entries the node points at.
+    pub refs: Vec<u32>,
+}
+
+/// What a node is. Mind-map kinds and flowchart symbols are the kinds the journal's mind maps
+/// have (`claudebase mindmap add --kind ...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeShape {
+    // Mind map
+    Topic,
+    Goal,
+    Fact,
+    Hypothesis,
+    Question,
+    Choice,
+    Task,
+    Idea,
+    DeadEnd,
+    Remark,
+    // Flowchart
+    Start,
+    End,
+    Process,
+    Decision,
+    Io,
+    Subprocess,
+    Document,
+    Data,
+    Manual,
+    Prep,
+    Connector,
+    Delay,
+    Note,
+    Gate(Gate),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NodeShape {
-    Box,
-    Decision,
+pub enum Gate {
+    And,
+    Or,
+    Not,
+    Nand,
+    Nor,
+    Xor,
+    Xnor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum NodeStatus {
+    #[default]
+    Open,
+    Done,
+    Dropped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -282,6 +341,8 @@ pub struct FlowEdge {
     pub from: String,
     pub to: String,
     pub label: Option<String>,
+    /// A mind map's cross link (drawn dashed), not a branch of the tree.
+    pub link: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

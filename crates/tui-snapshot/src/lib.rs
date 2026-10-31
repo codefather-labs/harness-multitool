@@ -129,6 +129,15 @@ impl Raster {
                         img.put_pixel(px, py, bg);
                     }
                 }
+                // Strikethrough: two pixels through the middle of the cell.
+                if cell.modifier.contains(Modifier::CROSSED_OUT) && cell.symbol() != " " {
+                    let sy = oy + ch / 2;
+                    for py in sy..sy + 2 {
+                        for px in ox..ox + cw {
+                            img.put_pixel(px, py, fg);
+                        }
+                    }
+                }
                 // Underline: two pixels just under the baseline, as terminals draw it.
                 if cell.modifier.contains(Modifier::UNDERLINED) {
                     let uy = oy + (baseline as u32 + 2).min(ch - 2);

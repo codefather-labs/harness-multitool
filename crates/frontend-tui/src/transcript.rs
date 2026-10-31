@@ -605,7 +605,11 @@ fn map(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapEvent, bg: Color) -> u16 
     let h = 3 + map_h;
     cv.frame(Rect::new(x, y, w, h), t.border_subtle, bg);
     cv.icon(ix, y + 1, 2, 1, Icon::Map, Tint::Accent);
-    cv.line(ix + 3, y + 1, iw, vec![Span::styled("MINDMAP", bold(t.accent)), Span::styled(format!("   map #{} updated: {}", m.id, m.change), plain(t.text))], bg);
+    let kind = match m.map.kind {
+        crate::model::MapKind::Mindmap => "MINDMAP",
+        crate::model::MapKind::Flowchart => "FLOWCHART",
+    };
+    cv.line(ix + 3, y + 1, iw, vec![Span::styled(kind, bold(t.accent)), Span::styled(format!("   map #{} updated: {}", m.id, m.change), plain(t.text))], bg);
     cv.line_right(ix + iw, y + 1, vec![Span::styled(m.date.clone(), plain(t.text_muted))], bg);
     let area = Rect::new(ix, y + 2, iw, map_h);
     cv.grow(y + h);
@@ -634,8 +638,7 @@ fn edge(d: &Drawn, row: u16, t: &Theme) -> Edge {
 /// The one row between two items (or above the first, below the last). Its top half is the
 /// bottom padding of the card above, its bottom half the top padding of the card below, and a
 /// thin line in the page colour runs between them: text sits off both card edges and cards are
-/// a hair apart, as in the mockups. The card corners are cut with quadrant blocks, so they read
-/// as rounded.
+/// a hair apart, as in the mockups. The stripes end with quadrant blocks (rounded ends).
 fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Drawn {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
     let page = t.background;
@@ -654,12 +657,15 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
             };
             continue;
         }
+        // No cut corners at the card edges: in a real terminal a one-cell notch at the edge of
+        // the transcript reads as a glitch, not as a rounded corner (operator's screenshot,
+        // 2026-11-01). Only the stripes end round.
+        let _ = (left, right);
         let (sym, fg, bg) = match (sa, sb) {
-            (Some(_), Some(_)) if left || right => (" ", page, page),
             (Some(a), Some(b)) if a == b => ("━", page, a),
             (Some(a), Some(b)) => ("▀", a, b),
-            (Some(a), None) => (if left { "▝" } else if right { "▘" } else { "▀" }, a, page),
-            (None, Some(b)) => (if left { "▗" } else if right { "▖" } else { "▄" }, b, page),
+            (Some(a), None) => ("▀", a, page),
+            (None, Some(b)) => ("▄", b, page),
             (None, None) => (" ", page, page),
         };
         cell.set_symbol(sym).set_fg(fg).set_bg(bg);

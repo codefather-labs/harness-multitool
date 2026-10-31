@@ -46,7 +46,8 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/callback [text]` | an HTTP callback with its status |
 | `/reminder [text]` | a journal reminder |
 | `/journal` | a JOURNAL event |
-| `/map-new` · `/map` | a mind map created (empty) · a mind map updated, drawn |
+| `/map-new` · `/map` | a map created (empty) · a flowchart updated, drawn |
+| `/flow` · `/mind` | every flowchart symbol and logic gate · every mind-map node kind and status |
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
 | `/exit`, `/quit` | quit |
@@ -63,6 +64,7 @@ multitool screen tool-calls --theme light --png out.png             # as a graph
 multitool screen tool-calls --no-graphics --size 160x45 --png out.png  # text mode, any size
 multitool screen startup --compare --png cmp.png                     # side by side with the mockup
 multitool screen splash --eyes-closed --png blink.png                # the logo's blink frame
+multitool screen maps --no-graphics --size 160x70 --png maps.png    # every map component
 ```
 
 ## Layout rules
@@ -73,3 +75,8 @@ Settled with the project owner while matching the mockups; the journal holds eac
 - Tool cards: only a file edit's diff has a background; tool output, notes and sent messages are plain text under the tool's name.
 - The startup page selection is an accent outline without a fill, shown only in the focused panel.
 - The one-row header shows the logo only when the terminal draws pictures.
+- Cards end straight at the transcript's edge (cut corners read as glitches there); only the stripes end round.
+
+## Maps
+
+Two kinds, as in the journal's mind maps. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches. A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.

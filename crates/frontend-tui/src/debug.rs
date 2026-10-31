@@ -5,7 +5,7 @@
 //! `/help` lists the commands. The sample content mirrors the mockups in docs/design/concept.
 
 use crate::model::{
-    Diff, DiffLine, FlowEdge, FlowMap, FlowNode, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapEvent, NodeShape, Role,
+    Diff, DiffLine, FlowEdge, FlowMap, FlowNode, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapEvent, MapKind, NodeShape, NodeStatus, Role,
     SessionView, Tab, TabIcon, TabMark, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 
@@ -20,7 +20,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/reminder [text]", "journal reminder"),
     ("/journal", "journal entry event"),
     ("/map-new", "mind map created (empty)"),
-    ("/map", "mind map updated, drawn"),
+    ("/map", "flowchart updated, drawn"),
+    ("/flow", "every flowchart symbol and gate"),
+    ("/mind", "every mind-map node kind"),
     ("/tool read|edit|cat|tg|a2a|journal|fail|run", "tool call"),
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
@@ -212,24 +214,140 @@ pub fn sample_tool(kind: &str) -> Option<ToolCall> {
     })
 }
 
+fn fnode(id: &str, text: &str, shape: NodeShape) -> FlowNode {
+    FlowNode { id: id.into(), text: text.into(), shape, changed: false, status: NodeStatus::Open, refs: vec![] }
+}
+
+fn fedge(a: &str, b: &str, label: Option<&str>) -> FlowEdge {
+    FlowEdge { from: a.into(), to: b.into(), label: label.map(String::from), link: false }
+}
+
+/// The router fallback flowchart of journal-mindmap-events-*.
 pub fn sample_map() -> FlowMap {
-    let node = |id: &str, text: &str, shape, changed| FlowNode { id: id.into(), text: text.into(), shape, changed };
-    let edge = |a: &str, b: &str, l: Option<&str>| FlowEdge { from: a.into(), to: b.into(), label: l.map(String::from) };
+    let mut n4 = fnode("n4", "Use fallback (model / local)", NodeShape::Process);
+    n4.changed = true;
     FlowMap {
+        kind: MapKind::Flowchart,
         nodes: vec![
-            node("n1", "Start", NodeShape::Box, false),
-            node("n2", "Primary OK?", NodeShape::Decision, false),
-            node("n3", "Use primary model", NodeShape::Box, false),
-            node("n4", "Use fallback (model / local)", NodeShape::Box, true),
-            node("n5", "End", NodeShape::Box, false),
+            fnode("n1", "Start", NodeShape::Start),
+            fnode("n2", "Primary OK?", NodeShape::Decision),
+            fnode("n3", "Use primary model", NodeShape::Process),
+            n4,
+            fnode("n5", "End", NodeShape::End),
         ],
         edges: vec![
-            edge("n1", "n2", None),
-            edge("n2", "n3", Some("yes")),
-            edge("n2", "n4", Some("no")),
-            edge("n3", "n5", None),
-            edge("n4", "n5", None),
+            fedge("n1", "n2", None),
+            fedge("n2", "n3", Some("yes")),
+            fedge("n2", "n4", Some("no")),
+            fedge("n3", "n5", None),
+            fedge("n4", "n5", None),
         ],
+    }
+}
+
+/// Every flowchart symbol and every logic gate, in four short chains.
+pub fn sample_flow_gallery() -> FlowMap {
+    use crate::model::Gate;
+    let mut changed = fnode("p3", "Changed node", NodeShape::Process);
+    changed.changed = true;
+    FlowMap {
+        kind: MapKind::Flowchart,
+        nodes: vec![
+            fnode("s1", "Start", NodeShape::Start),
+            fnode("i1", "Read input", NodeShape::Io),
+            fnode("d1", "Valid?", NodeShape::Decision),
+            fnode("p1", "Process", NodeShape::Process),
+            fnode("e1", "End", NodeShape::End),
+            fnode("m1", "Manual fix", NodeShape::Manual),
+            fnode("r1", "Prepare", NodeShape::Prep),
+            fnode("u1", "Subprocess", NodeShape::Subprocess),
+            fnode("o1", "Report", NodeShape::Document),
+            fnode("b1", "Store", NodeShape::Data),
+            fnode("w1", "Wait 5 s", NodeShape::Delay),
+            fnode("c1", "A", NodeShape::Connector),
+            fnode("g1", "", NodeShape::Gate(Gate::And)),
+            fnode("g2", "", NodeShape::Gate(Gate::Or)),
+            fnode("g3", "", NodeShape::Gate(Gate::Xor)),
+            fnode("g4", "", NodeShape::Gate(Gate::Not)),
+            fnode("c2", "B", NodeShape::Connector),
+            fnode("g5", "", NodeShape::Gate(Gate::Nand)),
+            fnode("g6", "", NodeShape::Gate(Gate::Nor)),
+            fnode("g7", "", NodeShape::Gate(Gate::Xnor)),
+            changed,
+            fnode("t1", "A note on the flow", NodeShape::Note),
+        ],
+        edges: vec![
+            fedge("s1", "i1", None),
+            fedge("i1", "d1", None),
+            fedge("d1", "p1", Some("yes")),
+            fedge("d1", "m1", Some("no")),
+            fedge("p1", "e1", None),
+            fedge("r1", "u1", None),
+            fedge("u1", "o1", None),
+            fedge("o1", "b1", None),
+            fedge("b1", "w1", None),
+            fedge("c1", "g1", None),
+            fedge("g1", "g2", None),
+            fedge("g2", "g3", None),
+            fedge("g3", "g4", None),
+            fedge("c2", "g5", None),
+            fedge("g5", "g6", None),
+            fedge("g6", "g7", None),
+            fedge("g7", "p3", None),
+        ],
+    }
+}
+
+/// Every mind-map node kind and status, refs and a cross link.
+pub fn sample_mind_gallery() -> FlowMap {
+    let with = |id: &str, text: &str, shape: NodeShape, status: NodeStatus, refs: &[u32]| FlowNode {
+        id: id.into(),
+        text: text.into(),
+        shape,
+        changed: false,
+        status,
+        refs: refs.to_vec(),
+    };
+    let mut changed = with("n13", "Changed in this event", NodeShape::Fact, NodeStatus::Open, &[]);
+    changed.changed = true;
+    let mut edges: Vec<FlowEdge> = [
+        ("n1", "n2"),
+        ("n1", "n3"),
+        ("n1", "n4"),
+        ("n1", "n5"),
+        ("n2", "n6"),
+        ("n2", "n7"),
+        ("n3", "n8"),
+        ("n3", "n9"),
+        ("n4", "n10"),
+        ("n4", "n11"),
+        ("n5", "n12"),
+        ("n5", "n13"),
+        ("n5", "n14"),
+    ]
+    .iter()
+    .map(|(a, b)| fedge(a, b, None))
+    .collect();
+    edges.push(FlowEdge { from: "n9".into(), to: "n6".into(), label: Some("contradicts".into()), link: true });
+    FlowMap {
+        kind: MapKind::Mindmap,
+        nodes: vec![
+            with("n1", "Router fallback", NodeShape::Topic, NodeStatus::Open, &[]),
+            with("n2", "Never drop a request", NodeShape::Goal, NodeStatus::Open, &[]),
+            with("n3", "Findings", NodeShape::Fact, NodeStatus::Open, &[]),
+            with("n4", "Options", NodeShape::Idea, NodeStatus::Open, &[]),
+            with("n5", "Work", NodeShape::Task, NodeStatus::Open, &[]),
+            with("n6", "Use an explicit chain", NodeShape::Choice, NodeStatus::Open, &[137]),
+            with("n7", "Which timeout for local?", NodeShape::Question, NodeStatus::Open, &[]),
+            with("n8", "Primary fails ~2% at peak", NodeShape::Fact, NodeStatus::Open, &[131]),
+            with("n9", "Retries alone are enough", NodeShape::Hypothesis, NodeStatus::Open, &[]),
+            with("n10", "Retry with backoff only", NodeShape::DeadEnd, NodeStatus::Dropped, &[]),
+            with("n11", "See the provider docs", NodeShape::Remark, NodeStatus::Open, &[]),
+            with("n12", "Write the router tests", NodeShape::Task, NodeStatus::Done, &[]),
+            changed,
+            with("n14", "Measure fallback latency", NodeShape::Task, NodeStatus::Open, &[]),
+        ],
+        edges,
     }
 }
 
@@ -301,6 +419,14 @@ fn command(w: &mut Workspace, cmd: &str) {
             v,
             Item::Map(MapEvent { id: 3, change: "+node n4, +edge n2->n4 (ref #137)".into(), date: "2026-10-28 14:28".into(), map: sample_map() }),
         ),
+        "flow" => attach(
+            v,
+            Item::Map(MapEvent { id: 4, change: "every flowchart symbol and logic gate".into(), date: "2026-11-01 01:20".into(), map: sample_flow_gallery() }),
+        ),
+        "mind" => attach(
+            v,
+            Item::Map(MapEvent { id: 5, change: "every mind-map node kind and status".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery() }),
+        ),
         "tool" | "t" => match sample_tool(or(arg, "read")) {
             Some(c) => attach(v, Item::Tool(c)),
             None => v.transcript.push(Item::Tips { label: "UNKNOWN TOOL".into(), lines: vec!["/tool read|edit|cat|tg|a2a|journal|fail|run".into()] }),
@@ -358,7 +484,7 @@ mod tests {
     #[test]
     fn every_debug_command_publishes_its_item() {
         let mut w = workspace();
-        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/map-new", "/map", "/help"] {
+        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/map-new", "/map", "/flow", "/mind", "/help"] {
             let before = w.view().transcript.len();
             let attached_before: usize = w.view().transcript.iter().map(|i| if let Item::Turn { attached, .. } = i { attached.len() } else { 0 }).sum();
             send(&mut w, cmd);

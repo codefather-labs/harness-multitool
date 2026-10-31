@@ -25,6 +25,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
     Fixture { name: "session-tabs", mockup: "session-tabs", build: session_tabs },
+    Fixture { name: "maps", mockup: "journal-mindmap-events", build: maps },
 ];
 
 pub fn by_name(name: &str) -> Option<&'static Fixture> {
@@ -431,4 +432,23 @@ pub fn session_tabs() -> AppState {
         toast: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
+}
+
+/// Every map component at once: the flowchart gallery and the mind-map gallery.
+pub fn maps() -> AppState {
+    let view = SessionView {
+        transcript: vec![turn_with(
+            Role::Assistant,
+            "01:20",
+            &["Every block and component of both map types."],
+            vec![
+                Item::Map(MapEvent { id: 4, change: "every flowchart symbol and logic gate".into(), date: "2026-11-01 01:20".into(), map: crate::debug::sample_flow_gallery() }),
+                Item::Map(MapEvent { id: 5, change: "every mind-map node kind and status".into(), date: "2026-11-01 01:20".into(), map: crate::debug::sample_mind_gallery() }),
+            ],
+        )],
+        status: router_status(),
+        composer: composer("Type a message, / for commands, @ to mention...", session_hints()),
+        ..Default::default()
+    };
+    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
 }
