@@ -618,6 +618,7 @@ dependencies = [
 name = "frontend-tui"
 version = "0.1.0-dev"
 dependencies = [
+ "fontdue",
  "image",
  "ratatui",
  "resvg",

@@ -1,6 +1,7 @@
 //! Named `AppState` scenarios, one per reference mockup in `docs/design/concept`.
 //! They are states of the real CLI, drawn by the real `view::draw`.
 
+use crate::images::Icon;
 use crate::model::{
     ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Item, KeyHint, Mode, QuickAction, RecentSession,
     Role, SessionView, SplashView, StartupPanel, StartupView, StatusLine, TipPart, Tone, ToolBody, ToolCall, ToolState,
@@ -186,8 +187,8 @@ fn recent(title: &str, path: &str, branch: &str, age: &str, model: &str) -> Rece
     RecentSession { title: title.into(), path: path.into(), branch: branch.into(), age: age.into(), model: model.into() }
 }
 
-fn action(key: char, icon: &str, title: &str, description: &str, kind: ActionKind) -> QuickAction {
-    QuickAction { key, icon: icon.into(), title: title.into(), description: description.into(), kind }
+fn action(key: char, icon: Icon, title: &str, description: &str, kind: ActionKind) -> QuickAction {
+    QuickAction { key, icon, title: title.into(), description: description.into(), kind }
 }
 
 fn tip(parts: &[(&str, bool)]) -> Vec<TipPart> {
@@ -207,11 +208,11 @@ pub fn startup() -> AppState {
                 recent("Bridge monitor dashboard", "~/work/bridge-monitor", "ui-refactor", "1 day ago", "gpt-4o-mini"),
             ],
             actions: vec![
-                action('n', "✎", "New session", "Start a fresh session in this folder", ActionKind::NewSession),
-                action('r', "▶", "Resume session", "Continue a recent session", ActionKind::Resume),
-                action('s', "⚙", "Settings", "Providers, tools, permissions, theme", ActionKind::Settings),
-                action('t', "▦", "Start tour", "A quick guided introduction", ActionKind::Tour),
-                action('?', "?", "Help", "Keybindings and usage reference", ActionKind::Help),
+                action('n', Icon::FilePlus, "New session", "Start a fresh session in this folder", ActionKind::NewSession),
+                action('r', Icon::Play, "Resume session", "Continue a recent session", ActionKind::Resume),
+                action('s', Icon::Gear, "Settings", "Providers, tools, permissions, theme", ActionKind::Settings),
+                action('t', Icon::Map, "Start tour", "A quick guided introduction", ActionKind::Tour),
+                action('?', Icon::Help, "Help", "Keybindings and usage reference", ActionKind::Help),
             ],
             focus: StartupPanel::Actions,
             selected_session: 0,

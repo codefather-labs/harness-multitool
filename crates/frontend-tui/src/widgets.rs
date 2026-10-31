@@ -34,9 +34,8 @@ pub const LOGO_COLS: u16 = 11;
 /// Returns the cells of the mark, where the logo picture goes.
 pub fn header(f: &mut Frame, area: Rect, t: &Theme, h: &HeaderInfo) -> Rect {
     fill(f, area, t.background);
-    let mut left = vec![Span::raw(" ")];
-    left.extend(logo_mark(t));
-    left.push(Span::raw("  "));
+    // The logo's cells (1..=LOGO_COLS) are filled by the picture or its fallback.
+    let mut left = vec![Span::raw(" ".repeat(LOGO_COLS as usize + 3))];
     left.push(Span::styled(h.product.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
     left.push(Span::styled(format!(" / {}", h.location), Style::default().fg(t.text_muted)));
     f.render_widget(Paragraph::new(Line::from(left)), area);
@@ -85,7 +84,8 @@ pub fn status_line(f: &mut Frame, area: Rect, t: &Theme, s: &StatusLine) {
         if i > 0 {
             spans.push(Span::styled("  ·  ", Style::default().fg(t.text_muted)));
         }
-        spans.push(Span::styled(format!("{k}  "), Style::default().fg(t.text_muted)));
+        spans.push(Span::styled(k.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
+        spans.push(Span::raw("  "));
         spans.push(Span::styled(v.clone(), Style::default().fg(t.text)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);

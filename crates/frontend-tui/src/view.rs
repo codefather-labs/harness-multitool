@@ -63,6 +63,10 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
             session(f, body, v, t, &mut out);
         }
     }
+    // Every picture's cells get its text fallback; a graphics terminal draws the picture over it.
+    for p in &out.placements {
+        crate::images::fallback(f.buffer_mut(), p, t);
+    }
     out
 }
 

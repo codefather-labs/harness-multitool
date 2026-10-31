@@ -76,7 +76,7 @@ fn main() -> Result<()> {
         Command::Logo { theme, width, png } => {
             let theme = Theme::builtin(&theme)?;
             let height = width * 82 / 530;
-            let pic = frontend_tui::images::rasterize(frontend_tui::images::Graphic::Logo, &theme, width, height);
+            let pic = frontend_tui::images::rasterize(&frontend_tui::images::Graphic::Logo, &theme, width, height);
             let bg = match theme.background {
                 ratatui::style::Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
                 _ => image::Rgba([0, 0, 0, 255]),
@@ -163,10 +163,10 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                 drawn = frontend_tui::draw(f, &state, &current);
                 let Some(picker) = &picker else { return };
                 for p in &drawn.placements {
-                    let key = (p.graphic, current.id.clone(), p.rect.width, p.rect.height);
+                    let key = (p.graphic.clone(), current.id.clone(), p.rect.width, p.rect.height);
                     if !pictures.contains_key(&key) {
                         let fs = picker.font_size();
-                        let px = images::rasterize(p.graphic, &current, (p.rect.width * fs.width) as u32, (p.rect.height * fs.height) as u32);
+                        let px = images::rasterize(&p.graphic, &current, (p.rect.width * fs.width) as u32, (p.rect.height * fs.height) as u32);
                         if let Ok(proto) = picker.new_protocol(
                             image::DynamicImage::ImageRgba8(px),
                             Size::new(p.rect.width, p.rect.height),
@@ -253,5 +253,7 @@ fn graphics_terminal() -> bool {
         || term.contains("kitty")
         || term.starts_with("foot")
         || term.contains("ghostty")
+        // GNOME Terminal and other VTE terminals answer the query (sixel when enabled).
+        || !env("VTE_VERSION").is_empty()
         || ["WezTerm", "ghostty", "iTerm.app", "rio"].contains(&program.as_str())
 }

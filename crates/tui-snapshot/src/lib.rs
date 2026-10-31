@@ -15,10 +15,10 @@ use ratatui::style::{Color, Modifier};
 
 /// Fonts are compiled in, so a render is the same on Linux, macOS and Windows (licences next to
 /// them in `fonts/`). `Raster::with_fonts` takes other files instead.
-const MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
-const MONO_BOLD: &[u8] = include_bytes!("../fonts/DejaVuSansMono-Bold.ttf");
+const MONO: &[u8] = include_bytes!("../../frontend-tui/fonts/DejaVuSansMono.ttf");
+const MONO_BOLD: &[u8] = include_bytes!("../../frontend-tui/fonts/DejaVuSansMono-Bold.ttf");
 /// Tried in order for characters the monospace font lacks, as a terminal falls back.
-const FALLBACK: &[&[u8]] = &[include_bytes!("../fonts/DejaVuSans.ttf"), include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf")];
+const FALLBACK: &[&[u8]] = &[include_bytes!("../../frontend-tui/fonts/DejaVuSans.ttf"), include_bytes!("../../frontend-tui/fonts/NotoSansSymbols2-Regular.ttf")];
 
 fn parse(name: &str, bytes: Vec<u8>) -> Result<Font, Error> {
     Font::from_bytes(bytes, FontSettings::default()).map_err(|e| Error(format!("{name}: {e}")))
@@ -78,7 +78,7 @@ impl Raster {
         term.draw(|f| placements = frontend_tui::draw(f, state, theme).placements).expect("draw");
         let buf = term.backend().buffer();
         let mut img = self.rasterise(buf, theme);
-        for p in placements {
+        for p in &placements {
             self.paste(&mut img, buf, theme, p);
         }
         img
@@ -86,12 +86,12 @@ impl Raster {
 
     /// A picture over its cells: the cells' background first (the text fallback is not shown,
     /// as a graphics-capable terminal would not show it), then the rasterised graphic.
-    fn paste(&self, img: &mut RgbImage, buf: &Buffer, theme: &Theme, p: Placement) {
+    fn paste(&self, img: &mut RgbImage, buf: &Buffer, theme: &Theme, p: &Placement) {
         let (cw, ch) = (self.cell_w, self.cell_h);
         let (x0, y0) = (p.rect.x as u32 * cw, p.rect.y as u32 * ch);
         let (w, h) = (p.rect.width as u32 * cw, p.rect.height as u32 * ch);
         let bg = rgb(buf[(p.rect.x, p.rect.y)].bg, theme.background);
-        let pic = images::rasterize(p.graphic, theme, w, h);
+        let pic = images::rasterize(&p.graphic, theme, w, h);
         for (x, y, px) in pic.enumerate_pixels() {
             let (ix, iy) = (x0 + x, y0 + y);
             if ix < img.width() && iy < img.height() {
@@ -222,6 +222,10 @@ mod shapes {
             '▀' => rect(img, ox, oy, x1, oy + chh / 2, c),
             '▄' => rect(img, ox, oy + chh / 2, x1, y1, c),
             '▏' => rect(img, ox, oy, ox + cw / 8 + 1, y1, c),
+            '▗' => rect(img, ox + cw / 2, oy + chh / 2, x1, y1, c),
+            '▖' => rect(img, ox, oy + chh / 2, ox + cw / 2, y1, c),
+            '▝' => rect(img, ox + cw / 2, oy, x1, oy + chh / 2, c),
+            '▘' => rect(img, ox, oy, ox + cw / 2, oy + chh / 2, c),
             '╭' | '╮' | '╰' | '╯' => {
                 let r = (cw as f32 / 2.0).min(chh as f32 / 2.0);
                 let (qx, qy, hx0, hx1, vy0, vy1) = match ch {

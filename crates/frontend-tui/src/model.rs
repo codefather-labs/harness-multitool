@@ -91,7 +91,7 @@ pub enum ActionKind {
 #[derive(Debug, Clone)]
 pub struct QuickAction {
     pub key: char,
-    pub icon: String,
+    pub icon: crate::images::Icon,
     pub title: String,
     pub description: String,
     pub kind: ActionKind,
