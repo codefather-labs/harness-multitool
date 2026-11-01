@@ -74,4 +74,9 @@ Existing files are never overwritten; the skill fills only what is missing. Once
 
 Writes that mirror into no file — an update (the changelog is the journal and git), a finding, a lesson, a verification — fire no instruction (proposed by the agent).
 
-**Proposed by the agent, to be confirmed:** a `Stop` hook at the end of the agent's turn checks that every write of the turn that needs a file has its file changed in the working tree, and reminds the agent of the ones that do not, so a forgotten update is caught before the turn ends (Q-28).
+**Proposed by the agent, open (Q-28): a check that cannot break anything.** The owner wants the check but not at the price of breaking work. The proposal keeps it advisory end to end:
+1. The `PostToolUse` hook on a memory write records a *pending doc update*: the write's id and the file it names.
+2. A `PostToolUse` hook on file writes (edit, write) clears every pending item whose file was touched.
+3. A `Stop` hook at the end of the turn, if items remain, adds **one** reminder listing them — once per turn, never a veto, never a retry loop; a failing hook is logged and ignored (IF-6).
+
+A false alarm costs one line in the context; a miss costs what it costs today. Nothing is blocked.
