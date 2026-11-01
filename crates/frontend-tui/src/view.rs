@@ -44,8 +44,8 @@ pub enum Target {
     Choice(usize),
     /// A section of the settings window.
     Section(usize),
-    /// A row of the Auth tab.
-    AuthRow(usize),
+    /// The sign-in button of the Provider page.
+    AuthButton,
     /// A provider row on the settings window's provider page.
     Provider(usize),
     /// A row of the settings' Callbacks tab.

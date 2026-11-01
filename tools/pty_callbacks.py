@@ -78,7 +78,7 @@ os.write(fd,b"\x07"); pump(0.3)
 # The settings' Callbacks tab: switch the condition off, save, and the daemon obeys.
 for c in "/settings\r": os.write(fd,c.encode()); time.sleep(0.005)
 pump(0.5)
-for _ in range(8): os.write(fd,b"\x1b[B"); pump(0.08)
+for _ in range(6): os.write(fd,b"\x1b[B"); pump(0.08)
 os.write(fd,b"\t"); pump(0.2); show("the settings on the Callbacks tab"); assert "running on 127.0.0.1" in text()
 for _ in range(4): os.write(fd,b"\x1b[B"); pump(0.08)
 os.write(fd,b" "); pump(0.2); show("the condition switched off")

@@ -77,12 +77,12 @@ for _ in range(50):
 for c in "/settings\r": os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.5); assert "Settings" in text(), text()
 assert "claude-subscription" in text() and "not available" in text(), "the option stays, disabled"
-keys(DOWN, TAB); show("the Auth tab")
-assert "gpt-subscription" in text() and "Enter a key" in text(), text()
-assert "claude-subscription" in text()
+keys(TAB); show("the one Provider page")
+assert "Enter a key" in text(), text()
+assert "Keys" not in text() and " Auth" not in text(), "one tab is enough: " + text()
 
-# Choose the plan: the button becomes Login. Cancel frees the port for the next attempt.
-keys(DOWN, DOWN, ENTER); pump(0.2); show("claude-subscription pressed: a toast")
+# Rows: Anthropic 0, OpenAI 1, Local 2, gpt-subscription 3, claude-subscription 4, the button 5.
+keys(DOWN, DOWN, DOWN, DOWN, ENTER); pump(0.2); show("claude-subscription pressed: a toast")
 assert "forbidden by Anthropic" in text(), text()
 keys(UP, ENTER, DOWN, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
 keys(ENTER); pump(0.5); show("Login pressed"); assert "Cancel" in text(), text()
@@ -94,7 +94,7 @@ assert q["client_id"] == ["dynamic_agent_client"] and q["agent_name_hint"] == ["
 state["nonce"] = q["nonce"][0]
 urllib.request.urlopen(f"{q['redirect_uri'][0]}?code=c&state={q['state'][0]}&client_id=oaiapp_test").read()
 pump(1.5); show("signed in"); assert "Signed in as you@example.com" in text() and "plan-model-a" in text(), text()
-keys(ENTER); assert "plan-model-b" in text(), text()
+keys(DOWN, ENTER); assert "plan-model-b" in text(), text()
 keys(b"\x13"); pump(0.8); show("saved"); assert "New sessions use chatgpt / plan-model-b" in text(), text()
 saved = open(cfg).read(); assert 'provider = "chatgpt"' in saved and "plan-model-b" in saved, saved
 assert ACCESS not in saved
@@ -109,8 +109,8 @@ assert "Answered on the plan." in text(), text()
 
 # A key for another provider: typed masked, saved owner-only, on no screen.
 for c in "/settings\r": os.write(fd, c.encode()); time.sleep(0.005)
-pump(0.5); keys(DOWN, TAB, UP, UP, UP, UP, ENTER); pump(0.2)
-keys(DOWN, DOWN, DOWN); show("back on api-key"); assert "Enter a key" in text(), text()
+pump(0.5); keys(TAB, DOWN, ENTER); pump(0.2)
+keys(DOWN, DOWN, DOWN, DOWN); show("on an API provider"); assert "Enter a key" in text(), text()
 keys(ENTER)
 for c in API_KEY: os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.3); show("typing a key"); assert API_KEY not in text() and "•" in text(), text()

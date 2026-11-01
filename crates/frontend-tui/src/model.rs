@@ -58,7 +58,7 @@ pub struct Workspace {
     pub outbox: Vec<Outgoing>,
     /// What the settings' Callbacks tab shows when opened, as the app knows it.
     pub callbacks: Option<CallbacksPage>,
-    /// The Auth tab as the running harness knows it.
+    /// The sign-in state as the running harness knows it.
     pub auth: Option<AuthPage>,
 }
 
@@ -154,10 +154,10 @@ pub struct SettingsView {
     pub editing_model: bool,
 }
 
-/// The provider row of a ChatGPT plan: choosing it is choosing `gpt-subscription`.
-pub const PLAN_PROVIDER: &str = "ChatGPT plan";
+/// The provider row of a ChatGPT plan.
+pub const PLAN_PROVIDER: &str = "gpt-subscription";
 
-/// The Auth tab of the settings: which adapter signs in, and its login.
+/// The chosen provider's sign-in, on the Provider page of the settings.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct AuthPage {
     /// What the chosen provider's key comes from: (provider row, where).
@@ -171,8 +171,6 @@ pub struct AuthPage {
     pub message: Vec<String>,
     /// The models this plan can use.
     pub models: Vec<String>,
-    /// 0 api-key, 1 gpt-subscription, 2 claude-subscription, 3 the button, 4 the model.
-    pub cursor: usize,
     /// A key being typed.
     pub entry: Option<String>,
 }
@@ -180,7 +178,7 @@ pub struct AuthPage {
 /// Prints no key.
 impl std::fmt::Debug for AuthPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthPage").field("plan_status", &self.plan_status).field("pending", &self.pending).field("cursor", &self.cursor).field("typing_a_key", &self.entry.is_some()).finish()
+        f.debug_struct("AuthPage").field("plan_status", &self.plan_status).field("pending", &self.pending).field("typing_a_key", &self.entry.is_some()).finish()
     }
 }
 

@@ -105,15 +105,14 @@ pub fn settings_callbacks() -> AppState {
     with_overlay(crate::model::Overlay::Settings(s))
 }
 
-/// The settings on the Auth tab, signed in to a plan.
+/// The settings on a signed-in plan.
 pub fn settings_auth() -> AppState {
     let mut s = crate::overlay::sample_settings();
-    s.section = s.sections.iter().position(|n| n == "Auth").unwrap_or(0);
     s.focus = crate::model::SettingsPane::Page;
     s.provider = s.providers.iter().position(|p| p.name == crate::model::PLAN_PROVIDER).unwrap_or(0);
+    s.cursor = s.providers.len();
     s.model = "gpt-5.5".into();
     s.auth = crate::overlay::sample_auth();
-    s.auth.cursor = 3;
     with_overlay(crate::model::Overlay::Settings(s))
 }
 

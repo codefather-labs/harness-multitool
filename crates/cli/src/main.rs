@@ -781,7 +781,7 @@ impl Live {
     }
 
     /// Saves the choice and makes it the base of new sessions. A running session keeps its model.
-    /// The Auth tab as things stand, keeping what the user is doing on it.
+    /// The sign-in state as things stand, keeping what the user is doing on it.
     fn auth_page(&self, keep: Option<frontend_tui::model::AuthPage>) -> frontend_tui::model::AuthPage {
         let mut page = keep.unwrap_or_default();
         let session = config::load().map(|c| c.session).unwrap_or_default();
@@ -794,7 +794,7 @@ impl Live {
         page
     }
 
-    /// Changes the Auth tab both where it is drawn and where it is kept.
+    /// Changes the sign-in state both where it is drawn and where it is kept.
     fn update_auth(&self, w: &mut frontend_tui::model::Workspace, change: impl FnOnce(&mut frontend_tui::model::AuthPage)) {
         use frontend_tui::model::Overlay;
         let open = match &w.overlay {
@@ -847,7 +847,7 @@ impl Live {
         });
     }
 
-    /// Already signed in: the plan's models, in the background, for the Auth tab.
+    /// Already signed in: the plan's models, in the background, for the Provider page.
     fn fetch_plan_models(&mut self) {
         let Ok(dir) = config::data_dir() else { return };
         if self.plan_models_asked || !harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
@@ -881,7 +881,6 @@ impl Live {
         self.update_auth(w, |a| match event {
             Ok((email, models)) => {
                 a.message = vec![format!("Signed in{}. Choose a model and press Ctrl+S.", email.map_or(String::new(), |e| format!(" as {e}")))];
-                a.cursor = 4;
                 a.models = models;
             }
             Err(reason) => a.message = vec![reason],
