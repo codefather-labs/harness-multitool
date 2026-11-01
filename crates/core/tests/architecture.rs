@@ -65,3 +65,17 @@ fn plugins_depend_only_on_the_interfaces() {
         assert!(local[0].starts_with("harness-api"), "{name}: {}", local[0]);
     }
 }
+
+/// CON-40: the repository does not name the project it grew out of.
+#[test]
+fn the_sources_do_not_name_their_origin() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let origin = ["claude", "base"].concat();
+    let mut files = Vec::new();
+    sources(crates, &mut files);
+    assert!(files.len() > 20);
+    for file in files.iter().filter(|f| !f.components().any(|c| c.as_os_str() == "target")) {
+        let text = fs::read_to_string(file).unwrap();
+        assert!(!text.to_lowercase().contains(&origin), "{} names it", file.display());
+    }
+}

@@ -6,7 +6,7 @@ Each milestone ends with its specifications checked, not with its features writt
 |---|---|---|
 | **M0 — Specification** | This repository's documents; the journal of the project seeded from them; the shared architecture map | every `P-`, `INV-`, `CON-`, `IF-` item is in the journal with its flags; open questions listed |
 | **M1 — Walking skeleton** (done) | `api` and `core` crates, registry, event bus, task states, test doubles for every interface; CI builds the core for wasm32 | INV-1, INV-2, INV-5 have passing checks |
-| **M2 — MVP** (built; waits for a run on a real model) | Anthropic and OpenAI-compatible providers, API-key auth, built-in tools, default policy, file session store, terminal frontend, configuration | a real coding task runs end to end on a native build; INV-3, INV-6 checked |
+| **M2 — MVP** (done on a local model; the Anthropic API not yet called for real) | Anthropic and OpenAI-compatible providers, API-key auth, built-in tools, default policy, file session store, terminal frontend, configuration | a real coding task runs end to end on a native build; INV-3, INV-6 checked |
 | **M3 — Memory** | the carried-over daemon as `Memory` and `Transport`; journal- and map-aware `ContextStrategy`; callbacks `notification` and `journal` (IF-13) | context built from memory; a long session compacts without losing specifications; INV-12 checked |
 | **M4 — Proof** | `Verifier`, the done gate, specifications as acceptance checks | INV-4, INV-11 checked |
 | **M5 — Browser** | platform-wasm, frontend-web, the demo on the project site | the demo runs a task in the page; INV-10 checked |

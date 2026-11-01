@@ -38,6 +38,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Debug: one message through a real session with no UI; prints its log, one line per event.
+    Run {
+        /// The message for the agent.
+        prompt: String,
+        /// Answer every permission prompt with yes; otherwise no.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Write the user's configuration (config.toml in the OS's config directory).
     Setup {
         /// How pictures (logo, icons, big text) are drawn: auto, sixel, kitty, iterm2 or off.
@@ -103,6 +111,7 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script } => preview(&name, &theme, script.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
+        Command::Run { prompt, yes } => run_once(&prompt, yes),
         Command::Setup { graphics } => {
             let mut c = config::load()?;
             if let Some(g) = graphics {
@@ -417,6 +426,29 @@ impl Live {
             }
         }
         any
+    }
+}
+
+/// `multitool run`: a real session without the UI, for debugging a provider or a tool.
+fn run_once(prompt: &str, yes: bool) -> Result<()> {
+    use harness_session::{FromSession, Sessions, real_factory};
+    let root = std::env::current_dir()?.to_string_lossy().into_owned();
+    let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root);
+    sessions.prompt(1, prompt.to_string());
+    loop {
+        let Some(message) = sessions.next(std::time::Duration::from_secs(3600)) else { bail!("no event for an hour") };
+        match message {
+            FromSession::Entry { entry, .. } => println!("{}", harness_scenarios::line(&entry)),
+            FromSession::Ask { tab, call, .. } => {
+                println!("ask         {} {} -> {}", call.name, call.input, if yes { "yes" } else { "no" });
+                sessions.answer(tab, if yes { harness_api::Answer::AllowOnce } else { harness_api::Answer::Deny });
+            }
+            FromSession::Ended { end, .. } => {
+                println!("ended: {end:?}");
+                return Ok(());
+            }
+            FromSession::Unavailable { message, .. } => bail!("{message}"),
+        }
     }
 }
 

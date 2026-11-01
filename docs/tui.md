@@ -25,9 +25,10 @@ provider = "anthropic"          # the default; or a name under [session.provider
 model = "claude-opus-5-5"       # the default
 max_cost_usd = 5.0              # optional budget; max_turns too
 
-[session.providers.local]       # any OpenAI-compatible endpoint
+[session.providers.local]       # any OpenAI-compatible endpoint; this one is Ollama
 kind = "openai"
-base_url = "http://localhost:8080/v1"
+base_url = "http://127.0.0.1:11434/v1"
+context_window = 32000
 
 [session.auth.local]
 none = true                     # no key needed
@@ -101,6 +102,7 @@ Tool calls, journal and mind-map events attach to the newest assistant turn when
 - `multitool trace` lists the scenarios of the agent loop; `multitool trace <name>` prints one's log, one line per event.
 - `multitool screen --scenario <name> --png out.png` draws the transcript that scenario leaves.
 - `multitool preview welcome --script <name>` runs a scenario on test doubles in the live UI.
+- `multitool run "<message>" [--yes]` sends one message through a real session with no UI and prints its log; `--yes` answers permission prompts with yes.
 - `tools/pty_session.py <absolute path to multitool>` drives the real UI in a pty against a fake provider endpoint: real HTTP, tools and permission prompts. It prints the screen at each step and the idle CPU. It needs the Python package `pyte`.
 
 ## Screens as images

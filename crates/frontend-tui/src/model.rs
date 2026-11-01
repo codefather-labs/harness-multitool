@@ -482,7 +482,7 @@ pub struct MindNode {
     pub changed: bool,
 }
 
-/// The node kinds of a mind map (`claudebase mindmap add --kind`).
+/// The node kinds of a mind map (`the carried-over memory backend mindmap add --kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MindKind {
     Topic,
@@ -545,7 +545,7 @@ pub struct FlowNode {
     pub active: bool,
 }
 
-/// ISO 5807 symbols and logic gates (`claudebase mindmap add --kind` of a flowchart).
+/// ISO 5807 symbols and logic gates (`the carried-over memory backend mindmap add --kind` of a flowchart).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Symbol {
     Start,

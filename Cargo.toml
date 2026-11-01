@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/core", "crates/doubles", "crates/scenarios", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/session", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
+members = ["crates/api", "crates/core", "crates/doubles", "crates/scenarios", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/memory-journal", "crates/session", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0-dev"
