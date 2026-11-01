@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 mod host_tools;
 mod wire;
 
+pub mod remote;
+
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookSetting {
@@ -561,6 +563,16 @@ impl Sessions {
     pub fn approve_acceptance(&self, text: &str) -> Result<(), String> {
         let data_dir = self.data_dir.as_deref().ok_or("this frontend keeps no approvals")?;
         approve_acceptance(data_dir, &self.root, text)
+    }
+
+    /// A run is on in some tab.
+    pub fn busy(&self) -> bool {
+        self.handles.values().any(|h| h.running.load(Ordering::SeqCst))
+    }
+
+    /// A run of this stored session is on.
+    pub fn runs(&self, session: &str) -> bool {
+        self.handles.values().any(|h| h.session == session && h.running.load(Ordering::SeqCst))
     }
 
     /// The stored session behind a tab, once it has one.

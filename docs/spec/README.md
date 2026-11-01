@@ -4,6 +4,7 @@
 - [invariants.md](invariants.md) — `INV-*`
 - [constraints.md](constraints.md) — `CON-*`
 - [interfaces.md](interfaces.md) — `IF-*`
+- [conversations.md](conversations.md) — how a conversation is stored, and carried between providers
 - [roadmap.md](roadmap.md)
 - [open-questions.md](open-questions.md) — `Q-*`
 

@@ -110,6 +110,8 @@ A project's journal, mind maps and flowcharts are mirrored into its `docs/` tree
 
 ## A conversation and a task
 
+A conversation lives in the daemon and can go on with any provider ([conversations.md](../spec/conversations.md)).
+
 A message runs turns until the model stops. With a verification protocol that is a *task*: it reaches `done` only through the verifier (INV-4), and a stop or a failure ends it. Without one it is a *conversation*: the model's stop waits for the next message, the task stays `running`, and a stop or a provider failure can be followed by another message.
 
 ## Debugging a feature

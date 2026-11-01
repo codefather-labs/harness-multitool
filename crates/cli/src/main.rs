@@ -247,6 +247,9 @@ fn main() -> Result<()> {
             if let Some(telegram) = config::telegram() {
                 daemon.start_telegram(telegram);
             }
+            // The conversations run here, whichever window asks (ADR 0024).
+            let make_host: harness_session::remote::MakeHost = std::sync::Arc::new(|settings, note, reload| host_for(note, reload, selection_summary(settings)));
+            daemon.host_conversations(harness_session::remote::DaemonHost::new(&dir, make_host));
             println!("daemon on 127.0.0.1:{}", daemon.port());
             daemon.wait_for_shutdown();
             Ok(())
@@ -431,7 +434,7 @@ struct Live {
     first_start_done: bool,
     /// When the locked prompt on screen first showed.
     prompt_opened: Option<std::time::Instant>,
-    sessions: harness_session::Sessions,
+    sessions: harness_session::remote::SessionLink,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
     /// Permission prompts waiting for the one on screen to be answered.
     asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
@@ -494,6 +497,10 @@ impl Live {
         self.window_ids.insert(tab, (client.clone(), window.window.clone()));
         if let Ok(mut urls) = self.urls.lock() {
             urls.insert(tab, window.url.clone());
+            drop(urls);
+            if let Some(note) = callback_note(&self.urls, tab) {
+                self.sessions.note(tab, note);
+            }
         }
         self.registered.insert(tab, window.clone());
         let sender = self.window_events.0.clone();
@@ -663,7 +670,7 @@ impl Live {
                 .iter()
                 .map(|t| reload::TabHandoff {
                     title: t.title.clone(),
-                    session: self.sessions.session_of(t.id).map(str::to_string),
+                    session: self.sessions.session_of(t.id),
                     window: self.registered.get(&t.id).map(|r| r.window.clone()),
                     url: self.registered.get(&t.id).map(|r| r.url.clone()),
                     scroll: t.view.scroll,
@@ -724,6 +731,7 @@ impl Live {
         let budget = settings.max_cost_usd.map_or("none".to_string(), |d| format!("${d:.2}"));
         let urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> = Default::default();
         let reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let link_settings = settings.clone();
         let (factory, provider, model, context_window): (harness_session::Factory, String, String, u64) = match script {
             Some(name) => {
                 harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
@@ -740,7 +748,13 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        let local = harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy());
+        // Everything goes through the daemon; a scripted run, or no daemon to be had, stays here.
+        let remote = match script {
+            Some(_) => None,
+            None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
+        };
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -985,7 +999,9 @@ impl Live {
                 std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
             };
             let host = host_for(note, self.reload_asked.clone(), selection_summary(&session));
-            self.sessions.set_factory(harness_session::with_host(session, self.root.clone(), config::data_dir()?, host));
+            let (root, data) = (self.root.clone(), config::data_dir()?);
+            let for_link = session.clone();
+            self.sessions.configure(&root, &for_link, || harness_session::with_host(session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
         }
         Ok(())
     }
@@ -1017,7 +1033,9 @@ impl Live {
                 std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
             };
             let host = host_for(note, self.reload_asked.clone(), selection_summary(&c.session));
-            self.sessions.set_factory(harness_session::with_host(c.session, self.root.clone(), config::data_dir()?, host));
+            let (root, data) = (self.root.clone(), config::data_dir()?);
+            let for_link = c.session.clone();
+            self.sessions.configure(&root, &for_link, || harness_session::with_host(c.session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
             self.provider = provider.to_string();
             self.model = model.to_string();
         }
@@ -1159,7 +1177,7 @@ impl Live {
                 Outgoing::ApproveChecks { tab } => {
                     let line = match self.checks_shown.take() {
                         None => "No checks are waiting for approval.".to_string(),
-                        Some(file) => match self.sessions.approve_acceptance(&file) {
+                        Some(file) => match config::data_dir().map_err(|e| e.to_string()).and_then(|d| harness_session::approve_acceptance(&d.to_string_lossy(), &self.root, &file)) {
                             Ok(()) => "Approved. If the file changes, a task asks again.".to_string(),
                             Err(e) => format!("Not approved: {e}"),
                         },

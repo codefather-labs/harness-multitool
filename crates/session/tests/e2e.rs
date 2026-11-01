@@ -1251,3 +1251,66 @@ fn a_conversation_brought_in_goes_on_with_another_provider_and_valid_history() {
     assert_eq!(messages[at + 1]["content"][0]["type"], "tool_result", "the cut-off call is answered, first thing: {sent}");
     assert_eq!(messages[at + 1]["content"][0]["tool_use_id"], "old1");
 }
+
+/// ADR 0024: a conversation run by the daemon, its window a client with the same operations.
+#[test]
+fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("in-daemon");
+    let data = temp_dir("in-daemon-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("d1", "shell", json!({"command": "cargo --version"}))), "Running."),
+        anthropic_turn(None, "Done with the first."),
+        anthropic_turn(None, "From the other window."),
+    ]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let settings = settings(&url, "k");
+    let open = || SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings, Default::default()).unwrap());
+    let mut link = open();
+    assert!(link.is_remote());
+
+    let pump = |link: &SessionLink, entries: &mut Vec<LogEntry>| -> Option<FromSession> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            for message in link.drain() {
+                match message {
+                    FromSession::Entry { entry, .. } => entries.push(entry),
+                    other => return Some(other),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    };
+    let mut entries = Vec::new();
+    link.prompt(1, "first".to_string());
+    assert!(matches!(pump(&link, &mut entries), Some(FromSession::Ask { tab: 1, .. })), "a prompt reaches the window");
+    // Queued and taken back through the daemon, then answered.
+    link.prompt(1, "taken back".to_string());
+    assert!(link.unqueue(1, "taken back"));
+    assert!(!link.unqueue(1, "taken back"));
+    link.answer(1, Answer::AllowOnce);
+    assert!(matches!(pump(&link, &mut entries), Some(FromSession::Ended { tab: 1, end: harness_core::RunEnd::AwaitingInput })));
+    assert_eq!(user_texts(&entries), ["first"]);
+    assert_eq!(entries.iter().map(|e| e.seq).collect::<Vec<_>>(), (0..entries.len() as u64).collect::<Vec<_>>(), "all of it, in order");
+    let session = link.session_of(1).unwrap();
+    let stored = read_log(&data, &root, &session);
+    assert_eq!(stored.len(), entries.len(), "the daemon wrote the log");
+
+    // Another window has its own tab 1; a stranger's window is refused.
+    let mut other = open();
+    let mut theirs = Vec::new();
+    other.prompt(1, "second".to_string());
+    assert!(matches!(pump(&other, &mut theirs), Some(FromSession::Ended { .. })));
+    assert_eq!(user_texts(&theirs), ["second"]);
+    assert_ne!(other.session_of(1).unwrap(), session);
+    assert!(!seen.lock().unwrap().last().unwrap().contains("Done with the first"), "windows apart");
+    assert!(client.stats().unwrap()["conversations"]["windows"].as_u64() == Some(2), "seen in the daemon's stats");
+    assert!(client.conversation_op(&json!({"window": "nobody", "op": "prompt", "tab": 1, "text": "x"})).is_err());
+    assert_eq!(client.build().as_deref(), Some(harness_daemon::build_id().as_str()));
+    link = other;
+    drop(link);
+}

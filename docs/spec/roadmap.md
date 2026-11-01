@@ -16,6 +16,8 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; the consistency check is a built-in, id-linked, advisory hook plus `multitool docs check` in CI (CON-45); the `project-init` skill creates the tree with an example entry in every file.
 
+**Conversations ([conversations.md](conversations.md)), in progress.** In: sessions in the daemon, the log as the format, transformation between providers, Claude Code's form read and written. Left: `multitool run` through the daemon, so that INV-15 has no exception but a scripted run and a window with no daemon; the start page listing a connected provider's conversations directly, where Claude Code's are brought in by `multitool import` today; a window attaching to a run still on; Codex CLI's form as the ChatGPT provider's own; a window's environment reaching the daemon.
+
 **Ideas, not yet on a milestone:**
 
 - generated documentation like rustdoc — `multitool doc`, on demand, builds a linked HTML site and a PDF from the docs files only ([ADR 0018](../decisions/0018-generated-documentation-site.md));

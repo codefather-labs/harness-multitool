@@ -84,7 +84,26 @@ struct State {
 /// A handler the build brought. It is shared between the server's threads.
 pub type SharedHandler = Arc<dyn CallbackHandler + Send + Sync>;
 
+/// IF-19: the conversations the daemon runs. It knows them only through this; the implementation
+/// is plugged in by the program that starts it (ADR 0024).
+pub trait ConversationHost: Send + Sync {
+    /// One operation of a window, as JSON. Never blocks on a model.
+    fn op(&self, window: &str, op: &Value) -> Result<Value, String>;
+    /// What happened in this window after `after`, waiting up to `wait` for something.
+    fn events(&self, window: &str, after: u64, wait: std::time::Duration) -> Vec<Value>;
+    fn stats(&self) -> Value;
+}
+
+/// What identifies this binary: a client of another build must not be served by this one.
+pub fn build_id() -> String {
+    std::env::current_exe().ok().and_then(|p| std::fs::metadata(p).ok()).map_or(String::new(), |m| {
+        let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
+        format!("{}-{modified}", m.len())
+    })
+}
+
 pub struct Daemon {
+    conversations: Mutex<Option<Arc<dyn ConversationHost>>>,
     handlers: Vec<SharedHandler>,
     state: Mutex<State>,
     wake: Condvar,
@@ -156,6 +175,7 @@ impl Daemon {
         write_private(&address_path(data_dir), &address).map_err(|e| format!("publishing the address: {e}"))?;
 
         let daemon = Arc::new(Daemon {
+            conversations: Mutex::new(None),
             handlers,
             // Numbered from the clock: a window listening across a restart still sees new events.
             state: Mutex::new(State { polled: HashMap::new(), windows: restore_windows(&dir), seen, next_seq: now_ms(), shutting_down: false }),
@@ -178,6 +198,29 @@ impl Daemon {
             });
         }
         Ok(daemon)
+    }
+
+    /// From now on the conversations of its windows run here.
+    pub fn host_conversations(&self, host: Arc<dyn ConversationHost>) {
+        *self.conversations.lock().expect("conversations") = Some(host);
+    }
+
+    fn conversation_op(&self, body: &str) -> (u16, Value) {
+        let Some(host) = self.conversations.lock().expect("conversations").clone() else { return (503, json!({"error": "this daemon runs no conversations"})) };
+        let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
+        let Some(window) = input["window"].as_str() else { return (400, json!({"error": "window is required"})) };
+        match host.op(window, &input) {
+            Ok(reply) => (200, reply),
+            Err(error) => (400, json!({"error": error})),
+        }
+    }
+
+    fn conversation_events(&self, query: &str) -> (u16, Value) {
+        let Some(host) = self.conversations.lock().expect("conversations").clone() else { return (503, json!({"error": "this daemon runs no conversations"})) };
+        let param = |name: &str| query.split('&').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='));
+        let Some(window) = param("window") else { return (400, json!({"error": "window is required"})) };
+        let after = param("after").and_then(|a| a.parse().ok()).unwrap_or(0);
+        (200, json!({"events": host.events(window, after, std::time::Duration::from_secs(2))}))
     }
 
     /// Starts the Telegram channel. With no call to this it stays off and nothing polls.
@@ -206,7 +249,7 @@ impl Daemon {
 
     fn stats(&self) -> Value {
         let telegram = self.telegram.lock().expect("telegram").as_ref().map_or(json!({"on": false}), telegram::Channel::status);
-        json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count()})
+        json!({"conversations": self.conversations.lock().expect("conversations").as_ref().map_or(Value::Null, |h| h.stats()), "memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count()})
     }
 
     /// The session's mode, from its log. Kept in the windows file, so a restart holds it.
@@ -259,7 +302,10 @@ impl Daemon {
             body.clear();
         }
         let (status, reply) = match (method.as_str(), path) {
-            ("GET", "/health") => (200, json!({"ok": true})),
+            ("GET", "/health") => (200, json!({"ok": true, "build": build_id()})),
+            ("POST", "/conversations") if admin => self.conversation_op(&body),
+            ("GET", "/conversations/events") if admin => self.conversation_events(query),
+            ("POST", "/conversations") | ("GET", "/conversations/events") => (401, json!({"error": "bad token"})),
             ("POST", "/register") if admin => self.register(&body),
             ("GET", "/events") if admin => self.events(query),
             ("POST", "/reload") if admin => self.reload(),

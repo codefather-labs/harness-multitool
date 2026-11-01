@@ -62,6 +62,31 @@ impl Client {
         Err("the daemon did not start".to_string())
     }
 
+    /// One operation on this window's conversations.
+    pub fn conversation_op(&self, op: &Value) -> Result<Value, String> {
+        let mut response = self.agent.post(format!("{}/conversations", self.base)).header("authorization", &format!("Bearer {}", self.admin)).send(op.to_string()).map_err(|e| e.to_string())?;
+        let status = response.status();
+        let reply: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+        if status != 200 {
+            return Err(reply["error"].as_str().unwrap_or("the daemon refused").to_string());
+        }
+        Ok(reply)
+    }
+
+    /// What happened in this window after `after`; waits a little for something.
+    pub fn conversation_events(&self, window: &str, after: u64) -> Result<Vec<Value>, String> {
+        let mut response = self.agent.get(format!("{}/conversations/events?window={window}&after={after}", self.base)).header("authorization", &format!("Bearer {}", self.admin)).call().map_err(|e| e.to_string())?;
+        let reply: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+        reply["events"].as_array().cloned().ok_or_else(|| reply["error"].as_str().unwrap_or("a bad answer from the daemon").to_string())
+    }
+
+    /// The build of the daemon that answers.
+    pub fn build(&self) -> Option<String> {
+        let mut response = self.agent.get(format!("{}/health", self.base)).call().ok()?;
+        let reply: Value = response.body_mut().read_json().ok()?;
+        reply["build"].as_str().map(str::to_string)
+    }
+
     fn healthy(&self) -> bool {
         let quick: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(2))).build().into();
         quick.get(format!("{}/health", self.base)).call().is_ok_and(|r| r.status() == 200)
