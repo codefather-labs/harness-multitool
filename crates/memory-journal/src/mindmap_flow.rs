@@ -122,7 +122,7 @@ fn measure(node: &Node, down: bool) -> Placed {
         }
         _ => (cw + 2.0 * PAD_X, ch + 2.0 * PAD_Y),
     };
-    let (sw, sh) = (sw.max(60.0).min(1000.0), sh.max(30.0));
+    let (sw, sh) = (sw.clamp(60.0, 1000.0), sh.max(30.0));
     // A gate's caption sits beside the symbol, off the arrows' axis: below
     // when arrows run left to right, to the right when they run down.
     let (bw, bh) = if gate {

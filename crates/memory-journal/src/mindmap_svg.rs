@@ -472,7 +472,7 @@ pub fn render_svg(map: &Map, theme: Theme) -> String {
         let Some(parent) = node.parent else { continue };
         let (c, p) = (by_id[&node.id], by_id[&parent]);
         let side = c.side as f64;
-        let (x1, y1) = (if p.side == 0 { p.x + side * p.w / 2.0 } else { p.x + side * p.w / 2.0 }, p.y);
+        let (x1, y1) = (p.x + side * p.w / 2.0, p.y);
         let (x2, y2) = (c.x - side * c.w / 2.0, c.y);
         let mx = (x1 + x2) / 2.0;
         let width = (3.2 - c.depth as f64 * 0.5).max(1.2);
