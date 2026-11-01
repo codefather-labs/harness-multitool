@@ -99,6 +99,19 @@ impl Memory for JournalMemory {
         ready(result.map(|_| ()).map_err(fail))
     }
 
+    fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        let conn = self.conn.borrow();
+        let filter = journal::Filter { flags: vec!["specification".into(), "constraint".into()], ..Default::default() };
+        let listed = journal::list(&conn, &filter, 0, limit.min(journal::MAX_PAGE_SIZE));
+        let result = listed.map(|(_, entries)| entries.into_iter().filter(|e| !e.flags.iter().any(|f| f.flag == "deprecated")).map(record).collect());
+        ready(result.map_err(fail))
+    }
+
+    fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
+        let listed = mindmap::list(&self.conn.borrow(), Some(&self.owner), false);
+        ready(listed.map(|maps| maps.into_iter().map(|m| (m.id as u64, m.title)).collect()).map_err(fail))
+    }
+
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
         let spec = mindmap::NewMap {
             title,

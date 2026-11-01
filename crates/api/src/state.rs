@@ -46,6 +46,8 @@ pub struct SessionState {
     pub turns: u32,
     /// Lines hooks added to the context (IF-6).
     pub hook_context: Vec<String>,
+    /// Messages before this index are left out of what goes to the model.
+    pub compacted_upto: usize,
     /// The evidence of the last verification.
     pub evidence: Option<String>,
 }
@@ -88,6 +90,7 @@ impl SessionState {
                 }
             }
             Event::Verification { evidence, .. } => self.evidence = Some(evidence.clone()),
+            Event::Compacted { upto, .. } => self.compacted_upto = *upto,
             Event::Error { .. } => {}
         }
     }

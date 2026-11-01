@@ -291,6 +291,10 @@ impl Engine {
             let state = self.state.borrow().clone();
             self.parts.context.build(&state, self.parts.memory.as_ref()).await.map_err(|e| format!("context: {e}"))?
         };
+        if let Some(cut) = context.compacted {
+            self.emit(Event::Compacted { upto: cut.upto, tokens_before: cut.tokens_before, tokens_after: cut.tokens_after });
+            self.hooks(HookPoint::PostCompact).await;
+        }
         let turn = self.state.borrow().turns + 1;
         self.emit(Event::TurnStarted { turn, provider: route.provider.clone(), model: route.model.clone() });
         let request = ModelRequest {

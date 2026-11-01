@@ -241,6 +241,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::ToolResult { id, output, is_error } => format!("result      {id}{} {output:?}", if *is_error { " ERROR" } else { "" }),
         Event::HookRan { point, hook, outcome, .. } => format!("hook        {point:?} {hook}: {outcome:?}"),
         Event::Verification { pass, evidence } => format!("verify      {} {evidence:?}", if *pass { "pass" } else { "FAIL" }),
+        Event::Compacted { upto, tokens_before, tokens_after } => format!("compacted   before message {upto}: {tokens_before} -> {tokens_after} tokens"),
         Event::Error { source, message } => format!("error       {source}: {message}"),
     };
     format!("{:>4} {:>6}ms  {body}", entry.seq, entry.at_ms)

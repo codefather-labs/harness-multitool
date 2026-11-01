@@ -225,6 +225,10 @@ pub trait Memory {
     fn journal_search(&self, query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>>;
     fn journal_get(&self, id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>>;
     fn journal_close(&self, id: u64, resolution: &str) -> BoxFuture<'_, PluginResult<()>>;
+    /// The specifications and constraints that bind the project, newest first.
+    fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>>;
+    /// The titles of the project's open maps: (id, title).
+    fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>>;
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>>;
     fn map_add(&self, map: u64, node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>>;
     fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>>;
@@ -235,6 +239,16 @@ pub trait Memory {
 pub struct TurnContext {
     pub system: Option<String>,
     pub messages: Vec<Message>,
+    /// The strategy cut the conversation here for this turn on: the engine logs it.
+    pub compacted: Option<Compaction>,
+}
+
+/// A cut the strategy made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compaction {
+    pub upto: usize,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
 }
 
 /// IF-8. Reads memory and the session; writes nothing but the context.

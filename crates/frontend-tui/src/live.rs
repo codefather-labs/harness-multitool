@@ -158,6 +158,10 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
+            Event::Compacted { tokens_before, tokens_after, .. } => {
+                let line = format!("The conversation was compacted: about {} to {} tokens. The log keeps all of it; the agent still has the journal.", short(*tokens_before), short(*tokens_after));
+                v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec![line] });
+            }
             Event::Error { source, message } => {
                 v.generating = false;
                 v.transcript.push(Item::Tips { label: format!("ERROR · {source}"), lines: message.lines().map(str::to_string).collect() });

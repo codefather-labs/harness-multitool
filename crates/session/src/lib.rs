@@ -34,6 +34,8 @@ pub struct Settings {
     pub max_tokens: u32,
     pub max_turns: Option<u32>,
     pub max_cost_usd: Option<f64>,
+    /// Compact the conversation above this many tokens; 70% of the context window by default.
+    pub compact_at_tokens: Option<u64>,
     pub tools: Vec<String>,
     /// Shell hooks, in the order they run.
     pub hooks: Vec<HookSetting>,
@@ -51,6 +53,7 @@ impl Default for Settings {
             max_tokens: 64_000,
             max_turns: None,
             max_cost_usd: None,
+            compact_at_tokens: None,
             tools: ["read", "edit", "shell", "search", "fetch"].into_iter().chain(harness_tools_memory::NAMES).map(String::from).collect(),
             hooks: Vec::new(),
             providers: BTreeMap::new(),
@@ -74,7 +77,7 @@ impl Settings {
             policy: "default".into(),
             hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).collect(),
             memory: "journal".into(),
-            context: "whole-conversation".into(),
+            context: "journal-aware".into(),
             store: "files".into(),
             verifier: "protocol".into(),
         }
@@ -100,6 +103,7 @@ fn env(name: &str) -> Option<String> {
 pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
+    let context_budget = settings.compact_at_tokens.unwrap_or(settings.context_window() * 7 / 10);
     let sessions_dir = sessions_dir(data_dir, root);
     let (root_d, journals_dir) = (root.to_string(), format!("{}/journals", data_dir.trim_end_matches('/')));
     r.auth("api-key", |cx| Ok(Rc::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings))))
@@ -115,7 +119,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
             let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
             Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(std::path::Path::new(&journals_dir), &key, "multitool")?))
         })
-        .context("whole-conversation", move |_| Ok(Rc::new(harness_context_default::WholeConversation { root: root_b.clone(), note: note.clone() })))
+        .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
     for name in harness_tools_memory::NAMES {

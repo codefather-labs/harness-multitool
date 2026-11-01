@@ -61,6 +61,8 @@ pub enum Event {
     ToolResult { id: String, output: String, is_error: bool },
     HookRan { point: HookPointKind, hook: String, outcome: HookOutcome, detail: Option<Value> },
     Verification { pass: bool, evidence: String },
+    /// Messages before `upto` no longer go to the model; the log keeps them.
+    Compacted { upto: usize, tokens_before: u64, tokens_after: u64 },
     /// A plugin failed; the task's state says what it meant for the task.
     Error { source: String, message: String },
 }

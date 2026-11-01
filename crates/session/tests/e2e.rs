@@ -467,3 +467,65 @@ fn the_agent_lists_plugins_and_asks_for_a_reload() {
     assert_eq!(asked, 1);
     assert!(!reload.load(std::sync::atomic::Ordering::SeqCst), "a denied reload does nothing");
 }
+
+/// M3: the context is built from memory, and a long session compacts without losing it.
+#[test]
+fn context_comes_from_memory_and_survives_compaction() {
+    let root = temp_dir("ctx");
+    let data = temp_dir("ctx-data");
+    let filler = "word ".repeat(400);
+    let mut turns = vec![
+        anthropic_turn(Some(("s1", "journal_add", json!({"body": "Prices are stored in cents, always.", "category": "specification", "tags": ["money"], "flags": ["specification"]}))), "Noting."),
+        anthropic_turn(Some(("s2", "journal_add", json!({"body": "Never call the bank on weekends.", "category": "decision", "tags": ["bank"], "flags": ["constraint"]}))), "Noting."),
+        anthropic_turn(Some(("s3", "journal_add", json!({"body": "An old rule that no longer holds.", "category": "decision", "tags": ["old"], "flags": ["constraint", "deprecated"]}))), "Noting."),
+        anthropic_turn(Some(("s4", "flowchart_new", json!({"title": "the deploy flow"}))), "Charting."),
+        anthropic_turn(None, "Done."),
+    ];
+    for i in 0..6 {
+        turns.push(anthropic_turn(Some((&format!("t{i}"), "read", json!({"path": "big.txt"}))), "Reading."));
+        turns.push(anthropic_turn(None, "Read it."));
+    }
+    let (url, seen) = fake_endpoint(turns);
+    std::fs::write(format!("{root}/big.txt"), &filler).unwrap();
+    let mut s = settings(&url, "k");
+    s.compact_at_tokens = Some(1500);
+    s.hooks = vec![HookSetting { event: Some("PostCompact".into()), command: "echo Re-read the specifications.".into(), name: Some("after-compact".into()) }];
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut prompts: Vec<String> = vec!["remember these".to_string()];
+    prompts.extend((0..6).map(|i| format!("ask number {i}")));
+    let prompts_ref: Vec<&str> = prompts.iter().map(String::as_str).collect();
+    let (entries, ends, _) = drive(&mut sessions, &prompts_ref, Answer::Deny);
+    assert!(ends.iter().all(|e| e == "AwaitingInput"), "{ends:?}");
+
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    let first_system = requests[0]["system"].as_str().unwrap();
+    assert!(!first_system.contains("Prices are stored"), "nothing in memory yet");
+    let last = requests.last().unwrap();
+    let system = last["system"].as_str().unwrap();
+    assert!(system.contains("Prices are stored in cents") && system.contains("Never call the bank"), "{system}");
+    assert!(!system.contains("no longer holds"), "a deprecated entry does not bind");
+    assert!(system.contains("the deploy flow"), "{system}");
+
+    let cuts: Vec<usize> = entries.iter().filter_map(|e| if let Event::Compacted { upto, .. } = e.event { Some(upto) } else { None }).collect();
+    assert!(!cuts.is_empty(), "the budget was passed");
+    assert!(cuts.windows(2).all(|w| w[0] < w[1]), "cuts only move forward: {cuts:?}");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::HookRan { point: event_kinds::HookPointKind::PostCompact, .. })));
+    assert!(system.contains("Re-read the specifications."), "the hook's context reaches the model");
+
+    let messages = last["messages"].as_array().unwrap();
+    let full: usize = entries.iter().filter(|e| matches!(e.event, Event::UserMessage { .. })).count();
+    assert_eq!(full, 7);
+    assert!(messages.len() < 2 * full + 4, "the request is shorter than the conversation: {}", messages.len());
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0].to_string().contains("was compacted") && messages[0].to_string().contains("remember these"), "{}", messages[0]);
+    for pair in messages.windows(2) {
+        assert_ne!(pair[0]["role"], pair[1]["role"], "roles alternate");
+    }
+
+    // The log keeps everything, and a resume replays to the same cut.
+    let listed = recent(&data, &root);
+    let stored = read_log(&data, &root, &listed[0].id);
+    let state = SessionState::fold(stored.iter().map(|e| &e.event));
+    assert_eq!(state.compacted_upto, *cuts.last().unwrap());
+    assert_eq!(stored.iter().filter(|e| matches!(e.event, Event::UserMessage { .. })).count(), 7, "INV-5: nothing is gone");
+}

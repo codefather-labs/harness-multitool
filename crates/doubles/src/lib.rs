@@ -205,6 +205,15 @@ impl Memory for InMemoryJournal {
         ready(Ok(()))
     }
 
+    fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        let binding = |e: &&JournalRecord| e.flags.iter().any(|f| f == "specification" || f == "constraint") && !e.flags.iter().any(|f| f == "deprecated");
+        ready(Ok(self.entries.borrow().iter().rev().filter(binding).take(limit).cloned().collect()))
+    }
+
+    fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
+        ready(Ok(self.maps.borrow().iter().map(|m| (m.id, m.title.clone())).collect()))
+    }
+
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
         let id = self.maps.borrow().len() as u64 + 1;
         let root = MapNode { id: 1, parent: None, kind: "topic".into(), text: title.into(), state: "open".into(), refs: vec![] };
@@ -237,7 +246,7 @@ pub struct WholeConversation;
 impl ContextStrategy for WholeConversation {
     fn build<'a>(&'a self, state: &'a SessionState, _memory: &'a dyn Memory) -> BoxFuture<'a, PluginResult<TurnContext>> {
         let system = (!state.hook_context.is_empty()).then(|| state.hook_context.join("\n"));
-        ready(Ok(TurnContext { system, messages: state.messages.clone() }))
+        ready(Ok(TurnContext { system, messages: state.messages.clone(), compacted: None }))
     }
 }
 
