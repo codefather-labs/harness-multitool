@@ -1264,7 +1264,7 @@ fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
         anthropic_turn(None, "From the other window."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let settings = settings(&url, "k");
@@ -1313,4 +1313,117 @@ fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
     assert_eq!(client.build().as_deref(), Some(harness_daemon::build_id().as_str()));
     link = other;
     drop(link);
+}
+
+/// A session in the daemon has its window's environment, not the daemon's: its key, what its tools
+/// and hooks see. What the window did not have is not there.
+#[test]
+fn a_session_in_the_daemon_has_its_windows_environment() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("window-env");
+    let data = temp_dir("window-env-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("e1", "shell", json!({"command": "echo \"var=[$MT_WINDOW_VAR] home=[$HOME]\""}))), "Looking."),
+        anthropic_turn(None, "Seen."),
+    ]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let mut s = settings(&url, "not-this-key");
+    s.auth.insert("anthropic".to_string(), json!({"env": "MT_WINDOW_KEY"}));
+    let environment = [("MT_WINDOW_VAR", "from-the-window"), ("MT_WINDOW_KEY", "key-of-the-window"), ("PATH", "/usr/bin:/bin")].map(|(k, v)| (k.to_string(), v.to_string())).into_iter().collect();
+    let link = RemoteSessions::open_in(client, &root, &s, Default::default(), environment).unwrap();
+    let mut link = SessionLink::Remote(link);
+    link.prompt(1, "look".to_string());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut result = String::new();
+    let mut ended = false;
+    while std::time::Instant::now() < deadline && !ended {
+        for message in link.drain() {
+            match message {
+                FromSession::Ask { tab, .. } => link.answer(tab, Answer::AllowOnce),
+                FromSession::Ended { .. } => ended = true,
+                FromSession::Entry { entry: LogEntry { event: Event::ToolResult { output, .. }, .. }, .. } => result = output.to_string(),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ended, "the run ended");
+    assert!(result.contains("var=[from-the-window]"), "{result}");
+    assert!(result.contains("home=[]"), "not the daemon's: {result}");
+    let first = seen.lock().unwrap()[0].to_lowercase();
+    assert!(first.contains("key-of-the-window"), "the key is the window's");
+    let session = link.session_of(1).unwrap();
+    let log = std::fs::read_to_string(std::path::Path::new(&data).join("sessions").join(root.trim_matches('/').replace(|c: char| !c.is_alphanumeric(), "-")).join(format!("{session}.jsonl"))).unwrap();
+    assert!(!log.contains("key-of-the-window"), "no key in the log (INV-6)");
+}
+
+/// CON-77: one writer to a log. A window still there keeps its session; from one gone, a new window
+/// takes it over with its run on: the prompt, the rest of the run, then the session itself.
+#[test]
+fn a_window_takes_over_a_run_from_one_that_went_away() {
+    use harness_session::remote::{DaemonHost, MakeHost};
+    let root = temp_dir("take-over");
+    let data = temp_dir("take-over-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "shell", json!({"command": "echo done"}))), "Running."),
+        anthropic_turn(None, "Rest of the run."),
+        anthropic_turn(None, "Going on here."),
+    ]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let s = settings(&url, "k");
+    let op = |window: &str, op: serde_json::Value| {
+        let mut op = op;
+        op["window"] = json!(window);
+        client.conversation_op(&op).unwrap()
+    };
+    let wait_for = |window: &str, after: &mut u64, kind: &str| -> serde_json::Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            for event in client.conversation_events(window, *after).unwrap() {
+                *after = event["seq"].as_u64().unwrap();
+                if event["event"]["kind"] == kind {
+                    return event["event"].clone();
+                }
+            }
+        }
+        panic!("no {kind} for {window}");
+    };
+    let (first, second) = ("conv-111-a", "conv-222-b");
+    for window in [first, second] {
+        op(window, json!({"op": "open", "root": root, "settings": s}));
+    }
+    op(first, json!({"op": "prompt", "tab": 1, "text": "start"}));
+    let mut after_first = 0;
+    wait_for(first, &mut after_first, "ask");
+    let session = op(first, json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
+
+    // Still there: refused, and nothing moves.
+    assert_eq!(op(second, json!({"op": "resume", "tab": 7, "text": session}))["elsewhere"], true);
+    // It stops polling, as a killed window does. The second one keeps polling.
+    let mut after = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(7);
+    while std::time::Instant::now() < deadline {
+        client.conversation_events(second, after).unwrap().iter().for_each(|e| after = e["seq"].as_u64().unwrap());
+    }
+    assert_eq!(op(second, json!({"op": "resume", "tab": 7, "text": session}))["attached"], true);
+    let ask = wait_for(second, &mut after, "ask");
+    assert_eq!(ask["tab"], 7, "the waiting prompt came with it");
+    assert_eq!(op(second, json!({"op": "session_of", "tab": 7}))["session"], json!(session));
+    // Asked of the tab meanwhile: it goes in when the run has ended.
+    op(second, json!({"op": "prompt", "tab": 7, "text": "and on"}));
+    op(second, json!({"op": "answer", "tab": 7, "answer": "once"}));
+    assert_eq!(wait_for(second, &mut after, "ended")["tab"], 7);
+    let last = wait_for(second, &mut after, "ended");
+    assert_eq!(last["tab"], 7, "the waiting message ran in this window");
+    let log: Vec<LogEntry> = read_log(&data, &root, &session);
+    assert_eq!(log.iter().map(|e| e.seq).collect::<Vec<_>>(), (0..log.len() as u64).collect::<Vec<_>>(), "one writer: one numbering");
+    assert_eq!(user_texts(&log), ["start", "and on"]);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    assert!(seen.lock().unwrap()[2].contains("Rest of the run"), "the session went on with all of it");
 }

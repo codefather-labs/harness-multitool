@@ -7,7 +7,7 @@ use harness_api::{Auth, BoxFuture, PluginError, PluginResult, Secret};
 use serde_json::Value;
 
 /// Reads the environment through a function, so the crate stays free of ambient access.
-pub type EnvRead = fn(&str) -> Option<String>;
+pub type EnvRead = Box<dyn Fn(&str) -> Option<String>>;
 
 pub struct ApiKeyAuth {
     env: EnvRead,
@@ -16,9 +16,9 @@ pub struct ApiKeyAuth {
 }
 
 impl ApiKeyAuth {
-    pub fn new(env: EnvRead, settings: &Value) -> Self {
+    pub fn new(env: impl Fn(&str) -> Option<String> + 'static, settings: &Value) -> Self {
         let settings = settings.as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-        ApiKeyAuth { env, settings }
+        ApiKeyAuth { env: Box::new(env), settings }
     }
 
     /// Where this provider's key comes from, for the settings; never the key.

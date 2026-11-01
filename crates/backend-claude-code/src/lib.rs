@@ -156,6 +156,8 @@ pub struct ClaudeCode {
     own_environment: bool,
     /// No prompts at all: the user's own choice, as they may run Claude Code themselves (CON-70).
     skip_permissions: bool,
+    /// What it runs with instead of this process's environment (a window's, in the daemon).
+    environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
 }
 
 impl ClaudeCode {
@@ -169,7 +171,14 @@ impl ClaudeCode {
             allowed_tools: settings["allowed_tools"].as_str().unwrap_or(READ_ONLY_TOOLS).to_string(),
             own_environment: settings["environment"] == "user",
             skip_permissions: settings["permissions"] == "skip",
+            environment: None,
         }
+    }
+
+    /// Runs with this environment instead of this process's.
+    pub fn with_environment(mut self, environment: std::sync::Arc<std::collections::BTreeMap<String, String>>) -> Self {
+        self.environment = Some(environment);
+        self
     }
 
     /// The arguments of one run. The user's own hooks and servers stay out of it (CON-61).
@@ -206,8 +215,15 @@ impl ClaudeCode {
         command.args(self.args(request)).current_dir(&self.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Nothing of the session that started the harness passes to the child; only where its own
         // configuration lives, which is where the user signed in.
-        for (name, _) in std::env::vars_os() {
-            let name = name.to_string_lossy().into_owned();
+        if let Some(base) = &self.environment {
+            command.env_clear();
+            command.envs(base.iter());
+        }
+        let names: Vec<String> = match &self.environment {
+            Some(base) => base.keys().cloned().collect(),
+            None => std::env::vars_os().map(|(name, _)| name.to_string_lossy().into_owned()).collect(),
+        };
+        for name in names {
             // Its own environment keeps what the user's hooks need, all but what marks a session
             // of its own as already running.
             let drop = if self.own_environment { name == "CLAUDECODE" || name.starts_with("CLAUDE_CODE_") } else { name.starts_with("CLAUDE") && name != "CLAUDE_CONFIG_DIR" };

@@ -97,8 +97,8 @@ impl Settings {
 }
 
 /// `MULTITOOL_WIRE_LOG=<file>`: see everything that goes to and comes from a model.
-fn wire_log_path() -> Option<PathBuf> {
-    std::env::var_os("MULTITOOL_WIRE_LOG").filter(|p| !p.is_empty()).map(PathBuf::from)
+fn wire_log_path(env: &WindowEnvRead) -> Option<PathBuf> {
+    env("MULTITOOL_WIRE_LOG").filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
 /// The folder's `origin` URL, if it is a repository with one.
@@ -107,12 +107,27 @@ fn git_origin(root: &str) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|u| !u.is_empty())
 }
 
-fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+/// A window's environment, held in memory for its sessions: in no file and in no log (INV-6).
+pub type WindowEnv = Arc<BTreeMap<String, String>>;
+
+type WindowEnvRead = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// Reads a window's environment, or this process's when it runs its own sessions.
+fn env_reader(environment: Option<WindowEnv>) -> WindowEnvRead {
+    match environment {
+        Some(map) => Arc::new(move |name| map.get(name).cloned()),
+        None => Arc::new(|name| std::env::var(name).ok()),
+    }
+}
+
+/// This process's environment, to send to the daemon. What is not text cannot be a key or a path
+/// another process would read back the same way, and stays behind.
+pub fn this_environment() -> BTreeMap<String, String> {
+    std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
 }
 
 /// Everything shipped in this build, under its configuration names.
-pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>) -> Registry {
+fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>, env: WindowEnvRead) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
     let delegate_session = settings.runs_delegate();
@@ -120,7 +135,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
     let sessions_dir = sessions_dir(data_dir, root);
     let (root_d, data_d) = (root.to_string(), std::path::PathBuf::from(data_dir));
     let auth_data = PathBuf::from(data_dir);
-    r.auth("api-key", move |cx| Ok(Rc::new(ProviderAuth::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings), cx.settings, &auth_data))))
+    r.auth("api-key", move |cx| Ok(Rc::new(ProviderAuth::new(harness_auth_apikey::ApiKeyAuth::new({ let env = env.clone(); move |name: &str| env(name) }, cx.settings), cx.settings, &auth_data))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
         .tool("edit", |_| Ok(Rc::new(harness_tools_builtin::Edit)))
@@ -279,26 +294,32 @@ pub struct Host {
     pub plugins: Arc<dyn Fn() -> Value + Send + Sync>,
     /// `plugins_reload` raises this; the frontend does the rest at a safe point.
     pub reload: Arc<std::sync::atomic::AtomicBool>,
+    /// The window's environment, when the session does not run in the window's own process.
+    pub environment: Option<WindowEnv>,
 }
 
 impl Default for Host {
     fn default() -> Self {
-        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default() }
+        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default(), environment: None }
     }
 }
 
 pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host) -> Factory {
     Arc::new(move |tab| {
         let data = data_dir.to_string_lossy().into_owned();
+        let read = env_reader(host.environment.clone());
         let mut platform = harness_platform_native::platform(data_dir.clone());
-        if let Some(path) = wire_log_path() {
+        if host.environment.is_some() {
+            platform.process = Some(Rc::new(harness_platform_native::NativeProcess { environment: host.environment.clone() }));
+        }
+        if let Some(path) = wire_log_path(&read) {
             platform.net = Rc::new(wire::WireLog::new(platform.net.clone(), path));
         }
         let mut selection = settings.selection();
         selection.tools.extend(["plugins_list".to_string(), "plugins_reload".to_string(), "debug_contract".to_string(), "debug_runs".to_string()]);
         let root_debug = root.clone();
 
-        let mut registry = registry(&settings, &root, &data, (host.note)(tab));
+        let mut registry = registry(&settings, &root, &data, (host.note)(tab), read.clone());
         let (plugins, reload) = (host.plugins.clone(), host.reload.clone());
         registry.tool("plugins_list", move |_| Ok(Rc::new(host_tools::PluginsList(plugins.clone()))));
         registry.tool("plugins_reload", move |_| Ok(Rc::new(host_tools::PluginsReload(reload.clone()))));
@@ -313,8 +334,8 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         }
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
-            parts.backend = Some(delegate(&settings, &root)?);
-            parts.conversations = Some(Rc::from(conversation_source("claude-code")?));
+            parts.backend = Some(delegate(&settings, &root, host.environment.clone())?);
+            parts.conversations = Some(Rc::from(conversation_source_in("claude-code", &*read)?));
         }
         Ok(parts)
     })
@@ -322,27 +343,35 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
 
 /// Claude Code as a delegate, in a build that has it (ADR 0020).
 #[cfg(feature = "claude-code")]
-fn delegate(settings: &Settings, root: &str) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>) -> Result<Rc<dyn AgentBackend>, String> {
     let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
-    Ok(Rc::new(harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row)))
+    let code = harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row);
+    Ok(Rc::new(match environment {
+        Some(environment) => code.with_environment(environment),
+        None => code,
+    }))
 }
 
 /// Where conversations held by another agent are read from, in a build that has one (IF-18).
-#[cfg(feature = "claude-code")]
 pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationFormat>, String> {
+    conversation_source_in(name, &|name| std::env::var(name).ok())
+}
+
+#[cfg(feature = "claude-code")]
+fn conversation_source_in(name: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
     match name {
-        harness_backend_claude_code::NAME => Ok(Box::new(harness_backend_claude_code::conversations::ClaudeCodeConversations::from_env().map_err(|e| e.to_string())?)),
+        harness_backend_claude_code::NAME => Ok(Box::new(harness_backend_claude_code::conversations::ClaudeCodeConversations::from_lookup(env).map_err(|e| e.to_string())?)),
         other => Err(format!("no conversations from {other}; known: {}", harness_backend_claude_code::NAME)),
     }
 }
 
 #[cfg(not(feature = "claude-code"))]
-pub fn conversation_source(_name: &str) -> Result<Box<dyn ConversationFormat>, String> {
+fn conversation_source_in(_name: &str, _env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
     Err("this build reads no conversations: build with --features claude-code".to_string())
 }
 
 #[cfg(not(feature = "claude-code"))]
-fn delegate(_settings: &Settings, _root: &str) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>) -> Result<Rc<dyn AgentBackend>, String> {
     Err("this build has no Claude Code delegate: build with --features claude-code".to_string())
 }
 
@@ -575,6 +604,26 @@ impl Sessions {
         self.handles.values().any(|h| h.session == session && h.running.load(Ordering::SeqCst))
     }
 
+    /// The tab holding this stored session, if one does.
+    pub fn tab_of(&self, session: &str) -> Option<u64> {
+        self.handles.iter().find(|(_, h)| h.session == session).map(|(tab, _)| *tab)
+    }
+
+    /// This tab's run goes on, and starts nothing after it: what waited for it is returned, for
+    /// whoever takes the conversation over. Its prompts and its stop still work here.
+    pub fn hand_over(&mut self, tab: u64) -> Vec<String> {
+        let Some(handle) = self.handles.get(&tab) else { return Vec::new() };
+        let inbox = self.inboxes.entry(tab).or_default();
+        let mut inbox = inbox.lock().expect("inbox");
+        handle.retired.store(true, Ordering::SeqCst);
+        inbox.drain(..).collect()
+    }
+
+    /// Lets go of a tab's session: its thread ends once it has no run.
+    pub fn forget(&mut self, tab: u64) {
+        self.handles.remove(&tab);
+    }
+
     /// The stored session behind a tab, once it has one.
     pub fn session_of(&self, tab: u64) -> Option<&str> {
         self.handles.get(&tab).map(|h| h.session.as_str())
@@ -771,6 +820,8 @@ impl Sessions {
                         let Some(text) = next else { continue };
                         pollster::block_on(engine.run(&text, None))
                     }
+                    // Handed over: the next run is the new owner's, or two would write this log.
+                    Input::Task { .. } | Input::Inbound { .. } if retired_here.load(Ordering::SeqCst) => break,
                     Input::Task { text, protocol } => {
                         running_here.store(true, Ordering::SeqCst);
                         pollster::block_on(engine.run(&text, Some(&protocol)))

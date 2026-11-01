@@ -339,7 +339,7 @@ fn host_for(note: std::sync::Arc<dyn Fn(u64) -> Option<String> + Send + Sync>, r
         all["callback_handlers_standard"] = serde_json::json!(["notification", "journal", "flowstate_update"]);
         all
     });
-    harness_session::Host { note, plugins, reload }
+    harness_session::Host { note, plugins, reload, environment: None }
 }
 
 fn selection_summary(s: &harness_session::Settings) -> serde_json::Value {
@@ -435,6 +435,8 @@ struct Live {
     /// When the locked prompt on screen first showed.
     prompt_opened: Option<std::time::Instant>,
     sessions: harness_session::remote::SessionLink,
+    /// Tabs opened on a run still on: entries up to this number came from the log.
+    shown_up_to: std::collections::HashMap<u64, u64>,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
     /// Permission prompts waiting for the one on screen to be answered.
     asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
@@ -754,7 +756,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1073,10 +1075,13 @@ impl Live {
     fn open_recent(&mut self, i: usize) -> Option<frontend_tui::AppState> {
         let info = self.recent.get(i)?.clone();
         let data = config::data_dir().ok()?;
-        let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &info.id);
         let mut state = self.fresh_session();
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             let tab = w.tabs[w.active].id;
+            // Opened first and read after: what a run on says from here comes as events, and all
+            // before is in the log. What both have shows once, by its number.
+            let opened = self.sessions.resume(tab, &info.id);
+            let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &info.id);
             let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
             let view = w.view_mut();
             view.transcript.clear();
@@ -1086,9 +1091,13 @@ impl Live {
                 }
                 feed.apply(view, entry);
             }
-            feed.run_ended(view);
+            if opened == harness_session::remote::Opened::Attached {
+                view.generating = true;
+                self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
+            } else {
+                feed.run_ended(view);
+            }
             self.feeds.insert(tab, feed);
-            self.sessions.resume(tab, &info.id);
         }
         Some(state)
     }
@@ -1244,6 +1253,9 @@ impl Live {
             let window = self.context_window;
             match message {
                 FromSession::Entry { tab, entry } => {
+                    if self.shown_up_to.get(&tab).is_some_and(|seq| entry.seq <= *seq) {
+                        continue;
+                    }
                     if let harness_api::Event::StepDebug { on, .. } = entry.event {
                         self.note_step_debug(tab, on);
                     }

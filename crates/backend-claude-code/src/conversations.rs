@@ -30,10 +30,15 @@ impl ClaudeCodeConversations {
 
     /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
     pub fn from_env() -> PluginResult<Self> {
-        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        Self::from_lookup(&|name| std::env::var(name).ok())
+    }
+
+    /// The same, reading a given environment: a window's, in the daemon.
+    pub fn from_lookup(env: &dyn Fn(&str) -> Option<String>) -> PluginResult<Self> {
+        if let Some(dir) = env("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
             return Ok(Self::new(dir));
         }
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).ok_or_else(|| PluginError::new("no home directory"))?;
+        let home = env("HOME").or_else(|| env("USERPROFILE")).ok_or_else(|| PluginError::new("no home directory"))?;
         Ok(Self::new(Path::new(&home).join(".claude")))
     }
 

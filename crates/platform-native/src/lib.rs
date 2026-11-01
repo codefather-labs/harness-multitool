@@ -58,7 +58,11 @@ fn ensure_parent(path: &str) -> std::io::Result<()> {
     }
 }
 
-pub struct NativeProcess;
+#[derive(Default)]
+pub struct NativeProcess {
+    /// What commands run with instead of this process's environment (a window's, in the daemon).
+    pub environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
+}
 
 impl Process for NativeProcess {
     fn run(&self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> BoxFuture<'_, PluginResult<ProcessOutput>> {
@@ -73,6 +77,10 @@ impl Process for NativeProcess {
         };
         if let Some(cwd) = cwd {
             c.current_dir(cwd);
+        }
+        if let Some(base) = &self.environment {
+            c.env_clear();
+            c.envs(base.iter());
         }
         c.envs(env.iter().map(|(k, v)| (k, v)));
         c.stdin(std::process::Stdio::null());
@@ -183,7 +191,7 @@ impl Storage for FileStorage {
 pub fn platform(data_dir: PathBuf) -> Platform {
     Platform {
         fs: Rc::new(NativeFs),
-        process: Some(Rc::new(NativeProcess)),
+        process: Some(Rc::new(NativeProcess::default())),
         net: Rc::new(NativeNet::default()),
         clock: Rc::new(NativeClock),
         storage: Rc::new(FileStorage(data_dir)),

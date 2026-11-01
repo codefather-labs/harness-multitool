@@ -20,6 +20,11 @@ use crate::{Factory, FromSession, Host, Sessions, Settings, TaskRefused};
 /// A window that has not polled for this long is gone; its runs finish with nobody watching.
 const WINDOW_GONE: Duration = Duration::from_secs(30);
 const PUMP: Duration = Duration::from_millis(10);
+/// A window polls every couple of seconds. One silent for this long is not there, as far as
+/// opening its conversation elsewhere goes.
+const WINDOW_SILENT: Duration = Duration::from_secs(5);
+/// How long a window waits for one that may have just gone, before it says the other is open.
+const WAIT_FOR_OTHER: Duration = Duration::from_secs(8);
 
 fn end_to_json(end: &RunEnd) -> Value {
     match end {
@@ -59,11 +64,25 @@ fn from_wire(value: &Value) -> Option<FromSession> {
     }
 }
 
+fn tab_of(message: &FromSession) -> u64 {
+    match message {
+        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } => *tab,
+    }
+}
+
 fn answer_to_json(answer: Answer) -> &'static str {
     match answer {
         Answer::AllowOnce => "once",
         Answer::AlwaysAllow => "always",
         Answer::Deny => "deny",
+    }
+}
+
+fn answer_from_json(value: &Value) -> Answer {
+    match value.as_str() {
+        Some("once") => Answer::AllowOnce,
+        Some("always") => Answer::AlwaysAllow,
+        _ => Answer::Deny,
     }
 }
 
@@ -79,8 +98,77 @@ struct Window {
     notes: Arc<Mutex<HashMap<u64, String>>>,
     polled: Instant,
     closed: bool,
-    /// Tabs whose prompt nobody has answered yet.
-    asking: HashSet<u64>,
+    /// Tabs whose prompt nobody has answered yet, with the prompt.
+    asking: HashMap<u64, Value>,
+    /// Runs of this window that another window has taken over: tab -> (window, its tab).
+    handed: HashMap<u64, (String, u64)>,
+    /// This window's tabs showing a run that another window started.
+    following: HashMap<u64, Follow>,
+    /// What each tab's run has said so far: the log has it only as of its last flush, and a window
+    /// taking the run over needs all of it.
+    said: HashMap<u64, Vec<Value>>,
+    /// The window's environment, for reading a provider's conversations (the daemon's own is not it).
+    environment: Option<crate::WindowEnv>,
+}
+
+/// A tab showing a run of another window. When it ends the tab has the session itself.
+struct Follow {
+    window: String,
+    tab: u64,
+    session: String,
+    /// What was asked of the tab meanwhile, in order.
+    pending: Vec<Value>,
+}
+
+impl Window {
+    fn silent(&self) -> bool {
+        self.closed || self.polled.elapsed() > WINDOW_SILENT
+    }
+
+    fn say(&mut self, event: Value) {
+        self.next += 1;
+        self.events.push_back((self.next, event));
+    }
+
+    /// One operation on this window's own sessions.
+    fn apply(&mut self, name: &str, op: &Value) -> Result<Value, String> {
+        let tab = op["tab"].as_u64().unwrap_or(0);
+        let text = || op["text"].as_str().unwrap_or_default().to_string();
+        let on = op["on"].as_bool().unwrap_or(false);
+        match name {
+            "prompt" => self.sessions.prompt(tab, text()),
+            "task" => {
+                let steps = serde_json::from_value(op["steps"].clone()).map_err(|e| e.to_string())?;
+                return Ok(match self.sessions.task(tab, text(), steps) {
+                    Ok(()) => json!({"ok": true}),
+                    Err(TaskRefused::Invalid(reason)) => json!({"invalid": reason}),
+                    Err(TaskRefused::NotApproved { commands, text }) => json!({"not_approved": {"commands": commands, "text": text}}),
+                });
+            }
+            "approve" => {
+                self.sessions.approve_acceptance(&text())?;
+            }
+            "nick" => self.sessions.nick(tab, text()),
+            "step_debug" => self.sessions.step_debug(tab, on),
+            "plan" => self.sessions.plan(tab, on),
+            "inbound" => self.sessions.inbound(tab, op["label"].as_str().unwrap_or_default().to_string(), text()),
+            "answer" => {
+                self.asking.remove(&tab);
+                self.sessions.answer(tab, answer_from_json(&op["answer"]));
+            }
+            "stop" => self.sessions.stop(tab),
+            "resume" => self.sessions.resume(tab, &text()),
+            "rebind" => return Ok(json!({"ok": self.sessions.rebind(tab)})),
+            "unqueue" => return Ok(json!({"ok": self.sessions.unqueue(tab, &text())})),
+            "session_of" => return Ok(json!({"session": self.sessions.session_of(tab)})),
+            "note" => {
+                self.notes.lock().expect("notes").insert(tab, text());
+            }
+            "close" => self.closed = true,
+            other => return Err(format!("no such operation: {other}")),
+        }
+        Ok(json!({"ok": true}))
+    }
 }
 
 /// The daemon's side: every conversation of every window runs here, and its log is written here.
@@ -108,40 +196,185 @@ impl DaemonHost {
     fn pump(&self) {
         let mut windows = self.windows.lock().expect("windows");
         let mut any = false;
-        for window in windows.values_mut() {
+        // A handed-over run speaks to the window that took it.
+        let mut handed = Vec::new();
+        for (id, window) in windows.iter_mut() {
             let messages = window.sessions.drain();
             let reload = window.reload.swap(false, Ordering::SeqCst);
             if window.polled.elapsed() > WINDOW_GONE {
                 window.closed = true;
             }
-            for message in &messages {
-                if let FromSession::Ask { tab, .. } = message {
-                    window.asking.insert(*tab);
+            let (theirs, own): (Vec<_>, Vec<_>) = messages.into_iter().partition(|m| window.handed.contains_key(&tab_of(m)));
+            for message in theirs {
+                let (to, tab) = window.handed[&tab_of(&message)].clone();
+                handed.push((id.clone(), tab_of(&message), to, tab, message));
+            }
+            for message in &own {
+                match message {
+                    FromSession::Ask { tab, .. } => {
+                        window.asking.insert(*tab, to_wire(message));
+                    }
+                    FromSession::Entry { tab, .. } => window.said.entry(*tab).or_default().push(to_wire(message)),
+                    FromSession::Ended { tab, .. } => {
+                        window.said.remove(tab);
+                    }
+                    FromSession::Unavailable { .. } => {}
                 }
             }
             if window.closed {
-                // Nobody is there to answer: a prompt is a denial, and the run goes on to its end.
-                for tab in window.asking.drain() {
-                    window.sessions.answer(tab, Answer::Deny);
-                }
                 window.events.clear();
                 continue;
             }
-            for message in messages {
-                window.next += 1;
-                window.events.push_back((window.next, to_wire(&message)));
+            for message in own {
+                window.say(to_wire(&message));
                 any = true;
             }
             if reload {
-                window.next += 1;
-                window.events.push_back((window.next, json!({"kind": "reload"})));
+                window.say(json!({"kind": "reload"}));
                 any = true;
             }
         }
+        for (from, from_tab, to, tab, message) in handed {
+            any |= Self::bring(&mut windows, &from, from_tab, &to, tab, message);
+        }
+        // Nobody is there to answer: a prompt is a denial, and the run goes on to its end.
+        let unanswered: Vec<(String, u64)> = windows.iter_mut().filter(|(_, w)| w.closed).flat_map(|(id, w)| w.asking.drain().map(|(tab, _)| (id.clone(), tab)).collect::<Vec<_>>()).collect();
+        for (id, tab) in unanswered {
+            let source = windows.get(&id).and_then(|w| w.following.get(&tab)).map(|f| (f.window.clone(), f.tab));
+            let (owner, owner_tab) = source.unwrap_or((id, tab));
+            if let Some(window) = windows.get(&owner) {
+                window.sessions.answer(owner_tab, Answer::Deny);
+            }
+        }
         // A closed window stays until its runs have finished: the log gets their end.
-        windows.retain(|_, w| !w.closed || w.sessions.busy());
+        windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
         if any {
             self.wake.notify_all();
+        }
+    }
+
+    /// One message of a handed-over run reaches the tab following it. When the run has ended, the
+    /// session is that tab's own, and what was asked of it meanwhile goes in.
+    fn bring(windows: &mut HashMap<String, Window>, from: &str, from_tab: u64, to: &str, tab: u64, message: FromSession) -> bool {
+        let ended = matches!(message, FromSession::Ended { .. });
+        let retabbed = match message {
+            FromSession::Entry { entry, .. } => FromSession::Entry { tab, entry },
+            FromSession::Ask { call, capabilities, .. } => FromSession::Ask { tab, call, capabilities },
+            FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
+            FromSession::Unavailable { message, .. } => FromSession::Unavailable { tab, message },
+        };
+        let mut said = false;
+        if let (FromSession::Entry { .. }, Some(source)) = (&retabbed, windows.get_mut(from)) {
+            source.said.entry(from_tab).or_default().push(to_wire(&retabbed));
+        }
+        if let Some(window) = windows.get_mut(to) {
+            if let FromSession::Ask { .. } = retabbed {
+                window.asking.insert(tab, to_wire(&retabbed));
+            }
+            if !window.closed {
+                window.say(to_wire(&retabbed));
+                said = true;
+            }
+        }
+        if !ended {
+            return said;
+        }
+        if let Some(source) = windows.get_mut(from) {
+            source.handed.remove(&from_tab);
+            source.sessions.forget(from_tab);
+        }
+        if let Some(window) = windows.get_mut(to)
+            && let Some(follow) = window.following.remove(&tab)
+        {
+            window.sessions.resume(tab, &follow.session);
+            for op in follow.pending {
+                let _ = window.apply(op["op"].as_str().unwrap_or_default(), &op);
+            }
+        }
+        said
+    }
+
+    /// Opening a session some other window holds. One writer to a log (CON-77): a window still
+    /// there keeps it; from one that went away, the session comes here, with its run if it is on.
+    fn take_over(windows: &mut HashMap<String, Window>, id: &str, tab: u64, session: &str) -> Option<Value> {
+        let root = windows.get(id)?.root.clone();
+        let (other, other_tab) = windows.iter().filter(|(other, w)| other.as_str() != id && w.root == root).find_map(|(other, w)| Some((other.clone(), w.sessions.tab_of(session)?)))?;
+        let source = &windows[&other];
+        // A process has one window: an older one of this process is what a hot reload left.
+        let this_process = |window: &str| window.split('-').nth(1).map(str::to_string);
+        let left_behind = this_process(&other).is_some() && this_process(&other) == this_process(id);
+        let shown_by = source.handed.get(&other_tab).map(|(window, _)| window.clone());
+        let there = match &shown_by {
+            Some(window) if window == id => false,
+            Some(window) => windows.get(window).is_some_and(|w| !w.silent()),
+            None => !source.silent() && !left_behind,
+        };
+        if there {
+            return Some(json!({"elsewhere": true}));
+        }
+        let running = source.sessions.runs(session);
+        if let Some(window) = shown_by.as_ref().and_then(|window| windows.get_mut(window)) {
+            window.following.retain(|_, f| f.session != session);
+        }
+        let source = windows.get_mut(&other)?;
+        source.closed = true;
+        if !running {
+            source.handed.remove(&other_tab);
+            source.sessions.forget(other_tab);
+            return None;
+        }
+        let waiting = source.sessions.hand_over(other_tab);
+        let said = source.said.get(&other_tab).cloned().unwrap_or_default();
+        let prompt = source.asking.remove(&other_tab);
+        source.handed.insert(other_tab, (id.to_string(), tab));
+        let window = windows.get_mut(id)?;
+        window.sessions.forget(tab);
+        let pending = waiting.into_iter().map(|text| json!({"op": "prompt", "tab": tab, "text": text})).collect();
+        window.following.insert(tab, Follow { window: other, tab: other_tab, session: session.to_string(), pending });
+        // First what was said so far: the log may not have the turn in progress yet.
+        for mut entry in said {
+            entry["tab"] = json!(tab);
+            window.say(entry);
+        }
+        if let Some(mut prompt) = prompt {
+            prompt["tab"] = json!(tab);
+            window.asking.insert(tab, prompt.clone());
+            window.say(prompt);
+        }
+        Some(json!({"ok": true, "attached": true}))
+    }
+
+    /// An operation on a tab showing another window's run.
+    fn on_followed(windows: &mut HashMap<String, Window>, id: &str, tab: u64, name: &str, op: &Value) -> Result<Value, String> {
+        let window = windows.get_mut(id).ok_or("this window is not open here")?;
+        let follow = window.following.get_mut(&tab).ok_or("not following")?;
+        match name {
+            "session_of" => Ok(json!({"session": follow.session})),
+            "rebind" => Ok(json!({"ok": false})),
+            "task" => Ok(json!({"invalid": "this conversation is finishing a run; give the task when it has ended"})),
+            "unqueue" => {
+                let at = follow.pending.iter().position(|p| p["op"] == "prompt" && p["text"] == op["text"]);
+                if let Some(at) = at {
+                    follow.pending.remove(at);
+                }
+                Ok(json!({"ok": at.is_some()}))
+            }
+            "answer" | "stop" => {
+                let (owner, owner_tab) = (follow.window.clone(), follow.tab);
+                window.asking.remove(&tab);
+                let owner = windows.get(&owner).ok_or("the run has ended")?;
+                if name == "stop" {
+                    owner.sessions.stop(owner_tab);
+                } else {
+                    owner.sessions.answer(owner_tab, answer_from_json(&op["answer"]));
+                }
+                Ok(json!({"ok": true}))
+            }
+            "note" | "close" => window.apply(name, op),
+            _ => {
+                follow.pending.push(op.clone());
+                Ok(json!({"ok": true}))
+            }
         }
     }
 
@@ -154,14 +387,19 @@ impl DaemonHost {
         };
         let lookup = notes.clone();
         let note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync> = Arc::new(move |tab| lookup.lock().ok()?.get(&tab).cloned());
-        let host = (self.make_host)(&settings, note, reload.clone());
+        let environment: Option<crate::WindowEnv> = serde_json::from_value(op["env"].clone()).ok().map(Arc::new);
+        let mut host = (self.make_host)(&settings, note, reload.clone());
+        host.environment = environment.clone();
         let factory = crate::with_host(settings, root.clone(), self.data_dir.clone(), host);
         match windows.get_mut(id) {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, polled: Instant::now(), closed: false, asking: HashSet::new() });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), environment: None });
             }
+        }
+        if let Some(window) = windows.get_mut(id) {
+            window.environment = environment;
         }
         Ok(json!({"ok": true, "pid": std::process::id()}))
     }
@@ -177,54 +415,19 @@ impl ConversationHost for DaemonHost {
         if name == "busy" {
             return Ok(json!({"busy": windows.values().any(|w| w.sessions.busy())}));
         }
-        // One writer to a log: a run left by a closed window finishes before the session opens again.
-        if name == "resume" && windows.iter().any(|(other, w)| other != id && op["text"].as_str().is_some_and(|session| w.sessions.runs(session))) {
-            let window = windows.get_mut(id).ok_or("this window is not open here")?;
-            window.next += 1;
-            let tab = op["tab"].as_u64().unwrap_or(0);
-            window.events.push_back((window.next, to_wire(&FromSession::Unavailable { tab, message: "This conversation is still finishing a run in the daemon. Open it again in a moment: all of it will be there.".to_string() })));
-            self.wake.notify_all();
-            return Ok(json!({"ok": false}));
-        }
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
         window.polled = Instant::now();
         let tab = op["tab"].as_u64().unwrap_or(0);
-        let text = || op["text"].as_str().unwrap_or_default().to_string();
-        let on = op["on"].as_bool().unwrap_or(false);
-        match name {
-            "prompt" => window.sessions.prompt(tab, text()),
-            "task" => {
-                let steps = serde_json::from_value(op["steps"].clone()).map_err(|e| e.to_string())?;
-                return Ok(match window.sessions.task(tab, text(), steps) {
-                    Ok(()) => json!({"ok": true}),
-                    Err(TaskRefused::Invalid(reason)) => json!({"invalid": reason}),
-                    Err(TaskRefused::NotApproved { commands, text }) => json!({"not_approved": {"commands": commands, "text": text}}),
-                });
+        if name == "resume" {
+            let session = op["text"].as_str().unwrap_or_default();
+            if let Some(reply) = Self::take_over(&mut windows, id, tab, session) {
+                self.wake.notify_all();
+                return Ok(reply);
             }
-            "nick" => window.sessions.nick(tab, text()),
-            "step_debug" => window.sessions.step_debug(tab, on),
-            "plan" => window.sessions.plan(tab, on),
-            "inbound" => window.sessions.inbound(tab, op["label"].as_str().unwrap_or_default().to_string(), text()),
-            "answer" => {
-                window.asking.remove(&tab);
-                window.sessions.answer(tab, match op["answer"].as_str() {
-                    Some("once") => Answer::AllowOnce,
-                    Some("always") => Answer::AlwaysAllow,
-                    _ => Answer::Deny,
-                });
-            }
-            "stop" => window.sessions.stop(tab),
-            "resume" => window.sessions.resume(tab, &text()),
-            "rebind" => return Ok(json!({"ok": window.sessions.rebind(tab)})),
-            "unqueue" => return Ok(json!({"ok": window.sessions.unqueue(tab, &text())})),
-            "session_of" => return Ok(json!({"session": window.sessions.session_of(tab)})),
-            "note" => {
-                window.notes.lock().expect("notes").insert(tab, text());
-            }
-            "close" => window.closed = true,
-            other => return Err(format!("no such operation: {other}")),
+        } else if window.following.contains_key(&tab) {
+            return Self::on_followed(&mut windows, id, tab, name, op);
         }
-        Ok(json!({"ok": true}))
+        windows.get_mut(id).ok_or("this window is not open here")?.apply(name, op)
     }
 
     fn events(&self, id: &str, after: u64, wait: Duration) -> Vec<Value> {
@@ -260,19 +463,26 @@ pub struct RemoteSessions {
     incoming: Receiver<FromSession>,
     tabs: Arc<Mutex<HashSet<u64>>>,
     stopped: Arc<AtomicBool>,
+    environment: std::collections::BTreeMap<String, String>,
+    say: Sender<FromSession>,
 }
 
 impl RemoteSessions {
     /// Opens this window in the daemon and starts listening. `reload` is raised when a session
     /// asks for a hot reload.
     pub fn open(client: Client, root: &str, settings: &Settings, reload: Arc<AtomicBool>) -> Result<RemoteSessions, String> {
+        Self::open_in(client, root, settings, reload, crate::this_environment())
+    }
+
+    /// The same, for a window with this environment rather than this process's.
+    pub fn open_in(client: Client, root: &str, settings: &Settings, reload: Arc<AtomicBool>, environment: std::collections::BTreeMap<String, String>) -> Result<RemoteSessions, String> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let window = format!("conv-{}-{now}", std::process::id());
-        client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings}))?;
+        client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
         let (sender, incoming) = channel();
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
-        listen(client.clone(), window.clone(), sender, tabs.clone(), stopped.clone(), reload);
-        Ok(RemoteSessions { client, window, incoming, tabs, stopped })
+        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload);
+        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender })
     }
 
     fn call(&self, op: &str, tab: u64, mut rest: Value) -> Option<Value> {
@@ -285,7 +495,7 @@ impl RemoteSessions {
     }
 
     pub fn configure(&self, root: &str, settings: &Settings) -> Result<(), String> {
-        self.client.conversation_op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings})).map(|_| ())
+        self.client.conversation_op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": self.environment})).map(|_| ())
     }
 }
 
@@ -326,6 +536,17 @@ fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc
     });
 }
 
+/// What opening a stored session came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    /// The tab has it; its next message continues the log.
+    Ready,
+    /// Its run is on, and now speaks to this tab; what it says next comes as for any run.
+    Attached,
+    /// Another window has it open: said on the tab.
+    Elsewhere,
+}
+
 /// What a frontend holds. `Local` is for scripted runs and for when no daemon can be had.
 pub enum SessionLink {
     Local(Sessions),
@@ -353,11 +574,29 @@ impl SessionLink {
         }
     }
 
-    pub fn resume(&mut self, tab: u64, session: &str) {
+    pub fn resume(&mut self, tab: u64, session: &str) -> Opened {
         match self {
-            SessionLink::Local(s) => s.resume(tab, session),
+            SessionLink::Local(s) => {
+                s.resume(tab, session);
+                Opened::Ready
+            }
             SessionLink::Remote(r) => {
-                r.call("resume", tab, json!({"text": session}));
+                // The other window may have just gone: its silence shows within seconds.
+                let deadline = Instant::now() + WAIT_FOR_OTHER;
+                loop {
+                    let Some(reply) = r.call("resume", tab, json!({"text": session})) else { return Opened::Ready };
+                    if reply["attached"] == true {
+                        return Opened::Attached;
+                    }
+                    if reply["elsewhere"] != true {
+                        return Opened::Ready;
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = r.say.send(FromSession::Unavailable { tab, message: "This conversation is open in another window. Close it there to go on here: one writer to a log.".to_string() });
+                        return Opened::Elsewhere;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
             }
         }
     }
