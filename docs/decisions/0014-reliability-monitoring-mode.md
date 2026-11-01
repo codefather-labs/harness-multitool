@@ -17,7 +17,9 @@ The harness gets a **reliability-monitoring mode**, run by the canons of SRE. Pr
 
 **One message per event — decided by the owner (answers Q-21).** A condition is **idempotent**: the same event never sends a second message, however many times the condition evaluates `true` for it. Every repeated `true` is still recorded, in the harness's **trigger log**, not sent. The hook that delivers the condition's message carries the matching instruction to the agent: *you get one message, not a stream; look in the harness's trigger log for the nearby triggers of this and similar conditions — there may be many.* The agent reads that log to see the scale of what happened before it acts (INV-14).
 
-What counts as "the same event", and when a condition re-arms, is open (Q-22). The agent proposes: by default, one event lasts while the condition stays `true` (it re-arms after it turns `false`), and a condition may name its event more precisely — for example by a pipeline iteration's id — so two failed iterations are two events.
+**The same event is the same event uuid — decided by the owner (answers Q-22).** Every incoming signal carries an event **uuid**; it is a required part of the communication contract. An incoming record whose uuid matches one already recorded is the same event: it trips idempotency, goes to the trigger log, and sends nothing. A record with a new uuid is a new event. A signal without a uuid does not satisfy the contract and is rejected.
+
+Open (Q-23): a burst of *different* events — many failed iterations, each with its own uuid — that trip the same condition at once: one message each, or one message for the burst, with the rest left for the agent to find in the trigger log?
 
 ## Policies are per project — decided by the owner (answers Q-19, Q-20; reframes Q-18)
 
@@ -59,4 +61,4 @@ What the agent may do is the project's policy. Two existing harness rules still 
 
 ## Open
 
-What identifies one event and when a condition re-arms (Q-22).
+A burst of different events tripping the same condition: one message each, or one per burst (Q-23).
