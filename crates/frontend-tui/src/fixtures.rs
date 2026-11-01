@@ -4,7 +4,7 @@
 use crate::images::{Eyes, Icon};
 use crate::model::{
     ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Inbound, InboundKind, Item, KeyHint, FlowchartEvent, MapCreated, MapTool, MindMapEvent,
-    Mode, QuickAction, RecentSession, Role, SessionView, SplashView, StartupPanel, StartupView, StatusLine, Tab, TabIcon, TabMark,
+    Mode, QuickAction, RecentSession, Role, SessionView, SplashPoint, SplashView, StartupPanel, StartupView, StatusLine, Tab, TabIcon, TabMark,
     TipPart, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 use crate::debug::{sample_flowchart, sample_journal, sample_tool};
@@ -194,16 +194,31 @@ pub fn splash() -> AppState {
         mode: Mode::Splash(SplashView {
             brand: brand(),
             heading: "Welcome".into(),
-            lines: vec![
-                "A plugin-first coding agent you build to fit your work.".into(),
-                "Every part - providers, tools, policy, memory, frontends - is a plugin you can replace.".into(),
-                "Done means proven: a task finishes only with its checks and evidence.".into(),
-                "Your project journal and mind maps keep what matters across sessions.".into(),
-            ],
+            lines: vec!["A plugin-first agent harness you build to fit your work.".into()],
+            points: splash_points(),
             button: "OK".into(),
             hint: "Enter to continue".into(),
         }),
     }
+}
+
+/// What the harness offers, short: shipped, specified, and - tagged - ideas and concepts
+/// (docs/spec, docs/decisions; P-8: honest about what is not built).
+pub fn splash_points() -> Vec<SplashPoint> {
+    vec![
+        SplashPoint::new("Every part is a Rust plugin you can replace", None),
+        SplashPoint::new("Plugins hot-reload without restarting sessions", None),
+        SplashPoint::new("Done means proven: tasks close with evidence", None),
+        SplashPoint::new("Spec-first: specs and invariants checked", None),
+        SplashPoint::new("Journal, mind maps, flowcharts as memory", None),
+        SplashPoint::new("Callback daemon: custom callbacks and handlers", None),
+        SplashPoint::new("Live flowcharts of running pipelines", None),
+        SplashPoint::new("Step-by-step debug of distributed pipelines", None),
+        SplashPoint::new("Plan mode: plans live in journal and maps", Some("idea")),
+        SplashPoint::new("AI-first reliability monitoring, 24/7", Some("concept")),
+        SplashPoint::new("Many agents in tabs, any model, any machine", None),
+        SplashPoint::new("Linux, macOS, Windows, and in the browser", None),
+    ]
 }
 
 fn recent(title: &str, path: &str, branch: &str, age: &str, model: &str) -> RecentSession {

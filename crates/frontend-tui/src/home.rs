@@ -155,13 +155,20 @@ fn rounded(color: Color, bg: Color) -> Block<'static> {
 }
 
 pub fn splash(f: &mut Frame, area: Rect, v: &SplashView, t: &Theme, pictures: bool, out: &mut Drawn) {
-    let card_h = 2 + 2 + v.lines.len() as u16;
-    let total = brand_h(pictures) + 1 + card_h + 1 + 3 + 1;
+    let gap = if v.points.is_empty() || v.lines.is_empty() { 0 } else { 1 };
+    let card_h = 2 + 2 + v.lines.len() as u16 + gap + v.points.len() as u16;
+    let rest = 1 + card_h + 1 + 3 + 1;
+    // A short terminal keeps the card and drops the logo rather than cutting the list.
+    let with_brand = brand_h(pictures) + rest <= area.height;
+    let total = if with_brand { brand_h(pictures) + rest } else { rest - 1 };
     let top = area.height.saturating_sub(total) / 2;
-    let mut y = top + brand(f, area, top, &v.brand, t, pictures, out) + 1;
+    let mut y = if with_brand { top + brand(f, area, top, &v.brand, t, pictures, out) + 1 } else { top };
 
+    // A bullet is "• text" with its tag right-aligned after a gap.
+    let tag_w = v.points.iter().filter_map(|p| p.tag.as_ref()).map(|s| s.chars().count() + 2).max().unwrap_or(0);
+    let point_w = v.points.iter().map(|p| p.text.chars().count() + 2).max().unwrap_or(0) + tag_w;
     // Wide enough for the longest line: text + 2 padding + 1 border on each side.
-    let longest = v.lines.iter().chain(std::iter::once(&v.heading)).map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+    let longest = v.lines.iter().chain(std::iter::once(&v.heading)).map(|l| l.chars().count()).max().unwrap_or(0).max(point_w) as u16;
     let card = Rect { y: area.y + y, height: card_h, ..centred(area, longest + 6) };
     let mut lines = vec![
         // The light mockup writes the heading in the accent, the dark one in the text colour.
@@ -169,6 +176,20 @@ pub fn splash(f: &mut Frame, area: Rect, v: &SplashView, t: &Theme, pictures: bo
         Line::default(),
     ];
     lines.extend(v.lines.iter().map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(t.text)))));
+    if gap > 0 {
+        lines.push(Line::default());
+    }
+    let inner_w = (card.width as usize).saturating_sub(6);
+    for p in &v.points {
+        let text_w = p.text.chars().count() + 2;
+        let mut spans = vec![Span::styled("• ", Style::default().fg(t.accent)), Span::styled(p.text.clone(), Style::default().fg(t.text))];
+        if let Some(tag) = &p.tag {
+            let pad = inner_w.saturating_sub(text_w + tag.chars().count()).max(2);
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(Span::styled(tag.clone(), Style::default().fg(t.text_muted)));
+        }
+        lines.push(Line::from(spans));
+    }
     let card_line = if t.dark { t.border_subtle } else { t.accent_line };
     let inside = lined(f, card, card_line, t.background);
     let text = Rect { x: inside.x + 2, width: inside.width.saturating_sub(4), ..inside };

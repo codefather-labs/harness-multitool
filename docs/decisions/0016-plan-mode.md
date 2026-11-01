@@ -19,10 +19,9 @@ The harness gets a **plan mode**: the classic plan mode of agent harnesses, wher
 - **The plan is the journal.** The approved plan is not only text in the conversation: it is the set of journal todos, specifications and decisions the planning wrote, plus its mind map and flowcharts, so the next session and other agents find it.
 - **A framework, not instructions.** Where plan mode elsewhere is a prompt, here it is a framework: documented tools, attention to keeping the documentation current, spec-first (P-4, P-10).
 
-## Proposed by the agent, to be confirmed
-
-- **Switching.** The user switches the mode on, or the agent proposes it for a task that needs a plan; leaving it always takes the user's approval (Q-25).
+- **Switching (answers Q-25).** Both ways, as in other harnesses: the user switches the mode on, or asks the agent to plan something and the agent enters plan mode itself. Leaving it takes the user's approval of the plan.
+- **A plan file is optional (answers Q-26).** The plan lives in the journal, mind maps and flowcharts, which the agent always has at hand and keeps current. Saving the plan to a file is an optional last step, only when the human wants it, once everything is planned and recorded: files tend to remain as stale leftovers, yet they matter to people. This part is not fully thought through yet and may change.
 
 ## Open
 
-How the mode is switched and left (Q-25); whether a plan has a document of its own besides the journal entries, mind map and flowcharts (Q-26).
+The optional plan file: its form and where it goes (the owner: not fully thought through yet).

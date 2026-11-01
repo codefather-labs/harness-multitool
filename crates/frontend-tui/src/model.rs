@@ -181,9 +181,25 @@ pub struct Brand {
 pub struct SplashView {
     pub brand: Brand,
     pub heading: String,
+    /// The text under the heading.
     pub lines: Vec<String>,
+    /// What the harness offers, one bullet each; a tag marks what is still an idea or a
+    /// concept, so the screen does not sell a design as a shipped feature (P-8).
+    pub points: Vec<SplashPoint>,
     pub button: String,
     pub hint: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SplashPoint {
+    pub text: String,
+    pub tag: Option<String>,
+}
+
+impl SplashPoint {
+    pub fn new(text: &str, tag: Option<&str>) -> Self {
+        SplashPoint { text: text.into(), tag: tag.map(Into::into) }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
