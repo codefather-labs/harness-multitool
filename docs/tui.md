@@ -47,6 +47,16 @@ name = "check.sh"               # what the card shows
 
 The command sees `HOOK_EVENT`, `HOOK_CALL` (a tool event's call as JSON) and `HOOK_PROMPT`. Exit 0: its output lines join the agent's context. Exit 2: a veto, with stderr as the reason. Any other exit: failed, and it blocks nothing.
 
+Callbacks reach a tab through the daemon, which the UI starts when needed (`multitool daemon`; it listens on localhost and goes on after the UI closes). Each tab has a URL, which its agent knows. POST JSON with a unique `uuid` and a `type`:
+
+| `type` | Fields | What happens |
+|---|---|---|
+| `notification` | `text`, `label` | a CALLBACK card, and the agent's next input, marked as external data |
+| `journal` | `text`, `category`, `tags` | a journal entry and its card; no agent turn |
+| `flowstate_update` | `map`, `node`, `instance` (or `correlation_id`), `state` | the chart drawn with that node active; no agent turn |
+
+A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. Not built yet: conditions and batches, custom handlers, the collapsed view of several instances.
+
 ## Flow
 
 splash (the key points of the harness as bullets, ideas and concepts tagged; OK / Enter) → startup page (recent sessions, quick actions) → session. On a terminal too short for the splash, the logo is dropped and the list stays whole.

@@ -2,7 +2,7 @@
 
 **A plugin-first, open-source agent harness in Rust.** An agent that writes code, runs tools and works with other agents — where almost every part is an interface you can replace with your own implementation, and where "done" means proven.
 
-Status: **early: the agent loop runs in the terminal UI.** The spec comes first and the code is checked against it. `./run.sh` opens it; set `ANTHROPIC_API_KEY`, or point it at any OpenAI-compatible endpoint ([how to use it](docs/tui.md)). The agent has the journal, mind-map and flowchart tools; the daemon, callbacks and the session modes are specified and not built yet.
+Status: **early: the agent loop runs in the terminal UI.** The spec comes first and the code is checked against it. `./run.sh` opens it; set `ANTHROPIC_API_KEY`, or point it at any OpenAI-compatible endpoint ([how to use it](docs/tui.md)). The agent has the journal, mind-map and flowchart tools; callbacks reach it through a local daemon; conditions, custom handlers and the session modes are specified and not built yet.
 
 ## What it is meant to be
 

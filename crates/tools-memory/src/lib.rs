@@ -130,7 +130,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         "salience": {"type": "string", "enum": ["high", "medium", "low"]},
                         "feature": {"type": "string"},
                     }),
-                    &["body", "category"],
+                    &["body", "category", "tags"],
                 )
             },
             |memory, input| {

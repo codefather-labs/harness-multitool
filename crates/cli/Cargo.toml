@@ -10,6 +10,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
 harness-session = { version = "0.1.0-dev", path = "../session" }
 harness-core = { version = "0.1.0-dev", path = "../core" }
 harness-api = { version = "0.1.0-dev", path = "../api" }

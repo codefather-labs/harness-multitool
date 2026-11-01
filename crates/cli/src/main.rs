@@ -38,6 +38,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The daemon: the single entry point of callbacks (the terminal UI starts it when needed).
+    Daemon {
+        /// The port on localhost; by default one is picked.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+    },
     /// Debug: one message through a real session with no UI; prints its log, one line per event.
     Run {
         /// The message for the agent.
@@ -112,6 +118,14 @@ fn main() -> Result<()> {
         Command::Preview { name, theme, script } => preview(&name, &theme, script.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Run { prompt, yes } => run_once(&prompt, yes),
+        Command::Daemon { port } => {
+            let dir = config::data_dir()?;
+            let daemon = harness_daemon::Daemon::start(&dir, port).map_err(|e| anyhow!(e))?;
+            println!("daemon on 127.0.0.1:{}", daemon.port());
+            loop {
+                std::thread::park();
+            }
+        }
         Command::Setup { graphics } => {
             let mut c = config::load()?;
             if let Some(g) = graphics {
@@ -179,6 +193,12 @@ fn local_time(at_ms: u64) -> String {
     chrono::Local.timestamp_millis_opt(at_ms as i64).single().map_or_else(String::new, |t| t.format("%H:%M").to_string())
 }
 
+/// A card that belongs to no turn of the agent's goes straight into the transcript.
+fn push_card(view: &mut frontend_tui::model::SessionView, card: frontend_tui::model::Item, _now: &str) {
+    view.transcript.push(card);
+    view.scroll = 0;
+}
+
 /// How long ago, as the startup page says it.
 fn age(ms: u64) -> String {
     match ms / 60_000 {
@@ -234,6 +254,9 @@ fn scenario_session(name: &str) -> Result<frontend_tui::AppState> {
     Ok(state)
 }
 
+/// An event from the daemon for one tab.
+type TabEvent = (u64, harness_daemon::WindowEvent);
+
 /// The sessions behind the tabs, and what ties them to the view.
 struct Live {
     sessions: harness_session::Sessions,
@@ -249,26 +272,103 @@ struct Live {
     provider: String,
     model: String,
     budget: String,
+    /// Each tab's callback URL, for its agent's system prompt.
+    urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>,
+    /// Tabs already registered with the daemon.
+    windows: std::collections::HashSet<u64>,
+    window_events: (std::sync::mpsc::Sender<TabEvent>, std::sync::mpsc::Receiver<TabEvent>),
 }
 
 impl Live {
+    /// Gives each new tab of a real session its window at the daemon, and listens to it.
+    fn connect_windows(&mut self, state: &frontend_tui::AppState) {
+        let frontend_tui::model::Mode::Session(w) = &state.mode else { return };
+        if !w.live || !self.real {
+            return;
+        }
+        for tab in w.tabs.iter().map(|t| t.id) {
+            if !self.windows.insert(tab) {
+                continue;
+            }
+            let Ok(dir) = config::data_dir() else { continue };
+            let Ok(program) = std::env::current_exe() else { continue };
+            let Ok(client) = harness_daemon::client::Client::find_or_start(&dir, &program) else { continue };
+            let Ok(window) = client.register(&self.root) else { continue };
+            if let Ok(mut urls) = self.urls.lock() {
+                urls.insert(tab, window.url);
+            }
+            let sender = self.window_events.0.clone();
+            std::thread::spawn(move || {
+                let mut after = 0;
+                loop {
+                    match client.poll(&window.window, after) {
+                        Ok(events) => {
+                            for e in events {
+                                after = after.max(e.seq);
+                                if sender.send((tab, e.event)).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
+                    }
+                }
+            });
+        }
+    }
+
+    /// What the daemon said reaches the view, or the agent.
+    fn receive_daemon(&mut self, state: &mut frontend_tui::AppState) -> bool {
+        use frontend_tui::model::{Item, Mode};
+        use harness_daemon::WindowEvent;
+        let events: Vec<_> = self.window_events.1.try_iter().collect();
+        let any = !events.is_empty();
+        let Mode::Session(w) = &mut state.mode else { return any };
+        let now = local_time(chrono::Utc::now().timestamp_millis() as u64);
+        for (tab, event) in events {
+            let Some(index) = w.tabs.iter().position(|t| t.id == tab) else { continue };
+            match event {
+                WindowEvent::Notification { label, text, .. } => {
+                    w.tabs[index].view.generating = true;
+                    self.sessions.inbound(tab, label, text);
+                }
+                WindowEvent::Journal { record } => {
+                    let card = frontend_tui::live::journal_card(&record, &now);
+                    w.journal.push(card.clone());
+                    push_card(&mut w.tabs[index].view, Item::Journal(card), &now);
+                }
+                WindowEvent::Flow { map, instance, node, state, off_chart, path } => {
+                    let card = frontend_tui::live::flow_card(&map, &instance, node, &state, off_chart, &path, &now);
+                    push_card(&mut w.tabs[index].view, Item::Flowchart(card), &now);
+                }
+            }
+        }
+        any
+    }
+
     fn new(script: Option<&str>) -> Result<Live> {
         let root = std::env::current_dir()?.to_string_lossy().into_owned();
         let settings = config::load()?.session;
         let budget = settings.max_cost_usd.map_or("none".to_string(), |d| format!("${d:.2}"));
+        let urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> = Default::default();
         let (factory, provider, model, context_window): (harness_session::Factory, String, String, u64) = match script {
             Some(name) => {
                 harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
                 let name = name.to_string();
-                let factory: harness_session::Factory = std::sync::Arc::new(move || Ok(harness_scenarios::parts(harness_scenarios::setup(&name).expect("checked above"))));
+                let factory: harness_session::Factory = std::sync::Arc::new(move |_| Ok(harness_scenarios::parts(harness_scenarios::setup(&name).expect("checked above"))));
                 (factory, "scripted".into(), "scripted-1".into(), 200_000)
             }
             None => {
                 let (provider, model, window) = (settings.provider.clone(), settings.model.clone(), settings.context_window());
-                (harness_session::real_factory(settings, root.clone(), config::data_dir()?), provider, model, window)
+                // A tab's agent is told its callback URL once the daemon gave it one.
+                let urls = urls.clone();
+                let note = std::sync::Arc::new(move |tab: u64| {
+                    urls.lock().ok()?.get(&tab).map(|url: &String| format!("Callbacks from outside reach this session at {url}: POST JSON with a unique uuid, a type (notification, journal, flowstate_update) and its fields."))
+                });
+                (harness_session::with_notes(settings, root.clone(), config::data_dir()?, note), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel() })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -283,7 +383,12 @@ impl Live {
         config::save(&c)?;
         if self.real {
             self.context_window = c.session.context_window();
-            self.sessions.set_factory(harness_session::real_factory(c.session, self.root.clone(), config::data_dir()?));
+            self.sessions.set_factory(harness_session::with_notes(c.session, self.root.clone(), config::data_dir()?, {
+                let urls = self.urls.clone();
+                std::sync::Arc::new(move |tab: u64| {
+                    urls.lock().ok()?.get(&tab).map(|url: &String| format!("Callbacks from outside reach this session at {url}: POST JSON with a unique uuid, a type (notification, journal, flowstate_update) and its fields."))
+                })
+            }));
             self.provider = provider.to_string();
             self.model = model.to_string();
         }
@@ -546,7 +651,9 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
         let mut dirty = true;
         loop {
             state.pictures = picker.is_some();
+            live.connect_windows(&state);
             dirty |= live.receive(&mut state);
+            dirty |= live.receive_daemon(&mut state);
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {

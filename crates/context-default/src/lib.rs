@@ -5,12 +5,14 @@ use harness_api::*;
 
 pub struct WholeConversation {
     pub root: String,
+    /// One more line for the system prompt, e.g. where this window's callbacks go.
+    pub note: Option<String>,
 }
 
 impl ContextStrategy for WholeConversation {
     fn build<'a>(&'a self, state: &'a SessionState, _memory: &'a dyn Memory) -> BoxFuture<'a, PluginResult<TurnContext>> {
         let mut system = format!("You are a coding agent working in the project at {}. Use the tools to read, change and check the code. Paths are relative to the project unless absolute.", self.root);
-        for line in &state.hook_context {
+        for line in self.note.iter().chain(&state.hook_context) {
             system.push('\n');
             system.push_str(line);
         }

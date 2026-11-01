@@ -89,7 +89,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 /// Everything shipped in this build, under its configuration names.
-pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
+pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
     let sessions_dir = sessions_dir(data_dir, root);
@@ -107,7 +107,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
             let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
             Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(std::path::Path::new(&journals_dir), &key, "multitool")?))
         })
-        .context("whole-conversation", move |_| Ok(Rc::new(harness_context_default::WholeConversation { root: root_b.clone() })))
+        .context("whole-conversation", move |_| Ok(Rc::new(harness_context_default::WholeConversation { root: root_b.clone(), note: note.clone() })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
     for name in harness_tools_memory::NAMES {
@@ -200,14 +200,19 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
 }
 
 /// Builds a session's parts, on the session's own thread: they are not `Send`.
-pub type Factory = Arc<dyn Fn() -> Result<Parts, String> + Send + Sync>;
+pub type Factory = Arc<dyn Fn(u64) -> Result<Parts, String> + Send + Sync>;
 
 /// The real plugins, chosen by the configuration.
 pub fn real_factory(settings: Settings, root: String, data_dir: PathBuf) -> Factory {
-    Arc::new(move || {
+    with_notes(settings, root, data_dir, Arc::new(|_| None))
+}
+
+/// The same, with a line for each tab's system prompt: where its callbacks go.
+pub fn with_notes(settings: Settings, root: String, data_dir: PathBuf, note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync>) -> Factory {
+    Arc::new(move |tab| {
         let data = data_dir.to_string_lossy().into_owned();
         let platform = harness_platform_native::platform(data_dir.clone());
-        registry(&settings, &root, &data).resolve(&settings.selection(), platform).map_err(|e| e.to_string())
+        registry(&settings, &root, &data, note(tab)).resolve(&settings.selection(), platform).map_err(|e| e.to_string())
     })
 }
 
@@ -223,8 +228,14 @@ pub enum FromSession {
     Unavailable { tab: u64, message: String },
 }
 
+/// What a session's next run starts from.
+enum Input {
+    Prompt(String),
+    Inbound { label: String, text: String },
+}
+
 struct Handle {
-    prompts: Sender<String>,
+    prompts: Sender<Input>,
     answers: Sender<Answer>,
     stop: StopFlag,
 }
@@ -279,7 +290,17 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            let _ = handle.prompts.send(text);
+            let _ = handle.prompts.send(Input::Prompt(text));
+        }
+    }
+
+    /// A callback into the agent's input; it waits its turn if the agent is busy.
+    pub fn inbound(&mut self, tab: u64, label: String, text: String) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Inbound { label, text });
         }
     }
 
@@ -306,14 +327,14 @@ impl Sessions {
     }
 
     fn start(&mut self, tab: u64, resume: Option<String>) {
-        let (prompts, prompt_rx) = channel::<String>();
+        let (prompts, prompt_rx) = channel::<Input>();
         let (answers, answer_rx) = channel();
         let stop = StopFlag::default();
         let (factory, to_frontend, flag, root) = (self.factory.clone(), self.to_frontend.clone(), stop.clone(), self.root.clone());
         let resuming = resume.is_some();
         let session = resume.unwrap_or_else(|| format!("{}-{tab}", self.started_ms));
         std::thread::spawn(move || {
-            let parts = match factory() {
+            let parts = match factory(tab) {
                 Ok(parts) => parts,
                 Err(message) => {
                     while prompt_rx.recv().is_ok() {
@@ -332,8 +353,11 @@ impl Sessions {
                     }
                 }
             }
-            while let Ok(text) = prompt_rx.recv() {
-                let end = pollster::block_on(engine.run(&text, None));
+            while let Ok(input) = prompt_rx.recv() {
+                let end = match input {
+                    Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
+                    Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),
+                };
                 let _ = to_frontend.send(FromSession::Ended { tab, end });
             }
         });

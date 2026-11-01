@@ -1,0 +1,19 @@
+[package]
+name = "harness-daemon"
+description = "The daemon: the single entry point of callbacks to agents, a URL per window (CON-20, IF-13, IF-16)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+harness-memory-journal = { version = "0.1.0-dev", path = "../memory-journal" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+ureq = { version = "3", features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

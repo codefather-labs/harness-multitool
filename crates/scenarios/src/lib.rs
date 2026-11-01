@@ -224,6 +224,7 @@ impl Frontend for StoppingFrontend {
 pub fn line(entry: &LogEntry) -> String {
     let body = match &entry.event {
         Event::UserMessage { text } => format!("user        {text:?}"),
+        Event::Inbound { label, text } => format!("inbound     {label}: {text:?}"),
         Event::TaskState { to, reason } => format!("task        -> {to:?}{}", reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default()),
         Event::TurnStarted { turn, provider, model } => format!("turn {turn}      start {provider}/{model}"),
         Event::TextDelta { text } => format!("text        {text:?}"),

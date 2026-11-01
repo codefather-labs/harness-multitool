@@ -43,6 +43,8 @@ pub enum HookOutcome {
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum Event {
     UserMessage { text: String },
+    /// A callback for the agent (IF-13). It reaches the model marked as external data (INV-12).
+    Inbound { label: String, text: String },
     TaskState { to: TaskState, reason: Option<String> },
     TurnStarted { turn: u32, provider: String, model: String },
     TextDelta { text: String },

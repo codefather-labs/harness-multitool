@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::model::{
     Arrow, Branch, FlowDirection, FlowNode, Flowchart, FlowchartEvent, Gate, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Symbol,
 };
+use crate::model::{Inbound, InboundKind};
 use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, PermissionView, Role, SessionView, Tone, ToolBody, ToolCall, ToolIcon, ToolState};
 
 /// Tool output lines shown before `+N more lines`.
@@ -46,6 +47,10 @@ impl Feed {
         match &entry.event {
             Event::UserMessage { text } => {
                 v.transcript.push(Item::Turn { role: Role::User, time, lines: text.lines().map(str::to_string).collect(), attached: vec![] });
+            }
+            Event::Inbound { label, text } => {
+                let kind = InboundKind::Callback { transport: "HTTP".into(), status: "200".into() };
+                v.transcript.push(Item::Inbound(Inbound { kind, from: label.clone(), time, text: text.clone() }));
             }
             Event::TaskState { .. } | Event::OpaqueBlock { .. } | Event::ModelToolCall { .. } => {}
             Event::TurnStarted { provider, model, .. } => {
@@ -286,6 +291,24 @@ fn flowchart(m: &MapData, newest_changed: bool) -> Flowchart {
             .collect(),
         arrows: m.edges.iter().map(|e| Arrow { from: node_id(e.from), to: node_id(e.to), label: (!e.label.is_empty()).then(|| e.label.clone()), refs: refs(&e.refs) }).collect(),
     }
+}
+
+/// A `journal` callback's entry as its card (no agent turn).
+pub fn journal_card(r: &harness_api::JournalRecord, date: &str) -> JournalEvent {
+    JournalEvent { id: r.id as u32, category: r.category.clone(), tags: r.tags.clone(), date: date.to_string(), text: r.body.clone() }
+}
+
+/// A `flowstate_update` as a FLOWCHART card: the chart with the event's node active (ADR 0012).
+/// The chart is the reference; an off-chart node is said so and marks nothing.
+pub fn flow_card(map: &MapData, instance: &str, node: u64, state: &str, off_chart: bool, path: &[u64], date: &str) -> FlowchartEvent {
+    let mut chart = flowchart(map, false);
+    let id = node_id(node);
+    for n in &mut chart.nodes {
+        n.active = !off_chart && n.id == id;
+        n.changed = path.iter().any(|p| node_id(*p) == n.id) && !n.active;
+    }
+    let change = if off_chart { format!("{instance}: off-chart event at n{node} ({state})") } else { format!("{instance}: n{node} {state}") };
+    FlowchartEvent { id: map.id as u32, change, date: date.to_string(), chart, open: None, focus: None, pan: (0, 0) }
 }
 
 /// The permission prompt for a call `Policy` asked about (permission-*).

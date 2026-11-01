@@ -209,7 +209,16 @@ impl Engine {
     /// One user message: runs turns until the model stops, then verifies when there is a
     /// protocol. Later messages continue the same session.
     pub async fn run(&self, text: &str, protocol: Option<&Protocol>) -> RunEnd {
-        let end = self.run_inner(text, protocol).await;
+        self.run_event(Event::UserMessage { text: text.to_string() }, text, protocol).await
+    }
+
+    /// A callback for the agent: the same run, its text marked as external data (INV-12).
+    pub async fn run_inbound(&self, label: &str, text: &str) -> RunEnd {
+        self.run_event(Event::Inbound { label: label.to_string(), text: text.to_string() }, text, None).await
+    }
+
+    async fn run_event(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
+        let end = self.run_inner(event, text, protocol).await;
         if let Err(message) = self.flush().await {
             self.emit(Event::Error { source: "store".into(), message: message.clone() });
             return RunEnd::Failed(message);
@@ -217,7 +226,7 @@ impl Engine {
         end
     }
 
-    async fn run_inner(&self, text: &str, protocol: Option<&Protocol>) -> RunEnd {
+    async fn run_inner(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
         if !self.started.replace(true) {
             self.hooks(HookPoint::SessionStart).await;
         }
@@ -230,7 +239,7 @@ impl Engine {
             self.emit(Event::Error { source: hook, message: reason.clone() });
             return RunEnd::Failed(reason);
         }
-        self.emit(Event::UserMessage { text: text.to_string() });
+        self.emit(event);
         self.set_task(TaskState::Running, None);
 
         loop {
