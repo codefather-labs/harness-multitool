@@ -26,6 +26,14 @@ enum Command {
         #[arg(long, default_value = "dark")]
         theme: String,
     },
+    /// Debug the agent loop: run a named scenario on test doubles and print its log, one line per event.
+    Trace {
+        /// Scenario name; omit to list them.
+        name: Option<String>,
+        /// Print the log as JSON lines, as the session store keeps it.
+        #[arg(long)]
+        json: bool,
+    },
     /// Write the user's configuration (config.toml in the OS's config directory).
     Setup {
         /// How pictures (logo, icons, big text) are drawn: auto, sixel, kitty, iterm2 or off.
@@ -87,6 +95,7 @@ fn main() -> Result<()> {
     let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into() });
     match command {
         Command::Preview { name, theme } => preview(&name, &theme),
+        Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Setup { graphics } => {
             let mut c = config::load()?;
             if let Some(g) = graphics {
@@ -145,6 +154,28 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `multitool trace`: the debug view of the loop.
+fn trace(name: Option<&str>, json: bool) -> Result<()> {
+    use harness_scenarios::{NAMES, line, run, setup};
+    let Some(name) = name else {
+        NAMES.iter().for_each(|n| println!("{n}"));
+        return Ok(());
+    };
+    let setup = setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
+    let t = run(setup);
+    for entry in &t.stored {
+        if json {
+            println!("{}", harness_api::event::to_line(entry));
+        } else {
+            println!("{}", line(entry));
+        }
+    }
+    if !json {
+        println!("ends: {:?}; task: {:?}; {} messages, {} turns, asked {}", t.ends, t.state.task, t.state.messages.len(), t.state.turns, t.asked);
+    }
+    Ok(())
 }
 
 /// The live terminal UI on a fixture state. Same `AppState` and `draw` as `screen`; keys and

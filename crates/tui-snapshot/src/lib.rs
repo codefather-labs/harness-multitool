@@ -156,10 +156,10 @@ impl Raster {
                     continue;
                 }
                 let mut font = if cell.modifier.contains(Modifier::BOLD) { &self.bold } else { &self.regular };
-                if font.lookup_glyph_index(c) == 0 {
-                    if let Some(f) = self.fallback.iter().find(|f| f.lookup_glyph_index(c) != 0) {
-                        font = f;
-                    }
+                if font.lookup_glyph_index(c) == 0
+                    && let Some(f) = self.fallback.iter().find(|f| f.lookup_glyph_index(c) != 0)
+                {
+                    font = f;
                 }
                 let (m, bitmap) = font.rasterize(c, self.px);
                 let gx = ox as i32 + m.xmin;
@@ -223,6 +223,7 @@ mod shapes {
 
     /// Quarter-circle arc for rounded corners. `(cx, cy)` is the arc centre, `r` its radius;
     /// `qx`/`qy` choose the quadrant (+1 right/down, -1 left/up).
+    #[allow(clippy::too_many_arguments)] // a geometry primitive: centre, radius, quadrant, width, colour
     fn arc(img: &mut RgbImage, cx: f32, cy: f32, r: f32, qx: f32, qy: f32, w: f32, c: Rgb<u8>) {
         let steps = (r * 4.0) as i32 + 8;
         for i in 0..=steps {

@@ -9,6 +9,8 @@ repository.workspace = true
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
+harness-api = { version = "0.1.0-dev", path = "../api" }
+harness-scenarios = { version = "0.1.0-dev", path = "../scenarios" }
 frontend-tui = { version = "0.1.0-dev", path = "../frontend-tui" }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 ratatui = "0.30.2"

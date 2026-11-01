@@ -1,0 +1,14 @@
+[package]
+name = "harness-scenarios"
+description = "Named runs of the real agent loop on test doubles: the tests of the loop and the debug command `multitool trace`."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+harness-core = { version = "0.1.0-dev", path = "../core" }
+harness-doubles = { version = "0.1.0-dev", path = "../doubles" }
+pollster = "0.4"
+serde_json = "1"

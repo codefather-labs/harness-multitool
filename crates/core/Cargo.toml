@@ -1,0 +1,11 @@
+[package]
+name = "harness-core"
+description = "The core of harness-multitool: the agent loop, the event bus, the registry, task states. No platform access (INV-1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"

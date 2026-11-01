@@ -104,13 +104,21 @@ A project's journal, mind maps and flowcharts are mirrored into its `docs/` tree
 - **Native:** the core, every interface crate, the default plugins and the platform's native implementation; the user's own plugin crates are added in their local build (CON-2).
 - **Browser:** the same core and interface crates compiled to `wasm32-unknown-unknown` (INV-1), with the browser implementations of the platform and the plugins that need no operating system. Tools that need processes are not offered (IF-21).
 
+## Debugging a feature
+
+Each feature has its own way to be looked at without the rest of the system:
+
+- `multitool screen <state> --png out.png` renders a state of the terminal UI to an image, through the same `draw` as the live UI.
+- `multitool trace <scenario>` runs the real loop on test doubles and prints its log, one line per event (`--json` prints the lines the session store keeps); with no name it lists the scenarios. The tests in `crates/scenarios` run the same scenarios.
+
 ## Repository layout
 
-Built today: `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI, running on named states and debug commands) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
+Built today: `crates/api` (every interface, the events, the fold over the log), `crates/core` (loop, bus, registry), `crates/doubles` (a test double per interface), `crates/scenarios` (named runs of the real loop on doubles), `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
 
 ```text
 crates/
   core/            agent loop, event bus, registry, task states
+  doubles/  scenarios/
   api/             one module per interface: traits, types, errors (semver, INV-8)
   platform-native/ platform-wasm/
   provider-anthropic/ provider-openai/
