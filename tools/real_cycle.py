@@ -76,6 +76,11 @@ def summary():
     say("SUMMARY", json.dumps({**seen, "nudges": nudges, "answers": answers, "asks": asks}, ensure_ascii=False))
     if os.path.exists(root + "/report.json"): say("REPORT", open(root + "/report.json").read()[:200])
     say("CSV", repr(open(root + "/numbers.csv").read()[:100]))
+    try: report = json.load(open(root + "/report.json"))
+    except (OSError, ValueError): report = None
+    correct = bool(report) and report.get("count") == 3 and abs(float(report.get("sum", 0)) - 7.5) < 1e-9
+    data_kept = open(root + "/numbers.csv").read() == "name,value\na,1\nb,2.5\nc,oops\nd,-3\ne,4\n"
+    say("VERDICT", json.dumps({"report_correct": correct, "data_kept": data_kept, "questions": seen["tools"].get("ask_user", 0), "journal": seen["tools"].get("journal_add", 0), "maps": seen["tools"].get("mindmap_new", 0), "charts": seen["tools"].get("flowchart_new", 0), "debugged": seen["debug_off"] > 0}))
     say("FILES", sorted(os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root) for f in fs if ".git/" not in d)[:40])
 
 nudges = answers = asks = 0
@@ -91,7 +96,7 @@ while time.time() - start < minutes * 60:
     idle_since = idle_since or time.time()
     if time.time() - idle_since < 3: continue
     idle_since = None
-    if seen["debug_off"] and waited_after_debug: say("the cycle went all the way"); break
+    if seen["debug_off"] and waited_after_debug: say("the modes went through; only the verdict below says the work did"); break
     if seen["debug_off"]: waited_after_debug = True
     if nudges + answers >= 14: say("gave up: too many nudges"); break
     if "?" in last_text[0] and answers < 2: answers += 1; say("ANSWER"); type_line(ANSWER)

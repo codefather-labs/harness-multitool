@@ -1199,3 +1199,15 @@ fn the_same_failure_is_said_at_the_third_time_and_stopped_at_the_fifth() {
     let (entries, _, _) = drive(&mut sessions, &["try again"], Answer::AllowOnce);
     assert!(!entries.iter().any(|e| matches!(&e.event, Event::Error { .. })), "a new message starts over");
 }
+
+/// ADR 0021: debugging comes after approval; the agent cannot skip to it from plan mode.
+#[test]
+fn the_agent_cannot_enter_debug_mode_while_planning() {
+    let root = temp_dir("dbg-plan");
+    let data = temp_dir("dbg-plan-data");
+    let (url, _) = fake_endpoint(vec![anthropic_turn(Some(("p", "plan_enter", json!({}))), ""), anthropic_turn(Some(("d", "debug_mode", json!({"on": true}))), ""), anthropic_turn(None, "Waiting.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["build it"], Answer::AllowOnce);
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { id, output, is_error: true } if id == "d" && output.contains("plan_exit"))));
+    assert!(!entries.iter().any(|e| matches!(&e.event, Event::StepDebug { .. })));
+}

@@ -624,6 +624,7 @@ impl Engine {
         if call.name == DEBUG_MODE_TOOL {
             self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
             let (output, is_error) = match call.input["on"].as_bool() {
+                Some(true) if self.state.borrow().plan_mode => ("You are in plan mode: debugging comes after the user approves the plan. Finish the plan, then call plan_exit.".to_string(), true),
                 Some(on) => {
                     self.set_step_debug(on, "agent").await;
                     (format!("Step-debug mode is {}.", if on { "on" } else { "off" }), false)
