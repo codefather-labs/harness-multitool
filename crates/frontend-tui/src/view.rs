@@ -46,6 +46,8 @@ pub enum Target {
     Section(usize),
     /// A provider row on the settings window's provider page.
     Provider(usize),
+    /// A row of the settings' Callbacks tab.
+    CallbackRow(usize),
     /// The close mark of an overlay.
     CloseOverlay,
     /// A clickable part of a map in the transcript: item index, the attached item inside a

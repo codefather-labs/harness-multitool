@@ -81,6 +81,21 @@ impl Client {
         }
     }
 
+    pub fn port(&self) -> &str {
+        self.base.rsplit(':').next().unwrap_or_default()
+    }
+
+    /// The daemon reads the projects' callback files again.
+    pub fn reload(&self) -> Result<Value, String> {
+        let mut response = self
+            .agent
+            .post(format!("{}/reload", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .send("{}")
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))
+    }
+
     /// Events after `after`, waiting a while for some.
     pub fn poll(&self, window: &str, after: u64) -> Result<Vec<Numbered>, String> {
         let mut response = self

@@ -70,7 +70,7 @@ value = 1000
 policies = [".harness/policies/pipeline.md"]
 ```
 
-A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. Not built yet: custom handlers, the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
+A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. The settings' Callbacks tab shows the standard types, this project's conditions and the daemon; it writes `.harness/callbacks.toml` and makes the daemon read it (`r` alone reloads). Not built yet: custom handlers, so only `built-in` and `off` can be chosen; the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
 
 ## Flow
 
@@ -143,6 +143,7 @@ Every mockup has a named state that renders through the same `draw` as the live 
 | `startup` | recent sessions, quick actions, status line, tip | `startup-*` |
 | `welcome` | a fresh session: welcome card, quick tips | `welcome-*` |
 | `main-session` | turns, tool rows, an expanded diff, status line, composer | `main-session-*` |
+| `settings-callbacks` | the settings on the Callbacks tab, with a dropdown open | `settings-callbacks-*` |
 | `reasoning` | a model's reasoning live, folded and unfolded, inside the turn above the answer | `reasoning-*` |
 | `inbound-messages` | Telegram, voice, agent-to-agent, callback, reminder; a toast | `inbound-messages-*` |
 | `tool-calls` | tool cards: numbered output with a fold, Telegram send, agent send, journal write, failure, running | `tool-calls-*` |

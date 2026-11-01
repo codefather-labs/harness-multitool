@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
 use crate::model::{
-    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing,
+    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
 use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
@@ -36,6 +36,9 @@ pub fn sample_permission() -> PermissionView {
 /// The settings window, opening on what the active session's status line says.
 pub fn settings_for(w: &Workspace) -> SettingsView {
     let mut s = sample_settings();
+    if let Some(page) = &w.callbacks {
+        s.callbacks = page.clone();
+    }
     for (key, value) in &w.view().status.fields {
         match key.as_str() {
             "MODEL" => s.model = value.clone(),
@@ -59,7 +62,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build };
     SettingsView {
-        sections: ["Provider", "Auth", "Tools", "Policy", "Memory", "Router", "Frontend", "Keys", "Theme"].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Auth", "Tools", "Policy", "Memory", "Router", "Frontend", "Keys", "Callbacks", "Theme"].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -75,6 +78,139 @@ pub fn sample_settings() -> SettingsView {
         model: MODELS[0].into(),
         timeout_s: 60,
         fallback: true,
+        callbacks: CallbacksPage::default(),
+    }
+}
+
+/// The harness's own callback types, each with the implementations this build has.
+pub fn standard_rows() -> Vec<StandardRow> {
+    let row = |name: &str, description: &str, concept| StandardRow {
+        name: name.into(),
+        description: description.into(),
+        implementations: vec!["built-in".into(), "off".into()],
+        chosen: 0,
+        concept,
+    };
+    vec![
+        row("notification", "into the agent's input", false),
+        row("journal", "writes a journal entry", false),
+        row("flowstate_update", "moves a flowchart instance", false),
+        row("skill", "starts a skill run", true),
+    ]
+}
+
+/// The design sample of the Callbacks tab.
+pub fn sample_callbacks() -> CallbacksPage {
+    let mut standard = standard_rows();
+    standard[0].implementations.insert(1, "acme-notifier (local build)".into());
+    standard[0].chosen = 1;
+    standard[2].implementations.insert(1, "acme-flowstate (local build)".into());
+    let custom = |name: &str, implementation: &str, on| CustomRow { name: name.into(), implementation: implementation.into(), on };
+    let condition = |name: &str, listens_to: &str, rule: &str, policy: &str, on| ConditionRow { name: name.into(), listens_to: listens_to.into(), rule: rule.into(), policy: policy.into(), on };
+    CallbacksPage {
+        standard,
+        custom: vec![custom("deploy_done", "acme-deploy", true), custom("nightly_report", "acme-reports", false)],
+        conditions: vec![
+            condition("pipeline keeps failing", "iteration_failed", "3 signals, 60 s quiet", ".harness/policies/pipeline.md", true),
+            condition("tests are flaky", "test_failed", "5 in 10 min", ".harness/policies/flaky-tests.md", false),
+        ],
+        daemon: "running on 127.0.0.1:42849".into(),
+        cursor: 0,
+        open: None,
+    }
+}
+
+/// The Callbacks tab (settings-callbacks-*): one list under three headings, rows at one cursor.
+fn callbacks_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
+    let p = &s.callbacks;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+    let heading = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+    let mut y = r.y;
+    let bottom = r.y + r.height;
+    let mut index = 0usize;
+    let row = |f: &mut Frame, y: &mut u16, spans: Vec<Span<'static>>, index: &mut usize, out: &mut Drawn| {
+        if *y >= bottom {
+            return;
+        }
+        let under = focus && p.cursor == *index;
+        text(f, r.x, *y, r.width, spans, if under { t.surface_raised } else { bg });
+        out.hits.push(Hit { rect: Rect::new(r.x, *y, r.width, 1), target: Target::CallbackRow(*index) });
+        *y += 1;
+        *index += 1;
+    };
+    text(f, r.x, y, r.width, vec![Span::styled("Standard types", heading)], bg);
+    y += 1;
+    for (i, std) in p.standard.iter().enumerate() {
+        let chosen = std.implementations.get(std.chosen).cloned().unwrap_or_default();
+        let name_w = 18;
+        let mut spans = vec![Span::styled(format!(" {:<name_w$}", std.name), strong)];
+        let choice = format!("{} {}", chosen, if p.open == Some(i) { "▴" } else { "▾" });
+        spans.push(Span::styled(format!("{choice:<31}"), Style::default().fg(t.text)));
+        if std.concept {
+            spans.push(Span::styled("concept · ", muted));
+        }
+        // What it does comes last: it is what a narrow window can do without.
+        spans.push(Span::styled(std.description.clone(), muted));
+        row(f, &mut y, spans, &mut index, out);
+        if p.open == Some(i) {
+            for (j, name) in std.implementations.iter().enumerate() {
+                if y < bottom {
+                    let mark = if j == std.chosen { "✓" } else { " " };
+                    let style = if j == std.chosen { Style::default().fg(t.accent) } else { Style::default().fg(t.text) };
+                    text(f, r.x, y, r.width, vec![Span::raw(" ".repeat(19)), Span::styled(format!("{mark} {name}"), style)], bg);
+                    y += 1;
+                }
+            }
+        }
+    }
+    let toggle = |on: bool| if on { Span::styled(" ● on  ", Style::default().fg(t.success)) } else { Span::styled(" ○ off ", muted) };
+    y += 1;
+    if y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled("Custom callbacks", heading)], bg);
+        y += 1;
+    }
+    if p.custom.is_empty() && y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled(" none in this build", muted)], bg);
+        y += 1;
+    }
+    for c in &p.custom {
+        let spans = vec![toggle(c.on), Span::styled(format!("{:<24}", c.name), strong), Span::styled(c.implementation.clone(), muted)];
+        row(f, &mut y, spans, &mut index, out);
+    }
+    y += 1;
+    if y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled("Conditions", heading), Span::styled("  .harness/conditions.toml", muted)], bg);
+        y += 1;
+    }
+    if p.conditions.is_empty() && y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled(" none in this project", muted)], bg);
+        y += 1;
+    }
+    for c in &p.conditions {
+        let spans = vec![toggle(c.on), Span::styled(format!("{:<24}", c.name), strong), Span::styled(c.listens_to.clone(), muted)];
+        row(f, &mut y, spans, &mut index, out);
+        if y < bottom {
+            let policy = if c.policy.is_empty() { String::new() } else { format!(" → {}", c.policy) };
+            text(f, r.x, y, r.width, vec![Span::raw("        "), Span::styled(format!("{}{policy}", c.rule), muted)], bg);
+            y += 1;
+        }
+    }
+    y += 1;
+    if y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled("Daemon  ", strong), Span::styled(p.daemon.clone(), muted), Span::styled("   r reload", muted)], bg);
+    }
+}
+
+/// Space or Enter on the Callbacks tab: unfold or pick an implementation, flip a toggle.
+fn activate_callback(p: &mut CallbacksPage) {
+    let (standard, custom) = (p.standard.len(), p.custom.len());
+    match p.cursor {
+        i if i < standard => p.open = if p.open == Some(i) { None } else { Some(i) },
+        i if i < standard + custom => p.custom[i - standard].on = !p.custom[i - standard].on,
+        i if i < p.rows() => p.conditions[i - standard - custom].on = !p.conditions[i - standard - custom].on,
+        _ => {}
     }
 }
 
@@ -290,7 +426,9 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     let (px, pw) = (div_x + 3, (inner.x + inner.width).saturating_sub(div_x + 5));
     let name = s.sections.get(s.section).cloned().unwrap_or_default();
     text(f, px, body_y, pw, vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))], bg);
-    if s.section != 0 {
+    if name == "Callbacks" {
+        callbacks_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
+    } else if s.section != 0 {
         text(f, px, body_y + 1, pw, vec![Span::styled(format!("{name} settings come with their stage."), Style::default().fg(t.text_muted))], bg);
     } else {
         provider_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
@@ -399,6 +537,29 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 answer(w, i);
             }
         }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Callbacks") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.callbacks;
+            match k {
+                Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
+                // An open dropdown takes the arrows; it closes on Space or Enter.
+                Key::Up | Key::Down if p.open.is_some() => {
+                    let row = &mut p.standard[p.open.unwrap_or(0)];
+                    let n = row.implementations.len();
+                    row.chosen = if k == Key::Up { (row.chosen + n - 1) % n } else { (row.chosen + 1) % n };
+                }
+                Key::Up => p.cursor = p.cursor.saturating_sub(1),
+                Key::Down => p.cursor = (p.cursor + 1).min(p.rows().saturating_sub(1)),
+                Key::Char(' ') | Key::Enter => activate_callback(p),
+                Key::Char('r') => w.outbox.push(Outgoing::ReloadCallbacks),
+                Key::Ctrl('s') => {
+                    let handlers = p.standard.iter().map(|r| (r.name.clone(), r.implementations.get(r.chosen).cloned().unwrap_or_default())).collect();
+                    let disabled = p.custom.iter().filter(|c| !c.on).map(|c| c.name.clone()).chain(p.conditions.iter().filter(|c| !c.on).map(|c| c.name.clone())).collect();
+                    w.overlay = None;
+                    w.outbox.push(Outgoing::SaveCallbacks { handlers, disabled });
+                }
+                _ => {}
+            }
+        }
         Overlay::Settings(s) => match k {
             Key::Esc => w.overlay = None,
             Key::Ctrl('s') => {
@@ -497,6 +658,11 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.section = i;
             s.focus = SettingsPane::Sections;
         }
+        (Some(Overlay::Settings(s)), Target::CallbackRow(i)) => {
+            s.focus = SettingsPane::Page;
+            s.callbacks.cursor = i;
+            activate_callback(&mut s.callbacks);
+        }
         (Some(Overlay::Settings(s)), Target::Provider(i)) => {
             s.provider = i;
             s.cursor = i;
@@ -517,6 +683,48 @@ mod tests {
         match crate::fixtures::main_session().mode {
             Mode::Session(w) => w,
             _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn the_callbacks_tab_toggles_chooses_and_saves() {
+        let mut w = workspace();
+        w.live = true;
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == "Callbacks").unwrap();
+        s.focus = SettingsPane::Page;
+        s.callbacks = sample_callbacks();
+        w.overlay = Some(Overlay::Settings(s));
+        let page = |w: &Workspace| match &w.overlay {
+            Some(Overlay::Settings(s)) => s.callbacks.clone(),
+            _ => panic!("the window closed"),
+        };
+        // Standard row 1: unfold, choose the next implementation, fold.
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(page(&w).open, Some(1));
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!((page(&w).open, page(&w).standard[1].chosen), (None, 1));
+        // Down to the first custom callback and the first condition: flip them.
+        for _ in 0..3 {
+            key(&mut w, Key::Down);
+        }
+        key(&mut w, Key::Char(' '));
+        assert!(!page(&w).custom[0].on);
+        for _ in 0..2 {
+            key(&mut w, Key::Down);
+        }
+        key(&mut w, Key::Char(' '));
+        assert!(!page(&w).conditions[0].on);
+        key(&mut w, Key::Char('r'));
+        assert_eq!(w.outbox.pop(), Some(Outgoing::ReloadCallbacks));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.overlay.is_none());
+        let Some(Outgoing::SaveCallbacks { handlers, disabled }) = w.outbox.pop() else { panic!() };
+        assert!(handlers.contains(&("journal".to_string(), "off".to_string())));
+        for name in ["deploy_done", "nightly_report", "pipeline keeps failing", "tests are flaky"] {
+            assert!(disabled.iter().any(|d| d == name), "{name}");
         }
     }
 

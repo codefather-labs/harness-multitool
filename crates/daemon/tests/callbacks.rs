@@ -270,3 +270,34 @@ fn other_types_stay_refused_and_a_broken_file_costs_only_the_conditions() {
     assert_eq!(post(&f.url, &json!({"uuid": "n", "type": "notification", "text": "still works"}).to_string()).0, 200);
     assert_eq!(signal(&f, "q", json!({})).0, 400);
 }
+
+/// ADR 0015: the project's callback settings are obeyed, and a reload applies them.
+#[test]
+fn switching_off_refuses_and_a_reload_applies() {
+    let f = with_conditions(THREE);
+    assert_eq!(post(&f.url, &json!({"uuid": "k1", "type": "journal", "text": "works"}).to_string()).0, 200);
+    assert_eq!(signal(&f, "k2", json!({})).0, 200);
+
+    let mut settings = conditions::ProjectCallbacks::default();
+    settings.handlers.insert("journal".into(), "off".into());
+    settings.disabled.push("pipeline keeps failing".into());
+    conditions::write_project(&f.root_path, &settings).unwrap();
+    assert_eq!(conditions::read_project(&f.root_path).unwrap(), settings);
+
+    // Until the reload nothing changes; after it, both are refused.
+    assert_eq!(post(&f.url, &json!({"uuid": "k3", "type": "journal", "text": "still"}).to_string()).0, 200);
+    let reply = f.client.reload().unwrap();
+    assert_eq!(reply["reloaded"], 1);
+    let (status, reply) = post(&f.url, &json!({"uuid": "k4", "type": "journal", "text": "no"}).to_string());
+    assert_eq!(status, 400);
+    assert!(reply["error"].as_str().unwrap().contains("switched off"));
+    assert_eq!(signal(&f, "k5", json!({})).0, 400, "a condition switched off gets no signals");
+    assert_eq!(post(&f.url, &json!({"uuid": "k6", "type": "notification", "text": "others go on"}).to_string()).0, 200);
+
+    // Back on: the same uuid was not burnt.
+    conditions::write_project(&f.root_path, &conditions::ProjectCallbacks::default()).unwrap();
+    f.client.reload().unwrap();
+    assert_eq!(post(&f.url, &json!({"uuid": "k4", "type": "journal", "text": "yes"}).to_string()).0, 200);
+    let base = format!("http://127.0.0.1:{}", f.daemon.port());
+    assert_eq!(post(&format!("{base}/reload"), "{}").0, 401);
+}

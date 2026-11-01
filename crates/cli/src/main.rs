@@ -281,12 +281,14 @@ struct Live {
 
 impl Live {
     /// Gives each new tab of a real session its window at the daemon, and listens to it.
-    fn connect_windows(&mut self, state: &frontend_tui::AppState) {
-        let frontend_tui::model::Mode::Session(w) = &state.mode else { return };
+    fn connect_windows(&mut self, state: &mut frontend_tui::AppState) {
+        let frontend_tui::model::Mode::Session(w) = &mut state.mode else { return };
         if !w.live || !self.real {
             return;
         }
-        for tab in w.tabs.iter().map(|t| t.id) {
+        let tabs: Vec<u64> = w.tabs.iter().map(|t| t.id).collect();
+        let before = self.windows.len();
+        for tab in tabs {
             if !self.windows.insert(tab) {
                 continue;
             }
@@ -314,6 +316,10 @@ impl Live {
                     }
                 }
             });
+        }
+        // The daemon may have just started: the settings should say so.
+        if self.windows.len() != before {
+            w.callbacks = Some(self.callbacks_page());
         }
     }
 
@@ -372,7 +378,43 @@ impl Live {
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
-        live_session(&self.provider, &self.model, &self.budget)
+        let mut state = live_session(&self.provider, &self.model, &self.budget);
+        if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+            w.callbacks = Some(self.callbacks_page());
+        }
+        state
+    }
+
+    /// What the settings' Callbacks tab shows: this project's files and this build's handlers.
+    fn callbacks_page(&self) -> frontend_tui::model::CallbacksPage {
+        use frontend_tui::model::{CallbacksPage, ConditionRow};
+        let project = harness_daemon::conditions::read_project(&self.root).unwrap_or_default();
+        let mut standard = frontend_tui::overlay::standard_rows();
+        for row in &mut standard {
+            if let Some(chosen) = project.handlers.get(&row.name).and_then(|h| row.implementations.iter().position(|i| i == h)) {
+                row.chosen = chosen;
+            }
+        }
+        let conditions = harness_daemon::conditions::read_configs(&self.root)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| {
+                let window = c.within_s.map_or(String::new(), |s| format!(" in {s} s"));
+                let rule = format!("{} signal(s){window}, {} s quiet", c.at_least, c.cooldown_s);
+                ConditionRow { on: !project.disabled.contains(&c.name), name: c.name, listens_to: c.on, rule, policy: c.policies.join(", ") }
+            })
+            .collect();
+        let daemon = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
+        CallbacksPage { standard, custom: Vec::new(), conditions, daemon, cursor: 0, open: None }
+    }
+
+    fn reload_daemon(&self) -> String {
+        let reply = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).map(|c| c.reload());
+        match reply {
+            Some(Ok(_)) => "The daemon read the project's callback files again.".to_string(),
+            Some(Err(e)) => format!("The daemon did not reload: {e}"),
+            None => "The daemon is not running; it will read the files when it starts.".to_string(),
+        }
     }
 
     /// Saves the choice and makes it the base of new sessions. A running session keeps its model.
@@ -467,6 +509,19 @@ impl Live {
                     }
                 }
                 Outgoing::Stop { tab } => self.sessions.stop(tab),
+                Outgoing::SaveCallbacks { handlers, disabled } => {
+                    let settings = harness_daemon::conditions::ProjectCallbacks { handlers: handlers.into_iter().collect(), disabled };
+                    let note = match harness_daemon::conditions::write_project(&self.root, &settings) {
+                        Ok(()) => format!("Saved .harness/callbacks.toml. {}", self.reload_daemon()),
+                        Err(e) => format!("Could not save: {e}"),
+                    };
+                    w.callbacks = Some(self.callbacks_page());
+                    w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
+                }
+                Outgoing::ReloadCallbacks => {
+                    let note = self.reload_daemon();
+                    w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
+                }
                 Outgoing::SaveSettings { provider, model } => {
                     let provider = match provider.as_str() {
                         "Anthropic API" => "anthropic".to_string(),
@@ -651,7 +706,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
         let mut dirty = true;
         loop {
             state.pictures = picker.is_some();
-            live.connect_windows(&state);
+            live.connect_windows(&mut state);
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
             // Input still queued (a burst of wheel events, fast typing) is handled first and

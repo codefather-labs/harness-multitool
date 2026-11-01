@@ -26,6 +26,7 @@ pub struct HeaderInfo {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // one value per app, moved only between screens
 pub enum Mode {
     /// Shown first on launch (journal: tui-splash).
     Splash(SplashView),
@@ -55,6 +56,8 @@ pub struct Workspace {
     pub live: bool,
     /// What the user did that the running sessions must hear about; the app drains it.
     pub outbox: Vec<Outgoing>,
+    /// What the settings' Callbacks tab shows when opened, as the app knows it.
+    pub callbacks: Option<CallbacksPage>,
 }
 
 /// A user's action for a running session, by the tab's id.
@@ -64,6 +67,10 @@ pub enum Outgoing {
     /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.
     Answer { tab: u64, choice: usize },
     Stop { tab: u64 },
+    /// The Callbacks tab saved: each standard type's implementation, and what is switched off.
+    SaveCallbacks { handlers: Vec<(String, String)>, disabled: Vec<String> },
+    /// Make the daemon read the project's callback files again.
+    ReloadCallbacks,
     /// Settings saved: the provider's option name and the model, for new sessions.
     SaveSettings { provider: String, model: String },
 }
@@ -118,6 +125,51 @@ pub struct SettingsView {
     pub model: String,
     pub timeout_s: u32,
     pub fallback: bool,
+    pub callbacks: CallbacksPage,
+}
+
+/// The Callbacks tab of the settings (settings-callbacks-*, ADR 0015).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallbacksPage {
+    pub standard: Vec<StandardRow>,
+    pub custom: Vec<CustomRow>,
+    pub conditions: Vec<ConditionRow>,
+    /// The daemon's state, as the page's last line says it.
+    pub daemon: String,
+    pub cursor: usize,
+    /// The standard row whose implementations are unfolded.
+    pub open: Option<usize>,
+}
+
+impl CallbacksPage {
+    pub fn rows(&self) -> usize {
+        self.standard.len() + self.custom.len() + self.conditions.len()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StandardRow {
+    pub name: String,
+    pub description: String,
+    pub implementations: Vec<String>,
+    pub chosen: usize,
+    pub concept: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomRow {
+    pub name: String,
+    pub implementation: String,
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConditionRow {
+    pub name: String,
+    pub listens_to: String,
+    pub rule: String,
+    pub policy: String,
+    pub on: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -137,7 +189,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new() }
+        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), callbacks: None }
     }
 
     pub fn view(&self) -> &SessionView {

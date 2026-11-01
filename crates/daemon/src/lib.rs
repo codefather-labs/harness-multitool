@@ -46,6 +46,8 @@ struct Window {
     /// Each instance's path through each chart: (map, instance) -> nodes in order.
     instances: HashMap<(u64, String), Vec<u64>>,
     conditions: Vec<conditions::Armed>,
+    /// Standard types switched off for this project.
+    off: HashSet<String>,
 }
 
 struct State {
@@ -157,7 +159,8 @@ impl Daemon {
             ("GET", "/health") => (200, json!({"ok": true})),
             ("POST", "/register") if admin => self.register(&body),
             ("GET", "/events") if admin => self.events(query),
-            ("POST", "/register") | ("GET", "/events") => (401, json!({"error": "bad token"})),
+            ("POST", "/reload") if admin => self.reload(),
+            ("POST", "/register") | ("POST", "/reload") | ("GET", "/events") => (401, json!({"error": "bad token"})),
             ("POST", p) if p.starts_with("/callback/") => self.callback(&p["/callback/".len()..], &body),
             _ => (404, json!({"error": "no such route"})),
         };
@@ -176,9 +179,24 @@ impl Daemon {
             Ok(armed) => (armed, None),
             Err(message) => (Vec::new(), Some(message)),
         };
-        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed };
+        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed, off: off_types(root) };
         self.state.lock().expect("daemon state").windows.insert(id.clone(), window);
         (200, json!({"window": id, "url": format!("http://127.0.0.1:{}/callback/{id}", self.port), "problem": problem}))
+    }
+
+    /// `POST /reload`: every window reads its project's callback files again. Signals gathered
+    /// so far start over.
+    fn reload(&self) -> (u16, Value) {
+        let mut state = self.state.lock().expect("daemon state");
+        let mut problems = Vec::new();
+        for w in state.windows.values_mut() {
+            match conditions::load(&w.root) {
+                Ok(armed) => w.conditions = armed,
+                Err(message) => problems.push(message),
+            }
+            w.off = off_types(&w.root);
+        }
+        (200, json!({"reloaded": state.windows.len(), "problems": problems}))
     }
 
     /// `GET /events?window=W&after=N`: what the window has not heard yet, waiting a while for it.
@@ -236,6 +254,12 @@ impl Daemon {
         if !self.state.lock().expect("daemon state").seen.insert(uuid.to_string()) {
             self.trigger_log(uuid, kind, &id, "duplicate", "");
             return (200, json!({"result": "duplicate"}));
+        }
+        let off = self.state.lock().expect("daemon state").windows.get(window).is_some_and(|w| w.off.contains(kind));
+        if off {
+            self.forget(uuid);
+            self.trigger_log(uuid, kind, &id, "no_handler", "switched off");
+            return (400, json!({"error": format!("the type {kind} is switched off in this project")}));
         }
         let handled = match kind {
             "notification" => self.notification(&id, uuid, &input),
@@ -356,6 +380,11 @@ impl Daemon {
         self.deliver(window, WindowEvent::Flow { map, instance, node, state: state_name, off_chart, path });
         Ok(json!({"off_chart": off_chart}))
     }
+}
+
+fn off_types(root: &str) -> HashSet<String> {
+    let handlers = conditions::read_project(root).map(|p| p.handlers).unwrap_or_default();
+    handlers.into_iter().filter(|(_, implementation)| implementation == "off").map(|(kind, _)| kind).collect()
 }
 
 /// The folder's `origin` URL, if it is a repository with one.

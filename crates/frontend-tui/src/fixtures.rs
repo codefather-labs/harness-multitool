@@ -22,6 +22,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "welcome", mockup: "welcome", build: welcome },
     Fixture { name: "main-session", mockup: "main-session", build: main_session },
     Fixture { name: "reasoning", mockup: "reasoning", build: reasoning },
+    Fixture { name: "settings-callbacks", mockup: "settings-callbacks", build: settings_callbacks },
     Fixture { name: "inbound-messages", mockup: "inbound-messages", build: inbound_messages },
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
@@ -68,6 +69,17 @@ fn session_hints() -> Vec<KeyHint> {
         KeyHint::new("@", "file"),
         KeyHint::new("/", "command"),
     ]
+}
+
+/// The settings on the Callbacks tab (settings-callbacks-*).
+pub fn settings_callbacks() -> AppState {
+    let mut s = crate::overlay::sample_settings();
+    s.section = s.sections.iter().position(|n| n == "Callbacks").unwrap_or(0);
+    s.focus = crate::model::SettingsPane::Page;
+    s.callbacks = crate::overlay::sample_callbacks();
+    s.callbacks.cursor = 2;
+    s.callbacks.open = Some(2);
+    with_overlay(crate::model::Overlay::Settings(s))
 }
 
 /// A model's reasoning in its three states (reasoning-*).
@@ -520,6 +532,7 @@ pub fn session_tabs() -> AppState {
         journal: crate::debug::known_entries(),
         live: false,
         outbox: Vec::new(),
+        callbacks: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }

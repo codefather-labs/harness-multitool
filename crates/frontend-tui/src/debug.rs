@@ -520,7 +520,7 @@ fn command(w: &mut Workspace, cmd: &str) {
             attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart, open: None, pan: (0, 0), focus: None }))
         }
         "permission" => w.overlay = Some(crate::model::Overlay::Permission(crate::overlay::sample_permission())),
-        "settings" => w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings())),
+        "settings" => w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::settings_for(w))),
         "tool" | "t" => match sample_tool(or(arg, "read")) {
             Some(c) => attach(v, Item::Tool(c)),
             None => v.transcript.push(Item::Tips { label: "UNKNOWN TOOL".into(), lines: vec!["/tool read|edit|cat|tg|a2a|journal|fail|run".into()] }),

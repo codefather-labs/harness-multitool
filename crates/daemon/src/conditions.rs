@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use harness_api::{Callback, Condition};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One `[[condition]]` of the project's file.
@@ -99,19 +99,50 @@ pub struct Armed {
     pub held: usize,
 }
 
+/// `.harness/callbacks.toml`: what the settings' Callbacks tab chose for this project.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectCallbacks {
+    /// Each standard type's implementation; `off` refuses it.
+    #[serde(default)]
+    pub handlers: std::collections::BTreeMap<String, String>,
+    /// The names of conditions and custom callbacks switched off.
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
+pub fn read_project(root: &str) -> Result<ProjectCallbacks, String> {
+    let path = Path::new(root).join(".harness").join("callbacks.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ProjectCallbacks::default()),
+        Err(e) => Err(format!("reading {}: {e}", path.display())),
+    }
+}
+
+pub fn write_project(root: &str, settings: &ProjectCallbacks) -> Result<(), String> {
+    let dir = Path::new(root).join(".harness");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let text = toml::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("callbacks.toml"), text).map_err(|e| format!("writing callbacks.toml: {e}"))
+}
+
+/// The project's conditions as written, for the settings page.
+pub fn read_configs(root: &str) -> Result<Vec<ConditionConfig>, String> {
+    let path = Path::new(root).join(".harness").join("conditions.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str::<ConditionsFile>(&text).map(|f| f.condition).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("reading {}: {e}", path.display())),
+    }
+}
+
 /// Reads a project's conditions. No file means none. A broken file is an error to show, not a
 /// reason to lose the window.
 pub fn load(root: &str) -> Result<Vec<Armed>, String> {
-    let path = Path::new(root).join(".harness").join("conditions.toml");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("reading {}: {e}", path.display())),
-    };
-    let file: ConditionsFile = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(file
-        .condition
+    let disabled = read_project(root)?.disabled;
+    Ok(read_configs(root)?
         .into_iter()
+        .filter(|c| !disabled.contains(&c.name))
         .map(|c| Armed {
             on: c.on.clone(),
             within: c.within_s.map(Duration::from_secs),
