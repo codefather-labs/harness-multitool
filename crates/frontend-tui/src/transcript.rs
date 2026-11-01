@@ -711,9 +711,6 @@ fn map_created(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapCreated, bg: Colo
     3
 }
 
-/// A map that changed: the event line, then the map - a mind map as a tree, a flowchart as a
-/// block diagram. With pictures it is an SVG made for its cells; without, the same layout in
-/// block and box-drawing characters.
 /// The journal entries an open map part unfolds: a chip's entry, or a node's or an arrow's refs.
 fn opened(body: MapBody, open: MapElement) -> Vec<u32> {
     match (body, open) {
@@ -721,37 +718,46 @@ fn opened(body: MapBody, open: MapElement) -> Vec<u32> {
         (MapBody::Mind(m), MapElement::Node(i)) => m.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Node(i)) => f.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Arrow(i)) => f.arrows.get(i).map(|a| a.refs.clone()).unwrap_or_default(),
-        (MapBody::Mind(_), MapElement::Arrow(_)) => vec![],
+        (MapBody::Mind(_), MapElement::Arrow(_)) | (_, MapElement::Area(..)) => vec![],
     }
 }
 
 /// The width of the ticket panel beside a map.
 const TICKET_W: u16 = 46;
 
-/// The rows of the ticket panel: a framed card per entry (#id category, date, tags, text).
-fn ticket_rows(ids: &[u32], known: &[JournalEvent], w: u16, t: &Theme) -> Vec<Vec<Span<'static>>> {
+/// The rows of the ticket panel: a header, then per entry its `#id category` line; only the
+/// focused entry (else the first) shows its date, tags and text, the others stay folded. The
+/// second value lists each entry's header row, for clicks.
+fn ticket_rows(ids: &[u32], focus: Option<u32>, known: &[JournalEvent], w: u16, t: &Theme) -> (Vec<Vec<Span<'static>>>, Vec<(usize, u32)>) {
     let tw = w.saturating_sub(4);
+    let shown = focus.filter(|f| ids.contains(f)).or(ids.first().copied());
     let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled("JOURNAL", bold(t.accent)), Span::styled("   click again to fold", plain(t.text_muted))]];
+    let mut heads = Vec::new();
     for id in ids {
         rows.push(vec![]);
+        let open = Some(*id) == shown;
+        let mark = if ids.len() > 1 { if open { "▾ " } else { "▸ " } } else { "" };
+        heads.push((rows.len(), *id));
         match known.iter().find(|e| e.id == *id) {
             Some(e) => {
-                rows.push(vec![Span::styled(format!("#{}", e.id), bold(t.info)), Span::styled(format!("  {}", e.category), bold(t.text))]);
-                rows.push(vec![Span::styled(e.date.clone(), plain(t.text_muted)), Span::styled(format!("  {}", e.tags.iter().map(|g| format!("#{g}")).collect::<Vec<_>>().join(" ")), plain(t.agent))]);
-                for l in wrap(&e.text, tw) {
-                    rows.push(vec![Span::styled(l, plain(t.text))]);
+                rows.push(vec![Span::styled(mark, plain(t.text_muted)), Span::styled(format!("#{}", e.id), bold(t.info)), Span::styled(format!("  {}", e.category), bold(t.text))]);
+                if open {
+                    rows.push(vec![Span::styled(e.date.clone(), plain(t.text_muted)), Span::styled(format!("  {}", e.tags.iter().map(|g| format!("#{g}")).collect::<Vec<_>>().join(" ")), plain(t.agent))]);
+                    for l in wrap(&e.text, tw) {
+                        rows.push(vec![Span::styled(l, plain(t.text))]);
+                    }
                 }
             }
-            None => rows.push(vec![Span::styled(format!("#{id}"), bold(t.info)), Span::styled("  not fetched yet", plain(t.text_muted))]),
+            None => rows.push(vec![Span::styled(mark, plain(t.text_muted)), Span::styled(format!("#{id}"), bold(t.info)), Span::styled("  not fetched yet", plain(t.text_muted))]),
         }
     }
-    rows
+    (rows, heads)
 }
 
 /// A map that changed: the event line, then the map - a mind map as a tree, a flowchart as a
 /// block diagram (an SVG made for its cells with pictures, the same layout in characters
 /// without). An open part unfolds its journal entries as a ticket on the right of the card.
-fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, date): (u32, &str, &str), body: MapBody, open: Option<MapElement>, bg: Color) -> u16 {
+fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, date): (u32, &str, &str), body: MapBody, (open, focus, pan): (Option<MapElement>, Option<u32>, (u16, u16)), bg: Color) -> u16 {
     let t = cv.t;
     let (ix, iw) = (x + 2, w.saturating_sub(4));
     let (label, noun, icon) = tool_names(tool);
@@ -765,13 +771,13 @@ fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, 
             (l.width, l.height)
         }
     };
-    // The ticket goes on the right when the map still fits beside it, else under the map:
-    // the map is never cut.
+    // The ticket goes on the right (operator: like the mind map's); a map wider than the room
+    // left is drawn from its panned position and dragged into view.
     let panel_w = TICKET_W.min(iw / 2);
-    let beside = layout_w + panel_w + 2 <= iw;
-    let ticket_w = if beside { panel_w } else { iw.min(TICKET_W * 2) };
-    let ticket = open.map(|o| ticket_rows(&opened(body, o), cv.journal, ticket_w, t));
-    let ticket_h = ticket.as_ref().map_or(0, |r| r.len() as u16 + 2);
+    let beside = true;
+    let ticket_w = panel_w;
+    let ticket = open.map(|o| ticket_rows(&opened(body, o), focus, cv.journal, ticket_w, t));
+    let ticket_h = ticket.as_ref().map_or(0, |(r, _)| r.len() as u16 + 2);
     let (map_h, below) = match (&ticket, beside) {
         (Some(_), true) => (layout_h.max(ticket_h) + 2, 0),
         (Some(_), false) => (layout_h + 2, ticket_h + 1),
@@ -785,20 +791,36 @@ fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, 
     let side = if ticket.is_some() && beside { panel_w + 2 } else { 0 };
     let area = Rect::new(ix, y + 2, iw - side, map_h);
     cv.grow(y + h);
+    let limit = crate::maps::pan_limit((area.width, area.height), (layout_w, layout_h));
+    let pan = (pan.0.min(limit.0), pan.1.min(limit.1));
     let (svg, hits) = match body {
         MapBody::Mind(m) => {
-            let hits = crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg);
-            (crate::mindmap::svg(m, t, area.width, area.height), hits)
+            let hits = crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg, pan);
+            (crate::mindmap::svg(m, t, area.width, area.height, pan), hits)
         }
         MapBody::Flow(f) => {
-            let hits = crate::flowchart::draw_text(&mut cv.buf, area, f, t, bg);
-            (crate::flowchart::svg(f, t, area.width, area.height), hits)
+            let hits = crate::flowchart::draw_text(&mut cv.buf, area, f, t, bg, pan);
+            (crate::flowchart::svg(f, t, area.width, area.height, pan), hits)
         }
     };
     let sub = cv.sub;
+    // The area first, its parts after: a press on a part wins, anywhere else starts a drag.
+    cv.hits.push((area, sub, MapElement::Area(limit.0, limit.1)));
     cv.hits.extend(hits.into_iter().map(|(r, e)| (r, sub, e)));
+    // Arrows where the map goes on beyond the area.
+    let mid = area.y + area.height / 2;
+    let mark = Style::default().fg(t.accent).bg(bg).add_modifier(Modifier::BOLD);
+    if pan.0 > 0 {
+        cv.buf[(area.x, mid)].set_symbol("◀").set_style(mark);
+    }
+    if pan.0 < limit.0 {
+        cv.buf[(area.x + area.width - 1, mid)].set_symbol("▶").set_style(mark);
+    }
+    if limit != (0, 0) {
+        cv.line_right(ix + iw, y + 1, vec![Span::styled("drag to pan   ", plain(t.text_muted)), Span::styled(date.to_string(), plain(t.text_muted))], bg);
+    }
     cv.placements.push(Placement { rect: area, graphic: Graphic::Svg(svg) });
-    if let Some(rows) = ticket {
+    if let Some((rows, heads)) = ticket {
         // The ticket: a frame in the accent beside the map, its rows inside.
         let pr = if beside {
             Rect::new(ix + iw - panel_w, y + 2, panel_w, (rows.len() as u16 + 2).min(map_h))
@@ -814,8 +836,14 @@ fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, 
             cv.line(pr.x + 2, ry, pr.width.saturating_sub(4), r, bg);
         }
         if let Some(o) = open {
-            // Clicking the ticket folds it, like clicking the part again.
+            // Clicking the ticket folds it, like clicking the part again; clicking an entry's
+            // header unfolds that entry and folds the one that was open.
             cv.hits.push((pr, sub, o));
+            if heads.len() > 1 {
+                for (row, entry) in heads {
+                    cv.hits.push((Rect::new(pr.x + 1, pr.y + 1 + row as u16, pr.width.saturating_sub(2), 1), sub, MapElement::Entry(entry)));
+                }
+            }
         }
     }
     h
@@ -828,11 +856,11 @@ enum MapBody<'a> {
 }
 
 fn mind_map(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &MindMapEvent, bg: Color) -> u16 {
-    map(cv, (x, y, w), MapTool::MindMap, (e.id, &e.change, &e.date), MapBody::Mind(&e.map), e.open, bg)
+    map(cv, (x, y, w), MapTool::MindMap, (e.id, &e.change, &e.date), MapBody::Mind(&e.map), (e.open, e.focus, e.pan), bg)
 }
 
 fn flowchart(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &FlowchartEvent, bg: Color) -> u16 {
-    map(cv, (x, y, w), MapTool::Flowchart, (e.id, &e.change, &e.date), MapBody::Flow(&e.chart), e.open, bg)
+    map(cv, (x, y, w), MapTool::Flowchart, (e.id, &e.change, &e.date), MapBody::Flow(&e.chart), (e.open, e.focus, e.pan), bg)
 }
 
 /// What a spacer row needs to know about the card on one side of it.

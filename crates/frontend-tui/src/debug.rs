@@ -219,7 +219,7 @@ pub fn sample_tool(kind: &str) -> Option<ToolCall> {
 }
 
 fn fnode(id: &str, text: &str, symbol: Symbol) -> FlowNode {
-    FlowNode { id: id.into(), text: text.into(), symbol, refs: vec![], changed: false }
+    FlowNode { id: id.into(), text: text.into(), symbol, refs: vec![], changed: false, active: false }
 }
 
 fn arrow(a: &str, b: &str, label: Option<&str>) -> Arrow {
@@ -279,12 +279,13 @@ pub fn sample_flow_gallery() -> Flowchart {
         nodes: vec![
             fnode("s1", "Start", Symbol::Start),
             fnode("i1", "Read input", Symbol::Io),
-            FlowNode { refs: vec![137], ..fnode("d1", "Valid?", Symbol::Decision) },
+            FlowNode { refs: vec![137, 131], ..fnode("d1", "Valid?", Symbol::Decision) },
             fnode("p1", "Process", Symbol::Process),
             fnode("e1", "End", Symbol::End),
             fnode("m1", "Manual fix", Symbol::Manual),
             fnode("r1", "Prepare", Symbol::Prep),
-            fnode("u1", "Subprocess", Symbol::Subprocess),
+            // The node a live run is at: outlined.
+            FlowNode { active: true, ..fnode("u1", "Subprocess", Symbol::Subprocess) },
             fnode("o1", "Report", Symbol::Document),
             fnode("b1", "Store", Symbol::Data),
             fnode("w1", "Wait 5 s", Symbol::Delay),
@@ -498,7 +499,7 @@ fn command(w: &mut Workspace, cmd: &str) {
         }
         "mindmap" | "mind" => attach(
             v,
-            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status; flowcharts linked from n6 and a branch".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery(), open: None }),
+            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status; flowcharts linked from n6 and a branch".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery(), open: None, pan: (0, 0), focus: None }),
         ),
         "flowchart" | "flow" | "map" => {
             let (change, chart) = if arg.trim() == "down" {
@@ -506,7 +507,7 @@ fn command(w: &mut Workspace, cmd: &str) {
             } else {
                 ("every symbol and logic gate", sample_flow_gallery())
             };
-            attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart, open: None }))
+            attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart, open: None, pan: (0, 0), focus: None }))
         }
         "permission" => w.overlay = Some(crate::model::Overlay::Permission(crate::overlay::sample_permission())),
         "settings" => w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings())),

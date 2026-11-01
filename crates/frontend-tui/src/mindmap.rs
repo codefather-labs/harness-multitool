@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::maps::{CH, CW, Put, esc, fit, hex, mix, svg_open};
+use crate::maps::{CH, CW, Put, clip, esc, fit, hex, mix, origin, svg_open};
 use crate::model::{MapElement, MindKind, MindMap, NodeStatus};
 use crate::theme::Theme;
 
@@ -171,28 +171,33 @@ fn junction(up: bool, down: bool, left: bool, right: bool) -> &'static str {
 
 /// The map in text, centred in `area`. Returns its clickable parts in buffer cells: each node
 /// with journal refs, and each `#N` ref chip on it (drawn later, so a chip wins over its node).
-pub fn draw_text(buf: &mut Buffer, area: Rect, map: &MindMap, t: &Theme, bg: Color) -> Vec<(Rect, MapElement)> {
+pub fn draw_text(buf: &mut Buffer, area: Rect, map: &MindMap, t: &Theme, bg: Color, pan: (u16, u16)) -> Vec<(Rect, MapElement)> {
     let l = layout(map);
-    let ox = area.x + area.width.saturating_sub(l.width) / 2;
-    let oy = area.y + area.height.saturating_sub(l.height) / 2;
+    // Centred when the map fits, else drawn from the panned position (cut at the area).
+    let ox = origin(area.x, area.width, l.width, pan.0);
+    let oy = origin(area.y, area.height, l.height, pan.1);
     let mut hits = Vec::new();
     for (i, (p, nd)) in l.nodes.iter().zip(&map.nodes).enumerate() {
         if nd.refs.is_empty() {
             continue;
         }
-        hits.push((Rect::new(ox + p.x, oy + p.y, p.w, 1), MapElement::Node(i)));
+        if let Some(r) = clip(area, ox + p.x as i32, oy + p.y as i32, p.w, 1) {
+            hits.push((r, MapElement::Node(i)));
+        }
         // The chips follow the text: "  #137" each.
         let mut at = (p.label.chars().count() - p.refs_len) as u16;
         for r in &nd.refs {
             let w = format!("#{r}").chars().count() as u16;
-            hits.push((Rect::new(ox + p.x + 3 + at + 2, oy + p.y, w, 1), MapElement::Entry(*r)));
+            if let Some(rect) = clip(area, ox + (p.x + 3 + at + 2) as i32, oy + p.y as i32, w, 1) {
+                hits.push((rect, MapElement::Entry(*r)));
+            }
             at += 2 + w;
         }
     }
     let mut put = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| {
-        let pos = (ox + x, oy + y);
-        if area.contains(pos.into()) {
-            buf[pos].set_symbol(s).set_style(st);
+        let (px, py) = (ox + x as i32, oy + y as i32);
+        if px >= 0 && py >= 0 && area.contains((px as u16, py as u16).into()) {
+            buf[(px as u16, py as u16)].set_symbol(s).set_style(st);
         }
     };
     text(buf, &l, map, t, bg, &mut put);
@@ -257,13 +262,13 @@ fn text(buf: &mut Buffer, l: &Layout, map: &MindMap, t: &Theme, bg: Color, put: 
 }
 
 /// The map as SVG in the theme's colours, `cols` x `rows` cells big, the layout centred.
-pub fn svg(map: &MindMap, t: &Theme, cols: u16, rows: u16) -> String {
+pub fn svg(map: &MindMap, t: &Theme, cols: u16, rows: u16, pan: (u16, u16)) -> String {
     let l = layout(map);
     let bg = t.background;
-    let ox = cols.saturating_sub(l.width) / 2;
-    let oy = rows.saturating_sub(l.height) / 2;
-    let px = |x: u16| (x + ox) as f32 * CW;
-    let py = |y: u16| (y + oy) as f32 * CH;
+    let ox = origin(0, cols, l.width, pan.0);
+    let oy = origin(0, rows, l.height, pan.1);
+    let px = |x: u16| (x as i32 + ox) as f32 * CW;
+    let py = |y: u16| (y as i32 + oy) as f32 * CH;
     let (line, text, muted) = (hex(t.border_subtle), hex(t.text), hex(t.text_muted));
     let mut s = svg_open(cols, rows, t.text_muted);
     // Branches: a curve from the parent's right end to the child's left end.
@@ -348,7 +353,7 @@ mod tests {
     #[test]
     fn the_gallery_svg_parses() {
         let t = Theme::builtin("dark").unwrap();
-        let s = svg(&crate::debug::sample_mind_gallery(), &t, 140, 30);
+        let s = svg(&crate::debug::sample_mind_gallery(), &t, 140, 30, (0, 0));
         assert!(resvg::usvg::Tree::from_str(&s, &resvg::usvg::Options::default()).is_ok());
     }
 }

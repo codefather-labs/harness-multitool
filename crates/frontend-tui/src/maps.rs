@@ -70,3 +70,21 @@ pub fn svg_open(cols: u16, rows: u16, arrow: Color) -> String {
         hex(arrow)
     )
 }
+
+/// Where a map `content` cells long starts in an area `len` cells long that starts at `at`:
+/// centred when it fits, else from `pan` cells into the map (clamped to its far edge).
+pub fn origin(at: u16, len: u16, content: u16, pan: u16) -> i32 {
+    if content > len { at as i32 - pan.min(content - len) as i32 } else { (at + (len - content) / 2) as i32 }
+}
+
+/// The farthest a map can be panned in an area: (columns, rows) hidden.
+pub fn pan_limit(area: (u16, u16), content: (u16, u16)) -> (u16, u16) {
+    (content.0.saturating_sub(area.0), content.1.saturating_sub(area.1))
+}
+
+/// A rect at a signed position, cut to `area`; None when nothing of it is inside.
+pub fn clip(area: ratatui::layout::Rect, x: i32, y: i32, w: u16, h: u16) -> Option<ratatui::layout::Rect> {
+    let (x0, y0) = (x.max(area.x as i32), y.max(area.y as i32));
+    let (x1, y1) = ((x + w as i32).min((area.x + area.width) as i32), (y + h as i32).min((area.y + area.height) as i32));
+    (x0 < x1 && y0 < y1).then(|| ratatui::layout::Rect::new(x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16))
+}

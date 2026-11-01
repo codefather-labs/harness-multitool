@@ -381,6 +381,8 @@ pub fn journal_mindmap_events() -> AppState {
                     date: "2026-10-28 14:28".into(),
                     chart: sample_flowchart(),
                     open: None,
+                    pan: (0, 0),
+                    focus: None,
                 })],
             ),
             turn(Role::User, "14:28", &["Looks good. Let's continue with the implementation."]),
@@ -440,6 +442,7 @@ pub fn session_tabs() -> AppState {
         active: 0,
         toast: None,
         overlay: None,
+        drag: None,
         journal: crate::debug::known_entries(),
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
@@ -458,8 +461,10 @@ pub fn maps() -> AppState {
                     change: "every symbol and logic gate".into(),
                     date: "2026-11-01 01:20".into(),
                     chart: crate::debug::sample_flow_gallery(),
-                    // The "no #131" arrow's entry unfolded beside the chart.
-                    open: Some(crate::model::MapElement::Arrow(3)),
+                    // The d1 node's two entries: #131 unfolded, #137 folded to its header.
+                    open: Some(crate::model::MapElement::Node(2)),
+                    pan: (0, 0),
+                    focus: Some(131),
                 }),
                 Item::Flowchart(FlowchartEvent {
                     id: 3,
@@ -467,14 +472,18 @@ pub fn maps() -> AppState {
                     date: "2026-11-01 01:20".into(),
                     chart: crate::debug::sample_flowchart_down(),
                     open: None,
+                    pan: (0, 0),
+                    focus: None,
                 }),
                 Item::MindMap(MindMapEvent {
                     id: 5,
                     change: "every node kind and status; flowcharts linked from n6 and a branch".into(),
                     date: "2026-11-01 01:20".into(),
                     map: crate::debug::sample_mind_gallery(),
-                    // Ctrl+click on #137 unfolded its entry.
-                    open: Some(crate::model::MapElement::Entry(137)),
+                    // Folded: only one ticket is open in a transcript.
+                    open: None,
+                    pan: (0, 0),
+                    focus: None,
                 }),
             ],
         )],

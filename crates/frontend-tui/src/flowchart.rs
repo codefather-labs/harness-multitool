@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::maps::{CH, CW, Put, esc, hex, mix, svg_open, wrap};
+use crate::maps::{CH, CW, Put, clip, esc, hex, mix, origin, svg_open, wrap};
 use crate::model::{FlowDirection, Flowchart, Gate, MapElement, Symbol};
 use crate::theme::Theme;
 
@@ -33,6 +33,8 @@ struct Placed {
     refs_line: bool,
     /// Where the node's rank column ends (the flow runs right): arrows turn after it.
     col_end: u16,
+    /// A live run is here: outlined in the accent, like the journal ticket.
+    active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +112,7 @@ pub fn layout(chart: &Flowchart) -> Layout {
                 _ => 4,
             };
             let h = lines.len() as u16 + 2 + u16::from(nd.symbol == Symbol::Data);
-            Placed { x: 0, y: 0, w: text_w + extra, h, lines, symbol: nd.symbol, changed: nd.changed, refs_line, col_end: 0 }
+            Placed { x: 0, y: 0, w: text_w + extra, h, lines, symbol: nd.symbol, changed: nd.changed, refs_line, col_end: 0, active: nd.active }
         })
         .collect();
     let members: Vec<Vec<usize>> = (0..ranks).map(|r| (0..n).filter(|&i| rank[i] == r).collect()).collect();
@@ -205,15 +207,16 @@ fn colours(p: &Placed, t: &Theme, bg: Color) -> (Color, Color) {
 
 /// The chart in text, centred in `area`. Returns its clickable parts in buffer cells: every
 /// node and every arrow pill that has journal entries linked.
-pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg: Color) -> Vec<(Rect, MapElement)> {
+pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg: Color, pan: (u16, u16)) -> Vec<(Rect, MapElement)> {
     let l = layout(chart);
     let mut hits = Vec::new();
-    let ox = area.x + area.width.saturating_sub(l.width) / 2;
-    let oy = area.y + area.height.saturating_sub(l.height) / 2;
+    // Centred when the map fits, else drawn from the panned position (cut at the area).
+    let ox = origin(area.x, area.width, l.width, pan.0);
+    let oy = origin(area.y, area.height, l.height, pan.1);
     let mut put = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| {
-        let pos = (ox + x, oy + y);
-        if area.contains(pos.into()) {
-            buf[pos].set_symbol(s).set_style(st);
+        let (px, py) = (ox + x as i32, oy + y as i32);
+        if px >= 0 && py >= 0 && area.contains((px as u16, py as u16).into()) {
+            buf[(px as u16, py as u16)].set_symbol(s).set_style(st);
         }
     };
     let edge = Style::default().fg(t.text_muted).bg(bg);
@@ -239,7 +242,7 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
                 put(buf, x1.saturating_sub(1), y1, "▶", edge);
                 if let Some(lb) = label {
                     pill(buf, bend + 1, y1, lb, t, bg, &mut put);
-                    hits.push((ox + bend + 1, oy + y1, lb.chars().count() as u16 + 2));
+                    hits.push((ox + (bend + 1) as i32, oy + y1 as i32, lb.chars().count() as u16 + 2));
                 }
             }
             FlowDirection::Down => {
@@ -261,7 +264,7 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
                 put(buf, x1, y1.saturating_sub(1), "▼", edge);
                 if let Some(lb) = label {
                     pill(buf, x1 + 1, bend + 1, lb, t, bg, &mut put);
-                    hits.push((ox + x1 + 1, oy + bend + 1, lb.chars().count() as u16 + 2));
+                    hits.push((ox + (x1 + 1) as i32, oy + (bend + 1) as i32, lb.chars().count() as u16 + 2));
                 }
             }
         }
@@ -269,20 +272,59 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
     for p in &l.nodes {
         node(buf, p, t, bg, &mut put);
     }
+    // The active node: a rounded accent frame one cell around it; the arrowheads it covers
+    // are drawn again on top.
+    let frame = Style::default().fg(t.accent_line).bg(bg);
+    for p in l.nodes.iter().filter(|p| p.active) {
+        let (x0, y0) = (p.x as i32 - 1, p.y as i32 - 1);
+        let (x1, y1) = (p.x as i32 + p.w as i32, p.y as i32 + p.h as i32);
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                let s = match (x == x0, x == x1, y == y0, y == y1) {
+                    (true, _, true, _) => "╭",
+                    (_, true, true, _) => "╮",
+                    (true, _, _, true) => "╰",
+                    (_, true, _, true) => "╯",
+                    (_, _, true, _) | (_, _, _, true) => "─",
+                    (true, _, _, _) | (_, true, _, _) => "│",
+                    _ => continue,
+                };
+                if x >= 0 && y >= 0 {
+                    put(buf, x as u16, y as u16, s, frame);
+                }
+            }
+        }
+    }
+    if l.nodes.iter().any(|p| p.active) {
+        for (a, b, _) in &l.arrows {
+            let (_, _, (x1, y1)) = route(&l, *a, *b);
+            if !l.nodes[*b].active {
+                continue;
+            }
+            match l.direction {
+                FlowDirection::Right => put(buf, x1.saturating_sub(1), y1, "▶", Style::default().fg(t.accent_line).bg(bg)),
+                FlowDirection::Down => put(buf, x1, y1.saturating_sub(1), "▼", Style::default().fg(t.accent_line).bg(bg)),
+            }
+        }
+    }
     // Pills per arrow, in arrow order; keep those of arrows with refs, then the nodes.
     let mut out: Vec<(Rect, MapElement)> = Vec::new();
     let mut pills = hits.into_iter();
     for (i, (_, _, label)) in l.arrows.iter().enumerate() {
         if label.is_some() {
             let (x, y, w) = pills.next().unwrap_or_default();
-            if !chart.arrows[i].refs.is_empty() {
-                out.push((Rect::new(x, y, w, 1), MapElement::Arrow(i)));
+            if !chart.arrows[i].refs.is_empty()
+                && let Some(r) = clip(area, x, y, w, 1)
+            {
+                out.push((r, MapElement::Arrow(i)));
             }
         }
     }
     for (i, (p, nd)) in l.nodes.iter().zip(&chart.nodes).enumerate() {
-        if !nd.refs.is_empty() {
-            out.push((Rect::new(ox + p.x, oy + p.y, p.w, p.h), MapElement::Node(i)));
+        if !nd.refs.is_empty()
+            && let Some(r) = clip(area, ox + p.x as i32, oy + p.y as i32, p.w, p.h)
+        {
+            out.push((r, MapElement::Node(i)));
         }
     }
     out
@@ -432,13 +474,13 @@ fn node(buf: &mut Buffer, p: &Placed, t: &Theme, bg: Color, put: &mut Put) {
 }
 
 /// The chart as SVG in the theme's colours, `cols` x `rows` cells big, the layout centred.
-pub fn svg(chart: &Flowchart, t: &Theme, cols: u16, rows: u16) -> String {
+pub fn svg(chart: &Flowchart, t: &Theme, cols: u16, rows: u16, pan: (u16, u16)) -> String {
     let l = layout(chart);
     let bg = t.background;
-    let ox = cols.saturating_sub(l.width) / 2;
-    let oy = rows.saturating_sub(l.height) / 2;
-    let px = |x: u16| (x + ox) as f32 * CW;
-    let py = |y: u16| (y + oy) as f32 * CH;
+    let ox = origin(0, cols, l.width, pan.0);
+    let oy = origin(0, rows, l.height, pan.1);
+    let px = |x: u16| (x as i32 + ox) as f32 * CW;
+    let py = |y: u16| (y as i32 + oy) as f32 * CH;
     let (line, text, muted) = (hex(t.border_subtle), hex(t.text), hex(t.text_muted));
     let mut s = svg_open(cols, rows, t.text_muted);
     for (a, b, label) in &l.arrows {
@@ -534,6 +576,16 @@ pub fn svg(chart: &Flowchart, t: &Theme, cols: u16, rows: u16) -> String {
             }
             Symbol::Process => format!(r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="9" {st}/>"#),
         };
+        if p.active {
+            s += &format!(
+                r#"<rect x="{}" y="{}" width="{}" height="{}" rx="12" fill="none" stroke="{}" stroke-width="2.5"/>"#,
+                x - 8.0,
+                y - 10.0,
+                w + 16.0,
+                h + 20.0,
+                hex(t.accent_line)
+            );
+        }
         let top = cy - (p.lines.len() as f32 - 1.0) * CH * 0.8 / 2.0 + 6.0 + if p.symbol == Symbol::Data { 6.0 } else { 0.0 };
         for (i, ln) in p.lines.iter().enumerate() {
             let shown = match p.symbol {
@@ -559,7 +611,7 @@ mod tests {
     use crate::model::{Arrow, FlowNode};
 
     fn chart(direction: FlowDirection) -> Flowchart {
-        let n = |id: &str, symbol| FlowNode { id: id.into(), text: id.into(), symbol, refs: vec![], changed: false };
+        let n = |id: &str, symbol| FlowNode { id: id.into(), text: id.into(), symbol, refs: vec![], changed: false, active: false };
         let a = |f: &str, t: &str| Arrow { from: f.into(), to: t.into(), label: None, refs: vec![] };
         Flowchart {
             direction,
@@ -588,7 +640,7 @@ mod tests {
     fn every_svg_parses() {
         let t = Theme::builtin("dark").unwrap();
         for c in [chart(FlowDirection::Right), chart(FlowDirection::Down), crate::debug::sample_flow_gallery(), crate::debug::sample_flowchart()] {
-            let s = svg(&c, &t, 140, 40);
+            let s = svg(&c, &t, 140, 40, (0, 0));
             assert!(resvg::usvg::Tree::from_str(&s, &resvg::usvg::Options::default()).is_ok());
         }
     }

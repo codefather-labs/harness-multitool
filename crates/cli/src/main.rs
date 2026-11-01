@@ -282,6 +282,15 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                 Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                     input::click(&mut state, &drawn, m.column, m.row)
                 }
+                // Dragging a map pans it; the release ends the drag (or unfolds a ticket).
+                Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left) => {
+                    input::drag(&mut state, m.column, m.row);
+                    continue;
+                }
+                Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
+                    input::release(&mut state);
+                    continue;
+                }
                 Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
                     input::scroll(&mut state, if m.kind == MouseEventKind::ScrollUp { 3 } else { -3 });
                     continue;

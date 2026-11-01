@@ -46,9 +46,24 @@ pub struct Workspace {
     pub toast: Option<Toast>,
     /// A modal window over the session: it takes the keys until it closes.
     pub overlay: Option<Overlay>,
+    /// A map being dragged with the mouse.
+    pub drag: Option<Drag>,
     /// Journal entries the transcript can unfold (the project's journal, as far as the session
     /// has fetched it).
     pub journal: Vec<JournalEvent>,
+}
+
+/// A press on a map, until the release: where it started, what it started on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Drag {
+    pub item: usize,
+    pub sub: Option<usize>,
+    pub at: (u16, u16),
+    pub pan: (u16, u16),
+    pub limit: (u16, u16),
+    /// The part pressed (a ref, a node, an arrow): a release without moving unfolds it.
+    pub part: Option<MapElement>,
+    pub moved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -105,7 +120,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None, journal: Vec::new() }
+        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new() }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -358,6 +373,10 @@ pub struct MindMapEvent {
     pub map: MindMap,
     /// The element whose journal entries are unfolded beside the map.
     pub open: Option<MapElement>,
+    /// The one entry of the ticket shown in full; the others are folded to their header.
+    pub focus: Option<u32>,
+    /// How far the map is dragged: (columns, rows) scrolled into it.
+    pub pan: (u16, u16),
 }
 
 /// A clickable part of a map: a journal ref of a node, a node, an arrow.
@@ -369,6 +388,8 @@ pub enum MapElement {
     Node(usize),
     /// An arrow by index: its linked entries.
     Arrow(usize),
+    /// The map's area itself (pressing there starts a drag); how far it can be panned.
+    Area(u16, u16),
 }
 
 /// A flowchart changed: the event line and the chart itself.
@@ -381,6 +402,10 @@ pub struct FlowchartEvent {
     pub chart: Flowchart,
     /// The element whose journal entries are unfolded beside the chart.
     pub open: Option<MapElement>,
+    /// The one entry of the ticket shown in full; the others are folded to their header.
+    pub focus: Option<u32>,
+    /// How far the chart is dragged: (columns, rows) scrolled into it.
+    pub pan: (u16, u16),
 }
 
 /// A tree of what is known about one topic: the first node is the root; branches join a parent
@@ -474,6 +499,8 @@ pub struct FlowNode {
     pub refs: Vec<u32>,
     /// Changed by the event being shown.
     pub changed: bool,
+    /// The node a live run is at now (ADR 0012): outlined in the accent.
+    pub active: bool,
 }
 
 /// ISO 5807 symbols and logic gates (`claudebase mindmap add --kind` of a flowchart).
