@@ -1,18 +1,54 @@
-# harness-multitool
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/design/readme/hero-dark.png">
+    <img alt="harness-multitool: AI agent toolkit for development, automation and project knowledge. The start screen, with recent sessions and quick actions." src="docs/design/readme/hero-light.png" width="860">
+  </picture>
+</p>
 
-**A plugin-first, open-source agent harness in Rust.** An agent that writes code, runs tools and works with other agents — where almost every part is an interface you can replace with your own implementation, and where "done" means proven.
+<p align="center">
+  <a href="https://github.com/codefather-labs/harness-multitool/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/codefather-labs/harness-multitool/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
+  <img alt="Linux, macOS, Windows" src="https://img.shields.io/badge/runs%20on-Linux%20·%20macOS%20·%20Windows-1f6feb">
+  <img alt="Status: early" src="https://img.shields.io/badge/status-early-f59e0b">
+</p>
 
-Status: **early: the agent loop runs in the terminal UI.** The spec comes first and the code is checked against it. `./run.sh` opens it; set `ANTHROPIC_API_KEY`, or point it at any OpenAI-compatible endpoint ([how to use it](docs/tui.md)). The agent has the journal, mind-map and flowchart tools; callbacks reach it through a local daemon; conditions, custom handlers and the session modes are specified and not built yet.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-it-does-today">What it does</a> ·
+  <a href="#documents">Documents</a> ·
+  <a href="docs/tui.md">Terminal UI</a> ·
+  <a href="docs/spec/roadmap.md">Roadmap</a>
+</p>
+
+**A plugin-first agent harness in Rust.** An agent that writes code, runs tools and keeps a memory of why the project is the way it is, where almost every part is an interface you can replace.
+
+## Quick start
+
+```bash
+git clone https://github.com/codefather-labs/harness-multitool
+cd harness-multitool
+./run.sh            # builds it and opens the terminal UI (Windows: run.ps1)
+```
+
+Open the settings with `Ctrl+,` and choose a provider: a key for an API, a local model on Ollama, or your ChatGPT plan through `gpt-subscription`, which signs in on OpenAI's own page.
+
+## What it does today
+
+- **The agent loop in a terminal UI:** streaming answers with Markdown and tables, tool calls with permission prompts, several tabs, sessions that resume, and what the agent is doing on the status line.
+- **Models:** Anthropic and OpenAI-compatible APIs, Ollama and other local servers, a ChatGPT plan. The model list comes from each provider, with prices where they are known.
+- **Plan mode:** the agent reads and plans, and nothing in the project can change until you approve.
+- **Step-debug mode:** the agent walks a running pipeline step by step through a debug router built by one contract, and every finished cycle is saved.
+- **Memory:** a project journal, mind maps and live flowcharts, which the agent's context is built from.
+- **Done means proven:** a task finishes only when its checks pass, and the evidence goes into the journal.
+- **Callbacks and channels:** events from outside reach the agent as data; conditions, custom handlers, and a Telegram channel.
+- **Hot reload:** rebuild and swap the binary in the same terminal, with the sessions going on.
 
 ## What it is meant to be
 
-- **Plugin-first.** The core is an agent loop and an event bus. Model providers, authentication, tools, permissions, context management, memory, sessions, model routing, verification, user interfaces, agent transport and hooks are interfaces. Each one has a default implementation; anyone can write another, build it into their local build and select it in the configuration.
-- **Your own tools.** Tools are an interface like everything else; the built-in ones (read, edit, shell, search) are plugins of that same interface.
-- **Done means proven.** The harness does not let an agent report a task done until the task's verification protocol has run and its evidence is recorded. Specifications are acceptance checks, not prose.
-- **Modes are frameworks.** Plan mode, step-by-step debugging of distributed pipelines and reliability monitoring are designed as frameworks, not prompts: plan mode writes the plan into the journal, mind maps and flowcharts; step-debug drives live flowcharts through a debug-router contract; monitoring wakes the agent through a daemon with a contract for custom callbacks, conditions and response policies.
-- **Memory that survives.** A project journal (decisions, findings, specifications, constraints, linked into a graph), mind maps and flowcharts are first-class; context is rebuilt from them instead of being summarised away.
-- **Many agents, many machines.** Sessions are addressable, message each other, and can be spread across machines and models.
-- **Runs in the browser.** The core compiles to WebAssembly; the project site will host the CLI itself as a live demo.
+- **Plugin-first.** The core is an agent loop and an event bus. Model providers, authentication, tools, permissions, context, memory, sessions and routing are interfaces, and the built-in ones are plugins of those same interfaces.
+- **Modes are frameworks, not prompts.** A mode gives the agent its rules and tools, and the harness holds to them.
+- **Many agents, many machines.** Sessions become addressable, message each other, and spread across machines and models.
+- **Runs in the browser.** The core compiles to WebAssembly; the project site is to host the CLI itself as a live demo.
 
 ## Documents
 
@@ -34,4 +70,4 @@ Every rule in these documents has an id (`P-…`, `INV-…`, `CON-…`, `IF-…`
 
 ## On authentication and subscriptions
 
-The project ships authentication for API keys. It does **not** ship, and will not accept, an implementation that signs in with a consumer subscription of a model vendor. The `Auth` interface is public: whoever writes and builds such an implementation for their own use does so under their own responsibility and the vendor's terms (see [ADR 0003](docs/decisions/0003-authentication.md)).
+The project ships authentication for API keys, and a subscription sign-in only where the vendor documents one for apps like this ([ADR 0019](docs/decisions/0019-vendor-documented-sign-in.md)). A ChatGPT plan is signed in through OpenAI's flow for open-source apps. A Claude subscription is not offered: Anthropic's terms do not permit it in other apps, so Anthropic models take an API key.
