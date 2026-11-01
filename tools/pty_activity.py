@@ -62,7 +62,7 @@ print("states:", seen); print("spinner frames:", len(spins), "seconds:", seconds
 for want in ["Waiting for slow-model", "Thinking", "Writing", "Waiting for your answer", "Running shell"]:
     assert want in seen, (want, seen)
 assert seen.index("Thinking") < seen.index("Writing") < seen.index("Waiting for your answer") < seen.index("Running shell"), seen
-assert len(spins) >= 5, spins
+assert len(spins) == 8 and all(c in "🌑🌒🌓🌔🌕🌖🌗🌘" for c in spins), spins
 assert seconds == sorted(seconds) and seconds[-1] >= 8, seconds
 pump(0.3); assert line() is None, "gone at the end: " + text()
 assert "generating" not in text(), text()

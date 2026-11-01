@@ -198,7 +198,15 @@ impl Tool for Search {
             }
             let root = resolve(&cx.root, folder);
             let mut hits = Vec::new();
-            for file in Self::walk(cx, root.clone(), 20_000).await {
+            // A file is searched as itself; a path that is neither is said, not "no matches".
+            let files = if cx.platform.fs.list(&root).await.is_ok() {
+                Self::walk(cx, root.clone(), 20_000).await
+            } else if cx.platform.fs.read(&root).await.is_ok() {
+                vec![root.clone()]
+            } else {
+                return ToolOutput::error(format!("no such file or folder: {folder}"));
+            };
+            for file in files {
                 let Ok(bytes) = cx.platform.fs.read(&file).await else { continue };
                 if bytes.contains(&0) {
                     continue;

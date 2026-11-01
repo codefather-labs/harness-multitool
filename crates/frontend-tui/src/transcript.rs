@@ -397,64 +397,16 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
         cv.sub = Some(i);
         y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
     }
-    let mut in_fence = false;
-    for l in lines {
-        if role == Role::User {
+    if role == Role::User {
+        // A person's message is shown as typed.
+        for l in lines {
             for w in wrap(l, tw) {
                 cv.line(CX, y, tw, vec![Span::styled(w, plain(t.text))], bg);
                 y += 1;
             }
-            continue;
         }
-        // An assistant's answer is Markdown; a person's message is shown as typed.
-        match crate::markdown::classify(l, &mut in_fence) {
-            crate::markdown::Block::Fence => {}
-            crate::markdown::Block::Code(code) => {
-                let raised = if bg == t.surface { t.surface_raised } else { t.surface };
-                for w in wrap_keeping_indent(code, tw.saturating_sub(2)) {
-                    cv.fill(Rect::new(CX, y, tw, 1), raised);
-                    cv.line(CX + 1, y, tw.saturating_sub(2), vec![Span::styled(w, plain(t.text))], raised);
-                    y += 1;
-                }
-            }
-            crate::markdown::Block::Heading(text) => {
-                for w in wrap(text, tw) {
-                    cv.line(CX, y, tw, vec![Span::styled(w, bold(t.accent))], bg);
-                    y += 1;
-                }
-            }
-            crate::markdown::Block::Text(text) => {
-                let raised = if bg == t.surface { t.surface_raised } else { t.surface };
-                let chars = crate::markdown::inline(text);
-                let flat: String = chars.iter().map(|(c, _)| *c).collect();
-                let mut at = 0;
-                for row in wrap(&flat, tw) {
-                    // Each row is a stretch of the flat text; the wrap drops spaces at breaks.
-                    while chars.get(at).is_some_and(|(c, _)| c.is_whitespace()) && !row.starts_with(chars[at].0) {
-                        at += 1;
-                    }
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    let mut run = String::new();
-                    let mut style = None;
-                    for _ in row.chars() {
-                        let Some((c, s)) = chars.get(at).copied() else { break };
-                        at += 1;
-                        if style != Some(s) {
-                            if let Some(done) = style.filter(|_| !run.is_empty()) {
-                                spans.push(Span::styled(std::mem::take(&mut run), md_style(done, t, raised)));
-                            }
-                            style = Some(s);
-                        }
-                        run.push(c);
-                    }
-                    if let Some(done) = style.filter(|_| !run.is_empty()) {
-                        spans.push(Span::styled(run, md_style(done, t, raised)));
-                    }
-                    cv.line(CX, y, tw, spans, bg);
-                    y += 1;
-                }
-            }
-        }
+    } else {
+        y = markdown(&mut cv, lines, y, tw, t, bg);
     }
     for (i, a) in attached.iter().enumerate().filter(|(_, a)| !matches!(a, Item::Thinking(_))) {
         cv.sub = Some(i);
@@ -474,11 +426,144 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
     cv.finish(y)
 }
 
+/// Styled characters as spans, in runs of one style.
+fn md_spans(chars: &[(char, crate::markdown::Inline)], t: &Theme, raised: Color) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut style = None;
+    for &(c, s) in chars {
+        if style != Some(s) {
+            if let Some(done) = style.filter(|_| !run.is_empty()) {
+                spans.push(Span::styled(std::mem::take(&mut run), md_style(done, t, raised)));
+            }
+            style = Some(s);
+        }
+        run.push(c);
+    }
+    if let Some(done) = style.filter(|_| !run.is_empty()) {
+        spans.push(Span::styled(run, md_style(done, t, raised)));
+    }
+    spans
+}
+
+/// An answer's Markdown, from row `y`. Returns the next free row.
+fn markdown(cv: &mut Canvas, lines: &[String], mut y: u16, tw: u16, t: &Theme, bg: Color) -> u16 {
+    use crate::markdown::{Node, blocks, inline, wrap_styled};
+    let raised = if bg == t.surface { t.surface_raised } else { t.surface };
+    for node in blocks(lines) {
+        match node {
+            Node::Code(code) => {
+                for w in wrap_keeping_indent(&code, tw.saturating_sub(2)) {
+                    cv.fill(Rect::new(CX, y, tw, 1), raised);
+                    cv.line(CX + 1, y, tw.saturating_sub(2), vec![Span::styled(w, plain(t.text))], raised);
+                    y += 1;
+                }
+            }
+            Node::Heading(text) => {
+                let flat: String = inline(&text).into_iter().map(|(c, _)| c).collect();
+                for w in wrap(&flat, tw) {
+                    cv.line(CX, y, tw, vec![Span::styled(w, bold(t.accent))], bg);
+                    y += 1;
+                }
+            }
+            Node::Blank => y += 1,
+            Node::Rule => {
+                cv.line(CX, y, tw, vec![Span::styled("─".repeat(tw as usize), plain(t.border_subtle))], bg);
+                y += 1;
+            }
+            Node::Text(text) => {
+                for row in wrap_styled(&inline(&text), tw as usize) {
+                    cv.line(CX, y, tw, md_spans(&row, t, raised), bg);
+                    y += 1;
+                }
+            }
+            Node::Quote(text) => {
+                for row in wrap_styled(&inline(&text), tw.saturating_sub(2) as usize) {
+                    let mut spans = vec![Span::styled("▎ ", plain(t.accent_line))];
+                    spans.extend(md_spans(&row, t, raised).into_iter().map(|s| s.patch_style(plain(t.text_muted))));
+                    cv.line(CX, y, tw, spans, bg);
+                    y += 1;
+                }
+            }
+            Node::Item { depth, marker, text } => {
+                let x = CX + depth * 2;
+                let hang = marker.chars().count() as u16 + 1;
+                let room = tw.saturating_sub(depth * 2 + hang);
+                for (i, row) in wrap_styled(&inline(&text), room as usize).into_iter().enumerate() {
+                    if i == 0 {
+                        cv.line(x, y, hang, vec![Span::styled(marker.clone(), plain(t.accent))], bg);
+                    }
+                    cv.line(x + hang, y, room, md_spans(&row, t, raised), bg);
+                    y += 1;
+                }
+            }
+            Node::Table { aligns, header, rows } => y = md_table(cv, &aligns, &header, &rows, y, tw, t, bg),
+        }
+    }
+    y
+}
+
+/// A table: columns lined up by the cells they take, cells wrapping inside their column.
+#[allow(clippy::too_many_arguments)]
+fn md_table(cv: &mut Canvas, aligns: &[crate::markdown::Align], header: &[String], rows: &[Vec<String>], mut y: u16, tw: u16, t: &Theme, bg: Color) -> u16 {
+    use crate::markdown::{Align, column_widths, display_width, inline, wrap_styled};
+    let raised = if bg == t.surface { t.surface_raised } else { t.surface };
+    let columns = rows.iter().map(Vec::len).chain(std::iter::once(header.len())).max().unwrap_or(0);
+    if columns == 0 {
+        return y;
+    }
+    let cell = |row: &[String], i: usize| inline(row.get(i).map_or("", String::as_str));
+    let wants: Vec<usize> = (0..columns).map(|i| rows.iter().map(|r| display_width(&cell(r, i))).chain(std::iter::once(display_width(&cell(header, i)))).max().unwrap_or(0).max(1)).collect();
+    let separators = 3 * (columns - 1);
+    let widths = column_widths(&wants, (tw as usize).saturating_sub(separators).max(columns));
+    let line = plain(t.border_subtle);
+    let draw = |cv: &mut Canvas, row: &[String], head: bool, y: &mut u16| {
+        let wrapped: Vec<_> = (0..columns).map(|i| wrap_styled(&cell(row, i), widths[i])).collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for r in 0..height {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..columns {
+                if i > 0 {
+                    spans.push(Span::styled(" │ ", line));
+                }
+                let part: &[(char, crate::markdown::Inline)] = wrapped[i].get(r).map_or(&[], Vec::as_slice);
+                let free = widths[i].saturating_sub(display_width(part));
+                let (before, after) = match aligns.get(i) {
+                    Some(Align::Right) => (free, 0),
+                    Some(Align::Center) => (free / 2, free - free / 2),
+                    _ => (0, free),
+                };
+                spans.push(Span::raw(" ".repeat(before)));
+                if head {
+                    spans.push(Span::styled(part.iter().map(|(c, _)| *c).collect::<String>(), bold(t.text)));
+                } else {
+                    spans.extend(md_spans(part, t, raised));
+                }
+                spans.push(Span::raw(" ".repeat(after)));
+            }
+            cv.line(CX, *y, tw, spans, bg);
+            *y += 1;
+        }
+    };
+    draw(cv, header, true, &mut y);
+    let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+    cv.line(CX, y, tw, vec![Span::styled(rule.join("─┼─"), line)], bg);
+    y += 1;
+    for row in rows {
+        draw(cv, row, false, &mut y);
+    }
+    y
+}
+
 fn md_style(s: crate::markdown::Inline, t: &Theme, raised: Color) -> Style {
     match s {
         crate::markdown::Inline::Plain => plain(t.text),
         crate::markdown::Inline::Bold => bold(t.text),
         crate::markdown::Inline::Code => plain(t.text).bg(raised),
+        crate::markdown::Inline::Italic => plain(t.text).add_modifier(Modifier::ITALIC),
+        crate::markdown::Inline::Strike => plain(t.text_muted).add_modifier(Modifier::CROSSED_OUT),
+        crate::markdown::Inline::Link => plain(t.info).add_modifier(Modifier::UNDERLINED),
+        crate::markdown::Inline::Muted => plain(t.text_muted),
     }
 }
 
@@ -1158,6 +1243,82 @@ pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> (Ve
         y0 += h + GAP;
     }
     (out, hits)
+}
+
+#[cfg(test)]
+mod markdown_tests {
+    use super::*;
+
+    fn rows(lines: &[&str], width: u16) -> Vec<String> {
+        let t = Theme::builtin("dark").unwrap();
+        let it = Item::Turn { role: Role::Assistant, time: "1".into(), lines: lines.iter().map(|l| l.to_string()).collect(), attached: vec![] };
+        let d = item(&it, width, &t, &[]);
+        (0..d.buf.area.height).map(|y| {
+            let mut skip = 0;
+            let mut out = String::new();
+            for x in 0..d.buf.area.width {
+                let s = d.buf[(x, y)].symbol();
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                skip = s.chars().map(crate::markdown::cell_width).sum::<usize>().saturating_sub(1);
+                out.push_str(s);
+            }
+            out
+        }).collect()
+    }
+
+    /// The answer of the owner's screenshot, 2026-11-01.
+    #[test]
+    fn the_owners_table_lines_up_with_its_emoji() {
+        let shown = rows(&[
+            "Проверил **19 из 23**:",
+            "",
+            "| Группа | Инструменты | Результат |",
+            "|---|---|---|",
+            "| Файлы и команды | `read`, `edit` | ✅ Работают |",
+            "| HTTP | `fetch` | ✅ Получен HTML |",
+            "",
+            "**Особенности:**",
+            "- `journal_close` сначала отказался",
+            "- `search` с путём",
+        ], 90);
+        let all = shown.join("\n");
+        assert!(!all.contains("|---") && !all.contains("| Группа") && !all.contains("**") && !all.contains('`') && !all.contains("- `"), "{all}");
+        let col = |needle: &str| {
+            let row = shown.iter().find(|r| r.contains(needle)).unwrap();
+            // Display columns of the separators in this row.
+            let mut at = 0;
+            let mut seps = Vec::new();
+            for c in row.chars() {
+                if c == '│' {
+                    seps.push(at);
+                }
+                at += crate::markdown::cell_width(c);
+            }
+            seps
+        };
+        assert_eq!(col("Группа").len(), 2, "{all}");
+        assert_eq!(col("Группа"), col("Файлы"), "{all}");
+        assert_eq!(col("Группа"), col("HTTP"), "{all}");
+        assert!(all.contains("┼"), "{all}");
+        assert!(all.contains("• journal_close") && all.contains("• search"), "{all}");
+    }
+
+    #[test]
+    fn a_wide_table_wraps_inside_its_cells_and_a_list_item_hangs() {
+        let shown = rows(&["| Name | Text |", "|---|---|", "| a | one two three four five six seven eight nine ten eleven twelve |"], 40);
+        let all = shown.join("\n");
+        assert!(all.contains("twelve") && all.contains("one two"), "{all}");
+        let body: Vec<&String> = shown.iter().filter(|r| r.contains('│')).collect();
+        assert!(body.len() >= 4, "header and wrapped rows: {all}");
+        let first = body[0].find('│').unwrap();
+        assert!(body.iter().all(|r| r.find('│') == Some(first)), "{all}");
+        let list = rows(&["- one two three four five six seven eight nine ten eleven"], 30);
+        let letter = |r: &str| r.chars().position(char::is_alphabetic).unwrap();
+        assert_eq!(letter(&list[1]), letter(&list[2]), "the wrap hangs under the text: {list:?}");
+    }
 }
 
 #[cfg(test)]

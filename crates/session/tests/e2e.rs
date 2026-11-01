@@ -867,3 +867,24 @@ fn the_claude_subscription_adapter_refuses_before_any_request() {
     assert!(ends[0].contains("forbidden by Anthropic") || format!("{entries:?}").contains("forbidden by Anthropic"), "{ends:?} {entries:?}");
     assert!(seen.lock().unwrap().is_empty(), "no request left");
 }
+
+/// A model passes a file to search as readily as a folder.
+#[test]
+fn search_takes_a_file_a_folder_and_says_when_neither() {
+    let root = temp_dir("search");
+    let data = temp_dir("search-data");
+    std::fs::create_dir_all(format!("{root}/sub")).unwrap();
+    std::fs::write(format!("{root}/sub/a.txt"), "first\nthe needle here\n").unwrap();
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("s1", "search", json!({"text": "needle", "path": "sub/a.txt"}))), "File."),
+        anthropic_turn(Some(("s2", "search", json!({"text": "needle", "path": "sub"}))), "Folder."),
+        anthropic_turn(Some(("s3", "search", json!({"text": "needle", "path": "no/such"}))), "Neither."),
+        anthropic_turn(None, "Done."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["find it"], Answer::AllowOnce);
+    let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
+    assert!(result("s1").0.contains("sub/a.txt:2: the needle here") && !result("s1").1, "{:?}", result("s1"));
+    assert!(result("s2").0.contains("sub/a.txt:2:"), "{:?}", result("s2"));
+    assert!(result("s3").1 && result("s3").0.contains("no such"), "{:?}", result("s3"));
+}

@@ -16,7 +16,7 @@ use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, Permis
 
 const WAITING: &str = "Waiting for the model";
 /// How often the spinner moves.
-pub const SPIN_MS: u64 = 100;
+pub const SPIN_MS: u64 = 125;
 
 /// Tool output lines shown before `+N more lines`.
 const OUTPUT_LINES: usize = 8;
@@ -418,7 +418,7 @@ pub const PULSE_MS: u64 = 1000;
 /// Moves the running pulses on: soft, up and down by colour. Returns whether any is still alive,
 /// so the app knows to keep drawing.
 /// Keeps the activity line going: it starts with the run, before the log has said anything, moves
-/// on ten times a second, and redraws nothing between runs. True if it changed.
+/// on eight times a second, and redraws nothing between runs. True if it changed.
 pub fn tick_activity(v: &mut SessionView, now_ms: u64) -> bool {
     if !v.generating {
         return v.activity.take().is_some();
@@ -638,7 +638,7 @@ mod activity_tests {
         assert!(tick_activity(&mut v, 1000));
         assert_eq!(v.activity.as_ref().map(|a| (a.state.as_str(), a.started_ms)), Some(("Waiting for the model", 1000)));
         assert!(!tick_activity(&mut v, 1050), "same frame, no redraw");
-        assert!(tick_activity(&mut v, 1100));
+        assert!(tick_activity(&mut v, 1200));
 
         let state = |v: &SessionView| v.activity.as_ref().map(|a| a.state.clone()).unwrap();
         let call = LogCall { id: "c".into(), name: "shell".into(), input: serde_json::json!({}) };

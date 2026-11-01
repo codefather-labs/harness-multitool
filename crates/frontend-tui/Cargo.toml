@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+unicode-width = "0.2"
 harness-api = { version = "0.1.0-dev", path = "../api" }
 serde_json = "1"
 fontdue = "0.9.5"

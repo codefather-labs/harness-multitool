@@ -143,7 +143,7 @@ pub fn run_time(ms: u64) -> String {
 
 /// What the agent is doing, for how long, and how to stop it: at the right of the status line.
 pub fn activity(f: &mut Frame, status: Rect, t: &Theme, a: &crate::model::Activity) {
-    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const SPINNER: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
     let frame = (a.now_ms / crate::live::SPIN_MS) as usize % SPINNER.len();
     let time = run_time(a.now_ms.saturating_sub(a.started_ms));
     let spans = vec![
@@ -152,7 +152,8 @@ pub fn activity(f: &mut Frame, status: Rect, t: &Theme, a: &crate::model::Activi
         Span::styled(format!("  {time}"), Style::default().fg(t.accent)),
         Span::styled("  ·  Esc stops ", Style::default().fg(t.text_muted)),
     ];
-    let width = (spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16).min(status.width);
+    // In cells: a moon takes two.
+    let width = (spans.iter().flat_map(|s| s.content.chars()).map(crate::markdown::cell_width).sum::<usize>() as u16).min(status.width);
     let area = Rect::new(status.x + status.width - width, status.y, width, 1);
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);
 }
