@@ -28,9 +28,9 @@ export COLORTERM="${COLORTERM:-truecolor}"
 profile="${PROFILE:-release}"
 bin="$here/target/$profile/multitool"
 if [[ "$profile" == release ]]; then
-  cargo build --quiet --release --manifest-path "$here/Cargo.toml"
+  cargo build --release --manifest-path "$here/Cargo.toml"
 else
-  cargo build --quiet --manifest-path "$here/Cargo.toml"
+  cargo build --manifest-path "$here/Cargo.toml"
 fi
 
 if [[ $# -eq 0 ]]; then
