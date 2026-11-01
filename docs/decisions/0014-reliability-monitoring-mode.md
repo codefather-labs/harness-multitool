@@ -1,6 +1,6 @@
-# 0014 — Reliability-monitoring mode (idea)
+# 0014 — Reliability-monitoring mode (concept)
 
-- **Status:** proposed — an idea of the project owner, not yet a design; nothing here binds until the owner accepts it · **Raised by:** the project owner, 2026-11-01
+- **Status:** concept — the owner's idea, grown into a concept with specifications of its own (INV-14, IF-15, CON-26); its owner decisions bind, the rest is open · **Raised by:** the project owner, 2026-11-01
 - **Specs:** IF-0.5, IF-6, IF-13, IF-15, INV-14; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers); a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode)
 
 ## The idea
@@ -19,13 +19,13 @@ The harness gets a **reliability-monitoring mode**, run by the canons of SRE. Pr
 
 **The same event is the same event uuid — decided by the owner (answers Q-22).** Every incoming signal carries an event **uuid**; it is a required part of the communication contract. An incoming record whose uuid matches one already recorded is the same event: it trips idempotency, goes to the trigger log, and sends nothing. A record with a new uuid is a new event. A signal without a uuid does not satisfy the contract and is rejected.
 
-Open (Q-23): a burst of *different* events — many failed iterations, each with its own uuid — that trip the same condition at once: one message each, or one message for the burst, with the rest left for the agent to find in the trigger log?
+**One message per batch — decided by the owner (answers Q-23).** A burst of different events that trips a condition always reaches the agent as **one message for the batch**; the rest is in the trigger log. Events have harness types (`flowstate_update`, `notification`, …) and product types — arbitrary strings the project defines — and the firing rules can be written right where the callback is formed: callbacks are plugins (the system is plugin-first), and an implementation of the interface returns `true` by any rules it likes. Choosing rules that do not spam the agent is the user's job for each product callback; a capable agent can also read the product meaning of a callback and the problem behind it.
 
 ## Policies are per project — decided by the owner (answers Q-19, Q-20; reframes Q-18)
 
 **The harness does not unify the response.** What the agent does in each situation is described to it per project: policies differ from project to project, and they are not something to standardise at the harness level (Q-19). The harness delivers the condition's message and the project's policies; the project's policies decide the response.
 
-**Policies are Markdown files, linked from conditions — decided by the owner (answers Q-18).** Writing a response policy is the client's process: the client describes how to respond, and the agent writes it down as Markdown files in the project. Every condition carries links — paths — to the policy files that answer it, and the message a condition sends names those paths, so the agent reads the policy for exactly the event it got. A policy is changed the same way: the client says, the agent edits the file. Signals and condition messages never write or change a policy file (INV-12).
+**Policies are Markdown files, linked from conditions — decided by the owner (answers Q-18).** Writing a response policy is the client's process: the client describes how to respond, and the agent writes it down as Markdown files in the project, under `.harness/policies/` (CON-26). Every condition carries links — paths — to the policy files that answer it, and the message a condition sends names those paths, so the agent reads the policy for exactly the event it got. A policy is changed the same way: the client says, the agent edits the file. Signals and condition messages never write or change a policy file (INV-12).
 
 **Sessions in this mode are open 24/7** (Q-20). A monitoring session is not started per incident: it stays open around the clock and receives condition messages as they come. It relies on compaction to keep its context bounded.
 
@@ -61,4 +61,4 @@ What the agent may do is the project's policy. Two existing harness rules still 
 
 ## Open
 
-A burst of different events tripping the same condition: one message each, or one per burst (Q-23).
+Nothing the owner has been asked is open; the concept is open to additions.

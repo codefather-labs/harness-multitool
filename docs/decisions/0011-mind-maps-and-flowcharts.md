@@ -31,3 +31,9 @@ The memory backend carried over (claudebase) has flowcharts as a `--type` of its
 ## Rejected
 
 - **One `map` tool with a type flag** (the backend's current shape): the agent has to know the switch exists and the operations mix (`--parent` means nothing in a flowchart, `--after` nothing in a mind map).
+
+## Roles — clarified by the owner, 2026-11-01
+
+- **A mind map is a document**: the map of the project's decisions, questions, constraints, invariants and specifications. When a developer asks why the system is made this way, the map of decisions, constraints and specifications must answer it.
+- **A flowchart is both** a document of a flow and the **live view of step-debug mode** ([ADR 0013](0013-step-debug-mode.md)): the chart a pipeline's run walks through, step by step. That is what sets it apart from a mind map.
+- **Both render to SVG files**, as claudebase does (`claudebase mindmap svg <id> -o map.svg`): a map or chart can be saved and shared as a picture outside the harness. A good practice the harness keeps.

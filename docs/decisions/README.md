@@ -1,6 +1,6 @@
 # Decisions
 
-One file per decision: what was decided, by whom, why, and what was rejected. A decision is replaced only by a new one that says so. Status: `accepted`, `proposed`, `replaced by NNNN`.
+One file per decision: what was decided, by whom, why, and what was rejected. A decision is replaced only by a new one that says so. Status: `accepted`, `concept` (an idea grown into a concept with specifications of its own, not yet scheduled), `proposed`, `replaced by NNNN`.
 
 | ADR | Decision | Status |
 |---|---|---|
@@ -17,4 +17,4 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0011](0011-mind-maps-and-flowcharts.md) | Mind maps and flowcharts are separate tools | accepted |
 | [0012](0012-flowcharts-as-live-pipelines.md) | Flowcharts are live: `flow` callbacks, runs, run history | accepted, open to additions |
 | [0013](0013-step-debug-mode.md) | Step-debug mode: charts, callbacks and a debug router the agent builds in the target project | accepted, open to additions |
-| [0014](0014-reliability-monitoring-mode.md) | Reliability-monitoring mode: metrics, SLOs and a response policy per event | proposed (an idea) |
+| [0014](0014-reliability-monitoring-mode.md) | Reliability-monitoring mode: metrics, SLOs and a response policy per event | concept |
