@@ -102,6 +102,14 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                     w.outbox.push(crate::model::Outgoing::Stop { tab });
                 }
                 Key::Esc => w.toast = None,
+                // The last queued message comes back to be changed, or dropped.
+                Key::Up if w.view().composer.text.is_empty() && !w.view().queued.is_empty() => {
+                    let tab = w.tabs[w.active].id;
+                    if let Some(text) = w.view_mut().queued.pop() {
+                        w.view_mut().composer.text = text.clone();
+                        w.outbox.push(crate::model::Outgoing::Unqueue { tab, text });
+                    }
+                }
                 Key::PageUp => scroll_view(w, 10),
                 Key::PageDown => scroll_view(w, -10),
                 Key::Home => scroll_view(w, 100_000),

@@ -54,6 +54,12 @@ impl Feed {
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
         self.note_activity(v, entry);
+        // It has reached the agent: its card takes over from the queue.
+        if let Event::UserMessage { text } = &entry.event
+            && let Some(at) = v.queued.iter().position(|q| q == text)
+        {
+            v.queued.remove(at);
+        }
         let time = (self.time)(entry.at_ms);
         match &entry.event {
             Event::UserMessage { text } => {

@@ -30,6 +30,9 @@ const UNCHECKED_SCAN: usize = 500;
 #[derive(Debug, Clone, Default)]
 pub struct StopFlag(Arc<AtomicBool>);
 
+/// What the user sent and the agent has not seen yet, shared with the thread that takes input.
+pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
+
 impl StopFlag {
     pub fn stop(&self) {
         self.0.store(true, Ordering::SeqCst);
@@ -57,6 +60,7 @@ pub enum RunEnd {
 }
 
 pub struct Engine {
+    inbox: Inbox,
     parts: Parts,
     frontend: Rc<dyn Frontend>,
     session: String,
@@ -75,6 +79,7 @@ impl Engine {
     pub fn new(parts: Parts, frontend: Rc<dyn Frontend>, session: impl Into<String>, root: impl Into<String>) -> Self {
         let started_ms = parts.platform.clock.now_ms();
         Engine {
+            inbox: Inbox::default(),
             parts,
             frontend,
             session: session.into(),
@@ -125,6 +130,30 @@ impl Engine {
 
     pub fn stop_flag(&self) -> StopFlag {
         self.stop.clone()
+    }
+
+    /// Messages the user sent while a run lasts: woven in at the next step boundary.
+    pub fn with_inbox(mut self, inbox: Inbox) -> Self {
+        self.inbox = inbox;
+        self
+    }
+
+    /// Takes what is queued into the conversation. True if anything came.
+    async fn take_queued(&self) -> bool {
+        let mut any = false;
+        loop {
+            let Some(text) = self.inbox.lock().expect("inbox").pop_front() else { return any };
+            if let Some((hook, reason)) = self.hooks(HookPoint::UserPromptSubmit { text: &text }).await {
+                self.emit(Event::Error { source: hook, message: reason });
+                continue;
+            }
+            self.emit(Event::UserMessage { text });
+            any = true;
+        }
+    }
+
+    fn has_queued(&self) -> bool {
+        !self.inbox.lock().expect("inbox").is_empty()
     }
 
     /// Uses a flag made before the engine, e.g. by the thread that will set it.
@@ -315,6 +344,9 @@ impl Engine {
                 }
                 Ok(harness_api::BackendEnd::Done) => {}
             }
+            if self.take_queued().await {
+                continue;
+            }
             self.hooks(HookPoint::Stop).await;
             let Some(protocol) = protocol.filter(|_| !self.state.borrow().plan_mode) else {
                 return RunEnd::AwaitingInput;
@@ -398,6 +430,7 @@ impl Engine {
             if self.stop.take() {
                 return self.stopped(protocol);
             }
+            self.take_queued().await;
             let route = match self.parts.router.route(&self.spent()) {
                 Ok(route) => route,
                 Err(reason) => return self.fail("router", reason, protocol),
@@ -420,6 +453,10 @@ impl Engine {
                 for call in &calls {
                     self.tool_call(call).await;
                 }
+                continue;
+            }
+            // The user wrote meanwhile: the run goes on with it.
+            if self.has_queued() {
                 continue;
             }
             self.hooks(HookPoint::Stop).await;

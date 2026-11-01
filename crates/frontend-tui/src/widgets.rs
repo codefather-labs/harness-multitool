@@ -157,3 +157,34 @@ pub fn activity(f: &mut Frame, status: Rect, t: &Theme, a: &crate::model::Activi
     let area = Rect::new(status.x + status.width - width, status.y, width, 1);
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(t.background)), area);
 }
+
+/// How many queued messages show, the rest said in a line.
+const QUEUE_ROWS: usize = 4;
+
+pub fn queue_height(queued: &[String]) -> u16 {
+    queued.len().min(QUEUE_ROWS + 1) as u16
+}
+
+/// Messages waiting for the agent, dim, above the composer, newest last: it sees them at its next
+/// step. The rows are one line each, whatever a message's length.
+pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[String]) {
+    if queued.is_empty() {
+        return;
+    }
+    let muted = Style::default().fg(t.text_muted);
+    let shown = if queued.len() > QUEUE_ROWS + 1 { QUEUE_ROWS } else { queued.len() };
+    let skipped = queued.len() - shown;
+    let mut lines = Vec::new();
+    if skipped > 0 {
+        lines.push(Line::from(Span::styled(format!("   … {skipped} more before these"), muted)));
+    }
+    for (i, text) in queued[skipped..].iter().enumerate() {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut spans = vec![Span::styled(" ⧗ ", Style::default().fg(t.accent)), Span::styled(flat, muted)];
+        if skipped + i + 1 == queued.len() {
+            spans.push(Span::styled("  ·  ↑ to change", muted.add_modifier(Modifier::DIM)));
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
+}

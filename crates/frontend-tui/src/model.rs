@@ -78,6 +78,8 @@ pub enum Outgoing {
     Init { tab: u64 },
     /// `/stepdebug`: step-debug mode on or off.
     StepDebug { tab: u64, on: bool },
+    /// Up on an empty composer: a queued message taken back.
+    Unqueue { tab: u64, text: String },
     /// `/nick`: name the agent.
     Nick { tab: u64, name: String },
     /// `/plan`: plan mode on or off.
@@ -439,6 +441,8 @@ pub struct SessionView {
     pub generating: bool,
     /// The name above the agent's messages; ASSISTANT until it has one.
     pub agent_name: Option<String>,
+    /// Messages sent during the run that the agent has not seen yet.
+    pub queued: Vec<String>,
     /// What the run is doing now; `None` between runs.
     pub activity: Option<Activity>,
     /// `/task` armed the next message as a task, with these commands.

@@ -7,12 +7,13 @@ import fcntl, http.server, json, pty, re, select, struct, tempfile, termios, thr
 import pyte
 
 turn = {"n": 0}
+bodies = []
 class H(http.server.BaseHTTPRequestHandler):
     def emit(self, event, wait=0.0):
         time.sleep(wait)
         self.wfile.write(f"data: {json.dumps(event)}\n\n".encode()); self.wfile.flush()
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("content-length", 0)))
+        bodies.append(self.rfile.read(int(self.headers.get("content-length", 0))).decode())
         self.send_response(200); self.send_header("content-type", "text/event-stream"); self.send_header("connection", "close"); self.end_headers()
         turn["n"] += 1
         if turn["n"] == 1:
@@ -46,6 +47,7 @@ def text(): return "\n".join(l.rstrip() for l in screen.display).rstrip()
 pump(1.5); assert line() is None, "no line before a run: " + text()
 for c in "go\r": os.write(fd, c.encode()); time.sleep(0.005)
 seen, spins, seconds = [], set(), []
+queued_stage = 0
 end = time.time() + 30; answered = False
 while time.time() < end:
     pump(0.05); l = line()
@@ -56,8 +58,21 @@ while time.time() < end:
     assert m, l
     spins.add(m.group(1)); seconds.append(int(m.group(3)))
     if not seen or seen[-1] != m.group(2): seen.append(m.group(2)); print("state:", l[-60:])
+    # While it works: one message taken back with Up, one left in the queue.
+    if queued_stage == 0 and m.group(2) == "Writing":
+        for c in "drop me\r": os.write(fd, c.encode()); time.sleep(0.005)
+        pump(0.2); assert "⧗ drop me" in text(), "in sight: " + text()
+        os.write(fd, b"\x1b[A"); pump(0.2); assert "⧗" not in text() and "drop me" in text(), "back in the composer: " + text()
+        for _ in "drop me": os.write(fd, b"\x7f")
+        for c in "and one more thing\r": os.write(fd, c.encode()); time.sleep(0.005)
+        pump(0.2); assert "⧗ and one more thing" in text() and "↑ to change" in text(), text(); print("queued:", [l.strip() for l in screen.display if "⧗" in l])
+        queued_stage = 1
     if m.group(2) == "Waiting for your answer" and "tool: shell" in text() and not answered:
         pump(1.0); os.write(fd, b"1"); answered = True
+assert queued_stage == 1
+assert "⧗" not in text() and "and one more thing" in text(), "delivered, its card up: " + text()
+assert "and one more thing" in bodies[1] and "drop me" not in "".join(bodies), bodies[1][:300]
+assert len(bodies) == 2, "woven in, no extra run"
 print("states:", seen); print("spinner frames:", len(spins), "seconds:", seconds[0], "to", seconds[-1])
 for want in ["Waiting for slow-model", "Thinking", "Writing", "Waiting for your answer", "Running shell"]:
     assert want in seen, (want, seen)

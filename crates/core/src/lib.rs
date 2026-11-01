@@ -5,5 +5,5 @@ pub mod engine;
 pub mod plan;
 pub mod registry;
 
-pub use engine::{Engine, RunEnd, StopFlag};
+pub use engine::{Inbox, Engine, RunEnd, StopFlag};
 pub use registry::{BuildContext, Parts, Registry, RegistryError, Selection};

@@ -826,10 +826,8 @@ impl Live {
         for t in &mut w.tabs {
             frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
             frontend_tui::live::set_status(&mut t.view, "MODEL", model);
-            if t.view.generating {
+            if t.view.generating || !self.sessions.rebind(t.id) {
                 self.rebind_after.insert(t.id);
-            } else {
-                self.sessions.rebind(t.id);
             }
         }
     }
@@ -1122,10 +1120,8 @@ impl Live {
                     if saved.is_ok() {
                         self.fetch_models();
                         for t in &w.tabs {
-                            if t.view.generating {
+                            if t.view.generating || !self.sessions.rebind(t.id) {
                                 self.rebind_after.insert(t.id);
-                            } else {
-                                self.sessions.rebind(t.id);
                             }
                         }
                     }
@@ -1139,6 +1135,9 @@ impl Live {
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
                 Outgoing::StepDebug { tab, on } => self.sessions.step_debug(tab, on),
                 Outgoing::Nick { tab, name } => self.sessions.nick(tab, name),
+                Outgoing::Unqueue { tab, text } => {
+                    self.sessions.unqueue(tab, &text);
+                }
                 Outgoing::Init { tab } => {
                     let lines = match init_project(&self.root) {
                         Ok(created) if created.is_empty() => vec!["Nothing to do: the docs tree and .harness/ are already here.".to_string()],
@@ -1261,8 +1260,8 @@ impl Live {
                     }
                 }
                 FromSession::Ended { tab, .. } => {
-                    if self.rebind_after.remove(&tab) {
-                        self.sessions.rebind(tab);
+                    if self.rebind_after.contains(&tab) && self.sessions.rebind(tab) {
+                        self.rebind_after.remove(&tab);
                     }
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {

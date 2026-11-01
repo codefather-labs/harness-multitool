@@ -68,6 +68,10 @@ pub fn submit(w: &mut Workspace) -> Sent {
     } else if w.live {
         // A running session draws the message from its log, like everything else.
         let tab = w.tabs[w.active].id;
+        // During a run it waits, in sight, for the next step boundary.
+        if w.view().generating && w.view().task.is_none() {
+            w.view_mut().queued.push(text.clone());
+        }
         match w.view_mut().task.take() {
             Some(steps) => w.outbox.push(Outgoing::Task { tab, text, steps }),
             None => w.outbox.push(Outgoing::Prompt { tab, text }),

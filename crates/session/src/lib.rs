@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use harness_api::*;
@@ -323,7 +324,8 @@ pub enum FromSession {
 
 /// What a session's next run starts from.
 enum Input {
-    Prompt(String),
+    /// Something is in the inbox; if a run took it already, nothing is left to do.
+    Next,
     Task { text: String, protocol: Protocol },
     Plan(bool),
     StepDebug(bool),
@@ -336,6 +338,10 @@ struct Handle {
     prompts: Sender<Input>,
     answers: Sender<Answer>,
     stop: StopFlag,
+    /// A run is on. Set and read under the inbox lock, so a message has one owner.
+    running: Arc<AtomicBool>,
+    /// This thread has been replaced by a rebind: it takes no more messages.
+    retired: Arc<AtomicBool>,
 }
 
 /// The sessions behind the tabs: one thread each, started by the tab's first message.
@@ -475,6 +481,8 @@ pub fn protocol_for(data_dir: Option<&str>, root: &str, mut steps: Vec<String>) 
 }
 
 pub struct Sessions {
+    /// Each tab's messages not yet seen by its agent; it outlives the tab's thread.
+    inboxes: HashMap<u64, harness_core::Inbox>,
     factory: Factory,
     root: String,
     data_dir: Option<String>,
@@ -506,7 +514,7 @@ impl Sessions {
     pub fn new(factory: Factory, root: String) -> Self {
         let (to_frontend, from_sessions) = channel();
         let started_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        Sessions { factory, root, data_dir: None, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
+        Sessions { inboxes: HashMap::new(), factory, root, data_dir: None, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
     }
 
     /// Where approvals are kept; without it a project's checks never run.
@@ -534,10 +542,26 @@ impl Sessions {
     /// Binds a tab to a stored session: its next message continues that log.
     /// Moves a tab's session to the current factory, its history kept: what settings changed
     /// reaches a session that has already started. Only between runs.
-    pub fn rebind(&mut self, tab: u64) {
-        if let Some(handle) = self.handles.remove(&tab) {
-            self.start(tab, Some(handle.session));
+    ///
+    /// False if a run is on after all (a queued message started one): try at the next `Ended`.
+    pub fn rebind(&mut self, tab: u64) -> bool {
+        let Some(handle) = self.handles.get(&tab) else { return true };
+        let inbox = self.inboxes.entry(tab).or_default().clone();
+        let queued = {
+            let inbox = inbox.lock().expect("inbox");
+            if handle.running.load(Ordering::SeqCst) {
+                return false;
+            }
+            handle.retired.store(true, Ordering::SeqCst);
+            !inbox.is_empty()
+        };
+        let Some(handle) = self.handles.remove(&tab) else { return true };
+        self.start(tab, Some(handle.session));
+        // What waited on the old thread's channel goes on the new one.
+        if queued && let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Next);
         }
+        true
     }
 
     pub fn resume(&mut self, tab: u64, session: &str) {
@@ -549,7 +573,18 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            let _ = handle.prompts.send(Input::Prompt(text));
+            self.inboxes.entry(tab).or_default().lock().expect("inbox").push_back(text);
+            let _ = handle.prompts.send(Input::Next);
+        }
+    }
+
+    /// Takes a queued message back, if the agent has not seen it yet.
+    pub fn unqueue(&mut self, tab: u64, text: &str) -> bool {
+        let Some(inbox) = self.inboxes.get(&tab) else { return false };
+        let mut inbox = inbox.lock().expect("inbox");
+        match inbox.iter().position(|t| t == text) {
+            Some(at) => inbox.remove(at).is_some(),
+            None => false,
         }
     }
 
@@ -636,6 +671,10 @@ impl Sessions {
         let resuming = resume.is_some();
         let session = resume.unwrap_or_else(|| format!("{}-{tab}", self.started_ms));
         let stored_name = session.clone();
+        let inbox = self.inboxes.entry(tab).or_default().clone();
+        let inbox_for_thread = inbox.clone();
+        let (running, retired) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (running_here, retired_here) = (running.clone(), retired.clone());
         std::thread::spawn(move || {
             let parts = match factory(tab) {
                 Ok(parts) => parts,
@@ -647,7 +686,7 @@ impl Sessions {
                 }
             };
             let frontend = Rc::new(ChannelFrontend { tab, to_frontend: to_frontend.clone(), answers: answer_rx });
-            let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag);
+            let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag).with_inbox(inbox_for_thread);
             if resuming {
                 match pollster::block_on(engine.load_log()) {
                     Ok(entries) => engine.resume(&entries),
@@ -671,13 +710,34 @@ impl Sessions {
                 }
                 let end = match input {
                     Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) => unreachable!("handled above"),
-                    Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
-                    Input::Task { text, protocol } => pollster::block_on(engine.run(&text, Some(&protocol))),
-                    Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),
+                    Input::Next => {
+                        let next = {
+                            let mut inbox = inbox.lock().expect("inbox");
+                            if retired_here.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let next = inbox.pop_front();
+                            running_here.store(next.is_some(), Ordering::SeqCst);
+                            next
+                        };
+                        // Nothing to do when a run took it or it was taken back; that run's own
+                        // end has told the frontend, and an `Ended` here could cut a later run.
+                        let Some(text) = next else { continue };
+                        pollster::block_on(engine.run(&text, None))
+                    }
+                    Input::Task { text, protocol } => {
+                        running_here.store(true, Ordering::SeqCst);
+                        pollster::block_on(engine.run(&text, Some(&protocol)))
+                    }
+                    Input::Inbound { label, text } => {
+                        running_here.store(true, Ordering::SeqCst);
+                        pollster::block_on(engine.run_inbound(&label, &text))
+                    }
                 };
+                running_here.store(false, Ordering::SeqCst);
                 let _ = to_frontend.send(FromSession::Ended { tab, end });
             }
         });
-        self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop });
+        self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop, running, retired });
     }
 }

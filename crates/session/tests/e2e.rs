@@ -974,3 +974,139 @@ fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
     assert!(!result("e4").1, "{:?}", result("e4"));
     assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "b");
 }
+
+/// A run driven by hand: at the first permission prompt, `at_prompt` acts, then it is answered.
+fn drive_acting(sessions: &mut Sessions, first: &str, answer: Answer, at_prompt: impl FnOnce(&mut Sessions)) -> (Vec<LogEntry>, Vec<String>) {
+    sessions.prompt(1, first.to_string());
+    let (mut entries, mut ends, mut act) = (Vec::new(), Vec::new(), Some(at_prompt));
+    loop {
+        match sessions.next(Duration::from_secs(5)) {
+            Some(FromSession::Entry { entry, .. }) => entries.push(entry),
+            Some(FromSession::Ask { tab, .. }) => {
+                if let Some(act) = act.take() {
+                    act(sessions);
+                }
+                sessions.answer(tab, answer);
+            }
+            Some(FromSession::Ended { end, .. }) => ends.push(format!("{end:?}")),
+            Some(FromSession::Unavailable { message, .. }) => panic!("{message}"),
+            None => return (entries, ends),
+        }
+    }
+}
+
+fn user_texts(entries: &[LogEntry]) -> Vec<String> {
+    entries.iter().filter_map(|e| if let Event::UserMessage { text } = &e.event { Some(text.clone()) } else { None }).collect()
+}
+
+#[test]
+fn a_message_sent_during_a_run_is_woven_in_at_the_next_step() {
+    let root = temp_dir("queue");
+    let data = temp_dir("queue-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("q1", "shell", json!({"command": "cargo --version"}))), "Running."),
+        anthropic_turn(None, "Seen, and done."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.prompt(1, "also this".to_string());
+        s.prompt(1, "and this".to_string());
+    });
+    assert_eq!(user_texts(&entries), ["first", "also this", "and this"]);
+    let order: Vec<&str> = entries.iter().filter_map(|e| match &e.event {
+        Event::ToolResult { .. } => Some("result"),
+        Event::UserMessage { .. } => Some("user"),
+        Event::TurnStarted { .. } => Some("turn"),
+        _ => None,
+    }).collect();
+    assert_eq!(order, ["user", "turn", "result", "user", "user", "turn"], "after the result, before the next turn, and no extra run");
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    assert_eq!(requests.len(), 2, "delivered once");
+    let last = requests[1]["messages"].as_array().unwrap().last().unwrap().clone();
+    let kinds: Vec<&str> = last["content"].as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!((last["role"].as_str(), &kinds[..]), (Some("user"), &["tool_result", "text", "text"][..]), "{last}");
+    for pair in requests[1]["messages"].as_array().unwrap().windows(2) {
+        assert_ne!(pair[0]["role"], pair[1]["role"], "roles alternate");
+    }
+}
+
+#[test]
+fn a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_at_once() {
+    let root = temp_dir("queue2");
+    let data = temp_dir("queue2-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("t1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "Done.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.prompt(1, "never mind".to_string());
+        assert!(s.unqueue(1, "never mind"));
+        assert!(!s.unqueue(1, "never mind"), "only once");
+    });
+    assert_eq!(user_texts(&entries), ["first"]);
+    assert!(!seen.lock().unwrap().iter().any(|r| r.contains("never mind")));
+
+    let root = temp_dir("queue3");
+    let data = temp_dir("queue3-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("s1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "Now the urgent one.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, ends) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.prompt(1, "urgent".to_string());
+        s.stop(1);
+    });
+    assert_eq!(user_texts(&entries), ["first", "urgent"], "{ends:?}");
+    assert!(ends.iter().any(|e| e.contains("Abandoned")), "the run stopped: {ends:?}");
+    assert!(seen.lock().unwrap().last().unwrap().contains("urgent"), "and the queue ran");
+}
+
+#[test]
+fn a_rebind_keeps_the_queue_and_delivers_it_once() {
+    let root = temp_dir("queue-rebind");
+    let data = temp_dir("queue-rebind-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("r1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "The kept one.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    sessions.prompt(1, "first".to_string());
+    let (mut entries, mut pending) = (Vec::new(), true);
+    while let Some(message) = sessions.next(Duration::from_secs(5)) {
+        match message {
+            FromSession::Entry { entry, .. } => entries.push(entry),
+            FromSession::Ask { tab, .. } => {
+                sessions.prompt(tab, "kept".to_string());
+                sessions.stop(tab);
+                sessions.answer(tab, Answer::AllowOnce);
+            }
+            FromSession::Ended { tab, .. } => {
+                if pending && sessions.rebind(tab) {
+                    pending = false;
+                }
+            }
+            FromSession::Unavailable { message, .. } => panic!("{message}"),
+        }
+    }
+    assert!(!pending, "the rebind went through in the end");
+    assert_eq!(user_texts(&entries), ["first", "kept"]);
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.iter().filter(|r| r.contains("kept")).count(), 1, "once, by one thread");
+}
+
+#[test]
+fn two_tabs_have_their_own_queues() {
+    let root = temp_dir("queue-tabs");
+    let data = temp_dir("queue-tabs-data");
+    let (url, _seen) = fake_endpoint(vec![anthropic_turn(Some(("a1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "One."), anthropic_turn(None, "Two.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    sessions.prompt(1, "in one".to_string());
+    let (mut one, mut two) = (Vec::new(), Vec::new());
+    while let Some(message) = sessions.next(Duration::from_secs(3)) {
+        match message {
+            FromSession::Entry { tab, entry } => if tab == 1 { one.push(entry) } else { two.push(entry) },
+            FromSession::Ask { tab, .. } => {
+                sessions.prompt(2, "in two".to_string());
+                assert!(!sessions.unqueue(tab, "in two"), "not this tab's to take back");
+                sessions.answer(tab, Answer::AllowOnce);
+            }
+            FromSession::Ended { .. } => {}
+            FromSession::Unavailable { message, .. } => panic!("{message}"),
+        }
+    }
+    assert_eq!(user_texts(&one), ["in one"]);
+    assert_eq!(user_texts(&two), ["in two"]);
+}

@@ -118,10 +118,11 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(rect) = logo {
         out.placements.push(Placement { rect, graphic: Graphic::Logo(s.eyes) });
     }
-    let [transcript, rule, status, bottom] = Layout::vertical([
+    let [transcript, rule, status, queue, bottom] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(widgets::queue_height(&v.queued)),
         Constraint::Length(4),
     ])
     .areas(body);
@@ -155,6 +156,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(a) = &v.activity {
         widgets::activity(f, status, t, a);
     }
+    widgets::queue(f, queue, t, &v.queued);
     let [input, _, button] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);
