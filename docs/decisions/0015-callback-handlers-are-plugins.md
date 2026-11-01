@@ -1,6 +1,6 @@
 # 0015 — Callback handlers are plugins
 
-- **Status:** accepted; hot reload amends [ADR 0002](0002-plugins-are-crates.md), mechanism open (Q-24) · **Decided by:** the project owner, 2026-11-01
+- **Status:** accepted; hot reload amends [ADR 0002](0002-plugins-are-crates.md) · **Decided by:** the project owner, 2026-11-01
 - **Specs:** IF-13, IF-15, IF-16, INV-12, INV-14; builds on [ADR 0002](0002-plugins-are-crates.md) (a plugin is a crate), [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0014](0014-reliability-monitoring-mode.md) (conditions)
 
 ## Decision
@@ -19,7 +19,17 @@ A custom handler is a plugin like any other ([ADR 0002](0002-plugins-are-crates.
 - each **custom** callback has an on/off flag;
 - the same tab binds conditions, policy files and the receiving session.
 
-**Hot reload.** Any plugin and any callback handler can be connected, replaced or disconnected **without restarting sessions**. The agent can trigger the reload itself, and can list the plugins and callback handlers that are connected (IF-4). How the reload works with plugins that are crates (ADR 0002) is open (Q-24).
+**Hot reload.** Any plugin and any callback handler can be connected, replaced or disconnected **without restarting sessions**. The agent can trigger the reload itself, and can list the plugins and callback handlers that are connected (IF-4). 
+
+**How hot reload works with crates — decided by the owner (answers Q-24).** Plugins stay Rust crates linked into the binary (ADR 0002): native, and checked against their interfaces by the compiler. A reload is a rebuild and a swap of the running binary in the same terminal:
+
+1. **Build.** The local build is rebuilt with the new or changed plugins (`cargo build`, incremental). If the build fails, nothing is swapped and the error goes to the agent and the user.
+2. **Safe point.** The swap waits until no model turn is streaming and no tool call is in flight.
+3. **Hand-off.** The running process writes everything it holds only in memory to a hand-off file: every tab, its transcript, scroll position, open tickets and expanded instances, the input draft, the overlay. Sessions' history lives in the session store and the daemon anyway; the hand-off carries the view.
+4. **Swap in the same terminal.** On Linux and macOS the process replaces itself with the new binary (`exec`): the same process, the same terminal, raw mode and the alternate screen kept — the shell and the terminal do not notice. On Windows, where a process cannot replace itself, the old process starts the new binary in the same console and waits for it, passing its exit code on; the console stays.
+5. **Restore.** The new process reads the hand-off, redraws every tab as it was and deletes the file. Callbacks that came during the swap were taken by the daemon and are delivered now.
+
+Rejected: loading plugins as dynamic libraries at run time — Rust has no stable ABI (a plugin would need the same compiler and interface crates, and unloading is unsafe), and the stable-ABI wrappers would force FFI-safe interfaces.
 
 **A type with no handler.** The daemon routes an incoming callback by its `type` to the handler bound to it (IF-13). If no handler is bound to the type, nothing reaches the agent: the callback is saved to the log, and the caller gets **400**. The harness never guesses where to send it.
 
@@ -35,4 +45,4 @@ Product callbacks are as varied as products. A fixed set of actions would force 
 
 ## Open
 
-The hot-reload mechanism, and the amendment of ADR 0002 it needs (Q-24).
+(none)

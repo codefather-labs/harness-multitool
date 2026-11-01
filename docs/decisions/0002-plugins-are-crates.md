@@ -17,4 +17,4 @@ Zero overhead on the hot path (streaming, tool calls), full type safety, and exa
 - **Out-of-process plugins as the base:** any language and isolation, but serialisation on the hot path. Kept as a possible later addition for tools, verifiers and frontends (CON-4).
 - **WebAssembly components as the base:** a sandbox for third-party plugins, at the cost of complexity and limited system access. A possible later addition.
 
-**To be amended:** [ADR 0015](0015-callback-handlers-are-plugins.md) requires hot reload of plugins and callback handlers without restarting sessions; how that fits plugins linked into the binary is open (Q-24).
+**Amended by [ADR 0015](0015-callback-handlers-are-plugins.md):** plugins stay crates linked into the binary, and they hot-reload: the local build is rebuilt and the running binary swaps itself in the same terminal at a safe point, handing its in-memory view over to the new process, so sessions are not restarted.

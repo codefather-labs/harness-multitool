@@ -34,6 +34,7 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-27** | The step-debug router of a target app is always built by one contract, an OpenAPI-style specification the harness ships: an `approve` route that lets the app go to its next step; a `step back` route only where stepping back is really possible — otherwise not implemented at all, no stubs; the app's other product routes as the product needs ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-28** | A debug-router route for debugging product behaviour or invariants imports and calls the functions the real code calls; it implements no business logic of its own. A route that reimplements logic instead of calling the code it debugs breaks the contract ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-29** | A step-debug pipeline waiting after a callback advances only on the agent's `approve`: no timeout, no default action, nothing on its own if the agent or its session is gone ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
+| **CON-30** | A hot reload swaps the binary only at a safe point — no model turn streaming, no tool call in flight — and never loses the view: everything held only in memory goes to a hand-off file the new process restores; a failed build swaps nothing ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md)). |
 
 ## Browser build
 
