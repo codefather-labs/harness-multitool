@@ -273,6 +273,7 @@ pub enum FromSession {
 /// What a session's next run starts from.
 enum Input {
     Prompt(String),
+    Task { text: String, protocol: Protocol },
     Inbound { label: String, text: String },
 }
 
@@ -284,6 +285,44 @@ struct Handle {
 }
 
 /// The sessions behind the tabs: one thread each, started by the tab's first message.
+/// A project's `.harness/acceptance.toml`: specifications as checks (ADR 0007). Commands live
+/// here, in a file the user owns, and never in journal entries: a callback or a model can write
+/// those, and running them would let a payload choose what runs (INV-12).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acceptance {
+    #[serde(default)]
+    check: Vec<AcceptanceCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptanceCheck {
+    spec: u64,
+    command: String,
+}
+
+/// The protocol of a task in this project: its own steps, then the acceptance checks.
+pub fn protocol_for(root: &str, mut steps: Vec<String>) -> Result<Protocol, String> {
+    let path = std::path::Path::new(root).join(".harness").join("acceptance.toml");
+    let mut specs = Vec::new();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let file: Acceptance = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            for check in file.check {
+                specs.push(check.spec);
+                steps.push(check.command);
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    }
+    if steps.is_empty() {
+        return Err("a task needs something to check: a command, or .harness/acceptance.toml".to_string());
+    }
+    Ok(Protocol { steps, specs })
+}
+
 pub struct Sessions {
     factory: Factory,
     root: String,
@@ -340,6 +379,19 @@ impl Sessions {
         if let Some(handle) = self.handles.get(&tab) {
             let _ = handle.prompts.send(Input::Prompt(text));
         }
+    }
+
+    /// A message that is a task: done only when `steps` and the project's acceptance checks pass
+    /// (INV-4). Refused, with nothing started, if there is nothing to check or the file is bad.
+    pub fn task(&mut self, tab: u64, text: String, steps: Vec<String>) -> Result<(), String> {
+        let protocol = protocol_for(&self.root, steps)?;
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Task { text, protocol });
+        }
+        Ok(())
     }
 
     /// A callback into the agent's input; it waits its turn if the agent is busy.
@@ -405,6 +457,7 @@ impl Sessions {
             while let Ok(input) = prompt_rx.recv() {
                 let end = match input {
                     Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
+                    Input::Task { text, protocol } => pollster::block_on(engine.run(&text, Some(&protocol))),
                     Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),
                 };
                 let _ = to_frontend.send(FromSession::Ended { tab, end });

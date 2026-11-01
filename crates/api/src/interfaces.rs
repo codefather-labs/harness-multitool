@@ -267,6 +267,8 @@ pub trait SessionStore {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Protocol {
     pub steps: Vec<String>,
+    /// The specifications some step checks, for reporting the ones nothing checks (INV-11).
+    pub specs: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

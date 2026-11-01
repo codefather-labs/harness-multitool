@@ -1113,6 +1113,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

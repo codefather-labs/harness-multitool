@@ -169,7 +169,7 @@ pub fn run(setup: Setup) -> Trace {
     let parts = registry(provider.clone(), store.clone(), setup.decision, setup.max_turns, setup.hook, setup.verdicts).resolve(&selection(), platform()).expect("the scenario's selection resolves");
 
     let engine = Engine::new(parts, frontend.clone(), "trace", ".").with_stop_flag(flag.clone());
-    let protocol = setup.protocol.then(|| Protocol { steps: vec!["cargo test".into()] });
+    let protocol = setup.protocol.then(|| Protocol { steps: vec!["cargo test".into()], specs: vec![] });
     let mut ends = Vec::new();
     for (i, prompt) in setup.prompts.into_iter().enumerate() {
         // A stop "before the run" comes while the first turn is starting: from a hook's event.

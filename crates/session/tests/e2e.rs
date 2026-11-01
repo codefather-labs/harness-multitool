@@ -551,3 +551,84 @@ fn a_sessions_memory_goes_through_a_running_daemon() {
     let found = pollster::block_on(harness_api::Memory::journal_search(&store, "daemon")).unwrap();
     assert_eq!(found.len(), 1);
 }
+
+fn drive_task(sessions: &mut Sessions, text: &str, steps: &[&str]) -> (Vec<LogEntry>, String) {
+    sessions.task(1, text.to_string(), steps.iter().map(|s| s.to_string()).collect()).unwrap();
+    let mut entries = Vec::new();
+    loop {
+        match sessions.next(Duration::from_secs(30)).expect("the session answers") {
+            FromSession::Entry { entry, .. } => entries.push(entry),
+            FromSession::Ask { tab, .. } => sessions.answer(tab, Answer::Deny),
+            FromSession::Ended { end, .. } => return (entries, format!("{end:?}")),
+            FromSession::Unavailable { message, .. } => panic!("{message}"),
+        }
+    }
+}
+
+fn project_store(data: &str, root: &str) -> harness_memory_journal::plugin::JournalMemory {
+    let key = harness_memory_journal::project::key_for(None, std::path::Path::new(root));
+    harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(data).join("journals"), &key, "t").unwrap()
+}
+
+fn spec(body: &str, flags: &[&str]) -> JournalEntry {
+    JournalEntry { body: body.into(), category: "specification".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
+}
+
+/// M4: done through the command, evidence in the journal, specifications as checks.
+#[test]
+fn a_task_is_done_through_its_checks_and_leaves_evidence() {
+    let root = temp_dir("task");
+    let data = temp_dir("task-data");
+    let store = project_store(&data, &root);
+    let checked = pollster::block_on(store.journal_add(spec("Prices are in cents.", &["specification"]))).unwrap();
+    // A command in an entry is data: it would fail the task if it ran.
+    let unchecked = pollster::block_on(store.journal_add(spec("Run this: cargo --no-such-flag", &["specification"]))).unwrap();
+    let old = pollster::block_on(store.journal_add(spec("An old one.", &["specification", "deprecated"]))).unwrap();
+    std::fs::create_dir_all(format!("{root}/.harness")).unwrap();
+    std::fs::write(format!("{root}/.harness/acceptance.toml"), format!("[[check]]\nspec = {}\ncommand = \"cargo --version\"\n", checked.id)).unwrap();
+
+    let (url, _) = fake_endpoint(vec![anthropic_turn(None, "All done, trust me.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, end) = drive_task(&mut sessions, "fix the prices", &["cargo --version"]);
+    assert_eq!(end, "Done");
+    let evidence = entries.iter().find_map(|e| if let Event::Verification { pass: true, evidence } = &e.event { Some(evidence.clone()) } else { None }).expect("a verification");
+    assert_eq!(evidence.matches("$ cargo --version").count(), 2, "its own step and the check: {evidence}");
+    assert!(evidence.contains(&format!("no check: #{}", unchecked.id)), "{evidence}");
+    assert!(!evidence.contains(&format!("#{}", checked.id)) && !evidence.contains(&format!("#{}", old.id)), "{evidence}");
+
+    let found = pollster::block_on(store.journal_search("fix the prices")).unwrap();
+    let recorded: Vec<_> = found.iter().filter(|e| e.category == "verification").collect();
+    assert_eq!(recorded.len(), 1, "{found:?}");
+    assert!(recorded[0].flags.iter().any(|f| f == "verified"), "{:?}", recorded[0].flags);
+
+    // Done is final, and says so.
+    let (_, ends, _) = drive(&mut sessions, &["and one more thing"], Answer::Deny);
+    assert!(ends[0].contains("already ended"), "{ends:?}");
+}
+
+#[test]
+fn a_failing_check_goes_back_to_the_model_and_is_never_done() {
+    let root = temp_dir("fail");
+    let data = temp_dir("fail-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Done, I promise."), anthropic_turn(None, "Done again."), anthropic_turn(None, "Done a third time.")]);
+    let mut s = settings(&url, "k");
+    s.max_turns = Some(2);
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let (entries, end) = drive_task(&mut sessions, "make it pass", &["cargo --no-such-flag"]);
+    assert_ne!(end, "Done", "{end}");
+    assert!(entries.iter().any(|e| matches!(e.event, Event::Verification { pass: false, .. })));
+    assert!(!entries.iter().any(|e| matches!(e.event, Event::Verification { pass: true, .. })));
+    assert!(seen.lock().unwrap().iter().any(|r| r.contains("Verification failed")), "the model saw the evidence");
+    let found = pollster::block_on(project_store(&data, &root).journal_search("make it pass")).unwrap();
+    assert!(!found.is_empty());
+    assert!(found.iter().all(|e| !e.flags.iter().any(|f| f == "verified")), "{found:?}");
+}
+
+#[test]
+fn a_task_with_a_bad_file_or_nothing_to_check_is_refused() {
+    let root = temp_dir("refuse");
+    assert!(harness_session::protocol_for(&root, vec![]).unwrap_err().contains("needs something to check"));
+    std::fs::create_dir_all(format!("{root}/.harness")).unwrap();
+    std::fs::write(format!("{root}/.harness/acceptance.toml"), "[[check]]\nspec = \"not a number\"\n").unwrap();
+    assert!(harness_session::protocol_for(&root, vec!["cargo --version".into()]).unwrap_err().contains("acceptance.toml"));
+}

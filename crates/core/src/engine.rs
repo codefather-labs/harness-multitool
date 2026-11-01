@@ -11,13 +11,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use harness_api::event::{DecidedBy, HookOutcome};
 use harness_api::{
-    Answer, Capability, Content, Decision, Event, Frontend, HookPoint, LogEntry, ModelEvent, ModelRequest, Protocol, Route, SessionState, Spent, StopReason, TaskState, ToolCall,
+    Answer, Capability, Content, Decision, Event, Frontend, HookPoint, JournalEntry, LogEntry, ModelEvent, ModelRequest, Protocol, Route, SessionState, Spent, StopReason, TaskState, ToolCall,
     ToolContext, ToolOutput, ToolSpec,
 };
 
 use crate::registry::Parts;
 
 /// Asks the loop to stop at its next step. Safe to set from another thread.
+/// How many binding entries the check for unchecked specifications looks at.
+const UNCHECKED_SCAN: usize = 500;
+
 #[derive(Debug, Clone, Default)]
 pub struct StopFlag(Arc<AtomicBool>);
 
@@ -277,7 +280,7 @@ impl Engine {
             let Some(protocol) = protocol else {
                 return RunEnd::AwaitingInput;
             };
-            match self.verify(protocol).await {
+            match self.verify(protocol, text).await {
                 Ok(true) => return RunEnd::Done,
                 Ok(false) => {} // the evidence went into the context; the model takes it up
                 Err(message) => return self.fail("verifier", message, Some(protocol)),
@@ -387,11 +390,35 @@ impl Engine {
 
     /// Returns whether the task is done. A failed check goes back to running, with the evidence
     /// in the conversation.
-    async fn verify(&self, protocol: &Protocol) -> Result<bool, String> {
+    /// INV-11: the specifications no step of this protocol checks, as a line of evidence.
+    async fn unchecked_specs(&self, protocol: &Protocol) -> String {
+        let binding = self.parts.memory.journal_binding(UNCHECKED_SCAN).await.unwrap_or_default();
+        let ids: Vec<String> = binding
+            .iter()
+            .filter(|e| e.flags.iter().any(|f| f == "specification") && !protocol.specs.contains(&e.id))
+            .map(|e| format!("#{}", e.id))
+            .collect();
+        if ids.is_empty() { String::new() } else { format!("\nSpecifications with no check: {}", ids.join(", ")) }
+    }
+
+    async fn verify(&self, protocol: &Protocol, task: &str) -> Result<bool, String> {
         self.set_task(TaskState::Verifying, None);
         let state = self.state.borrow().clone();
-        let result = self.parts.verifier.verify(protocol, &state).await.map_err(|e| e.to_string())?;
+        let mut result = self.parts.verifier.verify(protocol, &state).await.map_err(|e| e.to_string())?;
+        result.evidence.push_str(&self.unchecked_specs(protocol).await);
         self.emit(Event::Verification { pass: result.pass, evidence: result.evidence.clone() });
+        // IF-10: the evidence goes into memory. A store that cannot take it does not change the verdict.
+        let entry = JournalEntry {
+            body: format!("Verification {} for the task: {task}\n{}", if result.pass { "passed" } else { "failed" }, result.evidence),
+            category: "verification".into(),
+            tags: vec!["verification".into()],
+            flags: if result.pass { vec!["verified".into()] } else { vec![] },
+            salience: Some(if result.pass { "medium" } else { "low" }.into()),
+            feature: None,
+        };
+        if let Err(e) = self.parts.memory.journal_add(entry).await {
+            self.emit(Event::Error { source: "memory".into(), message: format!("the evidence was not recorded: {e}") });
+        }
         if result.pass {
             self.set_task(TaskState::Done, None);
             return Ok(true);

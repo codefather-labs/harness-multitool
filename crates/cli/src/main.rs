@@ -59,6 +59,13 @@ enum Command {
         /// Answer every permission prompt with yes; otherwise no.
         #[arg(long)]
         yes: bool,
+        /// Make it a task: done only when this command passes, and the project's acceptance
+        /// checks. Repeatable.
+        #[arg(long)]
+        verify: Vec<String>,
+        /// Make it a task with only the acceptance checks.
+        #[arg(long)]
+        task: bool,
     },
     /// Write the user's configuration (config.toml in the OS's config directory).
     Setup {
@@ -125,7 +132,7 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
-        Command::Run { prompt, yes } => run_once(&prompt, yes),
+        Command::Run { prompt, yes, verify, task } => run_once(&prompt, yes, (task || !verify.is_empty()).then_some(verify)),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
@@ -660,6 +667,15 @@ impl Live {
                     }
                     self.sessions.prompt(tab, text);
                 }
+                Outgoing::Task { tab, text, steps } => {
+                    let refused = self.sessions.task(tab, text, steps).err();
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        match refused {
+                            None => t.view.generating = true,
+                            Some(reason) => t.view.transcript.push(frontend_tui::model::Item::Tips { label: "TASK REFUSED".into(), lines: vec![reason] }),
+                        }
+                    }
+                }
                 Outgoing::Answer { tab, choice } => {
                     let answer = match choice {
                         0 => harness_api::Answer::AllowOnce,
@@ -757,11 +773,14 @@ impl Live {
 }
 
 /// `multitool run`: a real session without the UI, for debugging a provider or a tool.
-fn run_once(prompt: &str, yes: bool) -> Result<()> {
+fn run_once(prompt: &str, yes: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
     let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root);
-    sessions.prompt(1, prompt.to_string());
+    match task {
+        Some(steps) => sessions.task(1, prompt.to_string(), steps).map_err(|e| anyhow!(e))?,
+        None => sessions.prompt(1, prompt.to_string()),
+    }
     loop {
         let Some(message) = sessions.next(std::time::Duration::from_secs(3600)) else { bail!("no event for an hour") };
         match message {

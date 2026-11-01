@@ -64,6 +64,8 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outgoing {
     Prompt { tab: u64, text: String },
+    /// A message that is a task: done only when its checks pass (INV-4).
+    Task { tab: u64, text: String, steps: Vec<String> },
     /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.
     Answer { tab: u64, choice: usize },
     Stop { tab: u64 },
@@ -351,6 +353,8 @@ pub struct SessionView {
     pub clock: u32,
     /// The agent is producing a reply (`generating…` on the last assistant turn).
     pub generating: bool,
+    /// `/task` armed the next message as a task, with these commands.
+    pub task: Option<Vec<String>>,
 }
 
 /// One instance of a flowchart among several: one card, updated in place.

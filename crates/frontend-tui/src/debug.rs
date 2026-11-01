@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
+    ("/task [command|off]", "the next message is a task: done only when its checks pass"),
     ("/journal", "journal entry event"),
     ("/thinking", "a model's reasoning, live"),
     ("/mindmap-new · /flowchart-new", "a mind map / flowchart created (empty)"),
@@ -63,7 +64,10 @@ pub fn submit(w: &mut Workspace) -> Sent {
     } else if w.live {
         // A running session draws the message from its log, like everything else.
         let tab = w.tabs[w.active].id;
-        w.outbox.push(Outgoing::Prompt { tab, text });
+        match w.view_mut().task.take() {
+            Some(steps) => w.outbox.push(Outgoing::Task { tab, text, steps }),
+            None => w.outbox.push(Outgoing::Prompt { tab, text }),
+        }
     } else {
         let v = w.view_mut();
         let time = now(v);
@@ -457,6 +461,22 @@ fn command(w: &mut Workspace, cmd: &str) {
                 lines: COMMANDS.iter().map(|(c, d)| format!("{c:<44} {d}")).chain(std::iter::once("plain text: your message".to_string())).collect(),
             });
         }
+        "task" => {
+            let arg = arg.trim();
+            if arg == "off" {
+                v.task = None;
+                v.transcript.push(Item::Tips { label: "TASK".into(), lines: vec!["The next message is an ordinary one.".into()] });
+            } else {
+                let steps = v.task.get_or_insert_with(Vec::new);
+                if !arg.is_empty() {
+                    steps.push(arg.to_string());
+                }
+                let mut lines = vec!["The next message is a task. It is done only when these pass, then .harness/acceptance.toml:".to_string()];
+                lines.extend(steps.iter().map(|s| format!("$ {s}")));
+                lines.push("Once done, the tab's session is over: open a new tab to go on. /task off cancels.".to_string());
+                v.transcript.push(Item::Tips { label: "TASK".into(), lines });
+            }
+        }
         "reload" => {
             if w.live {
                 w.outbox.push(Outgoing::Reload);
@@ -581,6 +601,26 @@ mod tests {
     fn send(w: &mut Workspace, text: &str) {
         w.view_mut().composer.text = text.into();
         assert_eq!(submit(w), Sent::Done);
+    }
+
+    #[test]
+    fn task_arms_the_next_live_message_only() {
+        let mut w = workspace();
+        w.live = true;
+        send(&mut w, "/task cargo test");
+        send(&mut w, "/task cargo clippy");
+        send(&mut w, "fix it");
+        send(&mut w, "and a question");
+        let out = std::mem::take(&mut w.outbox);
+        assert!(matches!(&out[0], Outgoing::Task { text, steps, .. } if text == "fix it" && steps == &["cargo test", "cargo clippy"]), "{out:?}");
+        assert!(matches!(&out[1], Outgoing::Prompt { text, .. } if text == "and a question"), "{out:?}");
+
+        send(&mut w, "/task cargo test");
+        send(&mut w, "/task off");
+        send(&mut w, "plain");
+        assert!(matches!(&w.outbox[0], Outgoing::Prompt { .. }), "{:?}", w.outbox);
+        send(&mut w, "/task");
+        assert_eq!(w.view().task, Some(vec![]), "the acceptance checks alone");
     }
 
     #[test]
