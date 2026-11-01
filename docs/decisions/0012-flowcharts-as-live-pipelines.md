@@ -11,7 +11,7 @@ A flowchart is not only documentation: it can be bound to a real process or pipe
 
 **Flow events.** A `flow` callback names the bound flowchart, a **run** (one pass of the process through the chart: a deploy, a CI build, one request), and a step: a node or an arrow of the chart, with a state — `entered`, `passed`, `failed`, `skipped`, `waiting` — and optional data (a duration, a short message, a link to a log).
 
-**Live state.** Every watching window shows the chart's current run: the active node highlighted, the path already taken marked, a failed node in the error colour, the time spent per node. The chart is updated in place, not appended to the transcript on every event; the transcript shows when a run starts and how it ends.
+**Live state.** Every watching window shows the chart's current run: the active node highlighted, the path already taken marked, a failed node in the error colour, the time spent per node. Every `flowstate_update` event that changes the chart **renders it in the terminal**: the chart is drawn into the transcript the same way the `/flowchart` command draws it, already in its new state — active node, path taken, failures. The user sees the pipeline move step by step: the work is visibly going on. (Decided by the owner, 2026-11-01; replaces the earlier "updated in place, not appended on every event" rule.)
 
 **Run history.** Every event of every run is kept, in order, with its time (INV-13). Runs can be listed, opened and replayed step by step; two runs can be compared. This makes a chart a tool for **retrospective validation**: did the callbacks fire as designed, did the process take the path the chart says, where does it stall or fail, which runs differed.
 
