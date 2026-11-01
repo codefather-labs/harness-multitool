@@ -27,7 +27,10 @@ flowchart TB
         TRANS["Transport (IF-12)"]
         TRIG["Trigger (IF-13)"]
         SKILL["Skill (IF-14)"]
+        COND["Condition (IF-15)"]
+        HAND["CallbackHandler (IF-16)"]
     end
+    DAEMON["Daemon: memory + the single callback entry, a URL per agent window"]
     subgraph Platform["Platform (IF-20..25)"]
         FS["Fs"] --- PROC["Process"] --- NET["Net"] --- CLK["Clock"] --- STO["Storage"] --- TERM["Terminal"]
     end
@@ -40,9 +43,15 @@ flowchart TB
     LOOP --> CTX --> MEM
     LOOP --> VER --> MEM
     LOOP --> SES
+    DAEMON --> TRIG
     TRANS --> TRIG
-    TRIG -->|skill| SKILL --> LOOP
-    TRIG -->|journal| MEM
+    TRIG -->|by type| HAND
+    HAND -->|condition true, one message per batch| COND
+    HAND -->|notification| LOOP
+    HAND -->|skill| SKILL --> LOOP
+    HAND -->|journal| MEM
+    HAND -->|flowstate_update| MEM
+    MEM --- DAEMON
     BUS --> HOOK
     BUS --> TRANS
     Plugins --> Platform
@@ -71,12 +80,29 @@ flowchart TD
 
 Every box is an event on the bus (IF-0.2) and an append to the session log (INV-5), which is what makes rewind and branching (IF-9) a fold over events rather than a feature bolted on.
 
+## Session modes
+
+A session runs in a mode (IF-0.5); entering a mode fires a hook that adds the mode's instructions (IF-6). Each mode is a framework, not a prompt (P-10):
+
+| Mode | What it adds | Status |
+|---|---|---|
+| normal | the loop above | specified |
+| step-debug | one reference flowchart per pipeline, callbacks in the client code, a debug router in the client app by one contract (approve, step back where possible), env gate `MULTITOOL_DEBUG_MODE=1` with auth, runs kept in `.harness/debug` ([ADR 0013](../decisions/0013-step-debug-mode.md)) | accepted |
+| reliability monitoring | signals accumulate in the daemon; a `Condition` wakes the agent with one message per batch; per-project response policies in `.harness/policies`; sessions open 24/7 ([ADR 0014](../decisions/0014-reliability-monitoring-mode.md)) | concept |
+| plan | only harness tools, read operations and web search; the plan is journal entries, mind maps and flowcharts ([ADR 0016](../decisions/0016-plan-mode.md)) | idea |
+
+## Plugins and hot reload
+
+Plugins are crates linked into the binary (CON-2). A reload rebuilds the local build and swaps the binary in the same terminal at a safe point, handing the in-memory view over to the new process, so sessions are not restarted ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md), CON-50).
+
 ## Builds
 
 - **Native:** the core, every interface crate, the default plugins and the platform's native implementation; the user's own plugin crates are added in their local build (CON-2).
 - **Browser:** the same core and interface crates compiled to `wasm32-unknown-unknown` (INV-1), with the browser implementations of the platform and the plugins that need no operating system. Tools that need processes are not offered (IF-21).
 
-## Repository layout (proposed)
+## Repository layout
+
+Built today: `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI, running on named states and debug commands) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
 
 ```text
 crates/
@@ -88,7 +114,7 @@ crates/
   tools-builtin/   read, edit, shell, search, fetch
   policy-default/  context-default/  session-files/  verifier-protocol/
   memory-daemon/   memory-browser/
-  frontend-tui/    frontend-web/
+  frontend-tui/    frontend-web/    tui-snapshot/
   transport-daemon/
   cli/             the binary: config, registry wiring, frontends
 docs/

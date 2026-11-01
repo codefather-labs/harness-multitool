@@ -13,11 +13,11 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 
 `run.ps1` does the same on Windows (`-Graphics`, `-DebugBuild`). The scripts set the environment the installer will set globally later: `MULTITOOL_GRAPHICS` (default `auto`) and `COLORTERM=truecolor`.
 
-**Text first.** The design targets text mode: every picture has a text form drawn in the same cells — the logo as half-block pixel art, icons as glyphs, mind maps as box-drawing cards and arrows. Terminals with a graphics protocol (kitty, WezTerm, Ghostty; sixel where enabled) get pictures instead, made from SVG for the cells they cover. A protocol forced with `--graphics` is used only when the terminal answers a graphics query; others keep the text forms.
+**Text first.** Text mode is the primary target: the owner works in Ptyxis (VTE), which draws no pictures, so every screen must read well without them. The design targets text mode: every picture has a text form drawn in the same cells — the logo as half-block pixel art, icons as glyphs, mind maps as box-drawing cards and arrows. Terminals with a graphics protocol (kitty, WezTerm, Ghostty; sixel where enabled) get pictures instead, made from SVG for the cells they cover. A protocol forced with `--graphics` is used only when the terminal answers a graphics query; others keep the text forms.
 
 ## Flow
 
-splash (OK / Enter) → startup page (recent sessions, quick actions) → session.
+splash (the key points of the harness as bullets, ideas and concepts tagged; OK / Enter) → startup page (recent sessions, quick actions) → session. On a terminal too short for the splash, the logo is dropped and the list stays whole.
 
 ## Keys
 
@@ -26,7 +26,7 @@ splash (OK / Enter) → startup page (recent sessions, quick actions) → sessio
 | splash, startup | Esc | quit |
 | startup | ↑ ↓ · Tab / ← → · Enter · `n` `r` `s` `t` `?` | move · switch panel · choose · quick action |
 | session | Enter | send the composer line (text → your message; `/…` → a command) |
-| session | `/exit`, `/quit`, Ctrl+C | quit |
+| session | `/exit`, `/quit`, `/q`, Ctrl+C | quit |
 | session | Esc | close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
@@ -58,7 +58,10 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
 | `/hook start\|compact\|block\|fail\|timeout\|run` · `/hooks` | hooks firing on a loop event (session start and compaction run `fact-check-cognitive-protocol.sh` and `harness-lookup.sh`) · every hook outcome |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
-| `/exit`, `/quit` | quit |
+| `/exit`, `/quit`, `/q` | quit |
+| `/help`, `/?` | the list of commands |
+
+Short aliases: `/a` (agent), `/telegram` (tg), `/agent-msg` (a2a), `/cb` (callback), `/map-new` (flowchart-new), `/mind` (mindmap), `/flow` and `/map` (flowchart), `/t` (tool).
 
 Tool calls, journal and mind-map events attach to the newest assistant turn when it is the last item, as they do in a real session.
 
@@ -91,6 +94,8 @@ multitool screen splash --eyes-closed --png blink.png                # the logo'
 multitool screen maps --no-graphics --size 160x70 --png maps.png    # every map component
 multitool screen hooks --no-graphics --size 160x50 --png hooks.png  # every hook outcome
 ```
+
+Other `screen` options: `--mockups <dir>`, `--font` / `--font-bold` (other faces than the built-in DejaVu Sans Mono), `--px` (font size), `--cell-h` (cell height).
 
 ## Layout rules
 

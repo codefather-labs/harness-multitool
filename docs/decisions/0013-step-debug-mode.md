@@ -1,7 +1,7 @@
 # 0013 — Step-debug mode
 
 - **Status:** accepted, open to additions · **Decided by:** the project owner, 2026-11-01
-- **Specs:** IF-0.5, IF-4, IF-6, IF-7, IF-11, IF-13, CON-24, CON-25, CON-27, CON-28, INV-13; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0012](0012-flowcharts-as-live-pipelines.md) (live flowcharts)
+- **Specs:** IF-0.5, IF-4, IF-6, IF-7, IF-11, IF-13, CON-24, CON-25, CON-27, CON-28, CON-29, INV-13; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0012](0012-flowcharts-as-live-pipelines.md) (live flowcharts)
 
 ## Decision
 
@@ -20,7 +20,7 @@ The harness has a **step-debug mode**: event-driven, step-by-step debugging of t
    - **flow** — changes the state of the pipeline's flowchart (a `flow` trigger, ADR 0012): it updates the run's data and marks the node it came from as active. The active node is always the one the most recent callback came from.
 3. **Stepping lives in the target project.** The harness does not pause anyone's code. The agent makes the pipeline stepwise itself: after each callback the pipeline **waits for the agent's decision** before it goes on. For this the agent builds a **debug router** in the target project that lets a pipeline, step by step as its flowchart says, execute its next step only when the agent allows it.
 
-**Two routers, not to be confused — clarified by the owner.** The harness has one router of its own: its **daemon** (carried over from claudebase), which holds a callback URL for every open agent window and is the single entry point of callbacks to agents. The **debug router** is something else: a router in the *client app* the agent works on, which the agent builds — always by **one contract**, an OpenAPI-style specification (OpenAPI itself may be the base), so every app's debug router looks the same to the agent (CON-27):
+**Two routers, not to be confused — clarified by the owner.** The harness has one router of its own: its **daemon** (the carried-over memory daemon), which holds a callback URL for every open agent window and is the single entry point of callbacks to agents. The **debug router** is something else: a router in the *client app* the agent works on, which the agent builds — always by **one contract**, an OpenAPI-style specification (OpenAPI itself may be the base), so every app's debug router looks the same to the agent (CON-27):
 
 - an **approve** endpoint: lets the app go to its next step;
 - a **step back** endpoint, only where a step back is really possible; where it is not, the route is not implemented at all — no stubs;

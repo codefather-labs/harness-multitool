@@ -24,17 +24,16 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 
 | Id | Constraint |
 |---|---|
-| **CON-20** | The default `Memory` implementation is a local daemon that owns a project journal (entries with categories, tags, flags and links, hybrid lexical + semantic search) and mind maps. In the browser, the same interface is implemented over browser storage. |
+| **CON-20** | The default `Memory` implementation is a local daemon that owns a project journal (entries with categories, tags, flags and links, hybrid lexical + semantic search), mind maps and flowcharts. The same daemon is the single entry point of callbacks to agents, with a callback URL for every open agent window (IF-13). In the browser, the same interface is implemented over browser storage. |
 | **CON-21** | Journal flags include work items (todo, question, problem, bugreport, reminder, unverified, disputed) and marks (specification, constraint, important, idea, concept, comment, verified, deprecated); an entry carries any number of them. |
 | **CON-22** | One journal per project; a project is identified by its repository remote, or its directory when it has none. |
-| **CON-23** | Callback triggers (IF-13) are configuration of the project, versioned with it; the shipped kinds are `message`, `skill`, `journal` and `flow`; a flowchart's binding to a process and to its watching sessions is configuration too. A callback that matches no trigger is delivered as a `message`. Neither a `journal` nor a `flow` trigger starts a model turn. |
+| **CON-23** | Callback triggers (IF-13) are configuration of the project, versioned with it; every callback names its `type` (IF-13), and the shipped handlers are `notification` (formerly the `message` action), `flowstate_update` (formerly `flow`), `journal` and `skill` (IF-16); a flowchart's binding to a process and to its watching sessions is configuration too. A callback whose type has no handler reaches no agent: it is logged and the caller gets 400 (ADR 0015). Neither a `journal` nor a `flow` trigger starts a model turn. |
 | **CON-24** | Step-debug runs are stored in the target project, in an SQLite database under `.harness/debug/`: one run per cycle, saved when the run reaches a terminal block of its flowchart. |
 | **CON-25** | Step-debug code in a target project (debug router, step waits, the mode's callbacks) is active strictly behind the environment gate `MULTITOOL_DEBUG_MODE=1` and only with authorization — checked by the app itself or by a token issued by the harness daemon; without the gate the code is inert and the pipeline runs as uninstrumented ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-26** | A project's response policies (reliability monitoring) are Markdown files under `.harness/policies/` in the project; conditions link their paths ([ADR 0014](../decisions/0014-reliability-monitoring-mode.md)). |
 | **CON-27** | The step-debug router of a target app is always built by one contract, an OpenAPI-style specification the harness ships: an `approve` route that lets the app go to its next step; a `step back` route only where stepping back is really possible — otherwise not implemented at all, no stubs; the app's other product routes as the product needs ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-28** | A debug-router route for debugging product behaviour or invariants imports and calls the functions the real code calls; it implements no business logic of its own. A route that reimplements logic instead of calling the code it debugs breaks the contract ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-29** | A step-debug pipeline waiting after a callback advances only on the agent's `approve`: no timeout, no default action, nothing on its own if the agent or its session is gone ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
-| **CON-30** | A hot reload swaps the binary only at a safe point — no model turn streaming, no tool call in flight — and never loses the view: everything held only in memory goes to a hand-off file the new process restores; a failed build swaps nothing ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md)). |
 
 ## Browser build
 
@@ -50,3 +49,9 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-40** | The repository is self-contained: it does not refer to, depend on or name the project it grew out of. |
 | **CON-41** | Every spec item, invariant and constraint has a stable id; ids are never reused. |
 | **CON-42** | A change to a principle, invariant, constraint or interface contract goes through a decision record in `docs/decisions/`. |
+
+## Plugins and callbacks
+
+| Id | Constraint |
+|---|---|
+| **CON-50** | A hot reload swaps the binary only at a safe point — no model turn streaming, no tool call in flight — and never loses the view: everything held only in memory goes to a hand-off file the new process restores; a failed build swaps nothing ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md)). |

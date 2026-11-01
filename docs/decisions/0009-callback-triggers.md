@@ -9,7 +9,7 @@ External systems (CI, deploy scripts, webhooks, monitors, other machines) send e
 
 | Kind | What the event does | Agent turn? |
 |---|---|---|
-| `message` | Shows in the bound session as an inbound CALLBACK card (the default when no trigger matches). The agent sees it as data on its next turn. | when the session next runs |
+| `message` | Shows in the bound session as an inbound CALLBACK card . The agent sees it as data on its next turn. | when the session next runs |
 | `skill` | Starts a run of a named skill with the event as its input: the agent takes the callback up **with the skill's mindset** (its instructions, tools and policy), in a new session or in a named one. | yes, started by the event |
 | `journal` | Writes the event to the project journal as an entry (category, tags, flags from the trigger, the body from the payload). Nothing runs. | never |
 
@@ -32,3 +32,5 @@ A trigger matches callbacks by label and payload fields, and names its action an
 - New interfaces: `Trigger` (IF-13), `Skill` (IF-14). Delivery stays with `Transport` (IF-12).
 - New invariant INV-12: a callback's payload is data, never instructions or permissions.
 - Open questions: the trigger configuration syntax and payload templating (Q-9); how a skill run reports back to the caller (Q-10).
+
+**Amended by [ADR 0015](0015-callback-handlers-are-plugins.md):** every callback carries a `uuid` and a `type`, and the daemon routes it by `type` to a `CallbackHandler`. The actions above are the shipped handlers: `message` is the `notification` type, `flow` the `flowstate_update` type, `journal` and `skill` keep their names. There is no default any more: a callback whose type has no handler reaches no agent, is logged, and the caller gets 400.

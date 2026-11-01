@@ -1,7 +1,7 @@
 # 0015 — Callback handlers are plugins
 
 - **Status:** accepted; hot reload amends [ADR 0002](0002-plugins-are-crates.md) · **Decided by:** the project owner, 2026-11-01
-- **Specs:** IF-13, IF-15, IF-16, INV-12, INV-14; builds on [ADR 0002](0002-plugins-are-crates.md) (a plugin is a crate), [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0014](0014-reliability-monitoring-mode.md) (conditions)
+- **Specs:** IF-4, IF-13, IF-15, IF-16, INV-12, INV-14, CON-50; builds on [ADR 0002](0002-plugins-are-crates.md) (a plugin is a crate), [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0014](0014-reliability-monitoring-mode.md) (conditions)
 
 ## Decision
 

@@ -10,7 +10,7 @@ Status: **specification, terminal UI in progress.** The spec comes first and the
 - **Your own tools.** Tools are an interface like everything else; the built-in ones (read, edit, shell, search) are plugins of that same interface.
 - **Done means proven.** The harness does not let an agent report a task done until the task's verification protocol has run and its evidence is recorded. Specifications are acceptance checks, not prose.
 - **Modes are frameworks.** Plan mode, step-by-step debugging of distributed pipelines and reliability monitoring are designed as frameworks, not prompts: plan mode writes the plan into the journal, mind maps and flowcharts; step-debug drives live flowcharts through a debug-router contract; monitoring wakes the agent through a daemon with a contract for custom callbacks, conditions and response policies.
-- **Memory that survives.** A project journal (decisions, findings, specifications, constraints, linked into a graph) and mind maps are first-class; context is rebuilt from them instead of being summarised away.
+- **Memory that survives.** A project journal (decisions, findings, specifications, constraints, linked into a graph), mind maps and flowcharts are first-class; context is rebuilt from them instead of being summarised away.
 - **Many agents, many machines.** Sessions are addressable, message each other, and can be spread across machines and models.
 - **Runs in the browser.** The core compiles to WebAssembly; the project site will host the CLI itself as a live demo.
 

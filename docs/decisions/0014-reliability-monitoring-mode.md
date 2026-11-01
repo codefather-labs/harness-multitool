@@ -1,7 +1,7 @@
 # 0014 — Reliability-monitoring mode (concept)
 
 - **Status:** concept — the owner's idea, grown into a concept with specifications of its own (INV-14, IF-15, CON-26); its owner decisions bind, the rest is open · **Raised by:** the project owner, 2026-11-01
-- **Specs:** IF-0.5, IF-6, IF-13, IF-15, INV-14; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers); a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode)
+- **Specs:** IF-0.5, IF-6, IF-13, IF-15, IF-16, INV-14, CON-26; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers); a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode)
 
 ## The idea
 

@@ -26,7 +26,7 @@ A flowchart forced into a mind map loses its direction and its symbols' meaning;
 
 ## Context
 
-The memory backend carried over (claudebase) has flowcharts as a `--type` of its mind maps (`claudebase mindmap new --type flowchart`, ISO 5807 symbols and gates, direction down or right). The harness keeps that model's content and splits the interface; the backend adapter maps the two tools onto it until the backend splits too.
+The memory backend carried over has flowcharts as a `--type` of its mind maps (`claudebase mindmap new --type flowchart`, ISO 5807 symbols and gates, direction down or right). The harness keeps that model's content and splits the interface; the backend adapter maps the two tools onto it until the backend splits too.
 
 ## Rejected
 
@@ -36,4 +36,4 @@ The memory backend carried over (claudebase) has flowcharts as a `--type` of its
 
 - **A mind map is a document**: the map of the project's decisions, questions, constraints, invariants and specifications. When a developer asks why the system is made this way, the map of decisions, constraints and specifications must answer it.
 - **A flowchart is both** a document of a flow and the **live view of step-debug mode** ([ADR 0013](0013-step-debug-mode.md)): the chart a pipeline's run walks through, step by step. That is what sets it apart from a mind map.
-- **Both render to SVG files**, as claudebase does (`claudebase mindmap svg <id> -o map.svg`): a map or chart can be saved and shared as a picture outside the harness. A good practice the harness keeps.
+- **Both render to SVG files** (not built yet): a map or chart can be saved and shared as a picture outside the harness, as the carried-over memory backend already does. A good practice the harness keeps.

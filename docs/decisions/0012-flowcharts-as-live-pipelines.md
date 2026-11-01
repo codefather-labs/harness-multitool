@@ -1,6 +1,6 @@
 # 0012 — Flowcharts are live: flow callbacks, runs, run history
 
-- **Status:** accepted, open to additions — the owner described the goal and may extend it; the mechanism is open (Q-11, Q-12, Q-13) · **Decided by:** the project owner, 2026-11-01
+- **Status:** accepted, open to additions — the owner described the goal and may extend it; the mechanism is partly open (Q-12, Q-13; Q-11 settled below) · **Decided by:** the project owner, 2026-11-01
 - **Specs:** IF-7, IF-11, IF-13, CON-23, INV-12, INV-13; builds on [ADR 0009](0009-callback-triggers.md) and [ADR 0011](0011-mind-maps-and-flowcharts.md)
 
 ## Decision
@@ -33,7 +33,7 @@ The owner wants charts to serve beyond documentation: as the live view and the f
 
 ## Open
 
-How arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.
+How arbitrary payloads map to node ids, retention and size of the run history, and how a watching window is chosen (Q-12, Q-13). The event schema is the callback contract (`uuid`, `type`, the client's pipeline id; IF-13). The owner left the mechanism open on purpose.
 
 Used by [ADR 0013](0013-step-debug-mode.md): step-debug mode builds on live charts — the active node is the one the latest flow callback came from, and a run that reaches a terminal block is saved to the project's `.harness/debug/` SQLite and the chart reset.
 
