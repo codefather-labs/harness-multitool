@@ -46,6 +46,8 @@ pub struct SessionState {
     pub turns: u32,
     /// Lines hooks added to the context (IF-6).
     pub hook_context: Vec<String>,
+    /// Hook lines for the next model turn only.
+    pub reminders: Vec<String>,
     /// Plan mode (ADR 0016).
     pub plan_mode: bool,
     /// Messages before this index are left out of what goes to the model.
@@ -68,6 +70,7 @@ impl SessionState {
                 _ => self.assistant_tail().push(Content::Text { text: text.clone() }),
             },
             Event::TurnFinished { usage, cost_micro_usd, .. } => {
+                self.reminders.clear();
                 self.usage.add(*usage);
                 self.cost_micro_usd += cost_micro_usd.unwrap_or(0);
             }
@@ -87,8 +90,10 @@ impl SessionState {
                 }
             }
             Event::HookRan { outcome, .. } => {
-                if let HookOutcome::Context { lines } = outcome {
-                    self.hook_context.extend(lines.iter().cloned());
+                match outcome {
+                    HookOutcome::Context { lines } => self.hook_context.extend(lines.iter().cloned()),
+                    HookOutcome::Reminder { lines } => self.reminders.extend(lines.iter().cloned()),
+                    _ => {}
                 }
             }
             Event::Verification { evidence, .. } => self.evidence = Some(evidence.clone()),

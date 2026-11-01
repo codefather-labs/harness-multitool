@@ -1004,6 +1004,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-docs-mirror"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-api",
+ "harness-memory-journal",
+ "harness-platform-native",
+ "pollster",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "harness-doubles"
 version = "0.1.0-dev"
 dependencies = [
@@ -1098,6 +1110,7 @@ dependencies = [
  "harness-context-default",
  "harness-core",
  "harness-daemon",
+ "harness-docs-mirror",
  "harness-hooks-shell",
  "harness-memory-journal",
  "harness-platform-native",
@@ -1664,9 +1677,12 @@ dependencies = [
  "harness-api",
  "harness-core",
  "harness-daemon",
+ "harness-docs-mirror",
+ "harness-platform-native",
  "harness-scenarios",
  "harness-session",
  "image",
+ "pollster",
  "ratatui",
  "ratatui-image",
  "serde",

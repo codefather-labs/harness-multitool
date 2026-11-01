@@ -19,6 +19,12 @@ struct Cli {
     command: Option<Command>,
 }
 
+#[derive(clap::Subcommand)]
+enum DocsAction {
+    /// Ids present, statuses matching, indexes complete; the prose is not judged.
+    Check,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Open the terminal UI on a named state (default: welcome). F2 cycles themes; /exit or Ctrl+C quits (docs/tui.md).
@@ -34,6 +40,13 @@ enum Command {
         /// Continue from a hand-off file: the hot reload's new process starts this way.
         #[arg(long)]
         handoff: Option<PathBuf>,
+    },
+    /// Create what is missing of docs/ and .harness/, overwriting nothing.
+    Init,
+    /// The documentation: `check` compares the docs tree with itself and the journal.
+    Docs {
+        #[command(subcommand)]
+        action: DocsAction,
     },
     /// Debug the agent loop: run a named scenario on test doubles and print its log, one line per event.
     Trace {
@@ -135,6 +148,14 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
+        Command::Init => {
+            let root = std::env::current_dir()?.to_string_lossy().into_owned();
+            let created = init_project(&root).map_err(|e| anyhow!(e))?;
+            println!("created {} files", created.len());
+            created.iter().for_each(|f| println!("{f}"));
+            Ok(())
+        }
+        Command::Docs { action: DocsAction::Check } => docs_check(),
         Command::Run { prompt, yes, verify, task, plan } => run_once(&prompt, yes, plan, (task || !verify.is_empty()).then_some(verify)),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
@@ -315,6 +336,7 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    first_start_done: bool,
     /// When the locked prompt on screen first showed.
     prompt_opened: Option<std::time::Instant>,
     sessions: harness_session::Sessions,
@@ -442,6 +464,18 @@ impl Live {
     }
 
     /// Moves a hot reload along: the build's result, then the swap at a safe point.
+    /// CON-44: the one time this project is asked about its docs tree.
+    fn tick_first_start(&mut self, w: &mut frontend_tui::model::Workspace) {
+        if std::mem::replace(&mut self.first_start_done, true) || !self.real {
+            return;
+        }
+        let asks = config::data_dir().is_ok_and(|d| harness_session::first_start_asks(&d.to_string_lossy(), &self.root));
+        if asks {
+            let lines = vec!["This project has no docs/ and no .harness/. /init creates them, overwriting nothing, and the agent then keeps the documentation in step with its journal. This is asked only once; /init works any time.".to_string()];
+            w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "INITIALIZE THE PROJECT?".into(), lines });
+        }
+    }
+
     /// A prompt takes its answer only after this long on screen: see `PermissionView::locked`.
     fn tick_prompt(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
         const GRACE: std::time::Duration = std::time::Duration::from_millis(800);
@@ -567,7 +601,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, prompt_opened: None, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -721,6 +755,16 @@ impl Live {
                     }
                 }
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
+                Outgoing::Init { tab } => {
+                    let lines = match init_project(&self.root) {
+                        Ok(created) if created.is_empty() => vec!["Nothing to do: the docs tree and .harness/ are already here.".to_string()],
+                        Ok(created) => std::iter::once(format!("Created {} files:", created.len())).chain(created).collect(),
+                        Err(e) => vec![format!("Could not initialize: {e}")],
+                    };
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.view.transcript.push(frontend_tui::model::Item::Tips { label: "INIT".into(), lines });
+                    }
+                }
                 Outgoing::ApproveChecks { tab } => {
                     let line = match self.checks_shown.take() {
                         None => "No checks are waiting for approval.".to_string(),
@@ -830,6 +874,29 @@ impl Live {
 }
 
 /// `multitool run`: a real session without the UI, for debugging a provider or a tool.
+fn init_project(root: &str) -> Result<Vec<String>, String> {
+    pollster::block_on(harness_docs_mirror::project_init(&harness_platform_native::NativeFs, root)).map_err(|e| e.to_string())
+}
+
+/// `multitool docs check`: exit 1 on a finding. With no docs tree there is nothing to compare.
+fn docs_check() -> Result<()> {
+    let root = std::env::current_dir()?.to_string_lossy().into_owned();
+    let fs = harness_platform_native::NativeFs;
+    let Some(tree) = pollster::block_on(harness_docs_mirror::Tree::load(&fs, &root)) else {
+        println!("no docs tree here: multitool init creates one");
+        return Ok(());
+    };
+    let mut found = tree.check_files();
+    let memory = harness_session::project_memory(&config::data_dir()?.to_string_lossy(), &root).map_err(|e| anyhow!(e))?;
+    found.extend(pollster::block_on(tree.check_journal(&memory)).map_err(|e| anyhow!(e.to_string()))?);
+    found.iter().for_each(|f| println!("{}", f.0));
+    if found.is_empty() {
+        println!("the documentation and the journal agree");
+        return Ok(());
+    }
+    bail!("{} findings", found.len())
+}
+
 fn run_once(prompt: &str, yes: bool, plan: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
@@ -968,6 +1035,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
                 dirty |= live.tick_prompt(w);
+                live.tick_first_start(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.

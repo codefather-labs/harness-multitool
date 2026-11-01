@@ -31,6 +31,7 @@ pub enum Call {
     JournalGet { id: u64 },
     JournalClose { id: u64, resolution: String },
     JournalBinding { limit: usize },
+    JournalList { filter: JournalFilter },
     MapList,
     MapNew { kind: MapKind, title: String, direction: Option<String> },
     MapAdd { map: u64, node: NewMapNode },
@@ -55,6 +56,7 @@ pub fn serve(store: &dyn Memory, call: Call) -> Result<Value, String> {
         Call::JournalGet { id } => answer(crate::now_ready(store.journal_get(id))),
         Call::JournalClose { id, resolution } => answer(crate::now_ready(store.journal_close(id, &resolution))),
         Call::JournalBinding { limit } => answer(crate::now_ready(store.journal_binding(limit))),
+        Call::JournalList { filter } => answer(crate::now_ready(store.journal_list(filter))),
         Call::MapList => answer(crate::now_ready(store.map_list())),
         Call::MapNew { kind, title, direction } => answer(crate::now_ready(store.map_new(kind, &title, direction.as_deref()))),
         Call::MapAdd { map, node } => answer(crate::now_ready(store.map_add(map, node))),
@@ -117,6 +119,9 @@ impl Memory for DaemonMemory {
     }
     fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         self.ready(Call::JournalBinding { limit })
+    }
+    fn journal_list(&self, filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        self.ready(Call::JournalList { filter })
     }
     fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
         self.ready(Call::MapList)

@@ -191,6 +191,9 @@ impl Engine {
             if let (HookOutcome::Blocked { reason }, None) = (&outcome, &veto) {
                 veto = Some((hook.name().to_string(), reason.clone()));
             }
+            if hook.quiet_when_ok() && outcome == HookOutcome::Ok {
+                continue;
+            }
             self.emit(Event::HookRan { point: point.kind(), hook: hook.name().to_string(), outcome, detail: None });
         }
         veto

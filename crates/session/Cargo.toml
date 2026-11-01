@@ -13,6 +13,7 @@ harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
 harness-auth-apikey = { version = "0.1.0-dev", path = "../auth-apikey" }
 harness-provider-anthropic = { version = "0.1.0-dev", path = "../provider-anthropic" }
 harness-provider-openai = { version = "0.1.0-dev", path = "../provider-openai" }
+harness-docs-mirror = { version = "0.1.0-dev", path = "../docs-mirror" }
 harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
 harness-memory-journal = { version = "0.1.0-dev", path = "../memory-journal" }
 harness-tools-memory = { version = "0.1.0-dev", path = "../tools-memory" }

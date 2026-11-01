@@ -210,6 +210,11 @@ impl Memory for InMemoryJournal {
         ready(Ok(self.entries.borrow().iter().rev().filter(binding).take(limit).cloned().collect()))
     }
 
+    fn journal_list(&self, filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        let wanted = |e: &&JournalRecord| filter.category.as_ref().is_none_or(|c| *c == e.category) && (filter.flags.is_empty() || e.flags.iter().any(|f| filter.flags.contains(f)));
+        ready(Ok(self.entries.borrow().iter().rev().filter(wanted).take(filter.limit).cloned().collect()))
+    }
+
     fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
         ready(Ok(self.maps.borrow().iter().map(|m| (m.id, m.title.clone())).collect()))
     }

@@ -746,3 +746,41 @@ fn the_user_switches_plan_mode_and_a_task_does_not_finish_in_it() {
     assert_eq!(end, "Done");
     assert!(entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: false, .. })));
 }
+
+/// ADR 0017: in an initialized project the agent is told the file, reminded once, and never stopped.
+#[test]
+fn the_docs_mirror_prompts_for_one_turn_and_blocks_nothing() {
+    let root = temp_dir("mirror");
+    let data = temp_dir("mirror-data");
+    pollster::block_on(harness_docs_mirror::project_init(&harness_platform_native::NativeFs, &root)).unwrap();
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("m1", "journal_add", json!({"body": "Never on weekends.", "category": "decision", "tags": ["x"], "flags": ["constraint"]}))), "Noting."),
+        anthropic_turn(None, "Noted."),
+        anthropic_turn(None, "On the next message."),
+        anthropic_turn(None, "And the one after."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, ends, _) = drive(&mut sessions, &["note it", "next", "after"], Answer::Deny);
+    assert!(ends.iter().all(|e| e == "AwaitingInput"), "{ends:?}");
+    let system = |i: usize| -> String {
+        let requests = seen.lock().unwrap();
+        let body: serde_json::Value = serde_json::from_str(requests[i].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        body["system"].as_str().unwrap().to_string()
+    };
+    assert!(!system(0).contains("Mirror what"));
+    assert!(system(1).contains("docs/spec/constraints.md"), "the turn after the write names the file");
+    assert!(system(2).contains("carries no doc id") && !system(2).contains("Mirror what"), "the reminder, for one turn: {}", system(2));
+    assert!(!system(3).contains("carries no doc id"), "and gone");
+    assert!(!entries.iter().any(|e| matches!(&e.event, Event::HookRan { outcome: event_kinds::HookOutcome::Blocked { .. }, .. })));
+}
+
+#[test]
+fn a_project_is_asked_about_its_docs_once() {
+    let root = temp_dir("ask");
+    let data = temp_dir("ask-data");
+    assert!(first_start_asks(&data, &root));
+    assert!(!first_start_asks(&data, &root), "once");
+    let other = temp_dir("ask2");
+    std::fs::create_dir_all(format!("{other}/.harness")).unwrap();
+    assert!(!first_start_asks(&data, &other), "it already has one of them");
+}

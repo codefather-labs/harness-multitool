@@ -107,6 +107,13 @@ impl Memory for JournalMemory {
         ready(result.map_err(fail))
     }
 
+    fn journal_list(&self, filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        let conn = self.conn.borrow();
+        let wanted = journal::Filter { category: filter.category, flags: filter.flags, open: filter.open, ..Default::default() };
+        let listed = journal::list(&conn, &wanted, 0, filter.limit.min(journal::MAX_PAGE_SIZE));
+        ready(listed.map(|(_, entries)| entries.into_iter().map(record).collect()).map_err(fail))
+    }
+
     fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
         let listed = mindmap::list(&self.conn.borrow(), Some(&self.owner), false);
         ready(listed.map(|maps| maps.into_iter().map(|m| (m.id as u64, m.title)).collect()).map_err(fail))

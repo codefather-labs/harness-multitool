@@ -75,7 +75,7 @@ impl Settings {
             router: "one-model".into(),
             tools: self.tools.clone(),
             policy: "default".into(),
-            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).collect(),
+            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(std::iter::once("docs-mirror".to_string())).collect(),
             memory: "journal".into(),
             context: "journal-aware".into(),
             store: "files".into(),
@@ -134,6 +134,11 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
             Ok(Rc::new(tool))
         });
     }
+    let root_m = root.to_string();
+    r.hook("docs-mirror", move |cx| {
+        let memory = cx.memory.clone().ok_or("the docs mirror needs memory")?;
+        Ok(Rc::new(harness_docs_mirror::DocsMirrorHook::new(cx.platform.fs.clone(), memory, &root_m)))
+    });
     for (i, hook) in settings.hooks.iter().enumerate() {
         let (hook, root) = (hook.clone(), root.to_string());
         r.hook(&format!("shell-{i}"), move |cx| {
@@ -308,6 +313,29 @@ struct Acceptance {
 struct AcceptanceCheck {
     spec: u64,
     command: String,
+}
+
+/// The journal of a project, opened directly: for a look from the command line.
+pub fn project_memory(data_dir: &str, root: &str) -> Result<harness_memory_journal::plugin::JournalMemory, String> {
+    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
+    harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(data_dir).join("journals"), &key, "multitool")
+}
+
+/// Whether to ask about initializing this project: true once, when it has neither `docs/` nor
+/// `.harness/` (CON-44). Asking is remembered, so the question does not come back.
+pub fn first_start_asks(data_dir: &str, root: &str) -> bool {
+    let at = std::path::Path::new(root);
+    if at.join("docs").exists() || at.join(".harness").exists() {
+        return false;
+    }
+    let marker = format!("{}.init-asked", sessions_dir(data_dir, root));
+    if std::path::Path::new(&marker).exists() {
+        return false;
+    }
+    if let Some(dir) = std::path::Path::new(&marker).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(&marker, "").is_ok()
 }
 
 /// Why a task did not start.

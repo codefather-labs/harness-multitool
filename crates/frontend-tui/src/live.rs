@@ -518,7 +518,7 @@ fn output_body(output: &str) -> ToolBody {
 fn hook_outcome(outcome: &LogOutcome) -> HookOutcome {
     match outcome {
         LogOutcome::Ok => HookOutcome::Ok,
-        LogOutcome::Context { lines } => HookOutcome::Context(lines.clone()),
+        LogOutcome::Context { lines } | LogOutcome::Reminder { lines } => HookOutcome::Context(lines.clone()),
         LogOutcome::Blocked { reason } => HookOutcome::Blocked(reason.clone()),
         LogOutcome::Failed { message } => HookOutcome::Failed { code: 1, stderr: message.lines().map(str::to_string).collect() },
     }

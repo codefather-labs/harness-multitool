@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
+    ("/init", "create docs/ and .harness/, overwriting nothing"),
     ("/plan [off]", "plan mode: the agent reads and plans, nothing can change"),
     ("/task [command|off|trust]", "the next message is a task: done only when its checks pass"),
     ("/journal", "journal entry event"),
@@ -461,6 +462,14 @@ fn command(w: &mut Workspace, cmd: &str) {
                 label: "DEBUG COMMANDS".into(),
                 lines: COMMANDS.iter().map(|(c, d)| format!("{c:<44} {d}")).chain(std::iter::once("plain text: your message".to_string())).collect(),
             });
+        }
+        "init" => {
+            if w.live {
+                let tab = w.tabs[w.active].id;
+                w.outbox.push(Outgoing::Init { tab });
+            } else {
+                w.view_mut().transcript.push(Item::Tips { label: "INIT".into(), lines: vec!["Only a live session can initialize a project.".into()] });
+            }
         }
         "plan" => {
             let on = arg.trim() != "off";

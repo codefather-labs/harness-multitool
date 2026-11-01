@@ -118,7 +118,7 @@ impl JournalAware {
         if state.plan_mode {
             system.push_str(PLAN_RULES);
         }
-        for line in self.note.iter().chain(&state.hook_context) {
+        for line in self.note.iter().chain(&state.hook_context).chain(&state.reminders) {
             system.push('\n');
             system.push_str(line);
         }
@@ -169,6 +169,10 @@ impl Memory for NoMemory {
     }
 
     fn journal_binding(&self, _limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    fn journal_list(&self, _filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         Box::pin(std::future::ready(Ok(Vec::new())))
     }
 

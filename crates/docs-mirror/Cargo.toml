@@ -1,0 +1,17 @@
+[package]
+name = "harness-docs-mirror"
+description = "Keeps a project's docs tree and its journal consistent: the check, its hook, project initialization (ADR 0017)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"
+
+[dev-dependencies]
+harness-memory-journal = { version = "0.1.0-dev", path = "../memory-journal" }
+harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
+pollster = "0.4"
+tempfile = "3"

@@ -40,6 +40,8 @@ pub enum HookOutcome {
     Ok,
     /// Lines added to the agent's context.
     Context { lines: Vec<String> },
+    /// Lines for the next model turn only, then gone.
+    Reminder { lines: Vec<String> },
     /// A veto of a before-event, with its reason.
     Blocked { reason: String },
     Failed { message: String },

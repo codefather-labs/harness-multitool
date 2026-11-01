@@ -147,6 +147,10 @@ pub trait Hook {
     fn applies(&self, _point: &HookPoint<'_>) -> bool {
         true
     }
+    /// A built-in that often has nothing to say leaves no trace in the log when it says nothing.
+    fn quiet_when_ok(&self) -> bool {
+        false
+    }
     fn run<'a>(&'a self, point: &'a HookPoint<'a>) -> BoxFuture<'a, HookOutcome>;
 }
 
@@ -159,6 +163,15 @@ pub struct JournalEntry {
     pub flags: Vec<String>,
     pub salience: Option<String>,
     pub feature: Option<String>,
+}
+
+/// Which entries `Memory::journal_list` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct JournalFilter {
+    pub category: Option<String>,
+    pub flags: Vec<String>,
+    pub open: Option<bool>,
+    pub limit: usize,
 }
 
 /// A stored journal entry.
@@ -229,6 +242,8 @@ pub trait Memory {
     fn journal_close(&self, id: u64, resolution: &str) -> BoxFuture<'_, PluginResult<()>>;
     /// The specifications and constraints that bind the project, newest first.
     fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>>;
+    /// Entries by what they are: `flags` is any of, `open` narrows to open or closed items.
+    fn journal_list(&self, filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>>;
     /// The titles of the project's open maps: (id, title).
     fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>>;
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>>;
