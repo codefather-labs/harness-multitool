@@ -556,6 +556,51 @@ fn press_sign_in(w: &mut Workspace) {
     }
 }
 
+/// The model row: the name, or what it takes to get one.
+fn model_value(s: &SettingsView, t: &Theme) -> Vec<Span<'static>> {
+    let (muted, strong) = (Style::default().fg(t.text_muted), Style::default().fg(t.text).add_modifier(Modifier::BOLD));
+    if s.editing_model {
+        return vec![Span::styled("[ ", muted), Span::styled(format!("{}▏", s.model), strong), Span::styled(" ]", muted)];
+    }
+    if s.model.is_empty() {
+        let hint = if on_plan(s) { "sign in to see this plan's models" } else { "Enter types a model's name" };
+        return vec![Span::styled(format!("[ {hint} ]"), muted)];
+    }
+    let count = models_for(s).len();
+    let more = if count > 1 { format!("  {count} models, Enter for the next") } else { String::new() };
+    vec![Span::styled("[ ", muted), Span::styled(s.model.clone(), strong), Span::styled(" ▾ ]", muted), Span::styled(more, muted)]
+}
+
+/// The models the chosen provider offers, as far as is known.
+fn models_for(s: &SettingsView) -> Vec<String> {
+    let row = s.providers.get(s.provider).map_or("", |p| p.name.as_str());
+    if row == PLAN_PROVIDER {
+        return s.auth.models.clone();
+    }
+    let listed = s.auth.provider_models.iter().find(|(p, _)| p == row).map_or(Vec::new(), |(_, m)| m.clone());
+    // Anthropic's list needs a key too; until there is one, the models the harness knows.
+    if listed.is_empty() && row == "Anthropic API" {
+        return MODELS.iter().map(|m| m.to_string()).collect();
+    }
+    listed
+}
+
+/// Keeps the model one the chosen provider has: its first, or none until a list or a name comes.
+/// A name typed for a provider with no list yet stays.
+pub fn fit_model(s: &mut SettingsView) {
+    let list = models_for(s);
+    if list.contains(&s.model) {
+        return;
+    }
+    let foreign = |known: &[String]| known.contains(&s.model);
+    let elsewhere = MODELS.iter().any(|m| *m == s.model) || foreign(&s.auth.models) || s.auth.provider_models.iter().any(|(_, m)| foreign(m));
+    match list.first() {
+        Some(first) => s.model = first.clone(),
+        None if elsewhere || on_plan(s) => s.model.clear(),
+        None => {}
+    }
+}
+
 /// A provider row chosen. A disabled one answers with a toast and changes nothing.
 fn choose_provider(w: &mut Workspace, i: usize) {
     let Some(Overlay::Settings(s)) = &mut w.overlay else { return };
@@ -564,14 +609,7 @@ fn choose_provider(w: &mut Workspace, i: usize) {
         return;
     }
     s.provider = i;
-    // A model of another vendor means nothing here.
-    if on_plan(s) {
-        if !s.auth.models.is_empty() && !s.auth.models.contains(&s.model) {
-            s.model = s.auth.models[0].clone();
-        }
-    } else if s.providers[i].name == "Anthropic API" && !MODELS.contains(&s.model.as_str()) {
-        s.model = MODELS[0].into();
-    }
+    fit_model(s);
 }
 
 fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
@@ -641,7 +679,7 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
         vec![Span::styled("[ ]  Disabled", Style::default().fg(t.text_muted))]
     };
     for (spans, row_bg) in [
-        field("Default model", bracket(if s.editing_model { format!("{}▏", s.model) } else { s.model.clone() }, !s.editing_model), 0),
+        field("Default model", model_value(s, t), 0),
         field("Timeout", bracket(format!("{}s", s.timeout_s), false), 1),
         field("Fallback on error", check, 2),
     ] {
@@ -722,6 +760,10 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 // Save: the session's status line shows the chosen adapter and model.
                 let adapter = s.providers[s.provider].name.to_lowercase().replace(' ', "-");
                 let model = s.model.clone();
+                if model.trim().is_empty() {
+                    w.toast = Some(system_toast("Choose a model first."));
+                    return Some(Outcome::Stay);
+                }
                 if w.live {
                     let provider = s.providers[s.provider].name.clone();
                     w.overlay = None;
@@ -749,7 +791,9 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 SettingsPane::Page => s.cursor = (s.cursor + 1).min(s.providers.len() + 3),
             },
             // Enter types a model's name; the list only knows a few.
-            Key::Enter if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !(on_plan(s) && !s.auth.models.is_empty()) => s.editing_model = true,
+            Key::Enter if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !on_plan(s) && models_for(s).is_empty() => s.editing_model = true,
+            // With a list, E types a name that is not on it.
+            Key::Char('e') if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !on_plan(s) => s.editing_model = true,
             Key::Char(' ') | Key::Enter if s.focus == SettingsPane::Page => activate(w),
             Key::Enter => s.focus = SettingsPane::Page,
             _ => {}
@@ -766,9 +810,11 @@ fn activate(w: &mut Workspace) {
         i if i < n => choose_provider(w, i),
         i if i == n => press_sign_in(w),
         i if i == n + 1 => {
-            let list: Vec<String> = if on_plan(s) && !s.auth.models.is_empty() { s.auth.models.clone() } else { MODELS.iter().map(|m| m.to_string()).collect() };
-            let at = list.iter().position(|m| *m == s.model).map_or(0, |i| (i + 1) % list.len());
-            s.model = list[at].clone();
+            let list = models_for(s);
+            if !list.is_empty() {
+                let at = list.iter().position(|m| *m == s.model).map_or(0, |i| (i + 1) % list.len());
+                s.model = list[at].clone();
+            }
         }
         i if i == n + 2 => {
             let at = TIMEOUTS.iter().position(|v| *v == s.timeout_s).unwrap_or(0);
@@ -915,6 +961,56 @@ mod tests {
     }
 
     #[test]
+    fn each_provider_has_its_own_models_and_none_keeps_anothers() {
+        let mut w = on_provider_page();
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth.models.clear();
+            s.auth.provider_models = vec![("Local".into(), vec!["qwen".into(), "gemma".into()])];
+        }
+        assert!(page(&w).model.starts_with("claude"));
+        let (plan, local, openai, model) = (row(&w, PLAN_PROVIDER), row(&w, "Local"), row(&w, "OpenAI-compatible"), page(&w).providers.len() + 1);
+
+        // Before sign-in the plan has no list: no Claude name stays, and it cannot be saved.
+        to(&mut w, plan);
+        press(&mut w, &[Key::Enter]);
+        assert_eq!(page(&w).model, "");
+        press(&mut w, &[Key::Ctrl('s')]);
+        assert!(w.overlay.is_some() && w.outbox.is_empty(), "{:?}", w.outbox);
+        assert!(matches!(&w.toast, Some(t) if t.text.contains("Choose a model")));
+        to(&mut w, model);
+        press(&mut w, &[Key::Enter, Key::Char(' ')]);
+        assert_eq!((page(&w).model.as_str(), page(&w).editing_model), ("", false), "no typing a name on a plan");
+
+        // A list that arrives is taken up.
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth.models = vec!["gpt-a".into(), "gpt-b".into()];
+            fit_model(s);
+        }
+        assert_eq!(page(&w).model, "gpt-a");
+        press(&mut w, &[Key::Enter]);
+        assert_eq!(page(&w).model, "gpt-b");
+
+        to(&mut w, local);
+        press(&mut w, &[Key::Enter]);
+        assert_eq!(page(&w).model, "qwen");
+        to(&mut w, model);
+        press(&mut w, &[Key::Enter]);
+        assert_eq!(page(&w).model, "gemma", "the list of this provider, not Claude's");
+
+        // No list yet and another's name: empty, and a name can be typed.
+        to(&mut w, openai);
+        press(&mut w, &[Key::Enter]);
+        assert_eq!(page(&w).model, "");
+        to(&mut w, model);
+        press(&mut w, &[Key::Enter, Key::Char('m'), Key::Enter]);
+        assert_eq!(page(&w).model, "m");
+
+        to(&mut w, 0);
+        press(&mut w, &[Key::Enter]);
+        assert!(page(&w).model.starts_with("claude"));
+    }
+
+    #[test]
     fn the_button_runs_the_chosen_rows_pipeline() {
         let mut w = on_provider_page();
         let plan = row(&w, PLAN_PROVIDER);
@@ -971,7 +1067,7 @@ mod tests {
         if let Some(Overlay::Settings(s)) = &mut w.overlay {
             s.model = "x".into();
         }
-        press(&mut w, &[Key::Enter, Key::Backspace, Key::Char('g'), Key::Char(' '), Key::Enter]);
+        press(&mut w, &[Key::Char('e'), Key::Backspace, Key::Char('g'), Key::Char(' '), Key::Enter]);
         assert_eq!((page(&w).model.as_str(), page(&w).editing_model), ("g ", false));
 
         let plan = row(&w, PLAN_PROVIDER);
@@ -1100,6 +1196,9 @@ mod tests {
         match &w.overlay {
             Some(Overlay::Settings(s)) => assert_eq!((s.focus, s.provider), (SettingsPane::Page, 1)),
             _ => panic!("settings stay open"),
+        }
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.model = "some-model".into();
         }
         key(&mut w, Key::Ctrl('s'));
         assert!(w.overlay.is_none(), "Ctrl+S saves and closes");

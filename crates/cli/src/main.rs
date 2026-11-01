@@ -400,6 +400,8 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 
 /// The sessions behind the tabs, and what ties them to the view.
 /// A sign-in's outcome: the account and its models, or why it failed.
+/// A provider row's models, or why there are none.
+type ModelList = (String, Result<Vec<String>, String>);
 type LoginOutcome = Result<(Option<String>, Vec<String>), String>;
 type LoginEvents = (std::sync::mpsc::Sender<LoginOutcome>, std::sync::mpsc::Receiver<LoginOutcome>);
 
@@ -410,8 +412,7 @@ struct Live {
     /// Set while a browser sign-in waits: setting the flag cancels it.
     login_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     login_events: LoginEvents,
-    plan_models: (std::sync::mpsc::Sender<Vec<String>>, std::sync::mpsc::Receiver<Vec<String>>),
-    plan_models_asked: bool,
+    plan_models: (std::sync::mpsc::Sender<ModelList>, std::sync::mpsc::Receiver<ModelList>),
     step_debug_tabs: std::collections::HashSet<u64>,
     window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
     first_start_done: bool,
@@ -468,7 +469,7 @@ impl Live {
         if self.windows.len() != before {
             w.callbacks = Some(self.callbacks_page());
             w.auth = Some(self.auth_page(w.auth.clone()));
-            self.fetch_plan_models();
+            self.fetch_models();
         }
     }
 
@@ -726,7 +727,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), plan_models_asked: false, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -847,31 +848,54 @@ impl Live {
         });
     }
 
-    /// Already signed in: the plan's models, in the background, for the Provider page.
-    fn fetch_plan_models(&mut self) {
+    /// Each provider's models, in the background, for the Provider page. A server that is down
+    /// or a key that is missing costs its list, and the page says so only for the chosen one.
+    fn fetch_models(&mut self) {
         let Ok(dir) = config::data_dir() else { return };
-        if self.plan_models_asked || !harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
-            return;
-        }
-        self.plan_models_asked = true;
-        let base = plan_base_url(&config::load().map(|c| c.session).unwrap_or_default());
+        let session = config::load().map(|c| c.session).unwrap_or_default();
         let sender = self.plan_models.0.clone();
         std::thread::spawn(move || {
-            let auth = harness_auth_chatgpt::ChatGptAuth::new(&dir);
-            if let Ok(token) = pollster::block_on(harness_api::Auth::credentials(&auth, "chatgpt"))
-                && let Ok(models) = harness_auth_chatgpt::list_models(&base, token.expose())
-            {
-                let _ = sender.send(models.into_iter().map(|(slug, _)| slug).collect());
+            let plan = harness_auth_chatgpt::ChatGptAuth::new(&dir);
+            if harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
+                let answer = pollster::block_on(harness_api::Auth::credentials(&plan, "chatgpt")).map_err(|e| e.to_string()).and_then(|token| harness_auth_chatgpt::list_models(&plan_base_url(&session), token.expose()));
+                let _ = sender.send((frontend_tui::model::PLAN_PROVIDER.to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
+            }
+            let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
+            if let Ok(key) = pollster::block_on(harness_api::Auth::credentials(&keys, "anthropic")) {
+                let base = session.providers.get("anthropic").and_then(|p| p["base_url"].as_str()).map_or("https://api.anthropic.com/v1".to_string(), |b| format!("{}/v1", b.trim_end_matches('/').trim_end_matches("/v1")));
+                let answer = harness_auth_chatgpt::list_anthropic_models(&base, key.expose(), harness_provider_anthropic::API_VERSION);
+                let _ = sender.send(("Anthropic API".to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
+            }
+            for row in ["OpenAI-compatible", "Local"] {
+                let id = provider_id(row);
+                let token = pollster::block_on(harness_api::Auth::credentials(&keys, &id)).map(|k| k.expose().to_string()).ok();
+                // With no key there is nothing to ask a paid API; a local server needs none.
+                let Some(token) = token.or((id == "local").then(String::new)) else { continue };
+                let answer = harness_auth_chatgpt::list_models(&provider_base_url(&session, &id), &token);
+                let _ = sender.send((row.to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
             }
         });
     }
 
     /// A sign-in that ended. True if something changed.
     fn tick_login(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
-        if let Ok(models) = self.plan_models.1.try_recv() {
-            self.update_auth(w, |a| a.models = models);
+        let mut changed = false;
+        while let Ok((row, answer)) = self.plan_models.1.try_recv() {
+            changed = true;
+            let on_plan = row == frontend_tui::model::PLAN_PROVIDER;
+            self.update_auth(w, |a| match answer {
+                Ok(models) if on_plan => a.models = models,
+                Ok(models) => {
+                    a.provider_models.retain(|(p, _)| *p != row);
+                    a.provider_models.push((row.clone(), models));
+                }
+                Err(reason) => a.message = vec![format!("{row}: {reason}")],
+            });
+            if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                frontend_tui::overlay::fit_model(s);
+            }
         }
-        let Ok(event) = self.login_events.1.try_recv() else { return false };
+        let Ok(event) = self.login_events.1.try_recv() else { return changed };
         self.login_cancel = None;
         let told = match &event {
             Ok(_) => "Signed in to ChatGPT.".to_string(),
@@ -885,12 +909,8 @@ impl Live {
             }
             Err(reason) => a.message = vec![reason],
         });
-        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay
-            && !s.auth.models.is_empty()
-            && !s.auth.models.contains(&s.model)
-            && s.providers.get(s.provider).is_some_and(|p| p.name == frontend_tui::model::PLAN_PROVIDER)
-        {
-            s.model = s.auth.models[0].clone();
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+            frontend_tui::overlay::fit_model(s);
         }
         true
     }
@@ -922,6 +942,10 @@ impl Live {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
+        if provider == "local" {
+            c.session.providers.entry("local".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai", "base_url": LOCAL_BASE_URL}));
+            c.session.auth.entry("local".to_string()).or_insert_with(|| serde_json::json!({"none": true}));
+        }
         if provider == "chatgpt" {
             c.session.providers.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai-responses"}));
             c.session.auth.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"oauth": "chatgpt"}));
@@ -1041,7 +1065,11 @@ impl Live {
                     });
                 }
                 Outgoing::SaveKey { provider, key } => {
-                    let line = match self.save_key(&provider, &key) {
+                    let saved = self.save_key(&provider, &key);
+                    if saved.is_ok() {
+                        self.fetch_models();
+                    }
+                    let line = match saved {
                         Ok(id) => format!("Saved for {id} in the configuration, readable only by you. New sessions use it; a key in the environment still wins."),
                         Err(e) => format!("Could not save the key: {e}"),
                     };
@@ -1183,8 +1211,17 @@ fn harness_session_store(data_dir: &std::path::Path) -> harness_auth_chatgpt::St
 }
 
 fn plan_base_url(session: &harness_session::Settings) -> String {
-    session.providers.get("chatgpt").and_then(|p| p["base_url"].as_str()).unwrap_or("https://api.openai.com/v1").to_string()
+    provider_base_url(session, "chatgpt")
 }
+
+/// Where a provider's server is: as configured, or its usual place.
+fn provider_base_url(session: &harness_session::Settings, id: &str) -> String {
+    let usual = if id == "local" { LOCAL_BASE_URL } else { "https://api.openai.com/v1" };
+    session.providers.get(id).and_then(|p| p["base_url"].as_str()).unwrap_or(usual).to_string()
+}
+
+/// Ollama's address, the usual local server.
+const LOCAL_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 
 /// Opens the user's browser. MULTITOOL_BROWSER names another command, or `none`.
 fn open_browser(url: &str) -> bool {

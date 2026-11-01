@@ -30,6 +30,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/v1/models":
             assert self.headers["authorization"] == f"Bearer {ACCESS}"
             return self.reply(200, {"models": [{"slug": "plan-model-a", "display_name": "A", "visibility": "list"}, {"slug": "plan-model-b", "display_name": "B", "visibility": "list"}, {"slug": "hidden", "visibility": "hide"}]})
+        if self.path == "/openai/v1/models":
+            assert self.headers["authorization"] == f"Bearer {API_KEY}", self.headers["authorization"]
+            return self.reply(200, {"data": [{"id": "gpt-api-one"}, {"id": "text-embedding-x"}, {"id": "gpt-api-two"}]})
         self.reply(404, {})
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
@@ -50,7 +53,7 @@ root = tempfile.mkdtemp(prefix="mt-login-root"); home = tempfile.mkdtemp(prefix=
 browser = home + "/browser.sh"
 open(browser, "w").write(f'#!/bin/sh\nprintf %s "$1" > {home}/url\n'); os.chmod(browser, 0o755)
 cfg = home + "/cfg/harness-multitool/config.toml"
-open(cfg, "w").write(f'[session.providers.chatgpt]\nkind="openai-responses"\nbase_url="{base}/v1"\n\n[session.auth.chatgpt]\noauth="chatgpt"\nissuer="{base}"\n')
+open(cfg, "w").write(f'[session.providers.chatgpt]\nkind="openai-responses"\nbase_url="{base}/v1"\n\n[session.auth.chatgpt]\noauth="chatgpt"\nissuer="{base}"\n\n[session.providers.openai]\nbase_url="{base}/openai/v1"\n')
 COLS, ROWS = 130, 46; bin_ = sys.argv[1]
 pid, fd = pty.fork()
 if pid == 0:
@@ -84,7 +87,8 @@ assert "Keys" not in text() and " Auth" not in text(), "one tab is enough: " + t
 # Rows: Anthropic 0, OpenAI 1, Local 2, gpt-subscription 3, claude-subscription 4, the button 5.
 keys(DOWN, DOWN, DOWN, DOWN, ENTER); pump(0.2); show("claude-subscription pressed: a toast")
 assert "forbidden by Anthropic" in text(), text()
-keys(UP, ENTER, DOWN, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
+keys(UP, ENTER); row = [l for l in text().splitlines() if "Default model" in l][0]; assert "sign in to see this plan's models" in row and "claude" not in row, "no Claude model on a plan: " + row
+keys(DOWN, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
 keys(ENTER); pump(0.5); show("Login pressed"); assert "Cancel" in text(), text()
 first = open(home + "/url").read(); os.remove(home + "/url"); assert first.startswith(base + "/api/accounts/authorize?"), first
 keys(ENTER); pump(0.6); show("cancelled"); assert "cancelled" in text() and "Login" in text(), text()
@@ -114,7 +118,8 @@ keys(DOWN, DOWN, DOWN, DOWN); show("on an API provider"); assert "Enter a key" i
 keys(ENTER)
 for c in API_KEY: os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.3); show("typing a key"); assert API_KEY not in text() and "•" in text(), text()
-keys(ENTER); pump(0.6); show("key saved"); assert "Saved for" in text() and API_KEY not in text(), text()
+keys(ENTER); pump(1.0); show("key saved"); assert "Saved for" in text() and API_KEY not in text(), text()
+row = [l for l in text().splitlines() if "Default model" in l][0]; assert "gpt-api-one" in row and "2 models" in row, "this provider's own list: " + row
 saved = open(cfg).read(); assert API_KEY in saved, saved
 assert oct(os.stat(cfg).st_mode & 0o777) == "0o600", oct(os.stat(cfg).st_mode)
 keys(ESC); pump(0.2)

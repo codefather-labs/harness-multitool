@@ -250,3 +250,34 @@ fn signing_out_revokes_and_keeps_the_client() {
     assert!(store.load().is_none());
     assert_eq!(query(&begin_login(&store, &url, 0).unwrap().url, "client_id"), CLIENT);
 }
+
+/// A one-answer server, for the list's two shapes.
+fn answering(body: Value) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/v1", server.server_addr().to_ip().unwrap().port());
+    let done = std::thread::spawn(move || {
+        let request = server.recv().unwrap();
+        let mut seen = vec![request.url().to_string()];
+        seen.extend(request.headers().iter().filter(|h| ["authorization", "x-api-key", "anthropic-version"].iter().any(|n| h.field.equiv(n))).map(|h| format!("{}: {}", h.field, h.value)));
+        request.respond(tiny_http::Response::from_string(body.to_string())).unwrap();
+        seen
+    });
+    (url, done)
+}
+
+#[test]
+fn model_lists_come_from_the_servers_in_each_form() {
+    let ids = |m: Vec<(String, String)>| m.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let (url, done) = answering(json!({"models": [{"slug": "a", "visibility": "list"}, {"slug": "b", "visibility": "hide"}]}));
+    assert_eq!(ids(list_models(&url, "t").unwrap()), ["a"]);
+    assert_eq!(done.join().unwrap(), ["/v1/models", "authorization: Bearer t"].map(|s| s.to_string()));
+
+    let (url, done) = answering(json!({"data": [{"id": "gpt-x"}, {"id": "text-embedding-3"}, {"id": "whisper-1"}, {"id": "qwen"}]}));
+    assert_eq!(ids(list_models(&url, "").unwrap()), ["gpt-x", "qwen"]);
+    assert_eq!(done.join().unwrap().len(), 1, "no key, no header");
+
+    let (url, done) = answering(json!({"data": [{"id": "claude-x"}]}));
+    assert_eq!(ids(list_anthropic_models(&url, "k", "v1").unwrap()), ["claude-x"]);
+    let seen = done.join().unwrap().join(" ").to_lowercase();
+    assert!(seen.contains("x-api-key: k") && seen.contains("anthropic-version: v1") && !seen.contains("authorization"), "{seen}");
+}

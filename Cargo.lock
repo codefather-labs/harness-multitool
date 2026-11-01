@@ -1717,6 +1717,7 @@ dependencies = [
  "harness-daemon",
  "harness-docs-mirror",
  "harness-platform-native",
+ "harness-provider-anthropic",
  "harness-scenarios",
  "harness-session",
  "image",

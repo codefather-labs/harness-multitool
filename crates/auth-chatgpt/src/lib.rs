@@ -468,14 +468,35 @@ pub fn status(store: &Store) -> (bool, String) {
     }
 }
 
-/// The models this account can use, as (slug, display name), in the server's order.
+/// What is not a chat model, on a server that lists everything it has.
+const NOT_CHAT: [&str; 9] = ["embed", "whisper", "tts", "dall-e", "moderation", "image", "audio", "transcribe", "realtime"];
+
+/// The models a server offers, as (id, display name), in its order. It reads both forms: a plan's
+/// `models` with `slug` and `visibility`, and the usual `data` with `id`. No token means none sent.
 pub fn list_models(base_url: &str, token: &str) -> Result<Vec<(String, String)>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let mut response = agent(30).get(&url).header("authorization", &format!("Bearer {token}")).call().map_err(|e| format!("reaching OpenAI: {e}"))?;
+    let mut request = agent(15).get(&url);
+    if !token.is_empty() {
+        request = request.header("authorization", &format!("Bearer {token}"));
+    }
+    read_models(request, base_url)
+}
+
+/// The same from Anthropic's server, which takes its key in its own header.
+pub fn list_anthropic_models(base_url: &str, key: &str, version: &str) -> Result<Vec<(String, String)>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    read_models(agent(15).get(&url).header("x-api-key", key).header("anthropic-version", version), base_url)
+}
+
+fn read_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, base_url: &str) -> Result<Vec<(String, String)>, String> {
+    let mut response = request.call().map_err(|e| format!("reaching {base_url}: {e}"))?;
     if response.status() != 200 {
-        return Err(format!("listing models: {}", response.status()));
+        return Err(format!("listing the models of {base_url}: {}", response.status()));
     }
     let body: Value = response.body_mut().read_json().map_err(|e| format!("the model list: {e}"))?;
-    let list = body["models"].as_array().cloned().unwrap_or_default();
-    Ok(list.iter().filter(|m| m["visibility"] == "list").filter_map(|m| Some((m["slug"].as_str()?.to_string(), m["display_name"].as_str().unwrap_or_default().to_string()))).collect())
+    if let Some(list) = body["models"].as_array() {
+        return Ok(list.iter().filter(|m| m["visibility"] == "list").filter_map(|m| Some((m["slug"].as_str()?.to_string(), m["display_name"].as_str().unwrap_or_default().to_string()))).collect());
+    }
+    let list = body["data"].as_array().cloned().unwrap_or_default();
+    Ok(list.iter().filter_map(|m| m["id"].as_str()).filter(|id| !NOT_CHAT.iter().any(|n| id.contains(n))).map(|id| (id.to_string(), String::new())).collect())
 }

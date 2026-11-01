@@ -10,7 +10,7 @@ use harness_api::sse::SseParser;
 use harness_api::*;
 use serde_json::{Value, json};
 
-const API_VERSION: &str = "2026-10-21";
+pub const API_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const RETRIES: u32 = 2;
 

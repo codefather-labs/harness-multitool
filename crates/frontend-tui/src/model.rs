@@ -171,6 +171,8 @@ pub struct AuthPage {
     pub message: Vec<String>,
     /// The models this plan can use.
     pub models: Vec<String>,
+    /// What other providers offer: (provider row, models).
+    pub provider_models: Vec<(String, Vec<String>)>,
     /// A key being typed.
     pub entry: Option<String>,
 }
