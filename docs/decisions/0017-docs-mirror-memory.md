@@ -28,6 +28,29 @@ The shape is the one this repository uses for itself, which the owner chose as t
 
 **Plan mode.** A plan made in plan mode ([ADR 0016](0016-plan-mode.md)) is mirrored the same way — its decisions, specifications and questions into their files, its work items into the roadmap — rather than saved as a separate optional plan file.
 
+## Creating the docs tree
+
+Not every project needs a `docs/` tree, so it is created by a **skill of the agent** (`docs-init`, IF-14), not unconditionally at the harness's start (the owner, 2026-11-01). The skill creates the whole hierarchy at once, each file with an example entry showing how it is written — the shape of this repository:
+
+```text
+README.md                       what the project is, status, links (left alone if it exists)
+docs/
+  architecture/overview.md      layers diagram, one main flow, repository layout — example nodes
+  spec/README.md                how the spec is organised, the id scheme
+  spec/principles.md            P-1 example
+  spec/interfaces.md            IF-1 example: contract and boundaries
+  spec/invariants.md            INV-1 example with "Checked by"
+  spec/constraints.md           sections numbered by tens, CON-1 example
+  spec/open-questions.md        Q-1 open, Q-2 settled (struck through, with the answer)
+  spec/roadmap.md               M0 — Specification, with "Done when"
+  decisions/README.md           the index and the status values
+  decisions/0001-record-decisions.md   the first ADR: decisions are recorded here
+```
+
+Existing files are never overwritten; the skill fills only what is missing. Once the tree exists, the mirror rule (CON-43) and its hook apply to the project.
+
+**Proposed by the agent, to be confirmed (Q-29):** at the first start in a project with no `docs/`, the harness asks once whether to run `docs-init`; a project that says no is not mirrored until the skill is run, which reconciles "not every project needs docs" with "the mirror is mandatory".
+
 ## How the mirror is kept — decided by the owner (answers Q-27)
 
 **The agent writes the files; a hook makes sure it does.** After every tool call that writes to the journal, a mind map or a flowchart, the harness fires a `PostToolUse` hook (IF-6) whose condition is that write. The hook adds to the agent's context the instruction to update the documentation files that mirror what was written, naming the file:

@@ -30,3 +30,4 @@
 | ~~**Q-26**~~ | ~~Plan mode: a plan file of its own?~~ Settled by the owner: documentation in files is mandatory — the journal, maps and flowcharts are mirrored into the docs tree and kept consistent; a plan is mirrored there too ([ADR 0017](../decisions/0017-docs-mirror-memory.md), CON-43). | — |
 | ~~**Q-27**~~ | ~~How the documentation mirror is kept.~~ Settled by the owner: the agent writes the files; a `PostToolUse` hook on every write to the journal, a map or a chart tells it which file to update ([ADR 0017](../decisions/0017-docs-mirror-memory.md)). | — |
 | **Q-28** | Docs mirror: a `Stop` hook at the end of each turn that checks every write needing a file has its file changed, and reminds the agent of the rest? (proposed by the agent) | the owner |
+| **Q-29** | Docs tree: does the harness ask once, at the first start in a project without `docs/`, whether to run `docs-init`, with no mirroring until the tree exists? (proposed by the agent) | the owner |
