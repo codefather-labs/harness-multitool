@@ -165,6 +165,9 @@ pub struct SettingsView {
 /// The provider row of a ChatGPT plan.
 pub const PLAN_PROVIDER: &str = "gpt-subscription";
 
+/// The provider row of the Claude Code delegate, in a build that has it.
+pub const DELEGATE_PROVIDER: &str = "claude-code";
+
 /// A model on offer: its id, and what it costs and holds, as a line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelChoice {
@@ -182,6 +185,8 @@ pub struct AuthPage {
     /// `Signed in as ...` or `Not signed in`, for gpt-subscription.
     pub plan_status: String,
     pub signed_in: bool,
+    /// This build has the Claude Code delegate (ADR 0020).
+    pub delegate: bool,
     /// A browser sign-in is under way.
     pub pending: bool,
     /// The latest outcome, or the address to open.

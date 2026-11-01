@@ -79,6 +79,10 @@ fn build() -> Result<(), String> {
             if !cfg!(debug_assertions) {
                 c.arg("--release");
             }
+            // The new binary has what this one has.
+            if cfg!(feature = "claude-code") {
+                c.args(["--features", "claude-code"]);
+            }
             c
         }
     };

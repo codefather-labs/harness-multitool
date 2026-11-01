@@ -793,6 +793,7 @@ impl Live {
         let session = config::load().map(|c| c.session).unwrap_or_default();
         let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
         page.keys = ["Anthropic API", "OpenAI-compatible", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
+        page.delegate = cfg!(feature = "claude-code");
         if let Ok(dir) = config::data_dir() {
             (page.signed_in, page.plan_status) = harness_auth_chatgpt::status(&harness_session_store(&dir));
         }
@@ -987,6 +988,9 @@ impl Live {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
+        if provider == "claude-code" {
+            c.session.providers.entry("claude-code".to_string()).or_insert_with(|| serde_json::json!({"kind": "claude-code", "context_window": 200_000}));
+        }
         if provider == "local" {
             c.session.providers.entry("local".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai", "base_url": LOCAL_BASE_URL}));
             c.session.auth.entry("local".to_string()).or_insert_with(|| serde_json::json!({"none": true}));
@@ -1225,9 +1229,14 @@ impl Live {
                         // tokens would cost on the API.
                         if let harness_api::Event::TurnFinished { usage, .. } = &entry.event {
                             let field = |name: &str| t.view.status.fields.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).unwrap_or_default();
-                            if field("ADAPTER") == "chatgpt" {
+                            let (adapter, model, cost) = (field("ADAPTER"), field("MODEL"), field("COST"));
+                            // What Claude Code itself reports; it may be covered by a plan.
+                            if adapter == "claude-code" {
+                                frontend_tui::live::set_status(&mut t.view, "COST", &format!("~{cost} by Claude Code"));
+                            }
+                            if adapter == "chatgpt" {
                                 let total = self.plan_cost.entry(tab).or_default();
-                                *total += harness_provider_openai::prices::cost_micro_usd(&field("MODEL"), usage).unwrap_or(0);
+                                *total += harness_provider_openai::prices::cost_micro_usd(&model, usage).unwrap_or(0);
                                 frontend_tui::live::set_status(&mut t.view, "COST", &format!("in plan (~${:.2} at API)", *total as f64 / 1e6));
                             }
                         }
@@ -1280,6 +1289,7 @@ fn provider_id(row: &str) -> String {
         "OpenAI-compatible" => "openai".to_string(),
         "Local" => "local".to_string(),
         frontend_tui::model::PLAN_PROVIDER => "chatgpt".to_string(),
+        frontend_tui::model::DELEGATE_PROVIDER => "claude-code".to_string(),
         other => other.to_string(),
     }
 }

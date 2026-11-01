@@ -14,6 +14,7 @@ harness-auth-chatgpt = { version = "0.1.0-dev", path = "../auth-chatgpt" }
 harness-auth-apikey = { version = "0.1.0-dev", path = "../auth-apikey" }
 harness-provider-anthropic = { version = "0.1.0-dev", path = "../provider-anthropic" }
 harness-provider-openai = { version = "0.1.0-dev", path = "../provider-openai" }
+harness-backend-claude-code = { version = "0.1.0-dev", path = "../backend-claude-code", optional = true }
 harness-docs-mirror = { version = "0.1.0-dev", path = "../docs-mirror" }
 harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
 harness-memory-journal = { version = "0.1.0-dev", path = "../memory-journal" }
@@ -32,3 +33,7 @@ toml = "1"
 
 [dev-dependencies]
 harness-scenarios = { version = "0.1.0-dev", path = "../scenarios" }
+
+[features]
+# Claude Code as a delegate agent: off until Anthropic answers whether it may ship (ADR 0020).
+claude-code = ["dep:harness-backend-claude-code"]

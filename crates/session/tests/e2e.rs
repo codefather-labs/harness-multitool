@@ -921,3 +921,23 @@ fn the_agents_name_is_set_by_the_tool_or_the_user_and_replayed() {
     let stored = read_log(&data, &root, &listed[0].id);
     assert_eq!(SessionState::fold(stored.iter().map(|e| &e.event)).agent_name.as_deref(), Some("Orion"), "a replay says so");
 }
+
+/// ADR 0020: a build without the delegate says so, and nothing runs.
+#[cfg(not(feature = "claude-code"))]
+#[test]
+fn a_build_without_the_delegate_says_so() {
+    let root = temp_dir("nodelegate");
+    let data = temp_dir("nodelegate-data");
+    let mut s = Settings { provider: "claude-code".into(), ..Default::default() };
+    s.providers.insert("claude-code".into(), json!({"kind": "claude-code"}));
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    sessions.prompt(1, "hi".to_string());
+    let message = loop {
+        match sessions.next(Duration::from_secs(10)).expect("the session answers") {
+            FromSession::Unavailable { message, .. } => break message,
+            FromSession::Entry { .. } => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(message.contains("--features claude-code"), "{message}");
+}

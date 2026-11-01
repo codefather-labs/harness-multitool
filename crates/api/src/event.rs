@@ -73,6 +73,8 @@ pub enum Event {
     ToolResult { id: String, output: String, is_error: bool },
     HookRan { point: HookPointKind, hook: String, outcome: HookOutcome, detail: Option<Value> },
     Verification { pass: bool, evidence: String },
+    /// The session id of an agent backend, for going on with it (IF-17).
+    BackendSession { id: String },
     /// The agent's name in this session, and who gave it: `user` or `agent`.
     AgentName { name: String, by: String },
     /// Plan mode on or off, and who did it: `user` or `agent`.

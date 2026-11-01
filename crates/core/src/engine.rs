@@ -285,6 +285,48 @@ impl Engine {
         let _ = self.flush().await;
     }
 
+    /// The turns of a message on an agent backend (IF-17): it does the work, and the engine keeps
+    /// the log, the stop and the verdict.
+    async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>) -> RunEnd {
+        let source = backend.name().to_string();
+        loop {
+            if let Err(message) = self.flush().await {
+                return self.fail("store", message, protocol);
+            }
+            let state = self.state.borrow().clone();
+            let prompt = state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n"));
+            let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
+            let system = context.ok().and_then(|c| c.system);
+            let stopped = || self.stop.is_set();
+            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
+            let mut sink = |event: Event| {
+                self.emit(event);
+                !self.stop.is_set()
+            };
+            let end = backend.run(request, &mut sink).await;
+            if let Err(message) = self.flush().await {
+                return self.fail("store", message, protocol);
+            }
+            match end {
+                Err(e) => return self.fail(&source, e.to_string(), protocol),
+                Ok(harness_api::BackendEnd::Stopped) => {
+                    self.stop.take();
+                    return self.stopped(protocol);
+                }
+                Ok(harness_api::BackendEnd::Done) => {}
+            }
+            self.hooks(HookPoint::Stop).await;
+            let Some(protocol) = protocol.filter(|_| !self.state.borrow().plan_mode) else {
+                return RunEnd::AwaitingInput;
+            };
+            match self.verify(protocol, &prompt).await {
+                Ok(true) => return RunEnd::Done,
+                Ok(false) => {}
+                Err(message) => return self.fail("verifier", message, Some(protocol)),
+            }
+        }
+    }
+
     /// The two tools the engine itself answers: the mode is its own state.
     async fn plan_tool(&self, call: &ToolCall) {
         self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
@@ -345,6 +387,9 @@ impl Engine {
         }
         self.emit(event);
         self.set_task(TaskState::Running, None);
+        if let Some(backend) = self.parts.backend.clone() {
+            return self.run_backend(backend.as_ref(), protocol).await;
+        }
 
         loop {
             if let Err(message) = self.flush().await {

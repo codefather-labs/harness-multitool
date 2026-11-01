@@ -1,0 +1,15 @@
+[package]
+name = "harness-backend-claude-code"
+description = "Runs a session through the unmodified claude binary, signed in by the user (IF-17, ADR 0020)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"
+
+[dev-dependencies]
+pollster = "0.4"
+tempfile = "3"

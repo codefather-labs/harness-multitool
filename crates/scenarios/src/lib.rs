@@ -241,6 +241,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::ToolResult { id, output, is_error } => format!("result      {id}{} {output:?}", if *is_error { " ERROR" } else { "" }),
         Event::HookRan { point, hook, outcome, .. } => format!("hook        {point:?} {hook}: {outcome:?}"),
         Event::Verification { pass, evidence } => format!("verify      {} {evidence:?}", if *pass { "pass" } else { "FAIL" }),
+        Event::BackendSession { id } => format!("backend     session {id}"),
         Event::AgentName { name, by } => format!("agent name  {name} by {by}"),
         Event::StepDebug { on, by } => format!("step-debug  {} by {by}", if *on { "on" } else { "off" }),
         Event::PlanMode { on, by } => format!("plan mode   {} by {by}", if *on { "on" } else { "off" }),

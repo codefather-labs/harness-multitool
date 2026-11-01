@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::event::{HookOutcome, HookPointKind, LogEntry};
+use crate::event::Event;
 use crate::model::{Capability, Message, ModelEvent, ModelInfo, ModelRequest, ToolCall, ToolOutput, ToolSpec, TurnEnd, Usage};
 use crate::platform::Platform;
 use crate::state::SessionState;
@@ -43,6 +44,31 @@ impl fmt::Display for Secret {
 /// IF-2. The only component that sees secrets.
 pub trait Auth {
     fn credentials(&self, provider: &str) -> BoxFuture<'_, PluginResult<Secret>>;
+}
+
+/// One message for an agent backend.
+pub struct BackendRequest<'a> {
+    pub prompt: &'a str,
+    /// Its own session, to go on with.
+    pub session: Option<&'a str>,
+    /// What the harness adds to the backend's own instructions.
+    pub system: Option<&'a str>,
+    pub plan_mode: bool,
+    pub turn: u32,
+    pub stopped: &'a dyn Fn() -> bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendEnd {
+    Done,
+    Stopped,
+}
+
+/// IF-17. Runs a session's turns on its own instead of the engine with a `Provider`, and reports
+/// what it does as the log's events. `sink` answers false when the user has stopped it.
+pub trait AgentBackend {
+    fn name(&self) -> &str;
+    fn run<'a>(&'a self, request: BackendRequest<'a>, sink: &'a mut dyn FnMut(Event) -> bool) -> BoxFuture<'a, PluginResult<BackendEnd>>;
 }
 
 /// IF-1. Network to its own endpoint only; credentials only through `Auth`.

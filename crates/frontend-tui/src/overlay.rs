@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
-use crate::model::{AuthPage, InboundKind, ModelChoice, PLAN_PROVIDER, Toast};
+use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, ModelChoice, PLAN_PROVIDER, Toast};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -44,6 +44,10 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.auth {
         s.auth = page.clone();
     }
+    if s.auth.delegate {
+        let at = s.providers.iter().position(|p| p.name == CLAUDE_SUBSCRIPTION).unwrap_or(s.providers.len());
+        s.providers.insert(at, ProviderOption { name: DELEGATE_PROVIDER.into(), description: "runs your signed-in Claude Code as an agent".into(), local_build: false, disabled: None });
+    }
     // Yesterday's outcome is not news; an address still waiting to be opened is.
     if !s.auth.pending {
         s.auth.message.clear();
@@ -57,6 +61,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
                     "openai" | "openai-compatible" => "OpenAI-compatible",
                     "local" => "Local",
                     "chatgpt" => PLAN_PROVIDER,
+                    "claude-code" => DELEGATE_PROVIDER,
                     other => other,
                 };
                 if let Some(i) = s.providers.iter().position(|p| p.name == name) {
@@ -484,8 +489,13 @@ fn login_label(s: &SettingsView) -> &'static str {
         (true, false, true) => "Log out",
         (true, false, false) => "Login",
         (false, ..) if s.providers.get(s.provider).is_some_and(|p| p.name == "Local") => "No key needed",
+        (false, ..) if on_delegate(s) => "Signed in by Claude Code",
         (false, ..) => "Enter a key",
     }
+}
+
+fn on_delegate(s: &SettingsView) -> bool {
+    s.providers.get(s.provider).is_some_and(|p| p.name == DELEGATE_PROVIDER)
 }
 
 fn on_plan(s: &SettingsView) -> bool {
@@ -499,7 +509,7 @@ fn sign_in_rows(f: &mut Frame, r: Rect, mut y: u16, s: &SettingsView, t: &Theme,
     let page_focus = s.focus == SettingsPane::Page;
     let provider = s.providers.get(s.provider).map_or("", |p| p.name.as_str());
     let label = |text: &str| Span::styled(format!("{text:<22}"), Style::default().fg(t.text));
-    let status = if on_plan(s) { a.plan_status.clone() } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("key {w}")) };
+    let status = if on_plan(s) { a.plan_status.clone() } else if on_delegate(s) { "Claude Code signs in by itself".to_string() } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("key {w}")) };
     text(f, r.x, y, r.width, vec![label("Sign-in"), Span::styled(status, Style::default().fg(if on_plan(s) && a.signed_in { t.success } else { t.text_muted }))], bg);
     y += 1;
     if let Some(entry) = &a.entry {
@@ -559,6 +569,7 @@ fn press_sign_in(w: &mut Workspace) {
         (true, false, true) => w.outbox.push(Outgoing::Logout),
         (true, false, false) => w.outbox.push(Outgoing::Login),
         (false, ..) if s.providers[s.provider].name == "Local" => s.auth.message = vec!["A local model needs no key.".to_string()],
+        (false, ..) if on_delegate(s) => s.auth.message = vec!["The harness never sees this sign-in. To change it, run claude in a terminal and use /login there.".to_string()],
         (false, ..) => s.auth.entry = Some(String::new()),
     }
 }
@@ -586,7 +597,7 @@ fn models_for(s: &SettingsView) -> Vec<ModelChoice> {
     }
     let listed = s.auth.provider_models.iter().find(|(p, _)| p == row).map_or(Vec::new(), |(_, m)| m.clone());
     // Anthropic's list needs a key too; until there is one, the models the harness knows.
-    if listed.is_empty() && row == "Anthropic API" {
+    if listed.is_empty() && (row == "Anthropic API" || row == DELEGATE_PROVIDER) {
         return MODELS.iter().map(|m| ModelChoice { id: m.to_string(), detail: String::new(), context: None }).collect();
     }
     listed
@@ -1059,6 +1070,19 @@ mod tests {
         if let Some(Overlay::Settings(s)) = &mut w.overlay {
             s.cursor = cursor;
         }
+    }
+
+    #[test]
+    fn the_delegates_row_shows_only_in_a_build_that_has_it() {
+        let mut w = on_provider_page();
+        w.overlay = None;
+        assert!(!settings_for(&w).providers.iter().any(|p| p.name == DELEGATE_PROVIDER));
+        w.auth = Some(AuthPage { delegate: true, ..Default::default() });
+        w.view_mut().status.fields = vec![("ADAPTER".into(), "claude-code".into()), ("MODEL".into(), "claude-haiku-5-5".into())];
+        let s = settings_for(&w);
+        assert_eq!(s.providers[s.provider].name, DELEGATE_PROVIDER);
+        assert_eq!(login_label(&s), "Signed in by Claude Code");
+        assert!(models_for(&s).iter().any(|m| m.id == "claude-opus-5-5"));
     }
 
     #[test]

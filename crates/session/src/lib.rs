@@ -68,10 +68,16 @@ impl Settings {
         self.providers.get(&self.provider).and_then(|p| p["context_window"].as_u64()).unwrap_or(if self.provider == "anthropic" { 1_000_000 } else { 128_000 })
     }
 
+    /// Whether the chosen provider row is Claude Code as a delegate (ADR 0020).
+    fn runs_delegate(&self) -> bool {
+        self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "claude-code")
+    }
+
     fn selection(&self) -> Selection {
         Selection {
             auth: "api-key".into(),
-            providers: vec![self.provider.clone()],
+            // A delegate is no provider: the engine hands its turns over (IF-17).
+            providers: if self.runs_delegate() { Vec::new() } else { vec![self.provider.clone()] },
             router: "one-model".into(),
             tools: self.tools.clone(),
             policy: "default".into(),
@@ -152,6 +158,9 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
         });
     }
     for name in std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str)) {
+        if settings.providers.get(name).is_some_and(|p| p["kind"] == "claude-code") {
+            continue;
+        }
         let kind = settings.providers.get(name).and_then(|p| p["kind"].as_str()).map(str::to_string).unwrap_or_else(|| if name == "anthropic" { "anthropic".to_string() } else { "openai".to_string() });
         let provider_name = name.to_string();
         let on_plan = settings.auth.get(name).is_some_and(|a| a["oauth"] == "chatgpt");
@@ -274,8 +283,24 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             let data_dir = data_dir.clone();
             registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone() })));
         }
-        registry.resolve(&selection, platform).map_err(|e| e.to_string())
+        let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
+        if settings.runs_delegate() {
+            parts.backend = Some(delegate(&settings, &root)?);
+        }
+        Ok(parts)
     })
+}
+
+/// Claude Code as a delegate, in a build that has it (ADR 0020).
+#[cfg(feature = "claude-code")]
+fn delegate(settings: &Settings, root: &str) -> Result<Rc<dyn AgentBackend>, String> {
+    let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
+    Ok(Rc::new(harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row)))
+}
+
+#[cfg(not(feature = "claude-code"))]
+fn delegate(_settings: &Settings, _root: &str) -> Result<Rc<dyn AgentBackend>, String> {
+    Err("this build has no Claude Code delegate: build with --features claude-code".to_string())
 }
 
 /// What a running session tells the frontend.

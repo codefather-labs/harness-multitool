@@ -78,6 +78,8 @@ impl std::error::Error for RegistryError {}
 
 /// The resolved components of a session.
 pub struct Parts {
+    /// Runs turns instead of the providers, when set (IF-17).
+    pub backend: Option<Rc<dyn harness_api::AgentBackend>>,
     pub providers: BTreeMap<String, Rc<dyn Provider>>,
     pub router: Rc<dyn Router>,
     pub tools: BTreeMap<String, Rc<dyn Tool>>,
@@ -181,6 +183,7 @@ impl Registry {
             hooks.push(self.hooks.build(name, &cx("hook", name))?);
         }
         Ok(Parts {
+            backend: None,
             providers,
             router: self.routers.build(&selection.router, &cx("router", &selection.router))?,
             tools,

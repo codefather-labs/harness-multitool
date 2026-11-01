@@ -4,6 +4,7 @@
 #
 #   ./run.sh                          # preview, starting at the splash
 #   ./run.sh --graphics sixel         # force a picture protocol: auto|sixel|kitty|iterm2|off
+#   ./run.sh --claude-code            # with Claude Code as a delegate agent (ADR 0020)
 #   ./run.sh preview main-session     # any multitool arguments after the options
 #   MULTITOOL_GRAPHICS=off ./run.sh   # variables already set win over the defaults below
 set -euo pipefail
@@ -14,6 +15,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --graphics) MULTITOOL_GRAPHICS="$2"; shift 2 ;;
     --debug)    PROFILE=debug; shift ;;
+    --claude-code) FEATURES="--features multitool/claude-code"; shift ;;
     *) break ;;
   esac
 done
@@ -28,9 +30,9 @@ export COLORTERM="${COLORTERM:-truecolor}"
 profile="${PROFILE:-release}"
 bin="$here/target/$profile/multitool"
 if [[ "$profile" == release ]]; then
-  cargo build --release --manifest-path "$here/Cargo.toml"
+  cargo build --release ${FEATURES:-} --manifest-path "$here/Cargo.toml"
 else
-  cargo build --manifest-path "$here/Cargo.toml"
+  cargo build ${FEATURES:-} --manifest-path "$here/Cargo.toml"
 fi
 
 if [[ $# -eq 0 ]]; then
