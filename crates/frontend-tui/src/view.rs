@@ -143,7 +143,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
             more,
         );
     }
-    if let Some(toast) = &w.toast {
+    if let (Some(toast), None) = (&w.toast, &w.overlay) {
         draw_toast(f, tr, toast, t, out);
     }
     widgets::rule(f, rule, t);
@@ -157,6 +157,10 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(o) = &w.overlay {
         out.hits.clear();
         crate::overlay::draw(f, area, o, t, out);
+        // A message about what is going on in the overlay has to show over it.
+        if let Some(toast) = &w.toast {
+            draw_toast(f, tr, toast, t, out);
+        }
     }
 }
 
@@ -237,6 +241,7 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
         InboundKind::Agent { .. } => ("Agent", t.agent, Icon::Bot, Tint::Agent),
         InboundKind::Callback { .. } => ("Callback", t.success, Icon::Callback, Tint::Success),
         InboundKind::Reminder { .. } => ("Reminder", t.agent, Icon::Calendar, Tint::Agent),
+        InboundKind::System => ("Harness", t.warning, Icon::Bolt, Tint::Agent),
     };
     let text_w = toast.text.chars().count().max(name.len() + toast.from.len() + 12) as u16;
     let w = (text_w + 12).min(area.width / 2).max(30.min(area.width));

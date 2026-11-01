@@ -853,3 +853,17 @@ fn a_provider_on_a_plan_uses_the_sign_in_and_logs_no_token() {
     let stored = std::fs::read_to_string(format!("{data}/sessions/{}/{}.jsonl", root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>().trim_matches('-'), listed[0].id)).unwrap();
     assert!(!stored.contains("PLAN-"), "no token in the stored log");
 }
+
+/// CON-56: the empty adapter refuses, with its reason, and nothing is sent anywhere.
+#[test]
+fn the_claude_subscription_adapter_refuses_before_any_request() {
+    let root = temp_dir("refused");
+    let data = temp_dir("refused-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "must not run")]);
+    let mut s = settings(&url, "k");
+    s.auth.insert("anthropic".into(), json!({"oauth": "claude-subscription", "key": "ignored"}));
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let (entries, ends, _) = drive(&mut sessions, &["hi"], Answer::Deny);
+    assert!(ends[0].contains("forbidden by Anthropic") || format!("{entries:?}").contains("forbidden by Anthropic"), "{ends:?} {entries:?}");
+    assert!(seen.lock().unwrap().is_empty(), "no request left");
+}

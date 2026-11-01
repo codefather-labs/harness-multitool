@@ -82,7 +82,9 @@ assert "gpt-subscription" in text() and "Enter a key" in text(), text()
 assert "claude-subscription" in text()
 
 # Choose the plan: the button becomes Login. Cancel frees the port for the next attempt.
-keys(DOWN, ENTER, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
+keys(DOWN, DOWN, ENTER); pump(0.2); show("claude-subscription pressed: a toast")
+assert "forbidden by Anthropic" in text(), text()
+keys(UP, ENTER, DOWN, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
 keys(ENTER); pump(0.5); show("Login pressed"); assert "Cancel" in text(), text()
 first = open(home + "/url").read(); os.remove(home + "/url"); assert first.startswith(base + "/api/accounts/authorize?"), first
 keys(ENTER); pump(0.6); show("cancelled"); assert "cancelled" in text() and "Login" in text(), text()
@@ -107,8 +109,8 @@ assert "Answered on the plan." in text(), text()
 
 # A key for another provider: typed masked, saved owner-only, on no screen.
 for c in "/settings\r": os.write(fd, c.encode()); time.sleep(0.005)
-pump(0.5); keys(DOWN, TAB, UP, UP, UP, ENTER); pump(0.2)
-keys(DOWN, DOWN); show("back on api-key"); assert "Enter a key" in text(), text()
+pump(0.5); keys(DOWN, TAB, UP, UP, UP, UP, ENTER); pump(0.2)
+keys(DOWN, DOWN, DOWN); show("back on api-key"); assert "Enter a key" in text(), text()
 keys(ENTER)
 for c in API_KEY: os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.3); show("typing a key"); assert API_KEY not in text() and "•" in text(), text()

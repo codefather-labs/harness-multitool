@@ -406,6 +406,7 @@ type LoginEvents = (std::sync::mpsc::Sender<LoginOutcome>, std::sync::mpsc::Rece
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    toast_shown: Option<(String, std::time::Instant)>,
     /// Set while a browser sign-in waits: setting the flag cancels it.
     login_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     login_events: LoginEvents,
@@ -563,6 +564,27 @@ impl Live {
         }
     }
 
+    /// The harness's own toasts go by themselves; a message from outside waits to be closed.
+    fn tick_toast(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        const SHOWN: std::time::Duration = std::time::Duration::from_secs(8);
+        if !matches!(w.toast.as_ref().map(|t| &t.kind), Some(frontend_tui::model::InboundKind::System)) {
+            self.toast_shown = None;
+            return false;
+        }
+        let text = w.toast.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+        let shown = self.toast_shown.get_or_insert_with(|| (text.clone(), std::time::Instant::now()));
+        if shown.0 != text {
+            *shown = (text, std::time::Instant::now());
+            return false;
+        }
+        if shown.1.elapsed() < SHOWN {
+            return false;
+        }
+        w.toast = None;
+        self.toast_shown = None;
+        true
+    }
+
     /// CON-44: the one time this project is asked about its docs tree.
     fn tick_first_start(&mut self, w: &mut frontend_tui::model::Workspace) {
         if std::mem::replace(&mut self.first_start_done, true) || !self.real {
@@ -704,7 +726,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), plan_models_asked: false, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), plan_models_asked: false, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -851,10 +873,15 @@ impl Live {
         }
         let Ok(event) = self.login_events.1.try_recv() else { return false };
         self.login_cancel = None;
+        let told = match &event {
+            Ok(_) => "Signed in to ChatGPT.".to_string(),
+            Err(reason) => reason.chars().take(90).collect(),
+        };
+        w.toast = Some(frontend_tui::overlay::system_toast(&told));
         self.update_auth(w, |a| match event {
             Ok((email, models)) => {
                 a.message = vec![format!("Signed in{}. Choose a model and press Ctrl+S.", email.map_or(String::new(), |e| format!(" as {e}")))];
-                a.cursor = 3;
+                a.cursor = 4;
                 a.models = models;
             }
             Err(reason) => a.message = vec![reason],
@@ -1019,6 +1046,7 @@ impl Live {
                         Ok(id) => format!("Saved for {id} in the configuration, readable only by you. New sessions use it; a key in the environment still wins."),
                         Err(e) => format!("Could not save the key: {e}"),
                     };
+                    w.toast = Some(frontend_tui::overlay::system_toast(if line.starts_with("Saved") { "The key is saved." } else { "The key was not saved." }));
                     self.update_auth(w, |a| a.message = vec![line]);
                 }
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
@@ -1400,6 +1428,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
                 dirty |= live.tick_prompt(w);
                 live.tick_first_start(w);
+                dirty |= live.tick_toast(w);
                 dirty |= live.tick_login(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and

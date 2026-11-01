@@ -329,17 +329,33 @@ struct ProviderAuth {
     keys: harness_auth_apikey::ApiKeyAuth,
     chatgpt: harness_auth_chatgpt::ChatGptAuth,
     on_plan: Vec<String>,
+    /// Providers configured with the empty claude-subscription adapter.
+    refused: Vec<String>,
+}
+
+/// The claude-subscription adapter: it stands in the interface and refuses, whoever configures it,
+/// and holds no token logic (CON-56).
+pub struct ClaudeSubscription;
+
+impl Auth for ClaudeSubscription {
+    fn credentials(&self, _provider: &str) -> BoxFuture<'_, PluginResult<Secret>> {
+        Box::pin(std::future::ready(Err(PluginError::new(CLAUDE_SUBSCRIPTION_REFUSED))))
+    }
 }
 
 impl ProviderAuth {
     fn new(keys: harness_auth_apikey::ApiKeyAuth, settings: &Value, data_dir: &std::path::Path) -> Self {
         let on_plan = settings.as_object().map(|m| m.iter().filter(|(_, v)| v["oauth"] == "chatgpt").map(|(k, _)| k.clone()).collect()).unwrap_or_default();
-        ProviderAuth { keys, chatgpt: harness_auth_chatgpt::ChatGptAuth::new(data_dir), on_plan }
+        let refused = settings.as_object().map(|m| m.iter().filter(|(_, v)| v["oauth"] == "claude-subscription").map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+        ProviderAuth { keys, chatgpt: harness_auth_chatgpt::ChatGptAuth::new(data_dir), on_plan, refused }
     }
 }
 
 impl Auth for ProviderAuth {
     fn credentials(&self, provider: &str) -> BoxFuture<'_, PluginResult<Secret>> {
+        if self.refused.iter().any(|p| p == provider) {
+            return ClaudeSubscription.credentials(provider);
+        }
         if self.on_plan.iter().any(|p| p == provider) { self.chatgpt.credentials(provider) } else { self.keys.credentials(provider) }
     }
 }

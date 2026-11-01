@@ -113,7 +113,7 @@ pub fn settings_auth() -> AppState {
     s.provider = s.providers.iter().position(|p| p.name == crate::model::PLAN_PROVIDER).unwrap_or(0);
     s.model = "gpt-5.5".into();
     s.auth = crate::overlay::sample_auth();
-    s.auth.cursor = 2;
+    s.auth.cursor = 3;
     with_overlay(crate::model::Overlay::Settings(s))
 }
 

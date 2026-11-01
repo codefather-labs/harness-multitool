@@ -171,7 +171,7 @@ pub struct AuthPage {
     pub message: Vec<String>,
     /// The models this plan can use.
     pub models: Vec<String>,
-    /// 0 api-key, 1 gpt-subscription, 2 the button, 3 the model.
+    /// 0 api-key, 1 gpt-subscription, 2 claude-subscription, 3 the button, 4 the model.
     pub cursor: usize,
     /// A key being typed.
     pub entry: Option<String>,
@@ -517,6 +517,8 @@ pub enum InboundKind {
     Callback { transport: String, status: String },
     /// The session's own journal reminder.
     Reminder { id: u32, every: String },
+    /// The harness itself telling the user something; only ever a toast.
+    System,
 }
 
 #[derive(Debug, Clone)]

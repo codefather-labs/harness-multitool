@@ -7,6 +7,9 @@ use serde_json::Value;
 use crate::model::{Capability, StopReason, ToolCall, Usage};
 use crate::state::TaskState;
 
+/// What the claude-subscription adapter answers, and the settings show (CON-56).
+pub const CLAUDE_SUBSCRIPTION_REFUSED: &str = "Sorry, claude-subscription is forbidden by Anthropic's terms. Use an API key.";
+
 /// The label of a message from the Telegram channel. Reserved: a callback cannot claim it.
 pub const TELEGRAM_LABEL: &str = "telegram";
 
