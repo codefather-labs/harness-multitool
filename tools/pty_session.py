@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Debug: drives the real TUI in a pty against a fake Anthropic endpoint and prints the screen
 after each step, plus the idle CPU. Needs pyte. Usage: tools/pty_session.py $PWD/target/debug/multitool"""
+import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import os, pty, select, sys, time, json, threading, http.server, tempfile, fcntl, termios, struct, resource
 import pyte
 def sse(events): return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()

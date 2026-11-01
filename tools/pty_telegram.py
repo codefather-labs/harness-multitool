@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Debug: real TUI in a pty, a fake model endpoint, and a fake Bot API, and the real daemon carrying the Telegram channel.
 Prints the screen after each. Needs pyte. Usage: tools/pty_telegram.py <absolute path to multitool>"""
+import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import fcntl, http.server, json, os, pty, re, select, signal, struct, subprocess, sys, tempfile, termios, threading, time, urllib.request, urllib.error
 import pyte
 def sse(ev): return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in ev).encode()
