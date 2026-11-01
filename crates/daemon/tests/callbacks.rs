@@ -164,3 +164,109 @@ fn a_poll_waits_for_the_next_event() {
     let got = waiter.join().unwrap();
     assert_eq!(got.len(), 1);
 }
+
+fn with_conditions(toml: &str) -> Fixture {
+    let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::create_dir_all(root.path().join(".harness")).unwrap();
+    std::fs::write(root.path().join(".harness/conditions.toml"), toml).unwrap();
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let client = Client::find(data.path()).unwrap();
+    let root_path = root.path().to_string_lossy().into_owned();
+    let reg = client.register(&root_path).unwrap();
+    let data_path = data.path().to_path_buf();
+    Fixture { _data: data, _root: root, daemon, client, window: reg.window, url: reg.url, data_path, root_path }
+}
+
+fn signal(f: &Fixture, uuid: &str, extra: Value) -> (u16, Value) {
+    let mut body = json!({"uuid": uuid, "type": "iteration_failed"});
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    post(&f.url, &body.to_string())
+}
+
+const THREE: &str = r#"
+[[condition]]
+name = "pipeline keeps failing"
+on = "iteration_failed"
+at_least = 3
+cooldown_s = 1
+policies = [".harness/policies/pipeline.md"]
+"#;
+
+#[test]
+fn signals_gather_silently_until_the_condition_is_true() {
+    let f = with_conditions(THREE);
+    for i in 0..2 {
+        let (status, reply) = signal(&f, &format!("s{i}"), json!({"iteration": i}));
+        assert_eq!((status, reply["detail"]["signal"].as_bool()), (200, Some(true)));
+        assert_eq!(reply["detail"]["fired"], json!([]));
+    }
+    assert_eq!(signal(&f, "s0", json!({})).1["result"], "duplicate", "a repeat is not counted");
+    assert!(f.daemon.port() > 0);
+    assert_eq!(signal(&f, "s2", json!({"iteration": 2})).1["detail"]["fired"], json!(["pipeline keeps failing"]));
+    let got = events(&f, 0);
+    assert_eq!(got.len(), 1);
+    let WindowEvent::Notification { label, text, .. } = &got[0].event else { panic!("{got:?}") };
+    assert_eq!(label, "pipeline keeps failing");
+    for part in ["3 signal(s)", "one message, not a stream", "triggers.jsonl", ".harness/policies/pipeline.md", "\"iteration\":2"] {
+        assert!(text.contains(part), "{part} in {text}");
+    }
+}
+
+/// INV-14: a burst of different events is one message; nothing is lost from the log.
+#[test]
+fn a_burst_is_one_message_and_every_signal_is_logged() {
+    let f = with_conditions(THREE);
+    for i in 0..100 {
+        assert_eq!(signal(&f, &format!("b{i}"), json!({})).0, 200);
+    }
+    assert_eq!(events(&f, 0).len(), 1);
+    assert_eq!(log(&f).iter().filter(|l| l["type"] == "iteration_failed").count(), 100);
+
+    // After the quiet time a new batch can fire, and mentions what was held.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    for i in 0..3 {
+        signal(&f, &format!("c{i}"), json!({}));
+    }
+    let got = events(&f, 0);
+    assert_eq!(got.len(), 2);
+    let WindowEvent::Notification { text, .. } = &got[1].event else { panic!() };
+    assert!(text.contains("97 more came during the quiet time"), "{text}");
+}
+
+#[test]
+fn a_field_rule_counts_only_what_passes_and_a_window_forgets_old_signals() {
+    let f = with_conditions(r#"
+[[condition]]
+name = "slow"
+on = "iteration_failed"
+field = "ms"
+op = "gt"
+value = 1000
+"#);
+    assert_eq!(signal(&f, "a", json!({"ms": 500})).1["detail"]["fired"], json!([]));
+    assert_eq!(signal(&f, "w", json!({"ms": "not a number"})).1["detail"]["fired"], json!([]));
+    assert_eq!(signal(&f, "b", json!({"ms": 2000})).1["detail"]["fired"], json!(["slow"]));
+
+    let f = with_conditions(r#"
+[[condition]]
+name = "two quickly"
+on = "iteration_failed"
+at_least = 2
+within_s = 1
+"#);
+    signal(&f, "x", json!({}));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(signal(&f, "y", json!({})).1["detail"]["fired"], json!([]), "the first one is too old");
+    assert_eq!(signal(&f, "z", json!({})).1["detail"]["fired"], json!(["two quickly"]));
+}
+
+#[test]
+fn other_types_stay_refused_and_a_broken_file_costs_only_the_conditions() {
+    let f = with_conditions(THREE);
+    assert_eq!(post(&f.url, &json!({"uuid": "o", "type": "something_else"}).to_string()).0, 400);
+    let f = with_conditions("this is not toml [[");
+    assert_eq!(post(&f.url, &json!({"uuid": "n", "type": "notification", "text": "still works"}).to_string()).0, 200);
+    assert_eq!(signal(&f, "q", json!({})).0, 400);
+}

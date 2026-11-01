@@ -55,7 +55,22 @@ Callbacks reach a tab through the daemon, which the UI starts when needed (`mult
 | `journal` | `text`, `category`, `tags` | a journal entry and its card; no agent turn |
 | `flowstate_update` | `map`, `node`, `instance` (or `correlation_id`), `state` | the chart drawn with that node active; no agent turn |
 
-A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. Not built yet: conditions and batches, custom handlers, the collapsed view of several instances.
+A project's `.harness/conditions.toml` adds types of its own. Such a callback is a signal: it is logged and reaches no one until a condition turns true, and then the agent gets one message for the whole batch, with the condition, the policy files and the trigger log's path.
+
+```toml
+[[condition]]
+name = "pipeline keeps failing"
+on = "iteration_failed"          # the callback type it listens to
+at_least = 3                    # how many signals make it true (1 by default)
+within_s = 300                  # only signals this recent (all by default)
+cooldown_s = 60                 # after a message, none for this long; signals still go to the log
+field = "ms"                    # optional: count only signals where the field passes
+op = "gt"                       # eq, ne, gt, lt, ge, le
+value = 1000
+policies = [".harness/policies/pipeline.md"]
+```
+
+A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. Not built yet: custom handlers, the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
 
 ## Flow
 

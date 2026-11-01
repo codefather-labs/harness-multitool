@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use harness_api::{JournalEntry, JournalRecord, MapData, Memory};
+use harness_api::{Callback, JournalEntry, JournalRecord, MapData, Memory};
 use harness_memory_journal::plugin::JournalMemory;
 use harness_memory_journal::project::key_for;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub mod client;
+pub mod conditions;
 
 /// How long `GET /events` holds a request open when there is nothing to say.
 const POLL: Duration = Duration::from_secs(20);
@@ -44,6 +45,7 @@ struct Window {
     events: Vec<Numbered>,
     /// Each instance's path through each chart: (map, instance) -> nodes in order.
     instances: HashMap<(u64, String), Vec<u64>>,
+    conditions: Vec<conditions::Armed>,
 }
 
 struct State {
@@ -169,9 +171,14 @@ impl Daemon {
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
         let Some(root) = input["root"].as_str() else { return (400, json!({"error": "root is required"})) };
         let id = uuid::Uuid::new_v4().to_string();
-        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new() };
+        // A broken conditions file does not cost the window; the agent hears about it.
+        let (armed, problem) = match conditions::load(root) {
+            Ok(armed) => (armed, None),
+            Err(message) => (Vec::new(), Some(message)),
+        };
+        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed };
         self.state.lock().expect("daemon state").windows.insert(id.clone(), window);
-        (200, json!({"window": id, "url": format!("http://127.0.0.1:{}/callback/{id}", self.port)}))
+        (200, json!({"window": id, "url": format!("http://127.0.0.1:{}/callback/{id}", self.port), "problem": problem}))
     }
 
     /// `GET /events?window=W&after=N`: what the window has not heard yet, waiting a while for it.
@@ -234,6 +241,7 @@ impl Daemon {
             "notification" => self.notification(&id, uuid, &input),
             "journal" => self.journal(&id, &root, &input),
             "flowstate_update" => self.flow(&id, &root, &input),
+            _ if self.has_condition(&id, kind) => self.signal(&id, uuid, kind, &input),
             _ => {
                 self.forget(uuid);
                 self.trigger_log(uuid, kind, &id, "no_handler", "");
@@ -252,6 +260,28 @@ impl Daemon {
                 (400, json!({"error": message}))
             }
         }
+    }
+
+    fn has_condition(&self, window: &str, kind: &str) -> bool {
+        let state = self.state.lock().expect("daemon state");
+        state.windows.get(window).is_some_and(|w| w.conditions.iter().any(|c| c.on == kind))
+    }
+
+    /// A signal accumulates and reaches no agent, unless a condition turns true: then one
+    /// message for the whole batch (IF-15, INV-14). The payload is data (INV-12).
+    fn signal(&self, window: &str, uuid: &str, kind: &str, input: &Value) -> Result<Value, String> {
+        let callback = Callback { uuid: uuid.to_string(), kind: kind.to_string(), fields: input.clone() };
+        let log_path = self.data_dir.join("daemon").join("triggers.jsonl");
+        let fired: Vec<(String, String)> = {
+            let mut state = self.state.lock().expect("daemon state");
+            let w = state.windows.get_mut(window).ok_or("no such window")?;
+            w.conditions.iter_mut().filter(|c| c.on == kind).filter_map(|c| c.signal(now_ms(), callback.clone(), &log_path)).collect()
+        };
+        let names: Vec<String> = fired.iter().map(|(name, _)| name.clone()).collect();
+        for (label, text) in fired {
+            self.deliver(window, WindowEvent::Notification { uuid: uuid.to_string(), label, text });
+        }
+        Ok(json!({"signal": true, "fired": names}))
     }
 
     fn forget(&self, uuid: &str) {
