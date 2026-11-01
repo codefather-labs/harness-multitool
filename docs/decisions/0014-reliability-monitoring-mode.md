@@ -17,9 +17,17 @@ The harness gets a **reliability-monitoring mode**, run by the canons of SRE. Pr
 
 **Proposed by the agent, to be confirmed:** a condition that stays `true` must not resend on every evaluation. The agent proposes that the harness sends on the rising edge only (`false` → `true`), plus an optional cool-down per condition, so a long outage is one message, and a new one comes after it has recovered (Q-21).
 
-## What the SRE canon brings, as a starting point
+## Policies are per project — decided by the owner (answers Q-19, Q-20; reframes Q-18)
 
-The owner asked for the mode "by all the canons of SRE". These are the parts of the canon the agent proposes to build on. All of them are open until the owner decides.
+**The harness does not unify the response.** What the agent does in each situation is described to it per project: policies differ from project to project, and they are not something to standardise at the harness level (Q-19). The harness delivers the condition's message and the project's policies; the project's policies decide the response.
+
+**How a policy is written is not designed yet** (Q-18). Policies are built for each project on their own; the authoring interface comes later.
+
+**Sessions in this mode are open 24/7** (Q-20). A monitoring session is not started per incident: it stays open around the clock and receives condition messages as they come. It relies on compaction to keep its context bounded.
+
+## What the SRE canon brings, as a reference for project policies
+
+The owner asked for the mode "by all the canons of SRE". These are the parts of the canon a project's policies can draw on. The harness does not enforce them; each project decides which it uses.
 
 - **SLIs and SLOs.** A metric that matters is an SLI (availability, latency, error rate, freshness, a product metric such as conversion). Each SLI has an SLO: a target over a window, for example 99.9 % of requests under 300 ms over 28 days.
 - **Error budget.** An SLO leaves a budget of allowed failure. Events come from how fast the budget burns: multi-window, multi-burn-rate alerts. A fast burn pages; a slow burn opens a ticket. Breaking a single raw threshold is a weaker signal.
@@ -34,11 +42,12 @@ The owner asked for the mode "by all the canons of SRE". These are the parts of 
 - **Incident lifecycle.** detected → triaged → mitigating → mitigated → resolved → postmortem. Every step is an event and goes into the journal. A blameless postmortem is written afterwards, and its action items become todos.
 - **Toil.** An event that repeats with the same manual response is a candidate for automation, or for a better policy or alert.
 
-## Boundaries the agent proposes
+## Boundaries
 
-- Metrics and alerts are data (INV-12). They select a policy; they cannot write or widen one.
-- A policy can only narrow what `Policy` allows (IF-14 style). An action that changes a production system goes through the permission gate unless the policy explicitly pre-approves it, and that pre-approval is configured by the owner, never by an event.
-- The agent never silences an alert or changes an SLO on its own.
+What the agent may do is the project's policy. Two existing harness rules still hold, because they are not about the response but about where instructions come from:
+
+- Signals and condition messages are data (INV-12): they select a policy, they cannot write or widen one.
+- Every tool call still goes through `Policy` and its permission gate; a project's policy can pre-approve actions, and only the owner configures that, never an event.
 
 ## How it may fit what exists
 
@@ -48,4 +57,4 @@ The owner asked for the mode "by all the canons of SRE". These are the parts of 
 
 ## Open
 
-The edge-and-cool-down rule for conditions (Q-21); the format and storage of SLOs and policies (Q-18); which actions an agent may take on its own and how humans are paged (Q-19); how a mode that runs for days fits a session (Q-20).
+The edge-and-cool-down rule for conditions (Q-21); the interface for writing a project's policies (Q-18).
