@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use harness_api::{Callback, JournalEntry, JournalRecord, MapData, Memory};
+use harness_api::{Callback, CallbackHandler, HandlerEffect, JournalEntry, JournalRecord, MapData, Memory};
 use harness_memory_journal::plugin::JournalMemory;
 use harness_memory_journal::project::key_for;
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,8 @@ struct Window {
     conditions: Vec<conditions::Armed>,
     /// Standard types switched off for this project.
     off: HashSet<String>,
+    /// What this project chose: standard type -> implementation; and what is switched off.
+    project: conditions::ProjectCallbacks,
 }
 
 struct State {
@@ -56,7 +58,11 @@ struct State {
     next_seq: u64,
 }
 
+/// A handler the build brought. It is shared between the server's threads.
+pub type SharedHandler = Arc<dyn CallbackHandler + Send + Sync>;
+
 pub struct Daemon {
+    handlers: Vec<SharedHandler>,
     state: Mutex<State>,
     wake: Condvar,
     admin: String,
@@ -98,6 +104,11 @@ impl Daemon {
     /// Binds a localhost port (`0` picks one), publishes the address, and serves on a background
     /// thread pool until the process ends.
     pub fn start(data_dir: &Path, port: u16) -> Result<Arc<Daemon>, String> {
+        Self::start_with(data_dir, port, Vec::new())
+    }
+
+    /// The same, with the custom handlers of this build (IF-16).
+    pub fn start_with(data_dir: &Path, port: u16, handlers: Vec<SharedHandler>) -> Result<Arc<Daemon>, String> {
         let dir = data_dir.join("daemon");
         std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
         let server = Arc::new(tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| format!("binding a port: {e}"))?);
@@ -118,6 +129,7 @@ impl Daemon {
         write_private(&address_path(data_dir), &address).map_err(|e| format!("publishing the address: {e}"))?;
 
         let daemon = Arc::new(Daemon {
+            handlers,
             state: Mutex::new(State { windows: HashMap::new(), seen, next_seq: 1 }),
             wake: Condvar::new(),
             admin,
@@ -160,6 +172,8 @@ impl Daemon {
             ("POST", "/register") if admin => self.register(&body),
             ("GET", "/events") if admin => self.events(query),
             ("POST", "/reload") if admin => self.reload(),
+            ("GET", "/handlers") if admin => (200, json!({"handlers": self.handlers.iter().map(|h| json!({"name": h.name(), "types": h.types()})).collect::<Vec<_>>()})),
+            ("GET", "/handlers") => (401, json!({"error": "bad token"})),
             ("POST", "/register") | ("POST", "/reload") | ("GET", "/events") => (401, json!({"error": "bad token"})),
             ("POST", p) if p.starts_with("/callback/") => self.callback(&p["/callback/".len()..], &body),
             _ => (404, json!({"error": "no such route"})),
@@ -179,7 +193,7 @@ impl Daemon {
             Ok(armed) => (armed, None),
             Err(message) => (Vec::new(), Some(message)),
         };
-        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed, off: off_types(root) };
+        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed, off: off_types(root), project: conditions::read_project(root).unwrap_or_default() };
         self.state.lock().expect("daemon state").windows.insert(id.clone(), window);
         (200, json!({"window": id, "url": format!("http://127.0.0.1:{}/callback/{id}", self.port), "problem": problem}))
     }
@@ -195,6 +209,7 @@ impl Daemon {
                 Err(message) => problems.push(message),
             }
             w.off = off_types(&w.root);
+            w.project = conditions::read_project(&w.root).unwrap_or_default();
         }
         (200, json!({"reloaded": state.windows.len(), "problems": problems}))
     }
@@ -261,7 +276,26 @@ impl Daemon {
             self.trigger_log(uuid, kind, &id, "no_handler", "switched off");
             return (400, json!({"error": format!("the type {kind} is switched off in this project")}));
         }
+        if let Some(handler) = self.custom_handler(window, kind) {
+            return match self.run_handler(&id, handler, uuid, kind, input.clone()) {
+                Ok(name) => {
+                    self.trigger_log(uuid, kind, &id, "handled", &name);
+                    (200, json!({"result": "handled", "handler": name}))
+                }
+                Err(message) => {
+                    self.forget(uuid);
+                    self.trigger_log(uuid, kind, &id, "failed", &message);
+                    (400, json!({"error": message}))
+                }
+            };
+        }
+        let disabled_custom = self.handlers.iter().any(|h| h.types().iter().any(|t| t == kind));
         let handled = match kind {
+            _ if disabled_custom => {
+                self.forget(uuid);
+                self.trigger_log(uuid, kind, &id, "no_handler", "switched off");
+                return (400, json!({"error": format!("the type {kind} is switched off in this project")}));
+            }
             "notification" => self.notification(&id, uuid, &input),
             "journal" => self.journal(&id, &root, &input),
             "flowstate_update" => self.flow(&id, &root, &input),
@@ -284,6 +318,28 @@ impl Daemon {
                 (400, json!({"error": message}))
             }
         }
+    }
+
+    /// The custom handler for this type in this window: one chosen to override a standard type,
+    /// or one serving the type and not switched off.
+    fn custom_handler(&self, window: &str, kind: &str) -> Option<SharedHandler> {
+        let state = self.state.lock().expect("daemon state");
+        let project = &state.windows.get(window)?.project;
+        if let Some(chosen) = project.handlers.get(kind)
+            && let Some(handler) = self.handlers.iter().find(|h| h.name() == chosen)
+        {
+            return Some(handler.clone());
+        }
+        self.handlers.iter().find(|h| h.types().iter().any(|t| t == kind) && !project.disabled.iter().any(|d| d == h.name() || d == kind)).cloned()
+    }
+
+    fn run_handler(&self, window: &str, handler: SharedHandler, uuid: &str, kind: &str, input: Value) -> Result<String, String> {
+        let callback = Callback { uuid: uuid.to_string(), kind: kind.to_string(), fields: input };
+        let effect = pollster::block_on(handler.handle(&callback)).map_err(|e| format!("{}: {e}", handler.name()))?;
+        if let HandlerEffect::Agent { label, text } = effect {
+            self.deliver(window, WindowEvent::Notification { uuid: uuid.to_string(), label, text });
+        }
+        Ok(handler.name().to_string())
     }
 
     fn has_condition(&self, window: &str, kind: &str) -> bool {

@@ -70,7 +70,7 @@ value = 1000
 policies = [".harness/policies/pipeline.md"]
 ```
 
-A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. The settings' Callbacks tab shows the standard types, this project's conditions and the daemon; it writes `.harness/callbacks.toml` and makes the daemon read it (`r` alone reloads). Not built yet: custom handlers, so only `built-in` and `off` can be chosen; the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
+A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. The settings' Callbacks tab shows the standard types, this project's conditions and the daemon; it writes `.harness/callbacks.toml` and makes the daemon read it (`r` alone reloads). Custom handlers are crates implementing `CallbackHandler`, listed in `crates/cli/src/plugins.rs` of a local build: each serves its own types, can be chosen for a standard type in the tab, and can pass a message to the agent. Not built yet: the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
 
 ## Flow
 

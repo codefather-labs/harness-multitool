@@ -301,3 +301,88 @@ fn switching_off_refuses_and_a_reload_applies() {
     let base = format!("http://127.0.0.1:{}", f.daemon.port());
     assert_eq!(post(&format!("{base}/reload"), "{}").0, 401);
 }
+
+/// A custom handler for the tests: it counts its calls and can pass a message on, or fail.
+struct TestHandler {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl harness_api::CallbackHandler for TestHandler {
+    fn name(&self) -> &str {
+        "acme-handler"
+    }
+
+    fn types(&self) -> Vec<String> {
+        vec!["deploy_done".into()]
+    }
+
+    fn handle<'a>(&'a self, callback: &'a harness_api::Callback) -> harness_api::BoxFuture<'a, harness_api::PluginResult<harness_api::HandlerEffect>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let outcome = if callback.fields["fail"].as_bool() == Some(true) {
+            Err(harness_api::PluginError::new("it broke"))
+        } else {
+            Ok(harness_api::HandlerEffect::Agent { label: "deploy".into(), text: format!("got {}", callback.fields["env"]) })
+        };
+        Box::pin(std::future::ready(outcome))
+    }
+}
+
+fn with_handler() -> (Fixture, std::sync::Arc<TestHandler>) {
+    let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let handler = std::sync::Arc::new(TestHandler { calls: Default::default() });
+    let daemon = Daemon::start_with(data.path(), 0, vec![handler.clone()]).unwrap();
+    let client = Client::find(data.path()).unwrap();
+    let root_path = root.path().to_string_lossy().into_owned();
+    let reg = client.register(&root_path).unwrap();
+    let data_path = data.path().to_path_buf();
+    (Fixture { _data: data, _root: root, daemon, client, window: reg.window, url: reg.url, data_path, root_path }, handler)
+}
+
+fn calls(h: &TestHandler) -> usize {
+    h.calls.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn a_custom_handler_serves_its_type_once_and_can_tell_the_agent() {
+    let (f, h) = with_handler();
+    assert_eq!(f.client.handlers().unwrap(), vec![("acme-handler".to_string(), vec!["deploy_done".to_string()])]);
+    let body = json!({"uuid": "h1", "type": "deploy_done", "env": "prod"}).to_string();
+    let (status, reply) = post(&f.url, &body);
+    assert_eq!((status, reply["handler"].as_str()), (200, Some("acme-handler")));
+    assert_eq!(post(&f.url, &body).1["result"], "duplicate");
+    assert_eq!(calls(&h), 1, "INV-14: a repeat never reaches it");
+    assert_eq!(events(&f, 0)[0].event, WindowEvent::Notification { uuid: "h1".into(), label: "deploy".into(), text: "got \"prod\"".into() });
+    // A failure answers 400 and does not burn the uuid.
+    let failing = json!({"uuid": "h2", "type": "deploy_done", "fail": true}).to_string();
+    assert_eq!(post(&f.url, &failing).0, 400);
+    assert_eq!(post(&f.url, &json!({"uuid": "h2", "type": "deploy_done"}).to_string()).0, 200);
+}
+
+#[test]
+fn a_custom_handler_can_be_switched_off_or_chosen_over_a_standard_type() {
+    let (f, h) = with_handler();
+    let set = |handlers: &[(&str, &str)], disabled: &[&str]| {
+        let settings = conditions::ProjectCallbacks {
+            handlers: handlers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            disabled: disabled.iter().map(|d| d.to_string()).collect(),
+        };
+        conditions::write_project(&f.root_path, &settings).unwrap();
+        f.client.reload().unwrap();
+    };
+    set(&[], &["acme-handler"]);
+    assert_eq!(post(&f.url, &json!({"uuid": "o1", "type": "deploy_done"}).to_string()).0, 400);
+    assert_eq!(calls(&h), 0);
+
+    set(&[("notification", "acme-handler")], &[]);
+    let (_, reply) = post(&f.url, &json!({"uuid": "o2", "type": "notification", "env": "x"}).to_string());
+    assert_eq!(reply["handler"], "acme-handler");
+    assert_eq!(calls(&h), 1);
+
+    set(&[("notification", "built-in")], &[]);
+    let (_, reply) = post(&f.url, &json!({"uuid": "o3", "type": "notification", "text": "plain"}).to_string());
+    assert_eq!(reply["handler"], "notification");
+    assert_eq!(calls(&h), 1);
+    let base = format!("http://127.0.0.1:{}", f.daemon.port());
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+    assert_eq!(agent.get(format!("{base}/handlers")).call().unwrap().status().as_u16(), 401);
+}

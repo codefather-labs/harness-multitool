@@ -318,9 +318,20 @@ pub trait Condition {
     fn policies(&self) -> Vec<String>;
 }
 
-/// IF-16. Handles callbacks of the types it is bound to; cannot turn off INV-14.
+/// What a handler wants done with a callback it handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandlerEffect {
+    /// Nothing reaches the agent.
+    Quiet,
+    /// One message into the agent's input, marked as external data (INV-12).
+    Agent { label: String, text: String },
+}
+
+/// IF-16. Handles callbacks of the types it serves, or a standard type when chosen for it. The
+/// daemon calls it after its own checks, so it cannot turn off INV-14.
 pub trait CallbackHandler {
     fn name(&self) -> &str;
+    /// The custom types it serves; empty for one that only overrides standard types.
     fn types(&self) -> Vec<String>;
-    fn handle<'a>(&'a self, callback: &'a Callback) -> BoxFuture<'a, PluginResult<()>>;
+    fn handle<'a>(&'a self, callback: &'a Callback) -> BoxFuture<'a, PluginResult<HandlerEffect>>;
 }

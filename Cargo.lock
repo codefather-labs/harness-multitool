@@ -993,6 +993,7 @@ version = "0.1.0-dev"
 dependencies = [
  "harness-api",
  "harness-memory-journal",
+ "pollster",
  "serde",
  "serde_json",
  "tempfile",

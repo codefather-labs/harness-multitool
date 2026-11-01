@@ -99,6 +99,10 @@ Plugins are crates linked into the binary (CON-2). A reload rebuilds the local b
 
 A project's journal, mind maps and flowcharts are mirrored into its `docs/` tree (CON-43): `project-init` creates the tree and `.harness/` (CON-44); a `PostToolUse` hook on every memory write tells the agent which file to update; a built-in check linked by doc id reminds it once at `Stop` and runs as `multitool docs check` in CI (CON-45) ([ADR 0017](../decisions/0017-docs-mirror-memory.md)).
 
+## A local build
+
+`crates/cli/src/plugins.rs` is where a local build lists its own callback handlers (IF-16); the daemon runs them.
+
 ## Builds
 
 - **Native:** the core, every interface crate, the default plugins and the platform's native implementation; the user's own plugin crates are added in their local build (CON-2).

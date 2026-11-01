@@ -9,6 +9,7 @@ use frontend_tui::{Theme, fixtures};
 use tui_snapshot::{Raster, side_by_side};
 
 mod config;
+mod plugins;
 
 #[derive(Parser)]
 #[command(name = "multitool", version, about = "harness-multitool")]
@@ -120,7 +121,7 @@ fn main() -> Result<()> {
         Command::Run { prompt, yes } => run_once(&prompt, yes),
         Command::Daemon { port } => {
             let dir = config::data_dir()?;
-            let daemon = harness_daemon::Daemon::start(&dir, port).map_err(|e| anyhow!(e))?;
+            let daemon = harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()).map_err(|e| anyhow!(e))?;
             println!("daemon on 127.0.0.1:{}", daemon.port());
             loop {
                 std::thread::park();
@@ -387,10 +388,16 @@ impl Live {
 
     /// What the settings' Callbacks tab shows: this project's files and this build's handlers.
     fn callbacks_page(&self) -> frontend_tui::model::CallbacksPage {
-        use frontend_tui::model::{CallbacksPage, ConditionRow};
+        use frontend_tui::model::{CallbacksPage, ConditionRow, CustomRow};
         let project = harness_daemon::conditions::read_project(&self.root).unwrap_or_default();
+        let client = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d));
+        let handlers = client.as_ref().and_then(|c| c.handlers().ok()).unwrap_or_default();
         let mut standard = frontend_tui::overlay::standard_rows();
         for row in &mut standard {
+            // Any handler of this build can stand in for a standard type.
+            for (name, _) in &handlers {
+                row.implementations.insert(row.implementations.len() - 1, name.clone());
+            }
             if let Some(chosen) = project.handlers.get(&row.name).and_then(|h| row.implementations.iter().position(|i| i == h)) {
                 row.chosen = chosen;
             }
@@ -404,8 +411,13 @@ impl Live {
                 ConditionRow { on: !project.disabled.contains(&c.name), name: c.name, listens_to: c.on, rule, policy: c.policies.join(", ") }
             })
             .collect();
-        let daemon = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
-        CallbacksPage { standard, custom: Vec::new(), conditions, daemon, cursor: 0, open: None }
+        let custom = handlers
+            .iter()
+            .filter(|(_, types)| !types.is_empty())
+            .map(|(name, types)| CustomRow { name: name.clone(), implementation: types.join(", "), on: !project.disabled.contains(name) })
+            .collect();
+        let daemon = client.map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
+        CallbacksPage { standard, custom, conditions, daemon, cursor: 0, open: None }
     }
 
     fn reload_daemon(&self) -> String {

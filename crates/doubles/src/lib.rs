@@ -384,9 +384,9 @@ impl CallbackHandler for RecordingHandler {
         vec!["notification".into()]
     }
 
-    fn handle<'a>(&'a self, callback: &'a Callback) -> BoxFuture<'a, PluginResult<()>> {
+    fn handle<'a>(&'a self, callback: &'a Callback) -> BoxFuture<'a, PluginResult<HandlerEffect>> {
         self.handled.borrow_mut().push(callback.clone());
-        ready(Ok(()))
+        ready(Ok(HandlerEffect::Quiet))
     }
 }
 

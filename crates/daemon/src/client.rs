@@ -85,6 +85,23 @@ impl Client {
         self.base.rsplit(':').next().unwrap_or_default()
     }
 
+    /// The custom handlers the daemon's build has: (name, types).
+    pub fn handlers(&self) -> Result<Vec<(String, Vec<String>)>, String> {
+        let mut response = self
+            .agent
+            .get(format!("{}/handlers", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .call()
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        let body: Value = response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))?;
+        Ok(body["handlers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|h| (h["name"].as_str().unwrap_or_default().to_string(), h["types"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect()))
+            .collect())
+    }
+
     /// The daemon reads the projects' callback files again.
     pub fn reload(&self) -> Result<Value, String> {
         let mut response = self
