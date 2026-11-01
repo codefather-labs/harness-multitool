@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Debug: a Claude Code conversation brought onto the harness, in a real TUI in a pty (ADR 0022).
 By default a synthetic conversation and a fake `claude`: the old talk is drawn, the first message
-forks, the next resumes the fork, the original is not written. REAL_CLAUDE=1 CONVERSATION=<id> runs
+goes on under its own id, with no fork; every byte that was there stays. REAL_CLAUDE=1 CONVERSATION=<id> runs
 from the current directory on the real conversation and binary, one question, and reports how long
 each step took. Needs pyte and a build with --features claude-code.
 Usage: tools/pty_import.py <absolute path to multitool>"""
@@ -26,7 +26,7 @@ else:
     open(fake, "w").write(f"""#!/bin/sh
 echo "$@" >> {calls}
 cat > /dev/null
-echo '{{"type":"system","subtype":"init","session_id":"forked-2","model":"fake-model"}}'
+echo '{{"type":"system","subtype":"init","session_id":"{cid}","model":"fake-model"}}'
 echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"a new answer"}}]}}}}'
 echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":5,"output_tokens":2}}}}'
 """)
@@ -68,7 +68,7 @@ def send(s):
 pump(1.5); until("the start page lists it", lambda: "imported" in text() or "Old talk" in text() or "the first thing" in text() or cid[:8] in text() or True, 1)
 os.write(fd, b"r"); until("opened", lambda: "BROUGHT IN" in text(), 120)
 t = text(); print("\n".join(l for l in t.splitlines()[-16:])[:900])
-assert "goes on here in a fork" in t, t
+assert "It is one conversation" in t, t
 if not real:
     os.write(fd, b"\x1b[5~"); pump(0.3); assert "an old answer" in text(), "the old talk is drawn: " + text(); os.write(fd, b"\x1b[6~"); pump(0.2)
 send(QUESTION + "\r")
@@ -81,12 +81,12 @@ if real:
     assert open(original, "rb").read(size_before) and digest(size_before) == before, "the original's bytes"
     print("original's bytes: the same; it grew by", os.path.getsize(original) - size_before)
     os.kill(pid, 15); sys.exit(0)
-until("the fork answers", lambda: "a new answer" in text(), 10)
+until("it answers", lambda: "a new answer" in text(), 10)
 pump(0.5); send("again\r"); pump(1.5)
 call = open(calls).read().splitlines()
 assert len(call) == 2, call
-assert f"--resume {cid} --fork-session" in call[0], call[0]
-assert "--resume forked-2" in call[1] and "--fork-session" not in call[1], call[1]
-assert digest(size_before) == before and os.path.getsize(original) == size_before, "the original is not written"
-print("first forks, then resumes the fork; the original is whole"); print("ok")
+assert f"--resume {cid}" in call[0] and "--fork-session" not in call[0], call[0]
+assert f"--resume {cid}" in call[1] and "--fork-session" not in call[1], call[1]
+assert digest(size_before) == before, "every byte that was there stays"
+print("one conversation under its own id; every byte that was there stays"); print("ok")
 os.kill(pid, 15)

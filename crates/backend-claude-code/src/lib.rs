@@ -254,7 +254,9 @@ impl ClaudeCode {
             let _ = stderr.read_to_string(&mut text);
             text
         });
-        let mut mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, request.fork);
+        // A session going on with no total on record (just linked, or forked): its first total only sets the base.
+        let unknown = request.fork || (request.session.is_some() && request.cost_total_micro_usd == 0);
+        let mut mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, unknown);
         let stop_now = |child: &mut std::process::Child| {
             let _ = child.kill();
             let _ = child.wait();

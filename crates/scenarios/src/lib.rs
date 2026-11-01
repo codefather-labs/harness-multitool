@@ -251,6 +251,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::ContextSummary { text } => format!("summary     {} chars", text.len()),
         Event::BackendCost { total_micro_usd } => format!("cost        {total_micro_usd} in all"),
         Event::ConversationImported { source, id, .. } => format!("imported    {source} {id}"),
+        Event::FormSynced { source, id, .. } => format!("form        {source} {id}"),
     };
     format!("{:>4} {:>6}ms  {body}", entry.seq, entry.at_ms)
 }

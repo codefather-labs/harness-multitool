@@ -15,6 +15,6 @@ With Claude Code, the daemon brings the transcript up to all earlier history and
 
 Only a scripted run, `multitool run` for now, and a window that cannot have a daemon run sessions of their own. A daemon of another build is replaced when it is idle; if it is running conversations, the window works on its own.
 
-## What this costs
+## What this asks of a window
 
-Tools and providers see the daemon's environment, from when it started, not the terminal of a window: an API key set in one shell does not reach a daemon started from another.
+A window's environment travels with its operations and stays in the daemon's memory for that window's sessions.

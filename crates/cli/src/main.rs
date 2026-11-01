@@ -1093,10 +1093,13 @@ impl Live {
             }
             if opened == harness_session::remote::Opened::Attached {
                 view.generating = true;
-                self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
             } else {
                 feed.run_ended(view);
             }
+            self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
+            // What the next message goes through, not what the last one went through.
+            frontend_tui::live::set_status(view, "ADAPTER", &self.provider);
+            frontend_tui::live::set_status(view, "MODEL", &self.model);
             self.feeds.insert(tab, feed);
         }
         Some(state)
@@ -1523,14 +1526,20 @@ fn import_conversation(source: &str, id: Option<&str>) -> Result<()> {
         }
         return Ok(());
     };
+    let data_dir = config::data_dir()?;
+    // One conversation, wherever it is opened: it is linked once, and an open catches up.
+    if let Some(session) = harness_session::linked_session(&data_dir.to_string_lossy(), &root, source, id) {
+        println!("already here, linked: session {session}");
+        println!("Opening it brings in what {source} gained since. Open it from the start page, in this directory.");
+        return Ok(());
+    }
     let imported = conversations.read(&root, id).map_err(|e| anyhow!(e.to_string()))?;
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
-    let data_dir = config::data_dir()?;
     let session = harness_session::store_imported(&data_dir.to_string_lossy(), &root, &imported, now_ms).map_err(|e| anyhow!(e))?;
     println!("imported \"{}\": {} entries, {} damaged lines passed over", imported.info.title, imported.entries.len(), imported.damaged);
     println!("session: {session}");
-    println!("The original is untouched. It goes on in a fork at your first message, so it opens in {source} as before.");
-    println!("Open it from the start page with the provider set to {source}, in this directory.");
+    println!("It is linked, not copied: one conversation in {source} and here, under the same id. Only one of them can write at a time.");
+    println!("Open it from the start page, in this directory.");
     Ok(())
 }
 

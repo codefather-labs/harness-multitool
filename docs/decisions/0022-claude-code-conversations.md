@@ -1,6 +1,6 @@
 # 0022 — Moving a Claude Code conversation onto the harness
 
-- **Status:** accepted · **Decided by:** the project owner, 2026-11-01
+- **Status:** accepted; its fork is replaced by [ADR 0025](0025-one-conversation-in-every-form.md) · **Decided by:** the project owner, 2026-11-01
 - **Specs:** IF-17, IF-18, CON-69, CON-70, CON-71, CON-72; builds on [ADR 0020](0020-claude-code-delegate.md)
 
 ## Decision

@@ -423,6 +423,17 @@ pub struct ImportedConversation {
     pub damaged: usize,
 }
 
+/// What a form gained past a position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PulledForm {
+    /// In the log's terms; their numbers mean nothing.
+    pub entries: Vec<crate::event::LogEntry>,
+    /// Where it stands now; the same one when nothing changed.
+    pub cursor: String,
+    /// The form was rewound behind the position: `entries` are its new branch.
+    pub rewound: bool,
+}
+
 /// IF-18: a provider's own form of a conversation, read into the harness's log and written from
 /// it. The log is the conversation; this is how it reaches a provider that keeps its own.
 pub trait ConversationFormat {
@@ -433,4 +444,16 @@ pub trait ConversationFormat {
     /// Writes this history as a new conversation of the provider and returns its id. The history
     /// ends where the next message will go on.
     fn write(&self, root: &str, title: &str, history: &[Message]) -> PluginResult<String>;
+    /// Where the form stands now, for a position to go on from.
+    fn tip(&self, root: &str, id: &str) -> PluginResult<String>;
+    /// Where the form stands now, knowing it stood at `cursor`: for a position to move on from
+    /// without reading what is behind it.
+    fn tip_after(&self, root: &str, id: &str, cursor: &str) -> PluginResult<String>;
+    /// What the form gained past `cursor`. It may be read while another program writes it.
+    fn pull(&self, root: &str, id: &str, cursor: &str) -> PluginResult<PulledForm>;
+    /// Appends this history at `cursor`, the form's tip, and returns the new position. Every byte
+    /// already there stays. Refused if the form moved past `cursor`.
+    fn append(&self, root: &str, id: &str, cursor: &str, history: &[Message]) -> PluginResult<String>;
+    /// The provider's own program that has this conversation open right now, in words for the user.
+    fn held_by(&self, id: &str) -> Option<String>;
 }

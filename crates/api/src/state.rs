@@ -37,6 +37,16 @@ impl TaskState {
     }
 }
 
+/// Where a provider's form of this conversation stands against the log.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FormLink {
+    pub id: String,
+    /// The position reached in the form, in the form's own terms.
+    pub cursor: String,
+    /// How many of the session's messages it holds.
+    pub holds: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
     pub task: TaskState,
@@ -52,6 +62,9 @@ pub struct SessionState {
     pub backend_session: Option<String>,
     /// The next run forks `backend_session`, which is another session's own.
     pub backend_fork: bool,
+    /// The forms of this conversation that exist, by provider (ADR 0025).
+    #[serde(default)]
+    pub forms: std::collections::BTreeMap<String, FormLink>,
     /// Who took the last turn: what they signed goes to no one else.
     pub turn_model: Option<(String, String)>,
     pub backend_cost_total: u64,
@@ -137,6 +150,11 @@ impl SessionState {
                 if self.messages.last().is_some_and(|m| m.role == Role::User) {
                     self.messages.push(Message { role: Role::Assistant, content: vec![Content::Text { text: "[the conversation goes on here]".into() }] });
                 }
+            }
+            Event::FormSynced { source, id, cursor, holds } => {
+                self.backend_session = Some(id.clone());
+                self.backend_fork = false;
+                self.forms.insert(source.clone(), FormLink { id: id.clone(), cursor: cursor.clone(), holds: holds.unwrap_or(self.messages.len()) });
             }
             Event::AgentName { name, .. } => self.agent_name = Some(name.clone()),
             Event::PlanMode { on, .. } => self.plan_mode = *on,

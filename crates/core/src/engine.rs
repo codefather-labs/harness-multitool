@@ -112,6 +112,13 @@ impl Engine {
         self.parts.store.load(&self.session).await.map_err(|e| format!("session store: {e}"))
     }
 
+    /// A session just opened: the log catches up with its form, and is saved. True if it gained.
+    pub async fn catch_up(&self) -> bool {
+        let gained = self.pull_form().await;
+        let _ = self.flush().await;
+        gained
+    }
+
     /// Continues a session from its log: the state is the fold of the entries (INV-5).
     pub fn resume(&self, entries: &[LogEntry]) {
         let mut state = self.state.borrow_mut();
@@ -378,32 +385,134 @@ impl Engine {
         let _ = self.flush().await;
     }
 
-    /// A session made on another provider goes on here: its history is written in the backend's own
-    /// form first (IF-18). All but this message's own words, which go as the prompt.
-    async fn hand_over(&self) -> Result<(), String> {
+    /// The provider's form of this conversation and where it stands, if it has one here.
+    fn form(&self) -> Option<(Rc<dyn harness_api::ConversationFormat>, harness_api::state::FormLink)> {
+        let format = self.parts.conversations.clone()?;
+        let link = self.state.borrow().forms.get(format.name())?.clone();
+        Some((format, link))
+    }
+
+    /// INV-20: what the form gained outside the harness goes into the log. A provider's own
+    /// program keeps writing the form while this reads. True if the log gained anything.
+    pub async fn pull_form(&self) -> bool {
+        let Some((format, link)) = self.form() else { return false };
+        let source = format.name().to_string();
+        let pulled = match format.pull(&self.root, &link.id, &link.cursor) {
+            Ok(pulled) => pulled,
+            Err(e) => {
+                self.emit(Event::Error { source, message: e.to_string() });
+                return false;
+            }
+        };
+        if pulled.cursor == link.cursor {
+            return false;
+        }
+        // What the form did not have yet goes after what it gained, so the two read the same.
+        let unsent: Vec<harness_api::Message> = self.state.borrow().messages.get(link.holds..).unwrap_or_default().to_vec();
+        let gained = !pulled.entries.is_empty();
+        if pulled.rewound {
+            self.emit(Event::Error { source: source.clone(), message: "this conversation was rewound in the provider's program; the log keeps what was said before, and what follows is the new branch".to_string() });
+        }
+        for entry in pulled.entries {
+            self.emit(entry.event);
+        }
+        self.emit(Event::FormSynced { source: source.clone(), id: link.id.clone(), cursor: pulled.cursor.clone(), holds: None });
+        if !unsent.is_empty() {
+            let history = harness_api::provider_ready(&unsent);
+            match format.append(&self.root, &link.id, &pulled.cursor, &history) {
+                Ok(cursor) => self.emit(Event::FormSynced { source, id: link.id, cursor, holds: None }),
+                Err(e) => self.emit(Event::Error { source, message: e.to_string() }),
+            }
+        }
+        gained
+    }
+
+    /// INV-20: what the log gained goes to the form. With `holding_prompt`, all but the last
+    /// message's own words, which the provider's program gets as its prompt and records itself.
+    /// A failure moves nothing, so the next step tries again from the same place.
+    fn push_form(&self, holding_prompt: bool) -> Result<(), String> {
+        let Some((format, link)) = self.form() else { return Ok(()) };
         let state = self.state.borrow().clone();
-        let Some(format) = self.parts.conversations.clone().filter(|_| state.backend_session.is_none() && state.messages.len() > 1) else { return Ok(()) };
-        let mut history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+        let end = state.messages.len();
+        if link.holds >= end {
+            return Ok(());
+        }
+        let (mut history, holds) = (harness_api::provider_ready(&state.messages[link.holds..end]), if holding_prompt { end - 1 } else { end });
+        if holding_prompt {
+            Self::without_prompt(&mut history);
+            if history.is_empty() {
+                return Ok(());
+            }
+        }
+        if history.is_empty() {
+            self.emit(Event::FormSynced { source: format.name().to_string(), id: link.id, cursor: link.cursor, holds: Some(holds) });
+            return Ok(());
+        }
+        let cursor = format.append(&self.root, &link.id, &link.cursor, &history).map_err(|e| e.to_string())?;
+        self.emit(Event::FormSynced { source: format.name().to_string(), id: link.id, cursor, holds: Some(holds) });
+        Ok(())
+    }
+
+    fn without_prompt(history: &mut Vec<harness_api::Message>) {
         if let Some(last) = history.last_mut().filter(|m| m.role == harness_api::Role::User) {
             last.content.retain(|c| !matches!(c, Content::Text { .. }));
         }
         history.retain(|m| !m.content.is_empty());
+    }
+
+    /// A step that is not the provider's own program: the form hears of it now, or an error says
+    /// it did not. The conversation goes on either way: the log has it.
+    fn push_form_or_say(&self) {
+        if let Err(message) = self.push_form(false) {
+            let source = self.parts.conversations.as_ref().map_or("form".to_string(), |f| f.name().to_string());
+            self.emit(Event::Error { source, message });
+        }
+    }
+
+    /// A session made on another provider goes on here: its history is written in the backend's own
+    /// form first (IF-18). A session with a form has it brought up to date; all but this message's
+    /// own words, which go as the prompt.
+    async fn hand_over(&self) -> Result<(), String> {
+        if self.form().is_some() {
+            return self.push_form(true);
+        }
+        let state = self.state.borrow().clone();
+        let Some(format) = self.parts.conversations.clone().filter(|_| state.backend_session.is_none() && state.messages.len() > 1) else { return Ok(()) };
+        let mut history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+        Self::without_prompt(&mut history);
         if history.is_empty() {
             return Ok(());
         }
         let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
-        self.emit(Event::BackendSession { id });
+        let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
+        self.emit(Event::FormSynced { source: format.name().to_string(), id, cursor, holds: Some(state.messages.len() - 1) });
         Ok(())
+    }
+
+    /// The provider's own program has written its turns into its form: the same lines the log has
+    /// from its stream. The form's position moves on past them, and this links a new conversation.
+    fn record_tip(&self) {
+        let Some(format) = self.parts.conversations.clone() else { return };
+        let Some(id) = self.state.borrow().backend_session.clone() else { return };
+        let known = self.state.borrow().forms.get(format.name()).filter(|l| l.id == id).map(|l| l.cursor.clone());
+        let tip = match known {
+            Some(cursor) => format.tip_after(&self.root, &id, &cursor),
+            None => format.tip(&self.root, &id),
+        };
+        match tip {
+            Ok(cursor) => self.emit(Event::FormSynced { source: format.name().to_string(), id, cursor, holds: None }),
+            Err(e) => self.emit(Event::Error { source: format.name().to_string(), message: e.to_string() }),
+        }
     }
 
     /// The turns of a message on an agent backend (IF-17): it does the work, and the engine keeps
     /// the log, the stop and the verdict.
     async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>) -> RunEnd {
         let source = backend.name().to_string();
-        if let Err(message) = self.hand_over().await {
-            return self.fail(&source, message, protocol);
-        }
         loop {
+            if let Err(message) = self.hand_over().await {
+                return self.fail(&source, message, protocol);
+            }
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
             }
@@ -418,6 +527,7 @@ impl Engine {
                 !self.stop.is_set()
             };
             let end = backend.run(request, &mut sink).await;
+            self.record_tip();
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
             }
@@ -485,7 +595,18 @@ impl Engine {
     }
 
     async fn run_event(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
+        // CON-78: one writer to a form. Nothing is taken in that could not go on.
+        if let Some((format, link)) = self.form()
+            && let Some(holder) = format.held_by(&link.id)
+        {
+            let message = format!("This conversation is open in {holder}. Leave it there and send again: one writer at a time.");
+            self.emit(Event::Error { source: format.name().to_string(), message: message.clone() });
+            let _ = self.flush().await;
+            return RunEnd::Failed(message);
+        }
+        self.pull_form().await;
         let end = self.run_inner(event, text, protocol).await;
+        self.push_form_or_say();
         if let Err(message) = self.flush().await {
             self.emit(Event::Error { source: "store".into(), message: message.clone() });
             return RunEnd::Failed(message);
@@ -512,12 +633,13 @@ impl Engine {
         if let Some(backend) = self.parts.backend.clone() {
             return self.run_backend(backend.as_ref(), protocol).await;
         }
-        // From here on the backend's own session lacks what this provider does.
-        if self.state.borrow().backend_session.is_some() {
+        // From here on the backend's own session lacks what this provider does; a form hears it.
+        if self.state.borrow().backend_session.is_some() && self.form().is_none() {
             self.emit(Event::BackendSessionLost);
         }
 
         loop {
+            self.push_form_or_say();
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
             }

@@ -185,10 +185,10 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
-            Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost => {}
+            Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost | Event::FormSynced { .. } => {}
             Event::ContextSummary { .. } => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["What is above went into a summary here.".to_string()] }),
             Event::ConversationImported { source, title, .. } => {
-                v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It goes on here in a fork at your next message; the original stays as it was.")] });
+                v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
             }
             Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
             Event::StepDebug { on, by } => {

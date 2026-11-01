@@ -23,3 +23,5 @@ What must hold at all times. Each invariant names how it is checked; an invarian
 | **INV-17** | **The format is the harness's own.** The log depends on no provider and stays usable with any of them disconnected. |
 | **INV-18** | **Any adapter, at any time, in any direction.** A conversation can be switched to any connected adapter between any two messages and goes on with what was said. |
 | **INV-19** | **A connected adapter brings its provider's conversations.** Connecting it means reading them, writing into them, and resuming them in the harness. |
+| **INV-20** | **Consistent at every moment, by design.** Every form of a conversation that exists holds what the log holds, and the log holds what the form holds; no step is taken on a stale side ([conversations.md](conversations.md)). |
+| **INV-21** | **There and back, at any moment.** A conversation moves between the harness and a provider's own program in either direction, any number of times: one conversation, no copy, no fork, the same id. |

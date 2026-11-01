@@ -247,6 +247,17 @@ pub fn store_imported(data_dir: &str, root: &str, imported: &ImportedConversatio
     Ok(id)
 }
 
+/// The session of this project already linked to this conversation of a provider, if there is one:
+/// bringing it in again is opening it (INV-21).
+pub fn linked_session(data_dir: &str, root: &str, source: &str, id: &str) -> Option<String> {
+    let short: String = id.chars().take(8).collect();
+    let prefix = format!("imported-{short}-");
+    let files = std::fs::read_dir(sessions_dir(data_dir, root)).ok()?;
+    let mut names: Vec<String> = files.flatten().filter_map(|f| f.file_name().to_str()?.strip_suffix(".jsonl").map(str::to_string)).filter(|n| n.starts_with(&prefix)).collect();
+    names.sort();
+    names.into_iter().rev().find(|name| read_log(data_dir, root, name).iter().rev().any(|e| matches!(&e.event, Event::FormSynced { source: s, id: i, .. } if s == source && i == id)))
+}
+
 /// A stored session's entries, cut off at a damaged last line (a crash can leave one).
 pub fn read_log(data_dir: &str, root: &str, id: &str) -> Vec<LogEntry> {
     let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
@@ -335,7 +346,10 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
             parts.backend = Some(delegate(&settings, &root, host.environment.clone())?);
-            parts.conversations = Some(Rc::from(conversation_source_in("claude-code", &*read)?));
+        }
+        // A connected provider's form is kept in line whichever provider runs the session (INV-20).
+        if settings.providers.values().any(|p| p["kind"] == "claude-code") {
+            parts.conversations = conversation_source_in("claude-code", &*read).ok().map(Rc::from);
         }
         Ok(parts)
     })
@@ -784,7 +798,13 @@ impl Sessions {
             let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag).with_inbox(inbox_for_thread);
             if resuming {
                 match pollster::block_on(engine.load_log()) {
-                    Ok(entries) => engine.resume(&entries),
+                    Ok(entries) => {
+                        engine.resume(&entries);
+                        // INV-20: what its form gained meanwhile comes in before anything reads it.
+                        if pollster::block_on(engine.catch_up()) {
+                            let _ = to_frontend.send(FromSession::Ended { tab, end: RunEnd::AwaitingInput });
+                        }
+                    }
                     Err(message) => {
                         let _ = to_frontend.send(FromSession::Unavailable { tab, message });
                     }

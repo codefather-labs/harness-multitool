@@ -1,6 +1,6 @@
 # Conversations
 
-How the harness stores a conversation and carries it between providers. It is the specification behind [ADR 0022](../decisions/0022-claude-code-conversations.md), [ADR 0023](../decisions/0023-the-log-is-the-conversation.md) and [ADR 0024](../decisions/0024-conversations-live-in-the-daemon.md).
+How the harness stores a conversation and carries it between providers. It is the specification behind [ADR 0022](../decisions/0022-claude-code-conversations.md), [ADR 0023](../decisions/0023-the-log-is-the-conversation.md) and [ADR 0024](../decisions/0024-conversations-live-in-the-daemon.md) and [ADR 0025](../decisions/0025-one-conversation-in-every-form.md).
 
 ## The invariants
 
@@ -11,6 +11,8 @@ How the harness stores a conversation and carries it between providers. It is th
 | **INV-17** | **The format is the harness's own.** The log depends on no provider: it stays readable and usable with any provider disconnected. |
 | **INV-18** | **Any adapter, at any time, in any direction.** A conversation can be switched to any connected adapter between any two messages, and goes on with what was said so far. |
 | **INV-19** | **A connected adapter brings its provider's conversations.** Connecting a provider's adapter means reading that provider's conversations, writing into them, and resuming them in the harness. |
+| **INV-20** | **Consistent at every moment, by design.** Every form of a conversation that exists holds what the log holds, and the log holds what the form holds. No step of a conversation is taken on a stale side: what a form gained outside the harness reaches the log before anything reads it, and what the log gained reaches the form before the next call to any provider and when a run ends. |
+| **INV-21** | **There and back, at any moment.** A conversation can move between the harness and a provider's own program in either direction, any number of times, with nothing lost and nothing to do but open it there. It stays one conversation: no copy, no fork, the same id. |
 
 ## One message
 
@@ -32,6 +34,22 @@ sequenceDiagram
     D-->>F: bring it to the frontend
 ```
 
+Around every step the daemon keeps the forms in line with the log, whichever adapter runs the step:
+
+```mermaid
+flowchart TD
+    A[A session opens, or a message comes] --> B{Is the form held by the provider's own program?}
+    B -- yes, to send --> C[Refused, naming the program: one writer at a time]
+    B -- no --> D[Pull: what the form gained past its position goes into the log]
+    D --> E[Push: what the log gained past what the form holds is appended to the form]
+    E --> F[The step: a provider call, or the provider's own program]
+    F --> G{Did the provider's program write the form itself?}
+    G -- yes --> H[The form's new position is recorded; its lines are the ones the log already has]
+    G -- no --> E
+    H --> I[The run ends with log and form the same]
+    E --> I
+```
+
 A frontend sends operations and hears events: it holds a view, not the conversation. Everything the engine does (its log, its tools, its calls to a provider) happens in the daemon (IF-19, CON-75).
 
 ## The format
@@ -43,15 +61,19 @@ The conversation is the session's event log (INV-5): one JSON line per event, ap
 
 What the log holds about a provider is marked as such and is never needed to read the conversation: a block a model signed for itself (`OpaqueBlock`), and the id of a session a provider keeps of its own (`BackendSession`, `ConversationImported`).
 
+`FormSynced` links a session to a form: which provider, its id, the position reached in that form, and how many messages of the session the form holds. The next pull starts at that position and the next push at that count, so neither side is ever read or written twice, and a build without the adapter simply leaves the form behind until one with it opens the session.
+
 ## The forms of a conversation
 
 | Provider | Its form | Reading it | Writing it |
 |---|---|---|---|
-| Claude Code | a transcript file it keeps, per directory (IF-18) | `multitool import claude-code`, along the real chain of the file | a new transcript from the log, before the first message that needs it (CON-74) |
+| Claude Code | a transcript file it keeps, per directory (IF-18); `claude --resume` keeps its id and file | its real chain, whole on import and past the position after that | lines appended on its chain, and a new transcript for a session that has none (CON-74) |
 | ChatGPT plan, OpenAI-compatible, Ollama | the history in each request; nothing is kept with the provider | — | built from the log for every request |
 | Anthropic API | the history in each request | — | built from the log for every request, with the blocks this model signed |
 
 With Claude Code, the transcript is brought up to all earlier history and the new message goes as the prompt, and Claude Code records it itself. It refuses to go on from a file with no prompt, and writing the message first would send it twice. The end state is the one the chain describes: both hold the message before the reply starts.
+
+What the harness adds to a provider's form is only ever appended: every byte that was there stays as it was. A form is created for a session the first time the session goes on through that provider; one that exists is kept current from then on, through any other provider's turns.
 
 ## Transformation
 
@@ -75,10 +97,15 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 
 ## Switching
 
-- **To a provider with no form of its own:** the next request is built from the log. A backend session the log remembers no longer holds everything, so it is dropped (`BackendSessionLost`).
-- **To Claude Code, after turns elsewhere:** the log is written as a new transcript, and that session is resumed from then on.
-- **To Claude Code, from one of its own conversations with nothing elsewhere since:** its own session goes on, with its full record.
-- **A conversation brought in** goes on in a fork made at its first message (`--fork-session`). The original stays whole, and can be opened in Claude Code as before (CON-71).
+- **To a provider with no form of its own:** the next request is built from the log. A form the session has stays linked, and gets these turns too.
+- **To Claude Code, with a form:** that same conversation goes on: what other providers said was appended to it, and it resumes by its own id.
+- **To Claude Code, with no form yet:** the log is written as a new transcript, and that one is the session's form from then on.
+
+## Moving between the harness and a provider's program
+
+- **Onto the harness:** open it. A provider's conversation listed for this directory or brought in with `multitool import` is linked, not copied: opening it pulls what it gained. Importing it again gives the same session.
+- **Back:** open the same id in the provider's program, `claude --resume <id>`. Every turn made in the harness is already in its file, on any provider. Turns made there come back the same way at the next open.
+- **One writer at a time:** while the provider's own program has the conversation open, the harness shows it live but refuses to send, naming the program (CON-78). Leave it there and send again.
 
 ## When things go wrong
 
@@ -86,7 +113,11 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 |---|---|
 | A window goes away | Its runs finish in the daemon. The log has the reply, and the next window shows it (CON-76). |
 | A prompt with nobody to answer | A denial, once the window has not polled for 30 seconds. |
-| A session opened while its run is on elsewhere | Refused, saying why: one writer to a log (CON-77). |
+| A session open in a window still there | Refused, saying why: one writer to a log (CON-77). |
+| A session whose window went away, its run still on | The run comes to the window opening it: what was said, a waiting prompt, the rest live. |
+| The form was rewound in the provider's program | The log only grows: it gains the new branch and says that a rewind happened. |
+| A form cannot be written | An error on screen. The count of what it holds has not moved, so the next step tries again from there. |
+| A conversation open in the provider's program | Sending is refused, naming it (CON-78). |
 | The daemon stops | Its windows say so. The log keeps everything up to its last flush, and the conversation opens again. |
 | A daemon of another build | Replaced when idle. If it is running conversations, the window works on its own. |
 | Claude Code will not load a transcript | An error on screen, not a silent loss of context. Its format is undocumented and can change with its version. |
@@ -97,6 +128,8 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 | Check | What it proves |
 |---|---|
 | `tools/pty_daemon.py` | A TUI killed in the middle of a reply: the daemon finishes, the denied tool never runs, and a new window shows the reply and goes on |
+| `tools/real_move.py` | Real Claude Code and a real other provider: a conversation made in one, moved back and forth, each side naming every word told on the other; bytes before each append unchanged |
+| `tools/pty_attach.py` | A TUI killed with a run on: the next window takes the run over with its prompt, and nothing shows twice |
 | `tools/real_transform.py` | One session through real providers, each naming what the earlier ones were told |
 | `tools/pty_import.py` | A conversation brought in: drawn, forked at the first message, then resumed; the original's bytes unchanged |
 | `crates/session/tests/e2e.rs` | The daemon and a client in one process; a session brought in going on with another provider |

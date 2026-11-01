@@ -87,8 +87,18 @@ pub enum Event {
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },
     /// This session goes on with a conversation brought in from `source`: what precedes it in the
-    /// log is that conversation, drawn; its next message forks it (ADR 0022).
+    /// log is that conversation, drawn. On its own, with no `FormSynced` after it, its next message
+    /// forks it: how a session brought in before ADR 0025 goes on.
     ConversationImported { source: String, id: String, title: String },
+    /// This session's form at `source` is `id` and has reached `cursor`, holding `holds` of the
+    /// session's messages, or all of them so far (ADR 0025).
+    FormSynced {
+        source: String,
+        id: String,
+        cursor: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holds: Option<usize>,
+    },
     /// The agent's name in this session, and who gave it: `user` or `agent`.
     AgentName { name: String, by: String },
     /// Plan mode on or off, and who did it: `user` or `agent`.
