@@ -19,6 +19,9 @@ use crate::plan;
 use crate::registry::Parts;
 
 /// Asks the loop to stop at its next step. Safe to set from another thread.
+/// The tool the engine answers itself: the mode is its own state.
+const DEBUG_MODE_TOOL: &str = "debug_mode";
+
 /// How many binding entries the check for unchecked specifications looks at.
 const UNCHECKED_SCAN: usize = 500;
 
@@ -221,7 +224,24 @@ impl Engine {
             description: "Show the user the plan and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
             schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
         });
+        specs.push(ToolSpec {
+            name: DEBUG_MODE_TOOL.into(),
+            description: "Switch step-debug mode: event-driven debugging of a large pipeline, above all a distributed one. Only when the user asks, or when the task is debugging such a pipeline; not for a small program.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
+        });
         specs
+    }
+
+    /// Switches step-debug mode (ADR 0013). `by` is who did it, for the log.
+    pub async fn set_step_debug(&self, on: bool, by: &str) {
+        if self.state.borrow().step_debug == on {
+            return;
+        }
+        self.emit(Event::StepDebug { on, by: by.to_string() });
+        if on {
+            self.hooks(HookPoint::StepDebugEnter).await;
+        }
+        let _ = self.flush().await;
     }
 
     /// Switches plan mode (ADR 0016). `by` is who did it, for the log.
@@ -387,6 +407,18 @@ impl Engine {
     async fn tool_call(&self, call: &ToolCall) {
         if call.name == plan::ENTER_TOOL || call.name == plan::EXIT_TOOL {
             return self.plan_tool(call).await;
+        }
+        if call.name == DEBUG_MODE_TOOL {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            let (output, is_error) = match call.input["on"].as_bool() {
+                Some(on) => {
+                    self.set_step_debug(on, "agent").await;
+                    (format!("Step-debug mode is {}.", if on { "on" } else { "off" }), false)
+                }
+                None => ("on is required: true or false".to_string(), true),
+            };
+            self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
+            return;
         }
         let tool = self.parts.tools.get(&call.name).cloned();
         let capabilities = match tool.as_ref().map(|t| t.capabilities(&call.input)) {

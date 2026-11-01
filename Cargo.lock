@@ -994,6 +994,7 @@ dependencies = [
  "harness-api",
  "harness-memory-journal",
  "pollster",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

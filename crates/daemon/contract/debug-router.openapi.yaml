@@ -1,0 +1,76 @@
+openapi: 3.0.3
+info:
+  title: Step-debug router
+  version: "1"
+  description: >
+    The one contract of a debug router in a target app (ADR 0013, CON-27). The router exists only
+    when the app runs with MULTITOOL_DEBUG_MODE=1 (CON-25). A step waits for approve with no
+    timeout and no default action (CON-29). A product route added next to these imports and calls
+    what the real code calls, and holds no logic of its own (CON-28).
+security:
+  - bearer: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  schemas:
+    Status:
+      type: object
+      required: [waiting]
+      properties:
+        waiting:
+          type: boolean
+          description: Whether a step is waiting for approve.
+        instance:
+          type: string
+          description: The pass of the pipeline, as sent in flowstate_update.
+        node:
+          type: integer
+          description: The chart node the pipeline stands on.
+  responses:
+    Unauthorized:
+      description: No valid bearer token.
+paths:
+  /debug/status:
+    get:
+      summary: Where the pipeline stands. Changes nothing.
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /debug/approve:
+    post:
+      summary: Lets the waiting step go on to the next one.
+      responses:
+        "200":
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Nothing is waiting.
+  /debug/step-back:
+    post:
+      summary: >
+        Goes back one step. Only where that is really possible; otherwise this route does not
+        exist at all (404), and there is no stub.
+      responses:
+        "200":
+          description: Stepped back.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: There is nothing to step back to.

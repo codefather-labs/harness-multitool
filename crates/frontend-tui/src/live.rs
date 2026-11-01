@@ -161,6 +161,15 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
+            Event::StepDebug { on, by } => {
+                set_status(v, "DEBUG", if *on { "step" } else { "off" });
+                let line = if *on {
+                    format!("Step-debug mode is on ({by}): the agent walks the pipeline step by step. Each finished cycle is saved to .harness/debug/runs.sqlite.")
+                } else {
+                    format!("Step-debug mode is off ({by}).")
+                };
+                v.transcript.push(Item::Tips { label: "STEP DEBUG".into(), lines: vec![line] });
+            }
             Event::PlanMode { on, by } => {
                 set_status(v, "MODE", if *on { "plan" } else { "work" });
                 let line = if *on {

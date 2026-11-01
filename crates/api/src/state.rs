@@ -48,6 +48,8 @@ pub struct SessionState {
     pub hook_context: Vec<String>,
     /// Hook lines for the next model turn only.
     pub reminders: Vec<String>,
+    /// Step-debug mode (ADR 0013).
+    pub step_debug: bool,
     /// Plan mode (ADR 0016).
     pub plan_mode: bool,
     /// Messages before this index are left out of what goes to the model.
@@ -98,6 +100,7 @@ impl SessionState {
             }
             Event::Verification { evidence, .. } => self.evidence = Some(evidence.clone()),
             Event::PlanMode { on, .. } => self.plan_mode = *on,
+            Event::StepDebug { on, .. } => self.step_debug = *on,
             Event::Compacted { upto, .. } => self.compacted_upto = *upto,
             Event::Error { .. } => {}
         }

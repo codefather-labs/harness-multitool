@@ -46,4 +46,4 @@ Logs tell what happened after the fact; a debugger stops the program where it ru
 
 ## Open
 
-The debug-router contract itself is to be written (CON-27). The owner may add to this decision.
+The owner may add to this decision. The contract is `crates/daemon/contract/debug-router.openapi.yaml`; `multitool debug contract` prints it.

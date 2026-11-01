@@ -144,6 +144,17 @@ impl Client {
         }
     }
 
+    /// The window's session entered or left step-debug mode.
+    pub fn set_step_debug(&self, window: &str, on: bool) -> Result<(), String> {
+        let response = self
+            .agent
+            .post(format!("{}/window/step-debug", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .send(json!({"window": window, "on": on}).to_string())
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        if response.status() == 200 { Ok(()) } else { Err(format!("the daemon answered {}", response.status())) }
+    }
+
     /// What the daemon counts, for a look from outside.
     pub fn stats(&self) -> Result<Value, String> {
         let mut response = self

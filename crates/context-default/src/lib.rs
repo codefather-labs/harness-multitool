@@ -15,6 +15,9 @@ const LAST_ASK_CHARS: usize = 4000;
 /// In the prompt only while the mode is on (ADR 0016).
 const PLAN_RULES: &str = "\n\nPLAN MODE is on. Plan, do not build; do not get distracted by anything else. Available now: the journal, mind maps and flowcharts, reading, searching, single read-only commands, and fetching from the web. Nothing else runs: no edits, no commits, nothing with side effects.\n- Journal every decision, finding, assumption and open question as you reach it.\n- Each work item of the plan is a journal todo with its test protocol: what to test, regressions included, how, under which conditions, what evidence proves it. Rules the work must follow are specifications and constraints.\n- Open a mind map for what is known about the task: decisions, questions, constraints, alternatives rejected.\n- Draw a flowchart for each flow the plan changes or adds.\nWhen the plan is ready, call plan_exit with it: only the user's approval ends this mode. The plan is what the journal and maps hold, so the next session finds it.";
 
+/// In the prompt only while the mode is on (ADR 0013).
+const STEP_DEBUG_RULES: &str = "\n\nSTEP-DEBUG MODE is on: you walk a running pipeline step by step.\n1. Build a flowchart for each pipeline from its design, ending in nodes of kind end.\n2. Instrument the project with callbacks to your callback URL: notification brings data to you, journal only records, flowstate_update (map, node, instance, state, data) moves the chart. Each needs a uuid and a type.\n3. Make the pipeline wait after each callback for your approve, with no timeout and no default action: it never advances on its own.\n4. Build the debug router by the one contract: debug_contract gives it. Approve always; step back only where it is really possible, otherwise no route and no stub. A product route imports and calls what the real code calls and holds no logic of its own.\n5. All of this runs only with MULTITOOL_DEBUG_MODE=1 and with authorization; without the gate the code is inert. Check your router with: multitool debug check <url>, with the token in MULTITOOL_DEBUG_TOKEN.\nHold one pass at a time, so you can check each event. At an end node the run is saved to .harness/debug/runs.sqlite and the chart starts over; debug_runs reads them. Call debug_mode with on false when done.";
+
 pub struct JournalAware {
     pub root: String,
     /// One more line for the system prompt, e.g. where this window's callbacks go.
@@ -117,6 +120,9 @@ impl JournalAware {
         }
         if state.plan_mode {
             system.push_str(PLAN_RULES);
+        }
+        if state.step_debug {
+            system.push_str(STEP_DEBUG_RULES);
         }
         for line in self.note.iter().chain(&state.hook_context).chain(&state.reminders) {
             system.push('\n');

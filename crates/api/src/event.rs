@@ -31,6 +31,7 @@ pub enum HookPointKind {
     Stop,
     PostCompact,
     PlanEnter,
+    StepDebugEnter,
 }
 
 /// What a hook did (IF-6, ADR 0010).
@@ -71,6 +72,8 @@ pub enum Event {
     Verification { pass: bool, evidence: String },
     /// Plan mode on or off, and who did it: `user` or `agent`.
     PlanMode { on: bool, by: String },
+    /// Step-debug mode on or off (IF-0.5), and who did it.
+    StepDebug { on: bool, by: String },
     /// Messages before `upto` no longer go to the model; the log keeps them.
     Compacted { upto: usize, tokens_before: u64, tokens_after: u64 },
     /// A plugin failed; the task's state says what it meant for the task.

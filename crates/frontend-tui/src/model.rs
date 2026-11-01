@@ -68,6 +68,8 @@ pub enum Outgoing {
     Task { tab: u64, text: String, steps: Vec<String> },
     /// `/init`: create the docs tree and `.harness/`.
     Init { tab: u64 },
+    /// `/stepdebug`: step-debug mode on or off.
+    StepDebug { tab: u64, on: bool },
     /// `/plan`: plan mode on or off.
     Plan { tab: u64, on: bool },
     /// `/task trust`: approve the project's checks as last shown.

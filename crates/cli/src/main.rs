@@ -20,6 +20,24 @@ struct Cli {
 }
 
 #[derive(clap::Subcommand)]
+enum DebugAction {
+    /// Print the OpenAPI contract of a debug router.
+    Contract,
+    /// Test a running router against the contract; the token comes from MULTITOOL_DEBUG_TOKEN.
+    Check {
+        url: String,
+        /// Also send approve with the token, which moves a waiting pipeline on.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// The saved runs of the project in this directory, newest first.
+    Runs {
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
+}
+
+#[derive(clap::Subcommand)]
 enum DocsAction {
     /// Ids present, statuses matching, indexes complete; the prose is not judged.
     Check,
@@ -47,6 +65,11 @@ enum Command {
     Docs {
         #[command(subcommand)]
         action: DocsAction,
+    },
+    /// Step-debug: the router's contract, its check, and the saved runs.
+    Debug {
+        #[command(subcommand)]
+        action: DebugAction,
     },
     /// Debug the agent loop: run a named scenario on test doubles and print its log, one line per event.
     Trace {
@@ -82,6 +105,9 @@ enum Command {
         /// Start in plan mode: reads and plans, changes nothing.
         #[arg(long)]
         plan: bool,
+        /// Start in step-debug mode.
+        #[arg(long)]
+        step_debug: bool,
     },
     /// Write the user's configuration (config.toml in the OS's config directory).
     Setup {
@@ -156,7 +182,28 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Docs { action: DocsAction::Check } => docs_check(),
-        Command::Run { prompt, yes, verify, task, plan } => run_once(&prompt, yes, plan, (task || !verify.is_empty()).then_some(verify)),
+        Command::Debug { action: DebugAction::Contract } => {
+            print!("{}", harness_daemon::stepdebug::CONTRACT);
+            Ok(())
+        }
+        Command::Debug { action: DebugAction::Check { url, approve } } => {
+            let token = std::env::var("MULTITOOL_DEBUG_TOKEN").ok().filter(|t| !t.is_empty());
+            let report = harness_daemon::stepdebug::check_router(&url, token.as_deref(), approve);
+            report.iter().for_each(|c| println!("{} {}", if c.ok { "ok  " } else { "FAIL" }, c.line));
+            if report.iter().any(|c| !c.ok) {
+                bail!("the router breaks the contract");
+            }
+            Ok(())
+        }
+        Command::Debug { action: DebugAction::Runs { limit } } => {
+            let root = std::env::current_dir()?.to_string_lossy().into_owned();
+            for run in harness_daemon::stepdebug::runs(&root, limit).map_err(|e| anyhow!(e))? {
+                println!("run #{} map {} instance {} steps {}", run.id, run.map, run.instance, run.steps.len());
+                run.steps.iter().for_each(|s| println!("  {} node {} {}{} {}", s.at_ms, s.node, s.state, if s.off_chart { " off-chart" } else { "" }, s.data));
+            }
+            Ok(())
+        }
+        Command::Run { prompt, yes, verify, task, plan, step_debug } => run_once(&prompt, yes, plan, step_debug, (task || !verify.is_empty()).then_some(verify)),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
@@ -336,6 +383,8 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    step_debug_tabs: std::collections::HashSet<u64>,
+    window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
     first_start_done: bool,
     /// When the locked prompt on screen first showed.
     prompt_opened: Option<std::time::Instant>,
@@ -394,6 +443,10 @@ impl Live {
 
     /// Remembers a tab's window and hears its events from now on.
     fn listen(&mut self, tab: u64, client: harness_daemon::client::Client, window: harness_daemon::client::Registered) {
+        if self.step_debug_tabs.contains(&tab) {
+            let _ = client.set_step_debug(&window.window, true);
+        }
+        self.window_ids.insert(tab, (client.clone(), window.window.clone()));
         if let Ok(mut urls) = self.urls.lock() {
             urls.insert(tab, window.url.clone());
         }
@@ -443,6 +496,9 @@ impl Live {
             if let Some(session) = &saved.session {
                 let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
                 for entry in harness_session::read_log(&data, &self.root, session) {
+                    if let harness_api::Event::StepDebug { on, .. } = entry.event {
+                        self.note_step_debug(id, on);
+                    }
                     feed.apply(view, &entry);
                     w.journal.extend(feed.take_known());
                 }
@@ -464,6 +520,19 @@ impl Live {
     }
 
     /// Moves a hot reload along: the build's result, then the swap at a safe point.
+    /// The daemon saves runs only for a window whose session is in the mode. A failure here costs
+    /// a saved run, not the session.
+    fn note_step_debug(&mut self, tab: u64, on: bool) {
+        if on {
+            self.step_debug_tabs.insert(tab);
+        } else {
+            self.step_debug_tabs.remove(&tab);
+        }
+        if let Some((client, window)) = self.window_ids.get(&tab) {
+            let _ = client.set_step_debug(window, on);
+        }
+    }
+
     /// CON-44: the one time this project is asked about its docs tree.
     fn tick_first_start(&mut self, w: &mut frontend_tui::model::Workspace) {
         if std::mem::replace(&mut self.first_start_done, true) || !self.real {
@@ -570,7 +639,11 @@ impl Live {
                     w.journal.push(card.clone());
                     push_card(&mut w.tabs[index].view, Item::Journal(card), &now);
                 }
-                WindowEvent::Flow { map, instance, node, state, off_chart, path } => {
+                WindowEvent::Flow { map, instance, node, state, off_chart, path, run } => {
+                    if let Some(run) = run {
+                        let line = format!("Pass {instance} reached the end of {}: saved as run #{run} in .harness/debug/runs.sqlite, and the chart starts over.", map.title);
+                        w.tabs[index].view.transcript.push(Item::Tips { label: "CYCLE SAVED".into(), lines: vec![line] });
+                    }
                     let feed = self.feeds.entry(tab).or_insert_with(|| frontend_tui::live::Feed::new(local_time, window_size));
                     feed.flow(&mut w.tabs[index].view, &map, &instance, node, &state, off_chart, &path, &now, chrono::Utc::now().timestamp_millis() as u64);
                 }
@@ -601,7 +674,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -714,6 +787,9 @@ impl Live {
             let view = w.view_mut();
             view.transcript.clear();
             for entry in &log {
+                if let harness_api::Event::StepDebug { on, .. } = entry.event {
+                    self.note_step_debug(tab, on);
+                }
                 feed.apply(view, entry);
             }
             feed.run_ended(view);
@@ -755,6 +831,7 @@ impl Live {
                     }
                 }
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
+                Outgoing::StepDebug { tab, on } => self.sessions.step_debug(tab, on),
                 Outgoing::Init { tab } => {
                     let lines = match init_project(&self.root) {
                         Ok(created) if created.is_empty() => vec!["Nothing to do: the docs tree and .harness/ are already here.".to_string()],
@@ -835,6 +912,9 @@ impl Live {
             let window = self.context_window;
             match message {
                 FromSession::Entry { tab, entry } => {
+                    if let harness_api::Event::StepDebug { on, .. } = entry.event {
+                        self.note_step_debug(tab, on);
+                    }
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.apply(&mut t.view, &entry);
@@ -897,12 +977,15 @@ fn docs_check() -> Result<()> {
     bail!("{} findings", found.len())
 }
 
-fn run_once(prompt: &str, yes: bool, plan: bool, task: Option<Vec<String>>) -> Result<()> {
+fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
     let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root).with_data_dir(&config::data_dir()?.to_string_lossy());
     if plan {
         sessions.plan(1, true);
+    }
+    if step_debug {
+        sessions.step_debug(1, true);
     }
     match task {
         Some(steps) => {

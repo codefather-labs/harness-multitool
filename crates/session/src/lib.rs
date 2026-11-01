@@ -254,11 +254,15 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             platform.net = Rc::new(wire::WireLog::new(platform.net.clone(), path));
         }
         let mut selection = settings.selection();
-        selection.tools.extend(["plugins_list".to_string(), "plugins_reload".to_string()]);
+        selection.tools.extend(["plugins_list".to_string(), "plugins_reload".to_string(), "debug_contract".to_string(), "debug_runs".to_string()]);
+        let root_debug = root.clone();
+
         let mut registry = registry(&settings, &root, &data, (host.note)(tab));
         let (plugins, reload) = (host.plugins.clone(), host.reload.clone());
         registry.tool("plugins_list", move |_| Ok(Rc::new(host_tools::PluginsList(plugins.clone()))));
         registry.tool("plugins_reload", move |_| Ok(Rc::new(host_tools::PluginsReload(reload.clone()))));
+        registry.tool("debug_contract", |_| Ok(Rc::new(host_tools::DebugContract)));
+        registry.tool("debug_runs", move |_| Ok(Rc::new(host_tools::DebugRuns { root: root_debug.clone() })));
         // Offered only when the daemon's channel is on: a tool that cannot work is noise.
         let telegram = harness_daemon::client::Client::find(&data_dir).and_then(|c| c.stats().ok()).is_some_and(|s| s["telegram"]["on"] == true);
         if telegram {
@@ -287,6 +291,7 @@ enum Input {
     Prompt(String),
     Task { text: String, protocol: Protocol },
     Plan(bool),
+    StepDebug(bool),
     Inbound { label: String, text: String },
 }
 
@@ -480,6 +485,16 @@ impl Sessions {
         Ok(())
     }
 
+    /// The user switches step-debug mode.
+    pub fn step_debug(&mut self, tab: u64, on: bool) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::StepDebug(on));
+        }
+    }
+
     /// The user switches plan mode. It takes effect when the running turn, if any, has ended.
     pub fn plan(&mut self, tab: u64, on: bool) {
         if !self.handles.contains_key(&tab) {
@@ -555,8 +570,12 @@ impl Sessions {
                     pollster::block_on(engine.set_plan_mode(on, "user"));
                     continue;
                 }
+                if let Input::StepDebug(on) = input {
+                    pollster::block_on(engine.set_step_debug(on, "user"));
+                    continue;
+                }
                 let end = match input {
-                    Input::Plan(_) => unreachable!("handled above"),
+                    Input::Plan(_) | Input::StepDebug(_) => unreachable!("handled above"),
                     Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
                     Input::Task { text, protocol } => pollster::block_on(engine.run(&text, Some(&protocol))),
                     Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),

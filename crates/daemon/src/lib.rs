@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 pub mod client;
 pub mod conditions;
 pub mod memory;
+pub mod stepdebug;
 pub mod telegram;
 
 /// A window that polled within this long is still there.
@@ -35,7 +36,17 @@ pub enum WindowEvent {
     /// A `journal` callback wrote an entry; no agent turn.
     Journal { record: JournalRecord },
     /// A `flowstate_update` moved an instance of a chart; no agent turn.
-    Flow { map: MapData, instance: String, node: u64, state: String, off_chart: bool, path: Vec<u64> },
+    Flow {
+        map: MapData,
+        instance: String,
+        node: u64,
+        state: String,
+        off_chart: bool,
+        path: Vec<u64>,
+        /// This event ended a cycle in step-debug mode, and the run was saved under this id.
+        #[serde(default)]
+        run: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +61,10 @@ struct Window {
     events: Vec<Numbered>,
     /// Each instance's path through each chart: (map, instance) -> nodes in order.
     instances: HashMap<(u64, String), Vec<u64>>,
+    /// Step-debug mode: finished runs are saved (ADR 0013). Set by the session, never by a payload.
+    step_debug: bool,
+    /// The steps of each run so far, for saving it (INV-13).
+    cycles: HashMap<(u64, String), Vec<stepdebug::Step>>,
     conditions: Vec<conditions::Armed>,
     /// Standard types switched off for this project.
     off: HashSet<String>,
@@ -191,7 +206,20 @@ impl Daemon {
 
     fn stats(&self) -> Value {
         let telegram = self.telegram.lock().expect("telegram").as_ref().map_or(json!({"on": false}), telegram::Channel::status);
-        json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram})
+        json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count()})
+    }
+
+    /// The session's mode, from its log. Kept in the windows file, so a restart holds it.
+    fn set_step_debug(&self, body: &str) -> (u16, Value) {
+        let input: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let (Some(window), Some(on)) = (input["window"].as_str(), input["on"].as_bool()) else {
+            return (400, json!({"error": "window and on are required"}));
+        };
+        let mut state = self.state.lock().expect("daemon state");
+        let Some(w) = state.windows.get_mut(window) else { return (404, json!({"error": "no such window"})) };
+        w.step_debug = on;
+        save_windows(&self.data_dir.join("daemon"), &state.windows);
+        (200, json!({}))
     }
 
     fn telegram_send(&self, body: &str) -> (u16, Value) {
@@ -238,6 +266,8 @@ impl Daemon {
             ("POST", "/memory") if admin => self.memory_op(&body),
             ("GET", "/stats") if admin => (200, self.stats()),
             ("POST", "/telegram/send") if admin => self.telegram_send(&body),
+            ("POST", "/window/step-debug") if admin => self.set_step_debug(&body),
+            ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
             ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 self.state.lock().expect("daemon state").shutting_down = true;
@@ -265,7 +295,7 @@ impl Daemon {
             Ok(armed) => (armed, None),
             Err(message) => (Vec::new(), Some(message)),
         };
-        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed, off: off_types(root), project: conditions::read_project(root).unwrap_or_default() };
+        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), step_debug: false, cycles: HashMap::new(), conditions: armed, off: off_types(root), project: conditions::read_project(root).unwrap_or_default() };
         {
             let mut state = self.state.lock().expect("daemon state");
             state.windows.insert(id.clone(), window);
@@ -522,23 +552,46 @@ impl Daemon {
         let memory = self.memory(root)?;
         let map = now_ready(memory.map_read(map_id)).map_err(|e| e.to_string())?.ok_or_else(|| format!("no map #{map_id}"))?;
         let off_chart = !map.nodes.iter().any(|n| n.id == node);
-        let path = {
+        let at_end = !off_chart && map.nodes.iter().any(|n| n.id == node && n.kind == "end");
+        let step = stepdebug::Step { node, state: state_name.clone(), off_chart, at_ms: now_ms(), data: input["data"].clone() };
+        let (path, finished) = {
             let mut state = self.state.lock().expect("daemon state");
             let w = state.windows.get_mut(window).ok_or("no such window")?;
-            let path = w.instances.entry((map_id, instance.clone())).or_default();
+            let key = (map_id, instance.clone());
+            let path = w.instances.entry(key.clone()).or_default();
             if !off_chart {
                 path.push(node);
             }
-            path.clone()
+            let path = path.clone();
+            let mut finished = None;
+            if w.step_debug {
+                w.cycles.entry(key.clone()).or_default().push(step);
+                // The cycle ends here: the next event of this instance starts a new run.
+                if at_end {
+                    finished = w.cycles.remove(&key);
+                    w.instances.remove(&key);
+                }
+            }
+            (path, finished)
         };
-        self.deliver(window, WindowEvent::Flow { map, instance, node, state: state_name, off_chart, path });
-        Ok(json!({"off_chart": off_chart}))
+        let run = match finished {
+            Some(steps) => match stepdebug::save_run(root, map_id, &instance, &steps) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    self.trigger_log("", "flowstate_update", window, "run_not_saved", &e);
+                    None
+                }
+            },
+            None => None,
+        };
+        self.deliver(window, WindowEvent::Flow { map, instance, node, state: state_name, off_chart, path, run });
+        Ok(json!({"off_chart": off_chart, "run": run}))
     }
 }
 
 /// Windows are kept in a file, so callback URLs survive a daemon's restart.
 fn save_windows(dir: &Path, windows: &HashMap<String, Window>) {
-    let list: Vec<Value> = windows.values().map(|w| json!({"id": w.id, "root": w.root})).collect();
+    let list: Vec<Value> = windows.values().map(|w| json!({"id": w.id, "root": w.root, "step_debug": w.step_debug})).collect();
     let _ = write_private(&dir.join("windows.json"), &Value::Array(list).to_string());
 }
 
@@ -556,6 +609,8 @@ fn restore_windows(dir: &Path) -> HashMap<String, Window> {
                 root,
                 events: Vec::new(),
                 instances: HashMap::new(),
+                step_debug: w["step_debug"] == true,
+                cycles: HashMap::new(),
             };
             Some((id, window))
         })

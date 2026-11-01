@@ -21,6 +21,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
     ("/init", "create docs/ and .harness/, overwriting nothing"),
+    ("/stepdebug [off]", "step-debug mode, for large pipelines: each finished cycle is saved"),
     ("/plan [off]", "plan mode: the agent reads and plans, nothing can change"),
     ("/task [command|off|trust]", "the next message is a task: done only when its checks pass"),
     ("/journal", "journal entry event"),
@@ -469,6 +470,15 @@ fn command(w: &mut Workspace, cmd: &str) {
                 w.outbox.push(Outgoing::Init { tab });
             } else {
                 w.view_mut().transcript.push(Item::Tips { label: "INIT".into(), lines: vec!["Only a live session can initialize a project.".into()] });
+            }
+        }
+        "stepdebug" => {
+            let on = arg.trim() != "off";
+            if w.live {
+                let tab = w.tabs[w.active].id;
+                w.outbox.push(Outgoing::StepDebug { tab, on });
+            } else {
+                w.view_mut().transcript.push(Item::Tips { label: "STEP DEBUG".into(), lines: vec!["Only a live session has a step-debug mode.".into()] });
             }
         }
         "plan" => {

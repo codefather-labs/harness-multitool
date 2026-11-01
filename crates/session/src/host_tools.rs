@@ -85,3 +85,52 @@ impl Tool for TelegramSend {
         Box::pin(std::future::ready(answer))
     }
 }
+
+/// The contract of a debug router (CON-27).
+pub struct DebugContract;
+
+impl Tool for DebugContract {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "debug_contract".into(),
+            description: "The OpenAPI contract every step-debug router is built by.".into(),
+            schema: json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, _input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        Box::pin(std::future::ready(ToolOutput::ok(harness_daemon::stepdebug::CONTRACT.to_string())))
+    }
+}
+
+/// The project's saved step-debug runs.
+pub struct DebugRuns {
+    pub root: String,
+}
+
+impl Tool for DebugRuns {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "debug_runs".into(),
+            description: "The latest saved step-debug runs of this project, newest first, with their steps.".into(),
+            schema: json!({"type": "object", "properties": {"limit": {"type": "integer"}}}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![Capability::ReadPath(".harness/debug/runs.sqlite".into())])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let limit = input["limit"].as_u64().unwrap_or(5) as usize;
+        let answer = match harness_daemon::stepdebug::runs(&self.root, limit) {
+            Ok(runs) => ToolOutput::ok(serde_json::to_string(&runs).unwrap_or_default()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}

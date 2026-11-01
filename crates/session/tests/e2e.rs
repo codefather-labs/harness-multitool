@@ -784,3 +784,43 @@ fn a_project_is_asked_about_its_docs_once() {
     std::fs::create_dir_all(format!("{other}/.harness")).unwrap();
     assert!(!first_start_asks(&data, &other), "it already has one of them");
 }
+
+/// ADR 0013: the agent or the user switches step-debug; its rules are there only while it is on.
+#[test]
+fn step_debug_is_switched_logged_and_replayed() {
+    let root = temp_dir("sd");
+    let data = temp_dir("sd-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("d1", "debug_mode", json!({"on": true}))), "Switching."),
+        anthropic_turn(Some(("d2", "debug_contract", json!({}))), "Reading the contract."),
+        anthropic_turn(Some(("d3", "debug_runs", json!({}))), "Reading runs."),
+        anthropic_turn(Some(("d4", "debug_mode", json!({}))), "Oops."),
+        anthropic_turn(Some(("d5", "edit", json!({"path": "a.txt", "old_text": "a", "new_text": "b"}))), "It may still edit."),
+        anthropic_turn(None, "Waiting."),
+        anthropic_turn(Some(("d6", "debug_mode", json!({"on": false}))), "Done."),
+        anthropic_turn(None, "Off."),
+    ]);
+    std::fs::write(format!("{root}/a.txt"), "a").unwrap();
+    let mut s = settings(&url, "k");
+    s.hooks = vec![HookSetting { event: Some("StepDebugEnter".into()), command: "echo debugging".into(), name: Some("on-debug".into()) }];
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["debug the pipeline"], Answer::AllowOnce);
+    let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
+    assert!(result("d2").0.contains("/debug/approve"), "{:?}", result("d2"));
+    assert_eq!(result("d3"), ("[]".to_string(), false));
+    assert!(!std::path::Path::new(&format!("{root}/.harness")).exists(), "reading runs creates nothing");
+    assert!(result("d4").1);
+    assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "b", "the mode does not limit tools");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::HookRan { point: event_kinds::HookPointKind::StepDebugEnter, .. })));
+
+    let listed = recent(&data, &root);
+    let stored = read_log(&data, &root, &listed[0].id);
+    assert!(SessionState::fold(stored.iter().map(|e| &e.event)).step_debug, "a replay says it is on");
+
+    let (entries, _, _) = drive(&mut sessions, &["finish"], Answer::AllowOnce);
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::StepDebug { on: false, by } if by == "agent")));
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    assert!(!requests[0]["system"].as_str().unwrap().contains("STEP-DEBUG"));
+    assert!(requests[1]["system"].as_str().unwrap().contains("STEP-DEBUG"));
+    assert!(!requests.last().unwrap()["system"].as_str().unwrap().contains("STEP-DEBUG"));
+}
