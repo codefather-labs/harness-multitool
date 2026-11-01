@@ -49,7 +49,8 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-40** | The repository is self-contained: it does not refer to, depend on or name the project it grew out of. |
 | **CON-41** | Every spec item, invariant and constraint has a stable id; ids are never reused. |
 | **CON-42** | A change to a principle, invariant, constraint or interface contract goes through a decision record in `docs/decisions/`. |
-| **CON-43** | Once a project has its docs tree (created by the `docs-init` skill), its journal, mind maps and flowcharts are mirrored into Markdown files in its repository — README, architecture, spec (principles, interfaces, invariants, constraints, open questions, roadmap), decisions, flowchart pages — and kept consistent with them in the same change; the agent writes the files, prompted by a `PostToolUse` hook on every memory write; a disagreement is a finding settled before work goes on ([ADR 0017](../decisions/0017-docs-mirror-memory.md)). |
+| **CON-43** | Once a project has its docs tree (created by the `project-init` skill), its journal, mind maps and flowcharts are mirrored into Markdown files in its repository — README, architecture, spec (principles, interfaces, invariants, constraints, open questions, roadmap), decisions, flowchart pages — and kept consistent with them in the same change; the agent writes the files, prompted by a `PostToolUse` hook on every memory write; a disagreement is a finding settled before work goes on ([ADR 0017](../decisions/0017-docs-mirror-memory.md)). |
+| **CON-44** | Project initialization (`project-init`) creates the docs tree and the `.harness/` folder; it never overwrites an existing file. The harness asks about it once, at the first start in a project without `docs/` and `.harness/` ([ADR 0017](../decisions/0017-docs-mirror-memory.md)). |
 
 ## Plugins and callbacks
 

@@ -14,7 +14,7 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Terminal UI, in progress ahead of the loop:** visible hook runs (ADR 0010), mind-map and flowchart tools with journal tickets and panning (ADR 0011), the welcome screen with the key points; next: SVG export of maps and charts, live flowchart instances (ADR 0012), the Callbacks settings tab (ADR 0015).
 
-**Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; a `Stop`-hook check is Q-28; the `docs-init` skill creates the tree with an example entry in every file.
+**Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; a `Stop`-hook check is Q-28; the `project-init` skill creates the tree with an example entry in every file.
 
 **Ideas, not yet on a milestone:** plan mode — the classic plan mode with the accent on the journal, mind maps and flowcharts, and a hook with their instructions ([ADR 0016](../decisions/0016-plan-mode.md)).
 

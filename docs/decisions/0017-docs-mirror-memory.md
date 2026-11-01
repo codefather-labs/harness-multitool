@@ -1,4 +1,4 @@
-# 0017 — Project documentation mirrors the journal, mind maps and flowcharts
+# 0017 — Project initialization; documentation mirrors the journal, mind maps and flowcharts
 
 - **Status:** accepted · **Decided by:** the project owner, 2026-11-01
 - **Specs:** CON-43, IF-6, IF-7, P-4, P-5; replaces the "plan file is optional" part of [ADR 0016](0016-plan-mode.md) (Q-26)
@@ -28,9 +28,9 @@ The shape is the one this repository uses for itself, which the owner chose as t
 
 **Plan mode.** A plan made in plan mode ([ADR 0016](0016-plan-mode.md)) is mirrored the same way — its decisions, specifications and questions into their files, its work items into the roadmap — rather than saved as a separate optional plan file.
 
-## Creating the docs tree
+## Project initialization
 
-Not every project needs a `docs/` tree, so it is created by a **skill of the agent** (`docs-init`, IF-14), not unconditionally at the harness's start (the owner, 2026-11-01). The skill creates the whole hierarchy at once, each file with an example entry showing how it is written — the shape of this repository:
+Not every project needs a `docs/` tree, so it is created by a **skill of the agent**, `project-init` (IF-14), not unconditionally at the harness's start (the owner, 2026-11-01). Initializing a project creates both of the harness's folders in it: the **`docs/` tree** and the **`.harness/` folder** (the owner). The skill creates the whole docs hierarchy at once, each file with an example entry showing how it is written — the shape of this repository:
 
 ```text
 README.md                       what the project is, status, links (left alone if it exists)
@@ -45,11 +45,17 @@ docs/
   spec/roadmap.md               M0 — Specification, with "Done when"
   decisions/README.md           the index and the status values
   decisions/0001-record-decisions.md   the first ADR: decisions are recorded here
+.harness/
+  README.md                     what the folder holds
+  policies/                     response policies of reliability monitoring (CON-26)
+  debug/                        step-debug runs, SQLite (CON-24)
 ```
 
 Existing files are never overwritten; the skill fills only what is missing. Once the tree exists, the mirror rule (CON-43) and its hook apply to the project.
 
-**Proposed by the agent, to be confirmed (Q-29):** at the first start in a project with no `docs/`, the harness asks once whether to run `docs-init`; a project that says no is not mirrored until the skill is run, which reconciles "not every project needs docs" with "the mirror is mandatory".
+**Asked once (answers Q-29, decided by the owner).** At the first start in a project with no `docs/` and no `.harness/`, the harness asks once whether to initialize the project. A project that says no is not mirrored until `project-init` is run; the question is not asked again. The agent's addition: a mode that needs a `.harness/` subfolder (step-debug's `debug/`, monitoring's `policies/`) creates just that subfolder when it is first used, so a project that declined the docs can still use the modes.
+
+Which parts of `.harness/` are committed to the repository and which are ignored is open (Q-30).
 
 ## How the mirror is kept — decided by the owner (answers Q-27)
 
