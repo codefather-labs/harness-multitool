@@ -95,6 +95,10 @@ A session runs in a mode (IF-0.5); entering a mode fires a hook that adds the mo
 
 Plugins are crates linked into the binary (CON-2). A reload rebuilds the local build and swaps the binary in the same terminal at a safe point, handing the in-memory view over to the new process, so sessions are not restarted ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md), CON-50).
 
+## Documentation mirror
+
+A project's journal, mind maps and flowcharts are mirrored into its `docs/` tree (CON-43): `project-init` creates the tree and `.harness/` (CON-44); a `PostToolUse` hook on every memory write tells the agent which file to update; a built-in check linked by doc id reminds it once at `Stop` and runs as `multitool docs check` in CI (CON-45) ([ADR 0017](../decisions/0017-docs-mirror-memory.md)).
+
 ## Builds
 
 - **Native:** the core, every interface crate, the default plugins and the platform's native implementation; the user's own plugin crates are added in their local build (CON-2).

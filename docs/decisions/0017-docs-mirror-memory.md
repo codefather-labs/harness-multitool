@@ -1,7 +1,7 @@
 # 0017 — Project initialization; documentation mirrors the journal, mind maps and flowcharts
 
 - **Status:** accepted · **Decided by:** the project owner, 2026-11-01
-- **Specs:** CON-43, IF-6, IF-7, P-4, P-5; replaces the "plan file is optional" part of [ADR 0016](0016-plan-mode.md) (Q-26)
+- **Specs:** CON-43, CON-44, CON-45, IF-6, IF-7, P-4, P-5; replaces the "plan file is optional" part of [ADR 0016](0016-plan-mode.md) (Q-26)
 
 ## Decision
 
@@ -74,9 +74,11 @@ Existing files are never overwritten; the skill fills only what is missing. Once
 
 Writes that mirror into no file — an update (the changelog is the journal and git), a finding, a lesson, a verification — fire no instruction (proposed by the agent).
 
-**Proposed by the agent, open (Q-28): a check that cannot break anything.** The owner wants the check but not at the price of breaking work. The proposal keeps it advisory end to end:
-1. The `PostToolUse` hook on a memory write records a *pending doc update*: the write's id and the file it names.
-2. A `PostToolUse` hook on file writes (edit, write) clears every pending item whose file was touched.
-3. A `Stop` hook at the end of the turn, if items remain, adds **one** reminder listing them — once per turn, never a veto, never a retry loop; a failing hook is logged and ignored (IF-6).
+**The consistency check — decided by the owner (answers Q-28).** A check that cannot break anything and needs no workarounds:
 
-A false alarm costs one line in the context; a miss costs what it costs today. Nothing is blocked.
+1. **A built-in hook plugin on typed events.** A write to the journal, a mind map or a flowchart is a typed event on the bus (IF-0.2) with its category and flags; the check is a hook plugin (IF-6) that reads those events directly — no parsing of shell output or tool text.
+2. **Linked by id.** A write that must be mirrored carries the id of its documentation item — P-, IF-, INV-, CON-, Q- or ADR number, the same in both places (CON-43). The check is deterministic: the file the write's category names contains that id; a settled question is struck through with its answer; a deprecated or replaced item is marked so.
+3. **Advisory, once.** A `Stop` hook at the end of the agent's turn adds **one** reminder to the next turn listing the items that fail the check. It never vetoes, never forces the agent to continue, and so cannot loop; a hook that fails is logged and ignored.
+4. **The same checker as a command and in CI** — `multitool docs check` — so drift is caught even when the hook was off or the reminder was ignored.
+
+**Limit.** The check covers structure — ids present, statuses matching — not that the prose of a file says what the journal entry says. That agreement stays the agent's work, or a periodic review agent's (CON-45).
