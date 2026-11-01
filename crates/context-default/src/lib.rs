@@ -12,6 +12,9 @@ const BINDING_CHARS: usize = 400;
 const ASK_CHARS: usize = 160;
 const LAST_ASK_CHARS: usize = 4000;
 
+/// In the prompt only while the mode is on (ADR 0016).
+const PLAN_RULES: &str = "\n\nPLAN MODE is on. Plan, do not build; do not get distracted by anything else. Available now: the journal, mind maps and flowcharts, reading, searching, single read-only commands, and fetching from the web. Nothing else runs: no edits, no commits, nothing with side effects.\n- Journal every decision, finding, assumption and open question as you reach it.\n- Each work item of the plan is a journal todo with its test protocol: what to test, regressions included, how, under which conditions, what evidence proves it. Rules the work must follow are specifications and constraints.\n- Open a mind map for what is known about the task: decisions, questions, constraints, alternatives rejected.\n- Draw a flowchart for each flow the plan changes or adds.\nWhen the plan is ready, call plan_exit with it: only the user's approval ends this mode. The plan is what the journal and maps hold, so the next session finds it.";
+
 pub struct JournalAware {
     pub root: String,
     /// One more line for the system prompt, e.g. where this window's callbacks go.
@@ -111,6 +114,9 @@ impl JournalAware {
             for (id, title) in maps {
                 system.push_str(&format!("\n- #{id}: {title}"));
             }
+        }
+        if state.plan_mode {
+            system.push_str(PLAN_RULES);
         }
         for line in self.note.iter().chain(&state.hook_context) {
             system.push('\n');

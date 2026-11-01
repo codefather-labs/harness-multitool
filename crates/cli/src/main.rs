@@ -66,6 +66,9 @@ enum Command {
         /// Make it a task with only the acceptance checks.
         #[arg(long)]
         task: bool,
+        /// Start in plan mode: reads and plans, changes nothing.
+        #[arg(long)]
+        plan: bool,
     },
     /// Write the user's configuration (config.toml in the OS's config directory).
     Setup {
@@ -132,7 +135,7 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
-        Command::Run { prompt, yes, verify, task } => run_once(&prompt, yes, (task || !verify.is_empty()).then_some(verify)),
+        Command::Run { prompt, yes, verify, task, plan } => run_once(&prompt, yes, plan, (task || !verify.is_empty()).then_some(verify)),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
@@ -717,6 +720,7 @@ impl Live {
                         }
                     }
                 }
+                Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
                 Outgoing::ApproveChecks { tab } => {
                     let line = match self.checks_shown.take() {
                         None => "No checks are waiting for approval.".to_string(),
@@ -826,10 +830,13 @@ impl Live {
 }
 
 /// `multitool run`: a real session without the UI, for debugging a provider or a tool.
-fn run_once(prompt: &str, yes: bool, task: Option<Vec<String>>) -> Result<()> {
+fn run_once(prompt: &str, yes: bool, plan: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
     let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root).with_data_dir(&config::data_dir()?.to_string_lossy());
+    if plan {
+        sessions.plan(1, true);
+    }
     match task {
         Some(steps) => {
             let mut answer = sessions.task(1, prompt.to_string(), steps.clone());

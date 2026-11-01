@@ -66,6 +66,8 @@ pub enum Outgoing {
     Prompt { tab: u64, text: String },
     /// A message that is a task: done only when its checks pass (INV-4).
     Task { tab: u64, text: String, steps: Vec<String> },
+    /// `/plan`: plan mode on or off.
+    Plan { tab: u64, on: bool },
     /// `/task trust`: approve the project's checks as last shown.
     ApproveChecks { tab: u64 },
     /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.

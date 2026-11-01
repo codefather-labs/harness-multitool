@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
+    ("/plan [off]", "plan mode: the agent reads and plans, nothing can change"),
     ("/task [command|off|trust]", "the next message is a task: done only when its checks pass"),
     ("/journal", "journal entry event"),
     ("/thinking", "a model's reasoning, live"),
@@ -461,6 +462,15 @@ fn command(w: &mut Workspace, cmd: &str) {
                 lines: COMMANDS.iter().map(|(c, d)| format!("{c:<44} {d}")).chain(std::iter::once("plain text: your message".to_string())).collect(),
             });
         }
+        "plan" => {
+            let on = arg.trim() != "off";
+            if w.live {
+                let tab = w.tabs[w.active].id;
+                w.outbox.push(Outgoing::Plan { tab, on });
+            } else {
+                w.view_mut().transcript.push(Item::Tips { label: "PLAN MODE".into(), lines: vec!["Only a live session has a plan mode.".into()] });
+            }
+        }
         "task" => {
             let arg = arg.trim();
             if arg == "trust" {
@@ -604,6 +614,17 @@ mod tests {
     fn send(w: &mut Workspace, text: &str) {
         w.view_mut().composer.text = text.into();
         assert_eq!(submit(w), Sent::Done);
+    }
+
+    #[test]
+    fn plan_switches_a_live_session() {
+        let mut w = workspace();
+        send(&mut w, "/plan");
+        assert!(w.outbox.is_empty(), "the fixture has no session");
+        w.live = true;
+        send(&mut w, "/plan");
+        send(&mut w, "/plan off");
+        assert!(matches!(&w.outbox[..], [Outgoing::Plan { on: true, .. }, Outgoing::Plan { on: false, .. }]), "{:?}", w.outbox);
     }
 
     #[test]

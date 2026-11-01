@@ -26,6 +26,7 @@ pub fn point_kind(name: &str) -> Option<HookPointKind> {
         "PostToolUse" => HookPointKind::PostToolUse,
         "Stop" => HookPointKind::Stop,
         "PostCompact" => HookPointKind::PostCompact,
+        "PlanEnter" => HookPointKind::PlanEnter,
         _ => return None,
     })
 }

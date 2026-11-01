@@ -123,6 +123,7 @@ pub enum HookPoint<'a> {
     PostToolUse { call: &'a ToolCall, output: &'a ToolOutput },
     Stop,
     PostCompact,
+    PlanEnter,
 }
 
 impl HookPoint<'_> {
@@ -134,6 +135,7 @@ impl HookPoint<'_> {
             HookPoint::PostToolUse { .. } => HookPointKind::PostToolUse,
             HookPoint::Stop => HookPointKind::Stop,
             HookPoint::PostCompact => HookPointKind::PostCompact,
+            HookPoint::PlanEnter => HookPointKind::PlanEnter,
         }
     }
 }

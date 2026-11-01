@@ -666,3 +666,83 @@ fn a_projects_checks_run_only_as_approved() {
     approve_acceptance(&data, &root, &second).unwrap();
     assert!(matches!(protocol_for(Some(&data), &root, vec![]), Err(TaskRefused::NotApproved { commands, .. }) if commands == ["third"]));
 }
+
+/// ADR 0016: in plan mode nothing changes whatever is answered, and only the user ends it.
+#[test]
+fn plan_mode_refuses_changes_and_only_the_user_ends_it() {
+    let root = temp_dir("plan");
+    let data = temp_dir("plan-data");
+    std::fs::write(format!("{root}/a.txt"), "before").unwrap();
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("p1", "plan_enter", json!({}))), "Planning."),
+        anthropic_turn(Some(("p2", "edit", json!({"path": "a.txt", "old_text": "before", "new_text": "after"}))), "Editing."),
+        anthropic_turn(Some(("p3", "shell", json!({"command": "cargo --version > b.txt"}))), "Shell."),
+        anthropic_turn(Some(("p4", "read", json!({"path": "a.txt"}))), "Reading."),
+        anthropic_turn(Some(("p5", "journal_add", json!({"body": "Change a.txt.", "category": "decision", "tags": ["plan"]}))), "Noting."),
+        anthropic_turn(Some(("p6", "plan_exit", json!({"plan": "Change a.txt."}))), "Asking."),
+        anthropic_turn(None, "Waiting for you."),
+    ]);
+    let mut s = settings(&url, "k");
+    s.hooks = vec![HookSetting { event: Some("PlanEnter".into()), command: "echo planning".into(), name: Some("on-plan".into()) }];
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    // Everything is answered yes: the refusals cannot be approved, and plan_exit can.
+    let (entries, _, asked) = drive(&mut sessions, &["plan the change"], Answer::AlwaysAllow);
+    assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "before");
+    assert!(!std::path::Path::new(&format!("{root}/b.txt")).exists());
+    assert_eq!(asked, 1, "only plan_exit asked: {entries:?}");
+    let decision = |id: &str| entries.iter().find_map(|e| if let Event::ToolDecision { id: i, allowed, by, .. } = &e.event { (i == id).then(|| (*allowed, format!("{by:?}"))) } else { None });
+    assert_eq!(decision("p2"), Some((false, "Mode".to_string())));
+    assert_eq!(decision("p3"), Some((false, "Mode".to_string())));
+    assert_eq!(decision("p4"), Some((true, "Policy".to_string())));
+    assert_eq!(decision("p6"), Some((true, "User".to_string())));
+    let modes: Vec<(bool, String)> = entries.iter().filter_map(|e| if let Event::PlanMode { on, by } = &e.event { Some((*on, by.clone())) } else { None }).collect();
+    assert_eq!(modes, [(true, "agent".to_string()), (false, "user".to_string())]);
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::HookRan { point: event_kinds::HookPointKind::PlanEnter, .. })));
+
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    assert!(!requests[0]["system"].as_str().unwrap().contains("PLAN MODE"));
+    assert!(requests[1]["system"].as_str().unwrap().contains("PLAN MODE"));
+    assert!(!requests.last().unwrap()["system"].as_str().unwrap().contains("PLAN MODE"), "gone once off");
+    assert!(requests[0]["tools"].to_string().contains("plan_exit"));
+}
+
+#[test]
+fn a_refused_plan_stays_on_and_a_resume_restores_the_mode() {
+    let root = temp_dir("plan2");
+    let data = temp_dir("plan2-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("q1", "plan_exit", json!({"plan": "too early"}))), "Leaving."),
+        anthropic_turn(Some(("q2", "plan_enter", json!({}))), "Entering."),
+        anthropic_turn(Some(("q3", "plan_exit", json!({"plan": "my plan"}))), "Asking."),
+        anthropic_turn(Some(("q4", "plan_exit", json!({}))), "Empty."),
+        anthropic_turn(None, "Asking what to change."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, asked) = drive(&mut sessions, &["plan it"], Answer::Deny);
+    assert_eq!(asked, 1);
+    let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
+    assert!(result("q1").1 && result("q1").0.contains("not on"), "{:?}", result("q1"));
+    assert!(result("q3").1 && result("q3").0.contains("did not approve"), "{:?}", result("q3"));
+    assert!(result("q4").1 && result("q4").0.contains("required"), "{:?}", result("q4"));
+
+    let listed = recent(&data, &root);
+    let stored = read_log(&data, &root, &listed[0].id);
+    assert!(SessionState::fold(stored.iter().map(|e| &e.event)).plan_mode, "still on, and a replay says so");
+}
+
+#[test]
+fn the_user_switches_plan_mode_and_a_task_does_not_finish_in_it() {
+    let root = temp_dir("plan3");
+    let data = temp_dir("plan3-data");
+    let (url, _) = fake_endpoint(vec![anthropic_turn(None, "Done, I say."), anthropic_turn(None, "Now done.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    sessions.plan(1, true);
+    let (entries, end) = drive_task(&mut sessions, "do it", &["cargo --version"]);
+    assert_eq!(end, "AwaitingInput", "no verification in plan mode");
+    assert!(!entries.iter().any(|e| matches!(e.event, Event::Verification { .. })));
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: true, by } if by == "user")));
+    sessions.plan(1, false);
+    let (entries, end) = drive_task(&mut sessions, "do it now", &["cargo --version"]);
+    assert_eq!(end, "Done");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: false, .. })));
+}

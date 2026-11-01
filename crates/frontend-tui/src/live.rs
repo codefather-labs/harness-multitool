@@ -107,6 +107,7 @@ impl Feed {
                         DecidedBy::User => "denied".to_string(),
                         DecidedBy::Policy => "denied by policy".to_string(),
                         DecidedBy::Hook => "blocked by a hook".to_string(),
+                        DecidedBy::Mode => "refused in plan mode".to_string(),
                     };
                     card.outcome_tone = Tone::Error;
                     card.state = ToolState::Failed;
@@ -159,6 +160,15 @@ impl Feed {
             Event::Verification { pass, evidence } => {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
+            }
+            Event::PlanMode { on, by } => {
+                set_status(v, "MODE", if *on { "plan" } else { "work" });
+                let line = if *on {
+                    format!("Plan mode is on ({by}): the agent reads and plans. Nothing in the project can change. /plan off, or approving its plan, ends it.")
+                } else {
+                    format!("Plan mode is off ({by}): the agent can work.")
+                };
+                v.transcript.push(Item::Tips { label: "PLAN MODE".into(), lines: vec![line] });
             }
             Event::Compacted { tokens_before, tokens_after, .. } => {
                 let line = format!("The conversation was compacted: about {} to {} tokens. The log keeps all of it; the agent still has the journal.", short(*tokens_before), short(*tokens_after));

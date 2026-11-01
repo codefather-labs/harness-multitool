@@ -15,6 +15,7 @@ use harness_api::{
     ToolContext, ToolOutput, ToolSpec,
 };
 
+use crate::plan;
 use crate::registry::Parts;
 
 /// Asks the loop to stop at its next step. Safe to set from another thread.
@@ -206,7 +207,56 @@ impl Engine {
     }
 
     fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.parts.tools.values().map(|t| t.spec()).collect()
+        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).collect();
+        specs.push(ToolSpec {
+            name: plan::ENTER_TOOL.into(),
+            description: "Enter plan mode to study a task and plan it before changing anything. Use it when asked to plan.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+        });
+        specs.push(ToolSpec {
+            name: plan::EXIT_TOOL.into(),
+            description: "Show the user the plan and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
+        });
+        specs
+    }
+
+    /// Switches plan mode (ADR 0016). `by` is who did it, for the log.
+    pub async fn set_plan_mode(&self, on: bool, by: &str) {
+        if self.state.borrow().plan_mode == on {
+            return;
+        }
+        self.emit(Event::PlanMode { on, by: by.to_string() });
+        if on {
+            self.hooks(HookPoint::PlanEnter).await;
+        }
+        // A mode set between runs still reaches the log.
+        let _ = self.flush().await;
+    }
+
+    /// The two tools the engine itself answers: the mode is its own state.
+    async fn plan_tool(&self, call: &ToolCall) {
+        self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+        let result = |output: String, is_error: bool| self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
+        if call.name == plan::ENTER_TOOL {
+            self.set_plan_mode(true, "agent").await;
+            return result("Plan mode is on. Follow its rules; plan_exit asks the user to approve the plan.".into(), false);
+        }
+        if !self.state.borrow().plan_mode {
+            return result("plan mode is not on".into(), true);
+        }
+        if call.input["plan"].as_str().is_none_or(|p| p.trim().is_empty()) {
+            return result("plan is required: the plan to show the user".into(), true);
+        }
+        // Always the user's call: nothing is remembered, and an "always" counts this once.
+        let answer = self.frontend.ask(call, &[Capability::Command("leave plan mode and start the work".into())]).await;
+        if answer == Answer::Deny {
+            self.emit(Event::ToolDecision { id: call.id.clone(), allowed: false, by: DecidedBy::User, reason: None });
+            return result("The user did not approve the plan. Plan mode stays on: ask what to change.".into(), true);
+        }
+        self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: None });
+        self.set_plan_mode(false, "user").await;
+        result("The user approved the plan. Plan mode is off: go on with the work.".into(), false);
     }
 
     /// One user message: runs turns until the model stops, then verifies when there is a
@@ -277,7 +327,8 @@ impl Engine {
                 continue;
             }
             self.hooks(HookPoint::Stop).await;
-            let Some(protocol) = protocol else {
+            // Running a protocol is not planning: a task does not finish in plan mode.
+            let Some(protocol) = protocol.filter(|_| !self.state.borrow().plan_mode) else {
                 return RunEnd::AwaitingInput;
             };
             match self.verify(protocol, text).await {
@@ -331,6 +382,9 @@ impl Engine {
     /// One tool call through hooks and `Policy` (INV-3). Whatever happens, the model gets a
     /// result for it.
     async fn tool_call(&self, call: &ToolCall) {
+        if call.name == plan::ENTER_TOOL || call.name == plan::EXIT_TOOL {
+            return self.plan_tool(call).await;
+        }
         let tool = self.parts.tools.get(&call.name).cloned();
         let capabilities = match tool.as_ref().map(|t| t.capabilities(&call.input)) {
             Some(Ok(capabilities)) => capabilities,
@@ -348,6 +402,13 @@ impl Engine {
         let tool = tool.expect("checked above");
         self.emit(Event::ToolRequested { call: call.clone(), capabilities: capabilities.clone() });
 
+        if self.state.borrow().plan_mode
+            && let Some(reason) = plan::refusal(&capabilities)
+        {
+            self.emit(Event::ToolDecision { id: call.id.clone(), allowed: false, by: DecidedBy::Mode, reason: Some(reason.clone()) });
+            self.emit(Event::ToolResult { id: call.id.clone(), output: reason, is_error: true });
+            return;
+        }
         if let Some((hook, reason)) = self.hooks(HookPoint::PreToolUse { call }).await {
             self.emit(Event::ToolDecision { id: call.id.clone(), allowed: false, by: DecidedBy::Hook, reason: Some(format!("{hook}: {reason}")) });
             self.emit(Event::ToolResult { id: call.id.clone(), output: format!("blocked by the hook {hook}: {reason}"), is_error: true });

@@ -281,6 +281,7 @@ pub enum FromSession {
 enum Input {
     Prompt(String),
     Task { text: String, protocol: Protocol },
+    Plan(bool),
     Inbound { label: String, text: String },
 }
 
@@ -451,6 +452,16 @@ impl Sessions {
         Ok(())
     }
 
+    /// The user switches plan mode. It takes effect when the running turn, if any, has ended.
+    pub fn plan(&mut self, tab: u64, on: bool) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Plan(on));
+        }
+    }
+
     /// A callback into the agent's input; it waits its turn if the agent is busy.
     pub fn inbound(&mut self, tab: u64, label: String, text: String) {
         if !self.handles.contains_key(&tab) {
@@ -512,7 +523,12 @@ impl Sessions {
                 }
             }
             while let Ok(input) = prompt_rx.recv() {
+                if let Input::Plan(on) = input {
+                    pollster::block_on(engine.set_plan_mode(on, "user"));
+                    continue;
+                }
                 let end = match input {
+                    Input::Plan(_) => unreachable!("handled above"),
                     Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
                     Input::Task { text, protocol } => pollster::block_on(engine.run(&text, Some(&protocol))),
                     Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),
