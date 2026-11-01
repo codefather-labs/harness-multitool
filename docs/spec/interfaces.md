@@ -27,7 +27,7 @@ The names are illustrative; the configuration format itself is an open question.
 | Id | Interface | Behaviour | Boundary | Default |
 |---|---|---|---|---|
 | **IF-1** | `Provider` | Streams a model turn: text, tool calls, usage (input/output/cache tokens) and cost; lists models and their limits (context window, tool support). | Network to its own endpoint only; credentials only through `Auth`. | Anthropic, OpenAI-compatible, local (CON-10) |
-| **IF-2** | `Auth` | Produces credentials for a provider request; refreshes them when they expire. | The only component that sees secrets (INV-6). | API key (CON-11) |
+| **IF-2** | `Auth` | Produces credentials for a provider request; refreshes them when they expire. | The only component that sees secrets (INV-6). | API key (CON-11); a ChatGPT plan (CON-55) |
 | **IF-3** | `Router` | Picks the provider and model for each step (e.g. a cheap model to read and search, a strong one to decide and write) and enforces budgets in tokens, cost and time per task. | Reads usage events; cannot call tools. | One model for everything |
 
 ## Action

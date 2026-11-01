@@ -824,3 +824,32 @@ fn step_debug_is_switched_logged_and_replayed() {
     assert!(requests[1]["system"].as_str().unwrap().contains("STEP-DEBUG"));
     assert!(!requests.last().unwrap()["system"].as_str().unwrap().contains("STEP-DEBUG"));
 }
+
+/// CON-55: a provider on a plan takes its token from the sign-in, and nothing writes it down.
+#[test]
+fn a_provider_on_a_plan_uses_the_sign_in_and_logs_no_token() {
+    let root = temp_dir("plan-auth");
+    let data = temp_dir("plan-auth-data");
+    let store_dir = format!("{data}/auth/chatgpt");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let saved_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    std::fs::write(format!("{store_dir}/credentials.json"), json!({
+        "email": null, "issuer": "http://127.0.0.1:1", "subject": "u", "client_id": "c", "ext_agent_host_id": "h", "id_token": "i",
+        "access_token": "PLAN-ACCESS-TOKEN", "refresh_token": "PLAN-REFRESH-TOKEN", "token_type": "Bearer", "expires_in": 3600, "scopes": [], "saved_at_s": saved_at,
+    }).to_string()).unwrap();
+    let events = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n";
+    let (url, seen) = fake_endpoint(vec![events.to_string()]);
+    let mut s = Settings { provider: "chatgpt".into(), model: "some-model".into(), ..Default::default() };
+    s.providers.insert("chatgpt".into(), json!({"kind": "openai-responses", "base_url": url}));
+    s.auth.insert("chatgpt".into(), json!({"oauth": "chatgpt"}));
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let (entries, ends, _) = drive(&mut sessions, &["hi"], Answer::Deny);
+    assert_eq!(ends, ["AwaitingInput"], "{entries:?}");
+    let request = seen.lock().unwrap()[0].clone();
+    assert!(request.starts_with("POST /responses") || request.contains("/responses HTTP"), "{}", &request[..80]);
+    assert!(request.to_lowercase().contains("authorization: bearer plan-access-token"), "the token was sent");
+    assert!(!format!("{entries:?}").contains("PLAN-"), "no token in the log");
+    let listed = recent(&data, &root);
+    let stored = std::fs::read_to_string(format!("{data}/sessions/{}/{}.jsonl", root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>().trim_matches('-'), listed[0].id)).unwrap();
+    assert!(!stored.contains("PLAN-"), "no token in the stored log");
+}

@@ -59,6 +59,17 @@ enum Command {
         #[arg(long)]
         handoff: Option<PathBuf>,
     },
+    /// Sign in with a ChatGPT plan, on OpenAI's own page. Only `chatgpt` is offered: Anthropic does
+    /// not permit Claude subscription sign-in in other apps, so Anthropic takes an API key.
+    Login {
+        /// `chatgpt`
+        provider: String,
+    },
+    /// Sign out of a ChatGPT plan: the token is revoked and cleared.
+    Logout {
+        /// `chatgpt`
+        provider: String,
+    },
     /// Create what is missing of docs/ and .harness/, overwriting nothing.
     Init,
     /// The documentation: `check` compares the docs tree with itself and the journal.
@@ -174,6 +185,14 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
+        Command::Login { provider } => login(&provider),
+        Command::Logout { provider } => {
+            only_chatgpt(&provider)?;
+            let store = harness_auth_chatgpt::Store::new(&config::data_dir()?);
+            let confirmed = harness_auth_chatgpt::logout(&store).map_err(|e| anyhow!(e))?;
+            println!("{}", if confirmed { "signed out" } else { "signed out here, but OpenAI did not confirm the revocation: disconnect the app in ChatGPT's settings" });
+            Ok(())
+        }
         Command::Init => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let created = init_project(&root).map_err(|e| anyhow!(e))?;
@@ -954,6 +973,36 @@ impl Live {
 }
 
 /// `multitool run`: a real session without the UI, for debugging a provider or a tool.
+fn only_chatgpt(provider: &str) -> Result<()> {
+    match provider {
+        "chatgpt" => Ok(()),
+        "claude" | "anthropic" => bail!("Anthropic does not permit Claude subscription sign-in in other apps; set ANTHROPIC_API_KEY with a key from Claude Console"),
+        other => bail!("no sign-in for {other:?}: only chatgpt"),
+    }
+}
+
+/// `multitool login chatgpt`: the user signs in on OpenAI's page; nothing here sees a password.
+fn login(provider: &str) -> Result<()> {
+    only_chatgpt(provider)?;
+    let store = harness_auth_chatgpt::Store::new(&config::data_dir()?);
+    let session = config::load()?.session;
+    let issuer = session.auth.get("chatgpt").and_then(|a| a["issuer"].as_str()).unwrap_or(harness_auth_chatgpt::ISSUER).to_string();
+    let base = session.providers.get("chatgpt").and_then(|p| p["base_url"].as_str()).unwrap_or("https://api.openai.com/v1").to_string();
+    let pending = harness_auth_chatgpt::begin_login(&store, &issuer, 1455).map_err(|e| anyhow!(e))?;
+    println!("Open this in your browser and sign in:\n\n{}\n\nWaiting for it (up to 10 minutes)...", pending.url);
+    let credential = pending.finish(&store, std::time::Duration::from_secs(600)).map_err(|e| anyhow!(e))?;
+    println!("Signed in{}.", credential.email.map_or(String::new(), |e| format!(" as {e}")));
+    match harness_auth_chatgpt::list_models(&base, &credential.access_token) {
+        Ok(models) => {
+            println!("Models this account can use:");
+            models.iter().for_each(|(slug, name)| println!("  {slug}  {name}"));
+        }
+        Err(e) => println!("Could not list the models: {e}"),
+    }
+    println!("\nIn {}:\n\n[session]\nprovider = \"chatgpt\"\nmodel = \"<one of the above>\"\n\n[session.providers.chatgpt]\nkind = \"openai-responses\"\n\n[session.auth.chatgpt]\noauth = \"chatgpt\"", config::path()?.display());
+    Ok(())
+}
+
 fn init_project(root: &str) -> Result<Vec<String>, String> {
     pollster::block_on(harness_docs_mirror::project_init(&harness_platform_native::NativeFs, root)).map_err(|e| e.to_string())
 }
@@ -980,7 +1029,31 @@ fn docs_check() -> Result<()> {
 fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
-    let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root).with_data_dir(&config::data_dir()?.to_string_lossy());
+    let data = config::data_dir()?;
+    let settings = config::load()?.session;
+    // Step-debug needs what a window has: a daemon, a callback URL, and the daemon told the mode.
+    let window = if step_debug {
+        let client = harness_daemon::client::Client::find_or_start(&data, &std::env::current_exe()?).map_err(|e| anyhow!(e))?;
+        let registered = client.register(&root).map_err(|e| anyhow!(e))?;
+        client.set_step_debug(&registered.window, true).map_err(|e| anyhow!(e))?;
+        println!("window      {} on the daemon; callbacks go to {}", registered.window, registered.url);
+        Some((client, registered))
+    } else {
+        None
+    };
+    let factory = match &window {
+        Some((_, registered)) => {
+            let urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> = Default::default();
+            if let Ok(mut known) = urls.lock() {
+                known.insert(1, registered.url.clone());
+            }
+            let note = std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab));
+            let summary = selection_summary(&settings);
+            harness_session::with_host(settings, root.clone(), data.clone(), host_for(note, Default::default(), summary))
+        }
+        None => real_factory(settings, root.clone(), data.clone()),
+    };
+    let mut sessions = Sessions::new(factory, root).with_data_dir(&data.to_string_lossy());
     if plan {
         sessions.plan(1, true);
     }
@@ -1002,7 +1075,12 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
     loop {
         let Some(message) = sessions.next(std::time::Duration::from_secs(3600)) else { bail!("no event for an hour") };
         match message {
-            FromSession::Entry { entry, .. } => println!("{}", harness_scenarios::line(&entry)),
+            FromSession::Entry { entry, .. } => {
+                println!("{}", harness_scenarios::line(&entry));
+                if let (harness_api::Event::StepDebug { on, .. }, Some((client, registered))) = (&entry.event, &window) {
+                    let _ = client.set_step_debug(&registered.window, *on);
+                }
+            }
             FromSession::Ask { tab, call, .. } => {
                 println!("ask         {} {} -> {}", call.name, call.input, if yes { "yes" } else { "no" });
                 sessions.answer(tab, if yes { harness_api::Answer::AllowOnce } else { harness_api::Answer::Deny });

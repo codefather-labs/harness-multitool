@@ -1,0 +1,22 @@
+[package]
+name = "harness-auth-chatgpt"
+description = "Sign-in with a ChatGPT plan (IF-2, CON-55): OpenAI's flow for open-source apps."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+base64 = "0.22"
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tiny_http = "0.12"
+ureq = { version = "3", features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+pollster = "0.4"
+tempfile = "3"

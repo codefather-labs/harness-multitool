@@ -106,7 +106,8 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
     let context_budget = settings.compact_at_tokens.unwrap_or(settings.context_window() * 7 / 10);
     let sessions_dir = sessions_dir(data_dir, root);
     let (root_d, data_d) = (root.to_string(), std::path::PathBuf::from(data_dir));
-    r.auth("api-key", |cx| Ok(Rc::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings))))
+    let auth_data = PathBuf::from(data_dir);
+    r.auth("api-key", move |cx| Ok(Rc::new(ProviderAuth::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings), cx.settings, &auth_data))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
         .tool("edit", |_| Ok(Rc::new(harness_tools_builtin::Edit)))
@@ -155,7 +156,9 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
         let provider_name = name.to_string();
         r.provider(name, move |cx| {
             let auth = cx.auth.clone().ok_or("the provider was built before Auth")?;
-            let provider: Rc<dyn Provider> = if kind == "anthropic" {
+            let provider: Rc<dyn Provider> = if kind == "openai-responses" {
+                Rc::new(harness_provider_openai::responses::Responses::new(&provider_name, auth, cx.platform.net.clone(), cx.settings))
+            } else if kind == "anthropic" {
                 Rc::new(harness_provider_anthropic::Anthropic::new(auth, cx.platform.net.clone(), cx.platform.clock.clone(), cx.settings))
             } else {
                 Rc::new(harness_provider_openai::OpenAiCompatible::new(&provider_name, auth, cx.platform.net.clone(), cx.settings))
@@ -318,6 +321,27 @@ struct Acceptance {
 struct AcceptanceCheck {
     spec: u64,
     command: String,
+}
+
+/// Credentials by provider (IF-2): `[session.auth.<provider>] oauth = "chatgpt"` signs in with a
+/// ChatGPT plan; anything else is an API key.
+struct ProviderAuth {
+    keys: harness_auth_apikey::ApiKeyAuth,
+    chatgpt: harness_auth_chatgpt::ChatGptAuth,
+    on_plan: Vec<String>,
+}
+
+impl ProviderAuth {
+    fn new(keys: harness_auth_apikey::ApiKeyAuth, settings: &Value, data_dir: &std::path::Path) -> Self {
+        let on_plan = settings.as_object().map(|m| m.iter().filter(|(_, v)| v["oauth"] == "chatgpt").map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+        ProviderAuth { keys, chatgpt: harness_auth_chatgpt::ChatGptAuth::new(data_dir), on_plan }
+    }
+}
+
+impl Auth for ProviderAuth {
+    fn credentials(&self, provider: &str) -> BoxFuture<'_, PluginResult<Secret>> {
+        if self.on_plan.iter().any(|p| p == provider) { self.chatgpt.credentials(provider) } else { self.keys.credentials(provider) }
+    }
 }
 
 /// The journal of a project, opened directly: for a look from the command line.

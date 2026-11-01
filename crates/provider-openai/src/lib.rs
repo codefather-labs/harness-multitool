@@ -9,6 +9,8 @@ use harness_api::sse::SseParser;
 use harness_api::*;
 use serde_json::{Value, json};
 
+pub mod responses;
+
 pub struct OpenAiCompatible {
     name: String,
     auth: Rc<dyn Auth>,
