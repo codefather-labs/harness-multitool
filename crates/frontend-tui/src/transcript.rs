@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::images::{Graphic, Icon, Placement, Tint};
-use crate::model::{ThinkingView, 
+use crate::model::{FlowInstanceView, ThinkingView, 
     MapElement, DiffLine, FlowchartEvent, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapTool, MindMapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
 };
 use crate::theme::Theme;
@@ -248,6 +248,11 @@ pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], generating
             cv.finish(h)
         }
         Item::Inbound(m) => inbound(width, t, m),
+        Item::FlowInstance(v) => {
+            let mut cv = Canvas::new(width, t, known);
+            let h = flow_instance(&mut cv, 0, 0, width, v, t.background);
+            cv.finish(h)
+        }
         Item::Thinking(v) => {
             let mut cv = Canvas::new(width, t, known);
             let h = thinking(&mut cv, 0, 0, width, v, t.background);
@@ -491,6 +496,7 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
     match it {
         Item::Tool(c) => tool(cv, x, y, w, c, bg),
         Item::Thinking(v) => thinking(cv, x, y, w, v, bg),
+        Item::FlowInstance(v) => flow_instance(cv, x, y, w, v, bg),
         Item::Journal(j) => journal(cv, x, y, w, j, bg),
         Item::MapCreated(m) => map_created(cv, x, y, w, m, bg),
         Item::MindMap(e) => mind_map(cv, x, y, w, e, bg),
@@ -501,6 +507,33 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
             cv.embed(x, y, d)
         }
     }
+}
+
+/// One instance among several (ADR 0012): a row; opened, its chart under it. An update into a
+/// closed one tints the row with the accent, rising and fading by `pulse`.
+fn flow_instance(cv: &mut Canvas, x: u16, y: u16, w: u16, v: &FlowInstanceView, bg: Color) -> u16 {
+    let t = cv.t;
+    let base = if bg == t.surface { t.surface_raised } else { t.surface };
+    let row_bg = if v.pulse > 0 { tint(t.accent, base, 0.05 * v.pulse as f32) } else { base };
+    cv.fill(Rect::new(x, y, w, 1), row_bg);
+    let chevron = if v.expanded { "▾" } else { "▸" };
+    let spans = vec![
+        Span::styled(format!("{chevron} "), plain(t.text_muted)),
+        Span::styled("FLOW ", bold(t.accent)),
+        Span::styled(format!("#{} ", v.map), plain(t.text_muted)),
+        Span::styled(v.event.change.clone(), plain(t.text)),
+    ];
+    cv.line(x + 1, y, w.saturating_sub(2), spans, row_bg);
+    let mut h = 1;
+    if v.expanded {
+        let hits = cv.hits.len();
+        h += flowchart(cv, x, y + 1, w, &v.event, bg);
+        // No tickets or panning inside an instance yet: its row is what a click does.
+        cv.hits.truncate(hits);
+    }
+    let sub = cv.sub;
+    cv.hits.push((Rect::new(x, y, w, 1), sub, MapElement::Instance));
+    h
 }
 
 /// A turn's reasoning (reasoning-*). Live: framed in the accent, with a timer and a cursor.
@@ -842,7 +875,7 @@ fn opened(body: MapBody, open: MapElement) -> Vec<u32> {
         (MapBody::Mind(m), MapElement::Node(i)) => m.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Node(i)) => f.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Arrow(i)) => f.arrows.get(i).map(|a| a.refs.clone()).unwrap_or_default(),
-        (MapBody::Mind(_), MapElement::Arrow(_)) | (_, MapElement::Area(..) | MapElement::Thinking) => vec![],
+        (MapBody::Mind(_), MapElement::Arrow(_)) | (_, MapElement::Area(..) | MapElement::Thinking | MapElement::Instance) => vec![],
     }
 }
 

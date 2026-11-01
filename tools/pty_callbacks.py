@@ -56,6 +56,24 @@ turns.append(turn("Reading the policy, then the log."))
 for i in range(50): post(url,{"uuid":f"b{i}","type":"iteration_failed","iteration":i})
 n=len(bodies); pump(2.0); show("a burst of 50 signals: one message")
 print("requests after the burst:",len(bodies)-n,"| the model got:",json.dumps(json.loads(bodies[-1])["messages"][-1])[:330])
+# Several passes of the chart: one row each, updated in place, pulsing softly.
+def flow(uuid,instance,node,state="entered"): return post(url,{"uuid":uuid,"type":"flowstate_update","map":1,"node":node,"instance":instance,"state":state})
+print("instances:",flow("i1","req-2",1),flow("i2","req-3",1)); pump(1.5); show("two more passes: closed rows")
+def row_bg(needle):
+    for y in range(ROWS):
+        line=screen.display[y]
+        if needle in line: return screen.buffer[y][line.index(needle)].bg
+    return None
+print("row colour at rest:",row_bg("req-3")); frames=[]
+flow("i3","req-3",2,"passed"); t0=time.time()
+for _ in range(9):
+    pump(0.15); frames.append((round(time.time()-t0,2),row_bg("req-3")))
+print("row colour by time:",frames)
+assert len({c for _,c in frames})>=3, "it changes softly, in steps"
+pump(0.6); print("row colour after:",row_bg("req-3"))
+print("rows:",sum(1 for l in screen.display if "FLOW" in l)," the in-place text:",[l.strip()[:60] for l in screen.display if "req-3" in l])
+os.write(fd,b"\x07"); pump(0.6); show("Ctrl+G opens the newest")
+os.write(fd,b"\x07"); pump(0.3)
 # The settings' Callbacks tab: switch the condition off, save, and the daemon obeys.
 for c in "/settings\r": os.write(fd,c.encode()); time.sleep(0.005)
 pump(0.5)

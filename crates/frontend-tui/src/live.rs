@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::model::{
     Arrow, Branch, FlowDirection, FlowNode, Flowchart, FlowchartEvent, Gate, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Symbol,
 };
-use crate::model::{Inbound, InboundKind, ThinkingView};
+use crate::model::{FlowInstanceView, Inbound, InboundKind, ThinkingView};
 use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, PermissionView, Role, SessionView, Tone, ToolBody, ToolCall, ToolIcon, ToolState};
 
 /// Tool output lines shown before `+N more lines`.
@@ -29,6 +29,8 @@ pub struct Feed {
     known: Vec<JournalEvent>,
     /// When the reasoning being written began.
     thinking_started: Option<u64>,
+    /// The instances seen of each chart (ADR 0012).
+    instances: HashMap<u64, Vec<String>>,
 }
 
 struct CallPlace {
@@ -41,7 +43,7 @@ struct CallPlace {
 
 impl Feed {
     pub fn new(time: TimeFormat, context_window: u64) -> Self {
-        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new(), thinking_started: None }
+        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new(), thinking_started: None, instances: HashMap::new() }
     }
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
@@ -160,6 +162,42 @@ impl Feed {
                 v.generating = false;
                 v.transcript.push(Item::Tips { label: format!("ERROR · {source}"), lines: message.lines().map(str::to_string).collect() });
             }
+        }
+    }
+
+    /// A `flowstate_update` (ADR 0012): with one instance a new card per event; with several,
+    /// one card each, updated in place, closed until opened, pulsing on an update.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flow(&mut self, v: &mut SessionView, map: &MapData, instance: &str, node: u64, state: &str, off_chart: bool, path: &[u64], date: &str, now_ms: u64) {
+        let event = flow_card(map, instance, node, state, off_chart, path, date);
+        let seen = self.instances.entry(map.id).or_default();
+        if !seen.iter().any(|i| i == instance) {
+            seen.push(instance.to_string());
+        }
+        if seen.len() < 2 {
+            v.transcript.push(Item::Flowchart(event));
+            v.scroll = 0;
+            return;
+        }
+        let existing = v.transcript.iter_mut().find_map(|it| match it {
+            Item::FlowInstance(card) if card.map == map.id as u32 && card.instance == instance => Some(card),
+            _ => None,
+        });
+        match existing {
+            Some(card) => {
+                card.event = event;
+                if !card.expanded {
+                    card.pulse_until_ms = Some(now_ms + PULSE_MS);
+                }
+            }
+            None => v.transcript.push(Item::FlowInstance(FlowInstanceView {
+                map: map.id as u32,
+                instance: instance.to_string(),
+                event,
+                expanded: false,
+                pulse_until_ms: Some(now_ms + PULSE_MS),
+                pulse: 0,
+            })),
         }
     }
 
@@ -312,6 +350,29 @@ fn flowchart(m: &MapData, newest_changed: bool) -> Flowchart {
             .collect(),
         arrows: m.edges.iter().map(|e| Arrow { from: node_id(e.from), to: node_id(e.to), label: (!e.label.is_empty()).then(|| e.label.clone()), refs: refs(&e.refs) }).collect(),
     }
+}
+
+/// How long a pulse lasts.
+pub const PULSE_MS: u64 = 1000;
+
+/// Moves the running pulses on: soft, up and down by colour. Returns whether any is still alive,
+/// so the app knows to keep drawing.
+pub fn tick_pulses(v: &mut SessionView, now_ms: u64) -> bool {
+    let mut any = false;
+    for item in &mut v.transcript {
+        let Item::FlowInstance(card) = item else { continue };
+        let Some(until) = card.pulse_until_ms else { continue };
+        if now_ms >= until {
+            card.pulse_until_ms = None;
+            card.pulse = 0;
+            any = true;
+            continue;
+        }
+        let elapsed = PULSE_MS.saturating_sub(until - now_ms) as f32 / PULSE_MS as f32;
+        card.pulse = (8.0 * (1.0 - (2.0 * elapsed - 1.0).abs())).round() as u8;
+        any = true;
+    }
+    any
 }
 
 /// A `journal` callback's entry as its card (no agent turn).
@@ -662,6 +723,55 @@ mod tests {
     fn first_tool_after_thinking(v: &SessionView) -> &ToolCall {
         let Item::Turn { attached, .. } = &v.transcript[0] else { panic!() };
         attached.iter().find_map(|a| if let Item::Tool(c) = a { Some(c) } else { None }).expect("a tool")
+    }
+
+    fn chart() -> MapData {
+        serde_json::from_value(json!({"id": 1, "title": "t", "kind": "flowchart", "direction": "down", "root": 1,
+            "nodes": [{"id": 1, "parent": null, "kind": "start", "text": "go", "state": "open", "refs": []}, {"id": 2, "parent": 1, "kind": "process", "text": "work", "state": "open", "refs": []}],
+            "edges": [{"from": 1, "to": 2, "label": "", "refs": []}]})).unwrap()
+    }
+
+    #[test]
+    fn one_instance_adds_cards_and_several_share_one_each_in_place() {
+        let (mut f, mut v) = (feed(), SessionView::default());
+        let m = chart();
+        f.flow(&mut v, &m, "a", 1, "entered", false, &[1], "d", 0);
+        f.flow(&mut v, &m, "a", 2, "entered", false, &[1, 2], "d", 10);
+        assert_eq!(v.transcript.iter().filter(|i| matches!(i, Item::Flowchart(_))).count(), 2, "one instance: a card per event");
+
+        f.flow(&mut v, &m, "b", 1, "entered", false, &[1], "d", 20);
+        f.flow(&mut v, &m, "b", 2, "entered", false, &[1, 2], "d", 30);
+        f.flow(&mut v, &m, "a", 2, "failed", false, &[1, 2], "d", 40);
+        let cards: Vec<&FlowInstanceView> = v.transcript.iter().filter_map(|i| if let Item::FlowInstance(c) = i { Some(c) } else { None }).collect();
+        assert_eq!(cards.len(), 2, "one card per instance");
+        assert_eq!(cards[0].instance, "b");
+        assert!(cards[0].event.change.contains("n2"), "updated in place: {}", cards[0].event.change);
+        assert!(cards.iter().all(|c| !c.expanded), "closed by default");
+        assert!(cards[1].event.change.contains("failed"));
+        assert_eq!(v.transcript.len(), 4, "history stays, nothing else added");
+    }
+
+    #[test]
+    fn a_pulse_rises_falls_and_ends_and_an_open_card_has_none() {
+        let (mut f, mut v) = (feed(), SessionView::default());
+        let m = chart();
+        f.flow(&mut v, &m, "a", 1, "entered", false, &[1], "d", 0);
+        f.flow(&mut v, &m, "b", 1, "entered", false, &[1], "d", 0);
+        let level = |v: &SessionView| v.transcript.iter().find_map(|i| if let Item::FlowInstance(c) = i { Some(c.pulse) } else { None }).unwrap();
+        assert!(tick_pulses(&mut v, 100));
+        let low = level(&v);
+        assert!(tick_pulses(&mut v, 500));
+        assert_eq!(level(&v), 8, "strongest halfway");
+        assert!(low < 8 && low > 0, "it rises softly: {low}");
+        assert!(tick_pulses(&mut v, 1000), "one last frame to clear it");
+        assert_eq!(level(&v), 0);
+        assert!(!tick_pulses(&mut v, 1100), "over: no more frames");
+
+        if let Some(Item::FlowInstance(c)) = v.transcript.iter_mut().find(|i| matches!(i, Item::FlowInstance(_))) {
+            c.expanded = true;
+        }
+        f.flow(&mut v, &m, "b", 1, "passed", false, &[1], "d", 2000);
+        assert!(!tick_pulses(&mut v, 2100), "an open card needs no pulse");
     }
 
     #[test]

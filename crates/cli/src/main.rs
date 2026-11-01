@@ -474,6 +474,7 @@ impl Live {
         let any = !events.is_empty();
         let Mode::Session(w) = &mut state.mode else { return any };
         let now = local_time(chrono::Utc::now().timestamp_millis() as u64);
+        let window_size = self.context_window;
         for (tab, event) in events {
             let Some(index) = w.tabs.iter().position(|t| t.id == tab) else { continue };
             match event {
@@ -487,8 +488,8 @@ impl Live {
                     push_card(&mut w.tabs[index].view, Item::Journal(card), &now);
                 }
                 WindowEvent::Flow { map, instance, node, state, off_chart, path } => {
-                    let card = frontend_tui::live::flow_card(&map, &instance, node, &state, off_chart, &path, &now);
-                    push_card(&mut w.tabs[index].view, Item::Flowchart(card), &now);
+                    let feed = self.feeds.entry(tab).or_insert_with(|| frontend_tui::live::Feed::new(local_time, window_size));
+                    feed.flow(&mut w.tabs[index].view, &map, &instance, node, &state, off_chart, &path, &now, chrono::Utc::now().timestamp_millis() as u64);
                 }
             }
         }
@@ -868,6 +869,10 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
+            if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                let now = chrono::Utc::now().timestamp_millis() as u64;
+                dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
+            }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {

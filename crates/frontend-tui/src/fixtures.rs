@@ -22,6 +22,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "welcome", mockup: "welcome", build: welcome },
     Fixture { name: "main-session", mockup: "main-session", build: main_session },
     Fixture { name: "reasoning", mockup: "reasoning", build: reasoning },
+    Fixture { name: "flow-instances", mockup: "tool-calls", build: flow_instances },
     Fixture { name: "settings-callbacks", mockup: "settings-callbacks", build: settings_callbacks },
     Fixture { name: "inbound-messages", mockup: "inbound-messages", build: inbound_messages },
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
@@ -69,6 +70,27 @@ fn session_hints() -> Vec<KeyHint> {
         KeyHint::new("@", "file"),
         KeyHint::new("/", "command"),
     ]
+}
+
+/// Three passes of one chart at once: closed rows, one opened, one pulsing.
+pub fn flow_instances() -> AppState {
+    let card = |instance: &str, node: &str, state: &str, expanded, pulse| {
+        Item::FlowInstance(crate::model::FlowInstanceView {
+            map: 1,
+            instance: instance.into(),
+            event: FlowchartEvent { id: 1, change: format!("{instance}: {node} {state}"), date: "14:52".into(), chart: crate::debug::sample_flowchart_down(), open: None, focus: None, pan: (0, 0) },
+            expanded,
+            pulse_until_ms: None,
+            pulse,
+        })
+    };
+    let view = SessionView {
+        transcript: vec![turn(Role::User, "14:50", &["deploy all three"]), card("req-1", "n3", "entered", false, 0), card("req-2", "n2", "passed", true, 0), card("req-3", "n1", "entered", false, 6)],
+        status: status("8.4k / 200k", "$0.06", "$10.00"),
+        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints() },
+        ..Default::default()
+    };
+    AppState { header: header("session/deploy"), eyes: Eyes::Open, pictures: false, mode: Mode::Session(ws(view, "deploy")) }
 }
 
 /// The settings on the Callbacks tab (settings-callbacks-*).

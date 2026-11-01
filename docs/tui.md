@@ -53,7 +53,7 @@ Callbacks reach a tab through the daemon, which the UI starts when needed (`mult
 |---|---|---|
 | `notification` | `text`, `label` | a CALLBACK card, and the agent's next input, marked as external data |
 | `journal` | `text`, `category`, `tags` | a journal entry and its card; no agent turn |
-| `flowstate_update` | `map`, `node`, `instance` (or `correlation_id`), `state` | the chart drawn with that node active; no agent turn |
+| `flowstate_update` | `map`, `node`, `instance` (or `correlation_id`), `state` | the chart drawn with that node active; no agent turn. With one instance, a new card per event; with several, one row each, updated in place, opened by a click or Ctrl+G, pulsing softly for a second on an update |
 
 A project's `.harness/conditions.toml` adds types of its own. Such a callback is a signal: it is logged and reaches no one until a condition turns true, and then the agent gets one message for the whole batch, with the condition, the policy files and the trigger log's path.
 
@@ -70,7 +70,7 @@ value = 1000
 policies = [".harness/policies/pipeline.md"]
 ```
 
-A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. The settings' Callbacks tab shows the standard types, this project's conditions and the daemon; it writes `.harness/callbacks.toml` and makes the daemon read it (`r` alone reloads). Custom handlers are crates implementing `CallbackHandler`, listed in `crates/cli/src/plugins.rs` of a local build: each serves its own types, can be chosen for a standard type in the tab, and can pass a message to the agent. Not built yet: the collapsed view of several instances. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
+A repeated `uuid` is handled once. A type with no handler gets 400 and reaches no one. Everything is logged in `daemon/triggers.jsonl` in the OS's data directory. The settings' Callbacks tab shows the standard types, this project's conditions and the daemon; it writes `.harness/callbacks.toml` and makes the daemon read it (`r` alone reloads). Custom handlers are crates implementing `CallbackHandler`, listed in `crates/cli/src/plugins.rs` of a local build: each serves its own types, can be chosen for a standard type in the tab, and can pass a message to the agent. The file is read when a window opens; other kinds of conditions are crates implementing `Condition`, not yet selectable.
 
 ## Flow
 
@@ -86,6 +86,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | session | `/exit`, `/quit`, `/q`, Ctrl+C | quit |
 | session | Esc | stop a generating agent, else close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
+| session | Ctrl+G · click a FLOW row | open or close the newest flowchart instance · that one |
 | session | Ctrl+O · click `▸ Thought for …` | fold or unfold the newest reasoning · that one |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
 | session | click `⚙ Settings` | open the settings window |
@@ -144,6 +145,7 @@ Every mockup has a named state that renders through the same `draw` as the live 
 | `welcome` | a fresh session: welcome card, quick tips | `welcome-*` |
 | `main-session` | turns, tool rows, an expanded diff, status line, composer | `main-session-*` |
 | `settings-callbacks` | the settings on the Callbacks tab, with a dropdown open | `settings-callbacks-*` |
+| `flow-instances` | three passes of one chart: closed rows, one opened, one pulsing | none (designed in code) |
 | `reasoning` | a model's reasoning live, folded and unfolded, inside the turn above the answer | `reasoning-*` |
 | `inbound-messages` | Telegram, voice, agent-to-agent, callback, reminder; a toast | `inbound-messages-*` |
 | `tool-calls` | tool cards: numbered output with a fold, Telegram send, agent send, journal write, failure, running | `tool-calls-*` |

@@ -113,6 +113,17 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                     crate::debug::open_tab(w, &title);
                 }
                 Key::Ctrl('w') => close_tab(w),
+                // The newest flowchart instance, for hands on the keyboard.
+                Key::Ctrl('g') => {
+                    if let Some(v) = w.view_mut().transcript.iter_mut().rev().find_map(|it| match it {
+                        crate::model::Item::FlowInstance(v) => Some(v),
+                        _ => None,
+                    }) {
+                        v.expanded = !v.expanded;
+                        v.pulse = 0;
+                        v.pulse_until_ms = None;
+                    }
+                }
                 // The newest reasoning, for hands on the keyboard.
                 Key::Ctrl('o') => {
                     let newest = w.view_mut().transcript.iter_mut().rev().find_map(|it| match it {
@@ -188,6 +199,14 @@ pub fn release(s: &mut AppState) {
 /// already open (journal#262).
 fn toggle_map_part(w: &mut Workspace, item: usize, sub: Option<usize>, element: crate::model::MapElement) {
     use crate::model::{Item, MapElement};
+    if element == MapElement::Instance {
+        if let Some(Item::FlowInstance(v)) = w.view_mut().transcript.get_mut(item) {
+            v.expanded = !v.expanded;
+            v.pulse = 0;
+            v.pulse_until_ms = None;
+        }
+        return;
+    }
     if element == MapElement::Thinking {
         if let Some(Item::Turn { attached, .. }) = w.view_mut().transcript.get_mut(item)
             && let Some(Item::Thinking(v)) = sub.and_then(|s| attached.get_mut(s))

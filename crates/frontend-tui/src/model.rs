@@ -353,6 +353,19 @@ pub struct SessionView {
     pub generating: bool,
 }
 
+/// One instance of a flowchart among several: one card, updated in place.
+#[derive(Debug, Clone)]
+pub struct FlowInstanceView {
+    pub map: u32,
+    pub instance: String,
+    pub event: FlowchartEvent,
+    pub expanded: bool,
+    /// While an update's pulse runs: when it ends, in the log's clock.
+    pub pulse_until_ms: Option<u64>,
+    /// How strong the pulse is now, 0 to 8.
+    pub pulse: u8,
+}
+
 /// The reasoning of one model turn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThinkingView {
@@ -379,6 +392,8 @@ pub enum Item {
     /// A message that reached the session from outside (inbound-messages-*).
     Inbound(Inbound),
     /// A journal entry the agent wrote (journal#136).
+    /// One pass of a chart when several run at once: a row, opened by the user (ADR 0012).
+    FlowInstance(FlowInstanceView),
     /// The model's reasoning: inside a turn, above its answer (reasoning-*).
     Thinking(ThinkingView),
     Journal(JournalEvent),
@@ -499,6 +514,8 @@ pub enum MapElement {
     Arrow(usize),
     /// A reasoning block's header: a click folds or unfolds it.
     Thinking,
+    /// A flowchart instance's row: a click opens or closes it.
+    Instance,
     /// The map's area itself (pressing there starts a drag); how far it can be panned.
     Area(u16, u16),
 }
