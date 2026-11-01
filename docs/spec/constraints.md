@@ -59,3 +59,4 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | Id | Constraint |
 |---|---|
 | **CON-50** | A hot reload swaps the binary only at a safe point — no model turn streaming, no tool call in flight — and never loses the view: everything held only in memory goes to a hand-off file the new process restores; a failed build swaps nothing ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md)). |
+| **CON-51** | A project's `.harness/acceptance.toml` runs only in the exact text the user approved; any change, by anyone, asks again. Commands the user gives for a task need no approval. Commands in journal entries never run. |

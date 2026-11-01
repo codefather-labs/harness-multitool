@@ -20,7 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
-    ("/task [command|off]", "the next message is a task: done only when its checks pass"),
+    ("/task [command|off|trust]", "the next message is a task: done only when its checks pass"),
     ("/journal", "journal entry event"),
     ("/thinking", "a model's reasoning, live"),
     ("/mindmap-new · /flowchart-new", "a mind map / flowchart created (empty)"),
@@ -463,7 +463,10 @@ fn command(w: &mut Workspace, cmd: &str) {
         }
         "task" => {
             let arg = arg.trim();
-            if arg == "off" {
+            if arg == "trust" {
+                let tab = w.tabs[w.active].id;
+                w.outbox.push(Outgoing::ApproveChecks { tab });
+            } else if arg == "off" {
                 v.task = None;
                 v.transcript.push(Item::Tips { label: "TASK".into(), lines: vec!["The next message is an ordinary one.".into()] });
             } else {
@@ -621,6 +624,9 @@ mod tests {
         assert!(matches!(&w.outbox[0], Outgoing::Prompt { .. }), "{:?}", w.outbox);
         send(&mut w, "/task");
         assert_eq!(w.view().task, Some(vec![]), "the acceptance checks alone");
+        send(&mut w, "/task trust");
+        assert!(matches!(w.outbox.last(), Some(Outgoing::ApproveChecks { .. })), "{:?}", w.outbox);
+        assert_eq!(w.view().task, Some(vec![]), "approving does not add a step");
     }
 
     #[test]

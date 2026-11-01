@@ -305,6 +305,8 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 
 /// The sessions behind the tabs, and what ties them to the view.
 struct Live {
+    /// The project's checks as last shown for approval.
+    checks_shown: Option<String>,
     sessions: harness_session::Sessions,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
     /// Permission prompts waiting for the one on screen to be answered.
@@ -533,7 +535,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -668,12 +670,34 @@ impl Live {
                     self.sessions.prompt(tab, text);
                 }
                 Outgoing::Task { tab, text, steps } => {
-                    let refused = self.sessions.task(tab, text, steps).err();
-                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
-                        match refused {
-                            None => t.view.generating = true,
-                            Some(reason) => t.view.transcript.push(frontend_tui::model::Item::Tips { label: "TASK REFUSED".into(), lines: vec![reason] }),
+                    use harness_session::TaskRefused;
+                    let refused = self.sessions.task(tab, text.clone(), steps.clone()).err();
+                    let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) else { continue };
+                    match refused {
+                        None => t.view.generating = true,
+                        Some(TaskRefused::Invalid(reason)) => t.view.transcript.push(frontend_tui::model::Item::Tips { label: "TASK REFUSED".into(), lines: vec![reason] }),
+                        Some(TaskRefused::NotApproved { commands, text: file }) => {
+                            // Nothing is lost: the message and its steps wait for the answer.
+                            self.checks_shown = Some(file);
+                            t.view.task = Some(steps);
+                            t.view.composer.text = text;
+                            let mut lines = vec!["This project's .harness/acceptance.toml is new or changed. A task would run on this machine:".to_string()];
+                            lines.extend(commands.iter().map(|c| format!("$ {c}")));
+                            lines.push("/task trust approves exactly this, then Enter sends your message. /task off cancels.".to_string());
+                            t.view.transcript.push(frontend_tui::model::Item::Tips { label: "APPROVE THE CHECKS".into(), lines });
                         }
+                    }
+                }
+                Outgoing::ApproveChecks { tab } => {
+                    let line = match self.checks_shown.take() {
+                        None => "No checks are waiting for approval.".to_string(),
+                        Some(file) => match self.sessions.approve_acceptance(&file) {
+                            Ok(()) => "Approved. If the file changes, a task asks again.".to_string(),
+                            Err(e) => format!("Not approved: {e}"),
+                        },
+                    };
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.view.transcript.push(frontend_tui::model::Item::Tips { label: "CHECKS".into(), lines: vec![line] });
                     }
                 }
                 Outgoing::Answer { tab, choice } => {
@@ -776,9 +800,17 @@ impl Live {
 fn run_once(prompt: &str, yes: bool, task: Option<Vec<String>>) -> Result<()> {
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
-    let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root);
+    let mut sessions = Sessions::new(real_factory(config::load()?.session, root.clone(), config::data_dir()?), root).with_data_dir(&config::data_dir()?.to_string_lossy());
     match task {
-        Some(steps) => sessions.task(1, prompt.to_string(), steps).map_err(|e| anyhow!(e))?,
+        Some(steps) => {
+            let mut answer = sessions.task(1, prompt.to_string(), steps.clone());
+            if let (true, Err(harness_session::TaskRefused::NotApproved { commands, text })) = (yes, &answer) {
+                println!("approved    the project's checks: {}", commands.join("; "));
+                sessions.approve_acceptance(text).map_err(|e| anyhow!(e))?;
+                answer = sessions.task(1, prompt.to_string(), steps);
+            }
+            answer.map_err(|e| anyhow!("{e}; --yes approves them"))?;
+        }
         None => sessions.prompt(1, prompt.to_string()),
     }
     loop {

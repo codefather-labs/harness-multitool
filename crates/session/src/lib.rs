@@ -302,23 +302,60 @@ struct AcceptanceCheck {
     command: String,
 }
 
-/// The protocol of a task in this project: its own steps, then the acceptance checks.
-pub fn protocol_for(root: &str, mut steps: Vec<String>) -> Result<Protocol, String> {
+/// Why a task did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskRefused {
+    Invalid(String),
+    /// The project's checks are new or changed: `text` is the file as read, to approve as shown.
+    NotApproved { commands: Vec<String>, text: String },
+}
+
+impl std::fmt::Display for TaskRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskRefused::Invalid(reason) => f.write_str(reason),
+            TaskRefused::NotApproved { commands, .. } => write!(f, "this project's checks are not approved yet; they would run: {}", commands.join("; ")),
+        }
+    }
+}
+
+/// The copy of a project's acceptance file the user approved.
+fn approved_path(data_dir: &str, root: &str) -> String {
+    format!("{}.acceptance.toml", sessions_dir(data_dir, root))
+}
+
+/// Approves this text of the project's checks, the one the user was shown.
+pub fn approve_acceptance(data_dir: &str, root: &str, text: &str) -> Result<(), String> {
+    let path = approved_path(data_dir, root);
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The protocol of a task in this project: its own steps, which the user just gave, then the
+/// acceptance checks, which a repository brings and so run only as approved (CON-51). The file
+/// is read once, so what was compared is what runs. No data directory means nothing is approved.
+pub fn protocol_for(data_dir: Option<&str>, root: &str, mut steps: Vec<String>) -> Result<Protocol, TaskRefused> {
     let path = std::path::Path::new(root).join(".harness").join("acceptance.toml");
     let mut specs = Vec::new();
     match std::fs::read_to_string(&path) {
         Ok(text) => {
-            let file: Acceptance = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            let file: Acceptance = toml::from_str(&text).map_err(|e| TaskRefused::Invalid(format!("{}: {e}", path.display())))?;
+            let approved = data_dir.and_then(|d| std::fs::read_to_string(approved_path(d, root)).ok());
+            if approved.as_deref() != Some(text.as_str()) {
+                return Err(TaskRefused::NotApproved { commands: file.check.into_iter().map(|c| c.command).collect(), text });
+            }
             for check in file.check {
                 specs.push(check.spec);
                 steps.push(check.command);
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Err(e) => return Err(TaskRefused::Invalid(format!("{}: {e}", path.display()))),
     }
     if steps.is_empty() {
-        return Err("a task needs something to check: a command, or .harness/acceptance.toml".to_string());
+        return Err(TaskRefused::Invalid("a task needs something to check: a command, or .harness/acceptance.toml".to_string()));
     }
     Ok(Protocol { steps, specs })
 }
@@ -326,6 +363,7 @@ pub fn protocol_for(root: &str, mut steps: Vec<String>) -> Result<Protocol, Stri
 pub struct Sessions {
     factory: Factory,
     root: String,
+    data_dir: Option<String>,
     handles: HashMap<u64, Handle>,
     to_frontend: Sender<FromSession>,
     from_sessions: Receiver<FromSession>,
@@ -354,7 +392,19 @@ impl Sessions {
     pub fn new(factory: Factory, root: String) -> Self {
         let (to_frontend, from_sessions) = channel();
         let started_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        Sessions { factory, root, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
+        Sessions { factory, root, data_dir: None, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
+    }
+
+    /// Where approvals are kept; without it a project's checks never run.
+    pub fn with_data_dir(mut self, data_dir: &str) -> Self {
+        self.data_dir = Some(data_dir.to_string());
+        self
+    }
+
+    /// Approves the project's checks as they were shown in a refusal.
+    pub fn approve_acceptance(&self, text: &str) -> Result<(), String> {
+        let data_dir = self.data_dir.as_deref().ok_or("this frontend keeps no approvals")?;
+        approve_acceptance(data_dir, &self.root, text)
     }
 
     /// The stored session behind a tab, once it has one.
@@ -383,8 +433,8 @@ impl Sessions {
 
     /// A message that is a task: done only when `steps` and the project's acceptance checks pass
     /// (INV-4). Refused, with nothing started, if there is nothing to check or the file is bad.
-    pub fn task(&mut self, tab: u64, text: String, steps: Vec<String>) -> Result<(), String> {
-        let protocol = protocol_for(&self.root, steps)?;
+    pub fn task(&mut self, tab: u64, text: String, steps: Vec<String>) -> Result<(), TaskRefused> {
+        let protocol = protocol_for(self.data_dir.as_deref(), &self.root, steps)?;
         if !self.handles.contains_key(&tab) {
             self.start(tab, None);
         }

@@ -588,7 +588,9 @@ fn a_task_is_done_through_its_checks_and_leaves_evidence() {
     std::fs::write(format!("{root}/.harness/acceptance.toml"), format!("[[check]]\nspec = {}\ncommand = \"cargo --version\"\n", checked.id)).unwrap();
 
     let (url, _) = fake_endpoint(vec![anthropic_turn(None, "All done, trust me.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone()).with_data_dir(&data);
+    let Err(TaskRefused::NotApproved { text, .. }) = sessions.task(1, "fix the prices".into(), vec![]) else { panic!("the first run asks") };
+    sessions.approve_acceptance(&text).unwrap();
     let (entries, end) = drive_task(&mut sessions, "fix the prices", &["cargo --version"]);
     assert_eq!(end, "Done");
     let evidence = entries.iter().find_map(|e| if let Event::Verification { pass: true, evidence } = &e.event { Some(evidence.clone()) } else { None }).expect("a verification");
@@ -627,8 +629,40 @@ fn a_failing_check_goes_back_to_the_model_and_is_never_done() {
 #[test]
 fn a_task_with_a_bad_file_or_nothing_to_check_is_refused() {
     let root = temp_dir("refuse");
-    assert!(harness_session::protocol_for(&root, vec![]).unwrap_err().contains("needs something to check"));
+    let data = temp_dir("refuse-data");
+    assert!(protocol_for(Some(&data), &root, vec![]).unwrap_err().to_string().contains("needs something to check"));
     std::fs::create_dir_all(format!("{root}/.harness")).unwrap();
     std::fs::write(format!("{root}/.harness/acceptance.toml"), "[[check]]\nspec = \"not a number\"\n").unwrap();
-    assert!(harness_session::protocol_for(&root, vec!["cargo --version".into()]).unwrap_err().contains("acceptance.toml"));
+    assert!(protocol_for(Some(&data), &root, vec!["cargo --version".into()]).unwrap_err().to_string().contains("acceptance.toml"));
+}
+
+/// CON-51: a project's commands run only as the user approved them.
+#[test]
+fn a_projects_checks_run_only_as_approved() {
+    let root = temp_dir("approve");
+    let data = temp_dir("approve-data");
+    let file = format!("{root}/.harness/acceptance.toml");
+    let first = "[[check]]\nspec = 1\ncommand = \"first\"\n";
+
+    // With no file, the user's own commands need no approval.
+    assert_eq!(protocol_for(Some(&data), &root, vec!["mine".into()]).unwrap().steps, ["mine"]);
+
+    std::fs::create_dir_all(format!("{root}/.harness")).unwrap();
+    std::fs::write(&file, first).unwrap();
+    let refused = protocol_for(Some(&data), &root, vec!["mine".into()]).unwrap_err();
+    assert_eq!(refused, TaskRefused::NotApproved { commands: vec!["first".into()], text: first.into() });
+    assert!(protocol_for(None, &root, vec![]).is_err(), "no place for approvals: never approved");
+
+    approve_acceptance(&data, &root, first).unwrap();
+    approve_acceptance(&data, &root, first).unwrap();
+    let protocol = protocol_for(Some(&data), &root, vec!["mine".into()]).unwrap();
+    assert_eq!((protocol.steps, protocol.specs), (vec!["mine".to_string(), "first".to_string()], vec![1]));
+
+    // A change asks again, and approving what was shown does not cover what came after.
+    let second = first.replace("first", "second");
+    std::fs::write(&file, &second).unwrap();
+    assert!(matches!(protocol_for(Some(&data), &root, vec![]), Err(TaskRefused::NotApproved { commands, .. }) if commands == ["second"]));
+    std::fs::write(&file, second.replace("second", "third")).unwrap();
+    approve_acceptance(&data, &root, &second).unwrap();
+    assert!(matches!(protocol_for(Some(&data), &root, vec![]), Err(TaskRefused::NotApproved { commands, .. }) if commands == ["third"]));
 }

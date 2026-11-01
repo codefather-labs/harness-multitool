@@ -50,7 +50,7 @@ The names are illustrative; the configuration format itself is an open question.
 
 | Id | Interface | Behaviour | Boundary | Default |
 |---|---|---|---|---|
-| **IF-10** | `Verifier` | Given a task, its verification protocol and the specifications that bind it, runs or checks the protocol and returns pass / fail with the evidence, which goes into memory. | Runs tools through the loop like the agent, under `Policy`. | Protocol runner: commands and expected outcomes from the task's protocol |
+| **IF-10** | `Verifier` | Given a task, its verification protocol and the specifications that bind it, runs or checks the protocol and returns pass / fail with the evidence, which goes into memory. | Runs the commands of its protocol directly: they come from the user, or from the project's file as the user approved it (CON-51), never from the model. | Protocol runner: commands and expected outcomes from the task's protocol |
 
 ## Reach
 
