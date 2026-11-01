@@ -18,9 +18,8 @@ Reference mockups for the terminal UI. The implementation matches them pixel for
 | Session tabs | `session-tabs-*` | several sessions in one window, `+` for new, a2a hint |
 | Onboarding tour | `tour-*` | coach mark over `[ Settings ]`, step 3 of 7 |
 
-Logo: `../logo/multitool.svg`, traced from `startup-light.png` (the operator's pick). `multitool-mono.svg` and `multitool-16.svg` are older drafts. Flow on launch: splash -> startup -> session.
+Logo: `../logo/multitool.svg`, traced from `startup-light.png` (the operator's pick). Flow on launch: splash -> startup -> session.
 
-`drafts/` keeps rejected or superseded variants (old logo, layouts that drifted from the system). They are history, not reference.
 
 ## Designed in code, without a mockup
 

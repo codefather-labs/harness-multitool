@@ -21,7 +21,7 @@ Like `cargo doc` turns a crate into a browsable site, `multitool doc` turns a pr
 
 ## Decided by the owner (2026-11-01, answers Q-32 in part)
 
-- **Only the documentation storefront.** The generator reads only the documentation files in the repository — the docs mirror. It does not pull from the journal: the journal is the working memory behind the files, not something to publish.
+- **Only the documentation storefront.** The generator reads only the documentation files in the repository — the docs mirror, which holds no drafts (CON-46). It does not pull from the journal: the journal is the working memory behind the files, not something to publish.
 - **On demand.** `multitool doc` builds when it is called. Running it in CI is the project's DevOps choice — the files are in the repository, so a pipeline calls the command if it wants to; the tool does not manage CI.
 
 ## Open (Q-32)

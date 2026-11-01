@@ -1,7 +1,7 @@
 # 0017 — Project initialization; documentation mirrors the journal, mind maps and flowcharts
 
 - **Status:** accepted · **Decided by:** the project owner, 2026-11-01
-- **Specs:** CON-43, CON-44, CON-45, IF-6, IF-7, P-4, P-5; replaces the "plan file is optional" part of [ADR 0016](0016-plan-mode.md) (Q-26)
+- **Specs:** CON-43, CON-44, CON-45, CON-46, IF-6, IF-7, P-4, P-5; replaces the "plan file is optional" part of [ADR 0016](0016-plan-mode.md) (Q-26)
 
 ## Decision
 
@@ -21,6 +21,8 @@ The shape is the one this repository uses for itself, which the owner chose as t
 | `docs/spec/roadmap.md` | milestones and the plan: the journal's todos grouped into work |
 | `docs/decisions/NNNN-*.md` + index | decisions, one record each, with status, who decided, why, what was rejected, and what amends or replaces it |
 | flowcharts | a Markdown page per chart (or a section in the page of its feature) with the chart drawn as a diagram and exported to SVG |
+
+**The docs are a storefront: no drafts (the owner, 2026-11-01).** The files hold only the current, settled state of the project as it is meant to be read: no drafts, no work notes, no scratch text, no TODO placeholders, no half-written sections, no superseded variants kept "for history", and no assumption written as if it were a fact. Work in progress lives in the journal, mind maps and flowcharts; git keeps the history. What is not settled appears only in its declared form — an open question in `open-questions.md`, an ADR with the status `proposed` or `concept`, a proposal labelled as one — never as unfinished text (CON-46).
 
 **Consistency is part of the work.** A decision, specification, constraint, invariant or question that goes into the journal goes into its file in the same change; a reversal deprecates the journal entry and updates or strikes the file. A disagreement between the files and the journal or a map is a finding, settled before the work goes on. Ids (P-, IF-, INV-, CON-, Q-, ADR numbers) are stable and the same in both.
 

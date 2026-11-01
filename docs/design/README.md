@@ -6,8 +6,6 @@
 
 In text mode the logo is pixel art in half blocks, 50 × 8 pixels in 4 rows (`LOGO_ART` in `crates/frontend-tui/src/images.rs`): fork and saw 11 px each and as tall as each other, the handle centred, eyes with a glint. On launch the eyes blink twice (`--eyes-closed` renders the closed frame). The one-row header carries no text-mode logo: one row is too small for the tool to read.
 
-`multitool-mono.svg`, `multitool-16.svg` and the four `multitool-1..4-*.svg` unfolding frames are earlier drafts, kept for history.
-
 ## Icons
 
 `icons/*.svg`: 24 × 24 strokes in `#000000`, recoloured per use. Each has a text glyph for terminals without pictures (`Icon::fallback`).
