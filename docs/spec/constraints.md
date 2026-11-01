@@ -32,6 +32,7 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-25** | Step-debug code in a target project (debug router, step waits, the mode's callbacks) is active strictly behind the environment gate `MULTITOOL_STEP_DEBUG=1` and only with authorization — checked by the app itself or by a token issued by the harness daemon; without the gate the code is inert and the pipeline runs as uninstrumented ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 | **CON-26** | A project's response policies (reliability monitoring) are Markdown files under `.harness/policies/` in the project; conditions link their paths ([ADR 0014](../decisions/0014-reliability-monitoring-mode.md)). |
 | **CON-27** | The step-debug router of a target app is always built by one contract, an OpenAPI-style specification the harness ships: an `approve` route that lets the app go to its next step; a `step back` route only where stepping back is really possible — otherwise not implemented at all, no stubs; the app's other product routes as the product needs ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
+| **CON-28** | A debug-router route for debugging product behaviour or invariants imports and calls the functions the real code calls; it implements no business logic of its own. A route that reimplements logic instead of calling the code it debugs breaks the contract ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 
 ## Browser build
 

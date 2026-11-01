@@ -1,7 +1,7 @@
 # 0013 — Step-debug mode
 
 - **Status:** accepted, open to additions · **Decided by:** the project owner, 2026-11-01
-- **Specs:** IF-0.5, IF-4, IF-6, IF-7, IF-11, IF-13, CON-24, CON-25, CON-27, INV-13; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0012](0012-flowcharts-as-live-pipelines.md) (live flowcharts)
+- **Specs:** IF-0.5, IF-4, IF-6, IF-7, IF-11, IF-13, CON-24, CON-25, CON-27, CON-28, INV-13; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0012](0012-flowcharts-as-live-pipelines.md) (live flowcharts)
 
 ## Decision
 
@@ -25,6 +25,8 @@ The harness has a **step-debug mode**: event-driven, step-by-step debugging of t
 - an **approve** endpoint: lets the app go to its next step;
 - a **step back** endpoint, only where a step back is really possible; where it is not, the route is not implemented at all — no stubs;
 - the app's other product communication with the agent goes through the same debug router too, preferably; which routes it has depends on the product.
+
+**Product routes call the real code — decided by the owner.** Routes for debugging the product's behaviour and invariants (as opposed to `approve` / `step back`) import and reuse the very functions the real code calls. A route builds no business logic of its own; it only calls what the code already uses. So a route exercises the actual pieces of code, along real patterns of behaviour, and what it shows is true of the product, not of a copy of it (CON-28).
 
 The debug router works only behind the environment gate and **always with authorization** — checked by the app itself, or by a token issued by the harness daemon (CON-25).
 
