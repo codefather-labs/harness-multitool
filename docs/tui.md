@@ -1,6 +1,6 @@
 # Terminal UI
 
-The terminal frontend (IF-11) is built design-first against [design/concept](design/concept/README.md). The agent loop is not wired in yet: the TUI runs on named view states, and the composer publishes every kind of transcript item through debug commands, so each component can be looked at live.
+The terminal frontend (IF-11) is built design-first against [design/concept](design/concept/README.md). A new session is real: a plain message goes to the agent loop, and what the loop logs is what the transcript draws (`frontend-tui/src/live.rs`). The other named states are design fixtures. In any session the composer's `/` commands publish every kind of transcript item, so each component can be looked at live. The startup page's recent sessions are still fixtures.
 
 ## Run
 
@@ -15,6 +15,26 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 
 **Text first.** Text mode is the primary target: the owner works in Ptyxis (VTE), which draws no pictures, so every screen must read well without them. The design targets text mode: every picture has a text form drawn in the same cells — the logo as half-block pixel art, icons as glyphs, mind maps as box-drawing cards and arrows. Terminals with a graphics protocol (kitty, WezTerm, Ghostty; sixel where enabled) get pictures instead, made from SVG for the cells they cover. A protocol forced with `--graphics` is used only when the terminal answers a graphics query; others keep the text forms.
 
+## A session
+
+Choose the provider and the model in the configuration (`config.toml` in the OS's config directory, see `multitool setup`):
+
+```toml
+[session]
+provider = "anthropic"          # the default; or a name under [session.providers]
+model = "claude-opus-5-5"       # the default
+max_cost_usd = 5.0              # optional budget; max_turns too
+
+[session.providers.local]       # any OpenAI-compatible endpoint
+kind = "openai"
+base_url = "http://localhost:8080/v1"
+
+[session.auth.local]
+none = true                     # no key needed
+```
+
+Keys come from the environment: `ANTHROPIC_API_KEY`, or `<PROVIDER>_API_KEY` for a provider of that name (`[session.auth.<name>]` can name another variable with `env`, or hold the key as `key`). Each tab is its own session, with its own log in the OS's data directory. Reads inside the project run; writes, commands and network use ask (`1` once, `2` always for this session, `3` deny). Esc stops a generating agent at its next chunk, and the next message continues the conversation.
+
 ## Flow
 
 splash (the key points of the harness as bullets, ideas and concepts tagged; OK / Enter) → startup page (recent sessions, quick actions) → session. On a terminal too short for the splash, the logo is dropped and the list stays whole.
@@ -27,7 +47,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | startup | ↑ ↓ · Tab / ← → · Enter · `n` `r` `s` `t` `?` | move · switch panel · choose · quick action |
 | session | Enter | send the composer line (text → your message; `/…` → a command) |
 | session | `/exit`, `/quit`, `/q`, Ctrl+C | quit |
-| session | Esc | close the notification toast |
+| session | Esc | stop a generating agent, else close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
 | session | click `⚙ Settings` | open the settings window |
@@ -64,6 +84,13 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 Short aliases: `/a` (agent), `/telegram` (tg), `/agent-msg` (a2a), `/cb` (callback), `/map-new` (flowchart-new), `/mind` (mindmap), `/flow` and `/map` (flowchart), `/t` (tool).
 
 Tool calls, journal and mind-map events attach to the newest assistant turn when it is the last item, as they do in a real session.
+
+## Debugging sessions
+
+- `multitool trace` lists the scenarios of the agent loop; `multitool trace <name>` prints one's log, one line per event.
+- `multitool screen --scenario <name> --png out.png` draws the transcript that scenario leaves.
+- `multitool preview welcome --script <name>` runs a scenario on test doubles in the live UI.
+- `tools/pty_session.py <absolute path to multitool>` drives the real UI in a pty against a fake provider endpoint: real HTTP, tools and permission prompts. It prints the screen at each step and the idle CPU. It needs the Python package `pyte`.
 
 ## Screens as images
 

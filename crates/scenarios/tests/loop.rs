@@ -115,25 +115,49 @@ fn a_verifier_that_keeps_failing_never_reaches_done() {
 }
 
 #[test]
-fn a_budget_ends_the_task() {
+fn a_budget_stops_the_run() {
     let t = scenario("budget");
     assert!(matches!(&t.ends[0], RunEnd::Failed(reason) if reason.contains("budget")));
     assert_eq!(t.state.turns, 2);
 }
 
 #[test]
-fn the_user_can_stop_it() {
-    let t = scenario("stop");
-    assert_eq!(t.ends, vec![RunEnd::Abandoned]);
-    assert_eq!(t.state.task, TaskState::Abandoned);
-    assert!(t.requests.is_empty());
+fn the_user_can_stop_a_task_for_good_and_a_conversation_for_now() {
+    let task = scenario("stop-task");
+    assert_eq!(task.ends, vec![RunEnd::Abandoned]);
+    assert_eq!(task.state.task, TaskState::Abandoned);
+    assert!(task.requests.is_empty());
+
+    let chat = scenario("stop");
+    assert_eq!(chat.ends, vec![RunEnd::Abandoned, RunEnd::AwaitingInput], "the next message goes on");
+    assert_eq!(chat.state.task, TaskState::Running);
 }
 
 #[test]
-fn a_provider_error_fails_the_task_with_its_message() {
-    let t = scenario("provider-error");
-    assert_eq!(t.ends, vec![RunEnd::Failed("overloaded".into())]);
-    assert_eq!(t.state.task, TaskState::Failed);
+fn a_stop_cuts_a_streaming_turn() {
+    let t = scenario("stop-mid-turn");
+    assert_eq!(t.ends, vec![RunEnd::Abandoned]);
+    let chunks = t.entries.iter().filter(|e| matches!(e.event, Event::TextDelta { .. })).count();
+    assert_eq!(chunks, 1, "the provider stopped at the first chunk");
+}
+
+#[test]
+fn calls_cut_off_by_the_token_limit_never_run() {
+    let t = scenario("max-tokens-tool");
+    let (output, is_error) = tool_result(&t);
+    assert!(is_error && output.contains("did not run"), "{output}");
+    assert_eq!(t.ends, vec![RunEnd::AwaitingInput]);
+}
+
+#[test]
+fn a_provider_error_ends_a_task_but_not_a_conversation() {
+    let task = scenario("provider-error-task");
+    assert_eq!(task.ends, vec![RunEnd::Failed("overloaded".into())]);
+    assert_eq!(task.state.task, TaskState::Failed);
+
+    let chat = scenario("provider-error");
+    assert_eq!(chat.ends, vec![RunEnd::Failed("overloaded".into()), RunEnd::AwaitingInput]);
+    assert_eq!(chat.state.task, TaskState::Running);
 }
 
 #[test]

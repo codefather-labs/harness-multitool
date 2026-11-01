@@ -1,0 +1,27 @@
+[package]
+name = "harness-session"
+description = "Runs sessions natively: the plugin registry from the configuration, and a thread per session."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+harness-core = { version = "0.1.0-dev", path = "../core" }
+harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
+harness-auth-apikey = { version = "0.1.0-dev", path = "../auth-apikey" }
+harness-provider-anthropic = { version = "0.1.0-dev", path = "../provider-anthropic" }
+harness-provider-openai = { version = "0.1.0-dev", path = "../provider-openai" }
+harness-tools-builtin = { version = "0.1.0-dev", path = "../tools-builtin" }
+harness-policy-default = { version = "0.1.0-dev", path = "../policy-default" }
+harness-context-default = { version = "0.1.0-dev", path = "../context-default" }
+harness-session-files = { version = "0.1.0-dev", path = "../session-files" }
+harness-verifier-protocol = { version = "0.1.0-dev", path = "../verifier-protocol" }
+harness-router-default = { version = "0.1.0-dev", path = "../router-default" }
+pollster = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+harness-scenarios = { version = "0.1.0-dev", path = "../scenarios" }

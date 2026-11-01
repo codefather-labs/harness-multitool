@@ -41,3 +41,26 @@ fn doubles_depend_only_on_the_interfaces() {
     assert_eq!(local.len(), 1, "{local:?}");
     assert!(local[0].starts_with("harness-api"));
 }
+
+/// INV-7: plugin crates depend only on interface crates, never on each other.
+#[test]
+fn plugins_depend_only_on_the_interfaces() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    for name in [
+        "platform-native",
+        "auth-apikey",
+        "provider-anthropic",
+        "provider-openai",
+        "tools-builtin",
+        "policy-default",
+        "context-default",
+        "session-files",
+        "verifier-protocol",
+        "router-default",
+    ] {
+        let manifest = fs::read_to_string(crates.join(name).join("Cargo.toml")).unwrap();
+        let local: Vec<_> = manifest.lines().filter(|l| l.contains("path = ")).collect();
+        assert_eq!(local.len(), 1, "{name}: {local:?}");
+        assert!(local[0].starts_with("harness-api"), "{name}: {}", local[0]);
+    }
+}

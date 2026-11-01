@@ -95,7 +95,12 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                     w.view_mut().composer.text.pop();
                 }
                 Key::Char(c) => w.view_mut().composer.text.push(c),
-                // Esc closes the toast; the session itself is left with Ctrl+C.
+                // Esc stops a generating agent, else closes the toast; the session itself is
+                // left with Ctrl+C.
+                Key::Esc if w.live && w.view().generating => {
+                    let tab = w.tabs[w.active].id;
+                    w.outbox.push(crate::model::Outgoing::Stop { tab });
+                }
                 Key::Esc => w.toast = None,
                 Key::PageUp => scroll_view(w, 10),
                 Key::PageDown => scroll_view(w, -10),

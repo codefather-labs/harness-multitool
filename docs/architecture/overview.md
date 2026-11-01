@@ -104,27 +104,32 @@ A project's journal, mind maps and flowcharts are mirrored into its `docs/` tree
 - **Native:** the core, every interface crate, the default plugins and the platform's native implementation; the user's own plugin crates are added in their local build (CON-2).
 - **Browser:** the same core and interface crates compiled to `wasm32-unknown-unknown` (INV-1), with the browser implementations of the platform and the plugins that need no operating system. Tools that need processes are not offered (IF-21).
 
+## A conversation and a task
+
+A message runs turns until the model stops. With a verification protocol that is a *task*: it reaches `done` only through the verifier (INV-4), and a stop or a failure ends it. Without one it is a *conversation*: the model's stop waits for the next message, the task stays `running`, and a stop or a provider failure can be followed by another message.
+
 ## Debugging a feature
 
 Each feature has its own way to be looked at without the rest of the system:
 
 - `multitool screen <state> --png out.png` renders a state of the terminal UI to an image, through the same `draw` as the live UI.
+- `multitool screen --scenario <name>` draws what a loop scenario leaves on screen; `tools/pty_session.py` drives the real UI in a pty against a fake provider endpoint.
 - `multitool trace <scenario>` runs the real loop on test doubles and prints its log, one line per event (`--json` prints the lines the session store keeps); with no name it lists the scenarios. The tests in `crates/scenarios` run the same scenarios.
 
 ## Repository layout
 
-Built today: `crates/api` (every interface, the events, the fold over the log), `crates/core` (loop, bus, registry), `crates/doubles` (a test double per interface), `crates/scenarios` (named runs of the real loop on doubles), `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
+Built today: `crates/api` (every interface, the events, the fold over the log), `crates/core` (loop, bus, registry), `crates/doubles` (a test double per interface), `crates/scenarios` (named runs of the real loop on doubles), the default plugins (`platform-native`, `auth-apikey`, `provider-anthropic`, `provider-openai`, `tools-builtin`, `policy-default`, `context-default`, `session-files`, `verifier-protocol`, `router-default`), `crates/session` (the plugins from the configuration, a thread per session), `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
 
 ```text
 crates/
   core/            agent loop, event bus, registry, task states
-  doubles/  scenarios/
+  doubles/  scenarios/  session/
   api/             one module per interface: traits, types, errors (semver, INV-8)
   platform-native/ platform-wasm/
   provider-anthropic/ provider-openai/
   auth-apikey/
   tools-builtin/   read, edit, shell, search, fetch
-  policy-default/  context-default/  session-files/  verifier-protocol/
+  policy-default/  context-default/  session-files/  verifier-protocol/  router-default/
   memory-daemon/   memory-browser/
   frontend-tui/    frontend-web/    tui-snapshot/
   transport-daemon/

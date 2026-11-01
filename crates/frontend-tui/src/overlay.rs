@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
 use crate::model::{
-    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
+    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing,
 };
 use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
@@ -29,6 +29,7 @@ pub fn sample_permission() -> PermissionView {
         scope: "current workspace · local shell".into(),
         policy: "approval required · shell:execute".into(),
         choice: 0,
+        tab: None,
     }
 }
 
@@ -429,6 +430,11 @@ fn activate(s: &mut SettingsView) {
 /// The user answered the permission prompt: the call shows in the transcript with the answer.
 pub fn answer(w: &mut Workspace, choice: usize) {
     let Some(Overlay::Permission(p)) = w.overlay.take() else { return };
+    // A running session draws the call itself, from its log.
+    if let Some(tab) = p.tab {
+        w.outbox.push(Outgoing::Answer { tab, choice });
+        return;
+    }
     let (state, outcome, tone) = match choice {
         0 => (ToolState::Done, "allowed once", Tone::Success),
         1 => (ToolState::Done, "always allowed · rule saved", Tone::Success),

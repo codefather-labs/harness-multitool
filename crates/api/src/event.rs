@@ -46,6 +46,10 @@ pub enum Event {
     TaskState { to: TaskState, reason: Option<String> },
     TurnStarted { turn: u32, provider: String, model: String },
     TextDelta { text: String },
+    /// A provider block kept for replay; frontends do not show it.
+    OpaqueBlock { block: Value },
+    /// The model called a tool, in its place among the turn's blocks.
+    ModelToolCall { call: ToolCall },
     TurnFinished { turn: u32, stop: StopReason, usage: Usage, cost_micro_usd: Option<u64> },
     ToolRequested { call: ToolCall, capabilities: Vec<Capability> },
     ToolDecision { id: String, allowed: bool, by: DecidedBy, reason: Option<String> },

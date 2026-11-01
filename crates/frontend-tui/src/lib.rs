@@ -12,6 +12,7 @@ pub mod images;
 pub mod maps;
 pub mod mindmap;
 pub mod input;
+pub mod live;
 pub mod model;
 pub mod overlay;
 pub mod theme;

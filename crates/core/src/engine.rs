@@ -26,6 +26,10 @@ impl StopFlag {
         self.0.store(true, Ordering::SeqCst);
     }
 
+    fn is_set(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
     fn take(&self) -> bool {
         self.0.swap(false, Ordering::SeqCst)
     }
@@ -37,7 +41,9 @@ pub enum RunEnd {
     /// The model stopped and there is no protocol: the next user message continues.
     AwaitingInput,
     Done,
+    /// Something failed. Final for a task with a protocol; a conversation can go on.
     Failed(String),
+    /// The user stopped it. Final for a task with a protocol; a conversation can go on.
     Abandoned,
 }
 
@@ -87,6 +93,12 @@ impl Engine {
         self.stop.clone()
     }
 
+    /// Uses a flag made before the engine, e.g. by the thread that will set it.
+    pub fn with_stop_flag(mut self, stop: StopFlag) -> Self {
+        self.stop = stop;
+        self
+    }
+
     pub fn state(&self) -> SessionState {
         self.state.borrow().clone()
     }
@@ -119,10 +131,27 @@ impl Engine {
         }
     }
 
-    fn fail(&self, source: &str, message: String) -> RunEnd {
+    fn fail(&self, source: &str, message: String, protocol: Option<&Protocol>) -> RunEnd {
         self.emit(Event::Error { source: source.to_string(), message: message.clone() });
-        self.set_task(TaskState::Failed, Some(message.clone()));
+        if protocol.is_some() {
+            self.set_task(TaskState::Failed, Some(message.clone()));
+        }
         RunEnd::Failed(message)
+    }
+
+    fn stopped(&self, protocol: Option<&Protocol>) -> RunEnd {
+        if protocol.is_some() {
+            self.set_task(TaskState::Abandoned, Some("stopped by the user".into()));
+        }
+        RunEnd::Abandoned
+    }
+
+    /// Calls that will not run still get results: the history must stay valid for the model.
+    fn refuse_calls(&self, calls: &[ToolCall], why: &str) {
+        for call in calls {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            self.emit(Event::ToolResult { id: call.id.clone(), output: why.to_string(), is_error: true });
+        }
     }
 
     /// Runs every hook on `point`. Returns the first veto.
@@ -170,6 +199,8 @@ impl Engine {
         if self.state.borrow().task.is_final() {
             return RunEnd::Failed("the task has already ended".into());
         }
+        // A stop that came while nothing ran is not for the next message.
+        self.stop.take();
         if let Some((hook, reason)) = self.hooks(HookPoint::UserPromptSubmit { text }).await {
             self.emit(Event::Error { source: hook, message: reason.clone() });
             return RunEnd::Failed(reason);
@@ -179,23 +210,28 @@ impl Engine {
 
         loop {
             if let Err(message) = self.flush().await {
-                return self.fail("store", message);
+                return self.fail("store", message, protocol);
             }
             if self.stop.take() {
-                self.set_task(TaskState::Abandoned, Some("stopped by the user".into()));
-                return RunEnd::Abandoned;
+                return self.stopped(protocol);
             }
             let route = match self.parts.router.route(&self.spent()) {
                 Ok(route) => route,
-                Err(reason) => return self.fail("router", reason),
+                Err(reason) => return self.fail("router", reason, protocol),
             };
-            let calls = match self.turn(&route).await {
-                Ok(calls) => calls,
-                Err(message) => return self.fail(&route.provider, message),
+            let (calls, stop) = match self.turn(&route).await {
+                Ok(end) => end,
+                Err(message) => return self.fail(&route.provider, message, protocol),
             };
-            if self.stop.take() {
-                self.set_task(TaskState::Abandoned, Some("stopped by the user".into()));
-                return RunEnd::Abandoned;
+            if stop == StopReason::Stopped || self.stop.take() {
+                self.stop.take();
+                self.refuse_calls(&calls, "stopped by the user");
+                return self.stopped(protocol);
+            }
+            if stop == StopReason::MaxTokens && !calls.is_empty() {
+                // The arguments may be cut off: never run them. The model hears why.
+                self.refuse_calls(&calls, "the turn hit the token limit and this call may be incomplete; it did not run");
+                continue;
             }
             if !calls.is_empty() {
                 for call in &calls {
@@ -210,12 +246,12 @@ impl Engine {
             match self.verify(protocol).await {
                 Ok(true) => return RunEnd::Done,
                 Ok(false) => {} // the evidence went into the context; the model takes it up
-                Err(message) => return self.fail("verifier", message),
+                Err(message) => return self.fail("verifier", message, Some(protocol)),
             }
         }
     }
 
-    async fn turn(&self, route: &Route) -> Result<Vec<ToolCall>, String> {
+    async fn turn(&self, route: &Route) -> Result<(Vec<ToolCall>, StopReason), String> {
         let provider = self.parts.providers.get(&route.provider).ok_or_else(|| format!("the router chose an unknown provider: {}", route.provider))?;
         let context = {
             let state = self.state.borrow().clone();
@@ -231,16 +267,23 @@ impl Engine {
             max_tokens: route.max_tokens,
         };
         let calls = RefCell::new(Vec::new());
-        let mut sink = |event: ModelEvent| match event {
-            ModelEvent::Text(text) => self.emit(Event::TextDelta { text }),
-            ModelEvent::ToolCall(call) => calls.borrow_mut().push(call),
+        let mut sink = |event: ModelEvent| {
+            match event {
+                ModelEvent::Text(text) => self.emit(Event::TextDelta { text }),
+                ModelEvent::Opaque(block) => self.emit(Event::OpaqueBlock { block }),
+                ModelEvent::ToolCall(call) => {
+                    self.emit(Event::ModelToolCall { call: call.clone() });
+                    calls.borrow_mut().push(call);
+                }
+            }
+            !self.stop.is_set()
         };
         let end = provider.turn(&request, &mut sink).await.map_err(|e| e.to_string())?;
         self.emit(Event::TurnFinished { turn, stop: end.stop.clone(), usage: end.usage, cost_micro_usd: end.cost_micro_usd });
         if let StopReason::Other(reason) = &end.stop {
             return Err(format!("the model stopped: {reason}"));
         }
-        Ok(calls.into_inner())
+        Ok((calls.into_inner(), end.stop))
     }
 
     /// One tool call through hooks and `Policy` (INV-3). Whatever happens, the model gets a

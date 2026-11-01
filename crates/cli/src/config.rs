@@ -30,6 +30,10 @@ pub struct Terminal {
 pub struct Config {
     #[serde(default)]
     pub terminal: Terminal,
+    /// The model and plugins a session runs on: provider, model, budgets, keys (never required
+    /// here: keys normally come from the environment).
+    #[serde(default)]
+    pub session: harness_session::Settings,
 }
 
 pub fn path() -> Result<PathBuf> {
@@ -45,6 +49,12 @@ pub fn load() -> Result<Config> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
     }
+}
+
+/// Where sessions keep their logs: the OS's data directory.
+pub fn data_dir() -> Result<PathBuf> {
+    let dir = dirs::data_dir().ok_or_else(|| anyhow!("this OS reports no data directory"))?;
+    Ok(dir.join("harness-multitool"))
 }
 
 pub fn save(c: &Config) -> Result<PathBuf> {
@@ -77,7 +87,7 @@ mod tests {
     #[test]
     fn config_round_trips_and_defaults_to_auto() {
         assert_eq!(toml::from_str::<Config>("").unwrap().terminal.graphics, Graphics::Auto);
-        let c = Config { terminal: Terminal { graphics: Graphics::Sixel } };
+        let c = Config { terminal: Terminal { graphics: Graphics::Sixel }, ..Default::default() };
         let text = toml::to_string_pretty(&c).unwrap();
         assert!(text.contains("graphics = \"sixel\""), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap().terminal.graphics, Graphics::Sixel);

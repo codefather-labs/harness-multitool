@@ -1,5 +1,5 @@
-//! `multitool`: the harness binary. For now it carries the design-debug `screen` command, which
-//! renders a named state of the terminal UI to PNG (journal: tui-screens specification).
+//! `multitool`: the harness binary. The terminal UI runs real sessions (harness-session); the
+//! debug commands `screen` and `trace` show a named UI state or a loop scenario on their own.
 
 use std::path::PathBuf;
 
@@ -25,6 +25,10 @@ enum Command {
         name: String,
         #[arg(long, default_value = "dark")]
         theme: String,
+        /// Debug: new sessions run a named scenario on test doubles instead of a real model
+        /// (see `multitool trace`).
+        #[arg(long)]
+        script: Option<String>,
     },
     /// Debug the agent loop: run a named scenario on test doubles and print its log, one line per event.
     Trace {
@@ -51,8 +55,11 @@ enum Command {
     },
     /// Render a named UI state to PNG, as the CLI would show it.
     Screen {
-        /// Fixture name; omit with --list.
+        /// Fixture name; omit with --list or --scenario.
         name: Option<String>,
+        /// Debug: instead of a fixture, draw the session a scenario of `multitool trace` leaves.
+        #[arg(long)]
+        scenario: Option<String>,
         /// List the fixture names.
         #[arg(long)]
         list: bool,
@@ -92,9 +99,9 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into() });
+    let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None });
     match command {
-        Command::Preview { name, theme } => preview(&name, &theme),
+        Command::Preview { name, theme, script } => preview(&name, &theme, script.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Setup { graphics } => {
             let mut c = config::load()?;
@@ -119,14 +126,15 @@ fn main() -> Result<()> {
             println!("{} {width}x{height}", png.display());
             Ok(())
         }
-        Command::Screen { name, list, theme, size, png, compare, no_graphics, eyes_closed, mockups, font, font_bold, px, cell_h } => {
+        Command::Screen { name, scenario, list, theme, size, png, compare, no_graphics, eyes_closed, mockups, font, font_bold, px, cell_h } => {
             if list {
                 for f in fixtures::ALL {
                     println!("{}\t{}", f.name, f.mockup);
                 }
                 return Ok(());
             }
-            let name = name.ok_or_else(|| anyhow!("a screen name is required (see --list)"))?;
+            let scenario_state = scenario.as_deref().map(scenario_session).transpose()?;
+            let name = if scenario.is_some() { "welcome".to_string() } else { name.ok_or_else(|| anyhow!("a screen name is required (see --list)"))? };
             let fixture = fixtures::by_name(&name).ok_or_else(|| anyhow!("unknown screen {name:?} (see --list)"))?;
             let theme = Theme::builtin(&theme)?;
             let (cols, rows) = size
@@ -139,7 +147,7 @@ fn main() -> Result<()> {
                 (Some(r), Some(b)) => Raster::with_fonts(r, b, px, cell_h)?,
                 _ => Raster::new(px, cell_h)?,
             };
-            let mut state = (fixture.build)();
+            let mut state = scenario_state.unwrap_or_else(|| (fixture.build)());
             if eyes_closed {
                 state.eyes = frontend_tui::images::Eyes::Closed;
             }
@@ -153,6 +161,171 @@ fn main() -> Result<()> {
             println!("{} {}x{} px, {cols}x{rows} cells of {}x{} px", out.display(), img.width(), img.height(), raster.cell_w, raster.cell_h);
             Ok(())
         }
+    }
+}
+
+/// A log time as a card's stamp.
+fn local_time(at_ms: u64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(at_ms as i64).single().map_or_else(String::new, |t| t.format("%H:%M").to_string())
+}
+
+/// The working directory as the header shows it.
+fn shown_cwd() -> String {
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    match dirs::home_dir().and_then(|h| cwd.strip_prefix(&*h.to_string_lossy()).map(str::to_string)) {
+        Some(rest) => format!("~{rest}"),
+        None => cwd,
+    }
+}
+
+/// The current git branch, when this is a repository root on a branch.
+fn git_branch() -> Option<String> {
+    let head = std::fs::read_to_string(".git/HEAD").ok()?;
+    head.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
+}
+
+/// A fresh session view on the given model: the status line says what will really run.
+fn live_session(provider: &str, model: &str, budget: &str) -> frontend_tui::AppState {
+    let mut state = fixtures::welcome();
+    state.header.cwd = shown_cwd();
+    state.header.branch = git_branch();
+    if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+        w.live = true;
+        w.view_mut().status.fields = [("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .to_vec();
+    }
+    state
+}
+
+/// The screen a scenario of `multitool trace` leaves: the debug view of the UI's wiring.
+fn scenario_session(name: &str) -> Result<frontend_tui::AppState> {
+    let setup = harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
+    let t = harness_scenarios::run(setup);
+    let mut state = live_session("scripted", "scripted-1", "none");
+    if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+        let mut feed = frontend_tui::live::Feed::new(local_time, 200_000);
+        for entry in &t.stored {
+            feed.apply(w.view_mut(), entry);
+        }
+        feed.run_ended(w.view_mut());
+    }
+    Ok(state)
+}
+
+/// The sessions behind the tabs, and what ties them to the view.
+struct Live {
+    sessions: harness_session::Sessions,
+    feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
+    /// Permission prompts waiting for the one on screen to be answered.
+    asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
+    context_window: u64,
+    root: String,
+    provider: String,
+    model: String,
+    budget: String,
+}
+
+impl Live {
+    fn new(script: Option<&str>) -> Result<Live> {
+        let root = std::env::current_dir()?.to_string_lossy().into_owned();
+        let settings = config::load()?.session;
+        let budget = settings.max_cost_usd.map_or("none".to_string(), |d| format!("${d:.2}"));
+        let (factory, provider, model, context_window): (harness_session::Factory, String, String, u64) = match script {
+            Some(name) => {
+                harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
+                let name = name.to_string();
+                let factory: harness_session::Factory = std::sync::Arc::new(move || Ok(harness_scenarios::parts(harness_scenarios::setup(&name).expect("checked above"))));
+                (factory, "scripted".into(), "scripted-1".into(), 200_000)
+            }
+            None => {
+                let (provider, model, window) = (settings.provider.clone(), settings.model.clone(), settings.context_window());
+                (harness_session::real_factory(settings, root.clone(), config::data_dir()?), provider, model, window)
+            }
+        };
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, provider, model, budget })
+    }
+
+    fn fresh_session(&self) -> frontend_tui::AppState {
+        live_session(&self.provider, &self.model, &self.budget)
+    }
+
+    /// What the user did goes to the sessions; returns whether anything changed on screen.
+    fn send(&mut self, state: &mut frontend_tui::AppState) {
+        use frontend_tui::model::{Mode, Outgoing, Overlay};
+        let Mode::Session(w) = &mut state.mode else { return };
+        for out in std::mem::take(&mut w.outbox) {
+            match out {
+                Outgoing::Prompt { tab, text } => {
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.view.generating = true;
+                    }
+                    self.sessions.prompt(tab, text);
+                }
+                Outgoing::Answer { tab, choice } => {
+                    let answer = match choice {
+                        0 => harness_api::Answer::AllowOnce,
+                        1 => harness_api::Answer::AlwaysAllow,
+                        _ => harness_api::Answer::Deny,
+                    };
+                    self.sessions.answer(tab, answer);
+                    if w.overlay.is_none() {
+                        w.overlay = self.asks.pop_front().map(Overlay::Permission);
+                    }
+                }
+                Outgoing::Stop { tab } => self.sessions.stop(tab),
+            }
+        }
+    }
+
+    /// What the sessions said reaches the view. Returns whether anything did.
+    fn receive(&mut self, state: &mut frontend_tui::AppState) -> bool {
+        use frontend_tui::live::{Feed, permission};
+        use frontend_tui::model::{Item, Mode, Overlay, TabMark};
+        use harness_session::FromSession;
+        let messages = self.sessions.drain();
+        let any = !messages.is_empty();
+        let Mode::Session(w) = &mut state.mode else { return any };
+        let active = w.tabs.get(w.active).map(|t| t.id);
+        for message in messages {
+            let window = self.context_window;
+            match message {
+                FromSession::Entry { tab, entry } => {
+                    let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        feed.apply(&mut t.view, &entry);
+                        if Some(tab) != active && matches!(entry.event, harness_api::Event::TurnFinished { .. }) {
+                            t.mark = match t.mark {
+                                TabMark::Unread(n) => TabMark::Unread(n + 1),
+                                _ => TabMark::Unread(1),
+                            };
+                        }
+                    }
+                }
+                FromSession::Ask { tab, call, capabilities } => {
+                    let view = permission(tab, &call, &capabilities, &self.root);
+                    if w.overlay.is_none() {
+                        w.overlay = Some(Overlay::Permission(view));
+                    } else {
+                        self.asks.push_back(view);
+                    }
+                }
+                FromSession::Ended { tab, .. } => {
+                    let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        feed.run_ended(&mut t.view);
+                    }
+                }
+                FromSession::Unavailable { tab, message } => {
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.view.generating = false;
+                        t.view.transcript.push(Item::Tips { label: "CANNOT START THE SESSION".into(), lines: message.lines().map(str::to_string).collect() });
+                    }
+                }
+            }
+        }
+        any
     }
 }
 
@@ -181,7 +354,7 @@ fn trace(name: Option<&str>, json: bool) -> Result<()> {
 /// The live terminal UI on a fixture state. Same `AppState` and `draw` as `screen`; keys and
 /// clicks go through `frontend_tui::input`, and the next screen's data comes from fixtures until
 /// the core exists.
-fn preview(name: &str, theme: &str) -> Result<()> {
+fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
     use std::collections::HashMap;
 
     use frontend_tui::images::{self, Graphic};
@@ -200,7 +373,9 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     use ratatui_image::{Image, Resize};
 
     let fixture = fixtures::by_name(name).ok_or_else(|| anyhow!("unknown screen {name:?} (see `screen --list`)"))?;
-    let mut state = (fixture.build)();
+    let mut live = Live::new(script)?;
+    // The welcome state is a new session: it is real. The other states are design fixtures.
+    let mut state = if fixture.name == "welcome" { live.fresh_session() } else { (fixture.build)() };
     let mut theme_idx = BUILTIN.iter().position(|(id, _)| *id == theme).ok_or_else(|| anyhow!("unknown theme {theme:?}"))?;
     let mut current = Theme::builtin(BUILTIN[theme_idx].0)?;
 
@@ -239,12 +414,17 @@ fn preview(name: &str, theme: &str) -> Result<()> {
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
         let mut drawn = Drawn::default();
+        // Only a change is worth a frame: an idle session must not spin on drawing.
+        let mut dirty = true;
         loop {
             state.pictures = picker.is_some();
+            dirty |= live.receive(&mut state);
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {
-                terminal.draw(|f| {
+                if dirty {
+                    dirty = false;
+                    terminal.draw(|f| {
                     drawn = frontend_tui::draw(f, &state, &current);
                     let Some(picker) = &picker else { return };
                     for p in &drawn.placements {
@@ -264,20 +444,23 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                             f.render_widget(Image::new(proto), p.rect);
                         }
                     }
-                })?;
-                // The launch blink: redraw when the eyes change, otherwise wait for input.
+                    })?;
+                }
+                // The launch blink: redraw when the eyes change.
                 let (eyes, next) = images::eyes_at(launched.elapsed().as_millis() as u64);
                 if state.eyes != eyes {
                     state.eyes = eyes;
+                    dirty = true;
                     continue;
                 }
-                let wait = next.map(|n| n.saturating_sub(launched.elapsed().as_millis() as u64));
-                if let Some(wait) = wait
-                    && !event::poll(std::time::Duration::from_millis(wait))?
-                {
+                // Wait for input, for the next blink frame, or for a session's next event.
+                const SESSION_TICK_MS: u64 = 16;
+                let wait = next.map_or(SESSION_TICK_MS, |n| n.saturating_sub(launched.elapsed().as_millis() as u64).min(SESSION_TICK_MS));
+                if !event::poll(std::time::Duration::from_millis(wait))? {
                     continue;
                 }
             }
+            dirty = true;
             let outcome = match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
@@ -331,6 +514,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
             match outcome {
                 Outcome::Quit => return Ok(()),
                 Outcome::LeaveSplash => state = fixtures::startup(),
+                // The startup page's recent sessions are design fixtures for now.
                 Outcome::OpenSession(_) => state = fixtures::main_session(),
                 Outcome::Action(i) => {
                     let kind = match &state.mode {
@@ -338,7 +522,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                         _ => None,
                     };
                     match kind {
-                        Some(ActionKind::NewSession) => state = fixtures::welcome(),
+                        Some(ActionKind::NewSession) => state = live.fresh_session(),
                         Some(ActionKind::Resume) => state = fixtures::main_session(),
                         Some(ActionKind::Settings) => {
                             state = fixtures::welcome();
@@ -352,6 +536,7 @@ fn preview(name: &str, theme: &str) -> Result<()> {
                 }
                 Outcome::Stay | Outcome::OpenSettings => {}
             }
+            live.send(&mut state);
         }
     })();
     let _ = execute!(std::io::stdout(), DisableMouseCapture);

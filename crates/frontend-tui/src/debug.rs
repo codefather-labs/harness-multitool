@@ -6,7 +6,7 @@
 
 use crate::model::{
     Arrow, Branch, Diff, DiffLine, FlowDirection, FlowNode, Flowchart, FlowchartEvent, HookEvent, HookOutcome, HookRun, Inbound, InboundKind,
-    Item, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Role, SessionView, Symbol, Tab,
+    Item, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Outgoing, Role, SessionView, Symbol, Tab,
     TabIcon, TabMark, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 
@@ -58,6 +58,10 @@ pub fn submit(w: &mut Workspace) -> Sent {
     w.view_mut().scroll = 0;
     if let Some(cmd) = text.strip_prefix('/') {
         command(w, cmd);
+    } else if w.live {
+        // A running session draws the message from its log, like everything else.
+        let tab = w.tabs[w.active].id;
+        w.outbox.push(Outgoing::Prompt { tab, text });
     } else {
         let v = w.view_mut();
         let time = now(v);
@@ -535,7 +539,15 @@ pub fn open_tab(w: &mut Workspace, title: &str) {
     view.composer.text.clear();
     view.scroll = 0;
     view.generating = false;
-    w.tabs.push(Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view });
+    // A new session has spent nothing yet.
+    for (key, value) in &mut view.status.fields {
+        match key.as_str() {
+            "TOKENS" => *value = "0".into(),
+            "COST" => *value = "$0.00".into(),
+            _ => {}
+        }
+    }
+    w.tabs.push(Tab::new(title, TabIcon::Prompt, TabMark::None, view));
     w.active = w.tabs.len() - 1;
 }
 

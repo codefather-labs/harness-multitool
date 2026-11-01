@@ -2,12 +2,13 @@
 //! `Selection`, so it also proves INV-2: no default plugin is linked. `multitool trace <name>`
 //! prints a scenario's log line by line, the debug view of the loop.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
 use harness_api::event::{HookOutcome, HookPointKind};
 use harness_api::*;
-use harness_core::{Engine, Registry, RunEnd, Selection};
+use harness_core::{Engine, Parts, Registry, RunEnd, Selection, StopFlag};
 use harness_doubles::*;
 use serde_json::json;
 
@@ -22,7 +23,8 @@ pub struct Setup {
     pub protocol: bool,
     pub verdicts: Vec<(bool, &'static str)>,
     pub max_turns: Option<u32>,
-    pub stop_before_run: bool,
+    /// Stop after this many text chunks of the first turn; 0 stops before the run.
+    pub stop_at_turn: Option<usize>,
 }
 
 /// What a scenario produced.
@@ -49,7 +51,11 @@ pub const NAMES: &[&str] = &[
     "verify-fail-then-pass",
     "budget",
     "stop",
+    "stop-task",
+    "stop-mid-turn",
+    "max-tokens-tool",
     "provider-error",
+    "provider-error-task",
     "two-prompts",
 ];
 
@@ -89,8 +95,15 @@ pub fn setup(name: &str) -> Option<Setup> {
             ..s
         },
         "budget" => Setup { turns: vec![echo("c1"), echo("c2"), echo("c3")], max_turns: Some(2), ..s },
-        "stop" => Setup { turns: vec![done()], stop_before_run: true, ..s },
-        "provider-error" => Setup { turns: vec![ScriptedTurn::fail("overloaded")], ..s },
+        "stop" => Setup { turns: vec![done(), ScriptedTurn::say("Still here.")], prompts: vec!["one", "two"], stop_at_turn: Some(0), ..s },
+        "stop-task" => Setup { turns: vec![done()], protocol: true, stop_at_turn: Some(0), ..s },
+        "stop-mid-turn" => Setup { turns: vec![ScriptedTurn::say("one two three four five")], stop_at_turn: Some(1), ..s },
+        "max-tokens-tool" => Setup {
+            turns: vec![ScriptedTurn { max_tokens: true, ..echo("c1") }, done()],
+            ..s
+        },
+        "provider-error" => Setup { turns: vec![ScriptedTurn::fail("overloaded"), ScriptedTurn::say("Back again.")], prompts: vec!["one", "two"], ..s },
+        "provider-error-task" => Setup { turns: vec![ScriptedTurn::fail("overloaded")], protocol: true, ..s },
         "two-prompts" => Setup {
             turns: vec![ScriptedTurn::say("First answer."), ScriptedTurn::say("Second answer.")],
             prompts: vec!["first", "second"],
@@ -116,19 +129,19 @@ pub fn selection() -> Selection {
     }
 }
 
-pub fn run(setup: Setup) -> Trace {
+/// The parts a scenario runs on, for the live UI (`multitool preview --script`).
+pub fn parts(setup: Setup) -> Parts {
     let provider = ScriptedProvider::new(setup.turns);
-    let store = Rc::new(InMemoryStore::default());
-    let frontend = Rc::new(RecordingFrontend { answers: std::cell::RefCell::new(VecDeque::from(setup.answers)), ..Default::default() });
+    registry(provider, Rc::new(InMemoryStore::default()), setup.decision, setup.max_turns, setup.hook, setup.verdicts).resolve(&selection(), platform()).expect("the scenario's selection resolves")
+}
 
+fn registry(provider: Rc<ScriptedProvider>, store: Rc<InMemoryStore>, decision: Option<Decision>, max_turns: Option<u32>, hook: Option<(HookPointKind, HookOutcome)>, verdicts: Vec<(bool, &'static str)>) -> Registry {
     let mut registry = Registry::new();
-    let (p, st) = (provider.clone(), store.clone());
-    let decision = setup.decision.unwrap_or(Decision::Allow);
-    let max_turns = setup.max_turns.unwrap_or(50);
-    let (hook, verdicts) = (setup.hook, setup.verdicts);
+    let decision = decision.unwrap_or(Decision::Allow);
+    let max_turns = max_turns.unwrap_or(50);
     registry
         .auth("double", |_| Ok(Rc::new(FixedAuth(Secret::new("canary-secret")))))
-        .provider("scripted", move |_| Ok(p.clone()))
+        .provider("scripted", move |_| Ok(provider.clone()))
         .router("double", move |_| Ok(Rc::new(OneModelRouter { provider: "scripted".into(), max_turns })))
         .tool("echo", |_| Ok(Rc::new(EchoTool { name: "echo".into(), needs: vec![Capability::Command("echo".into())] })))
         .policy("double", move |_| Ok(Rc::new(FixedPolicy::new(decision.clone()))))
@@ -138,23 +151,73 @@ pub fn run(setup: Setup) -> Trace {
         })
         .memory("double", |_| Ok(Rc::new(InMemoryJournal::default())))
         .context("double", |_| Ok(Rc::new(WholeConversation)))
-        .store("double", move |_| Ok(st.clone()))
+        .store("double", move |_| Ok(store.clone()))
         .verifier("double", move |_| Ok(Rc::new(ScriptedVerifier::new(verdicts.clone()))));
-    let parts = registry.resolve(&selection(), platform()).expect("the scenario's selection resolves");
+    registry
+}
 
-    let engine = Engine::new(parts, frontend.clone(), "trace", ".");
-    if setup.stop_before_run {
-        engine.stop_flag().stop();
-    }
+pub fn run(setup: Setup) -> Trace {
+    let provider = ScriptedProvider::new(setup.turns);
+    let store = Rc::new(InMemoryStore::default());
+    let flag = StopFlag::default();
+    let frontend = Rc::new(StoppingFrontend {
+        inner: RecordingFrontend { answers: std::cell::RefCell::new(VecDeque::from(setup.answers)), ..Default::default() },
+        after_chunks: setup.stop_at_turn.filter(|n| *n > 0).map(Cell::new),
+        flag: flag.clone(),
+    });
+
+    let parts = registry(provider.clone(), store.clone(), setup.decision, setup.max_turns, setup.hook, setup.verdicts).resolve(&selection(), platform()).expect("the scenario's selection resolves");
+
+    let engine = Engine::new(parts, frontend.clone(), "trace", ".").with_stop_flag(flag.clone());
     let protocol = setup.protocol.then(|| Protocol { steps: vec!["cargo test".into()] });
     let mut ends = Vec::new();
-    for prompt in setup.prompts {
+    for (i, prompt) in setup.prompts.into_iter().enumerate() {
+        // A stop "before the run" comes while the first turn is starting: from a hook's event.
+        if i == 0 && setup.stop_at_turn == Some(0) {
+            frontend.after_chunks_zero(&flag);
+        }
         ends.push(pollster::block_on(engine.run(prompt, protocol.as_ref())));
     }
     let stored = store.sessions.borrow().get("trace").cloned().unwrap_or_default();
-    let entries = frontend.entries.borrow().clone();
+    let entries = frontend.inner.entries.borrow().clone();
     let requests = provider.requests.borrow().clone();
-    Trace { entries, stored, ends, state: engine.state(), asked: frontend.asked.get(), requests }
+    Trace { entries, stored, ends, state: engine.state(), asked: frontend.inner.asked.get(), requests }
+}
+
+/// The recording frontend, plus the user pressing Stop at a chosen moment.
+struct StoppingFrontend {
+    inner: RecordingFrontend,
+    after_chunks: Option<Cell<usize>>,
+    flag: StopFlag,
+}
+
+impl StoppingFrontend {
+    fn after_chunks_zero(&self, _flag: &StopFlag) {
+        STOP_ON_PROMPT.with(|s| s.set(true));
+    }
+}
+
+thread_local! {
+    static STOP_ON_PROMPT: Cell<bool> = const { Cell::new(false) };
+}
+
+impl Frontend for StoppingFrontend {
+    fn on_entry(&self, entry: &LogEntry) {
+        self.inner.on_entry(entry);
+        if matches!(entry.event, Event::UserMessage { .. }) && STOP_ON_PROMPT.with(|s| s.replace(false)) {
+            self.flag.stop();
+        }
+        if let (Event::TextDelta { .. }, Some(left)) = (&entry.event, &self.after_chunks) {
+            left.set(left.get().saturating_sub(1));
+            if left.get() == 0 {
+                self.flag.stop();
+            }
+        }
+    }
+
+    fn ask<'a>(&'a self, call: &'a ToolCall, capabilities: &'a [Capability]) -> BoxFuture<'a, Answer> {
+        self.inner.ask(call, capabilities)
+    }
 }
 
 /// One log entry as one readable line.
@@ -164,6 +227,8 @@ pub fn line(entry: &LogEntry) -> String {
         Event::TaskState { to, reason } => format!("task        -> {to:?}{}", reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default()),
         Event::TurnStarted { turn, provider, model } => format!("turn {turn}      start {provider}/{model}"),
         Event::TextDelta { text } => format!("text        {text:?}"),
+        Event::OpaqueBlock { block } => format!("block       {block}"),
+        Event::ModelToolCall { call } => format!("call        {} {} {}", call.id, call.name, call.input),
         Event::TurnFinished { turn, stop, usage, cost_micro_usd } => {
             format!("turn {turn}      end {stop:?}, {} in / {} out, {} µ$", usage.input, usage.output, cost_micro_usd.unwrap_or(0))
         }

@@ -21,6 +21,8 @@ pub struct ScriptedTurn {
     pub calls: Vec<ToolCall>,
     /// When set, the turn fails with this message.
     pub error: Option<String>,
+    /// The turn ends cut off by the token limit.
+    pub max_tokens: bool,
 }
 
 impl ScriptedTurn {
@@ -61,21 +63,30 @@ impl Provider for ScriptedProvider {
         vec![ModelInfo { id: "scripted-1".into(), context_window: 200_000, supports_tools: true }]
     }
 
-    fn turn<'a>(&'a self, request: &'a ModelRequest, sink: &'a mut dyn FnMut(ModelEvent)) -> BoxFuture<'a, PluginResult<TurnEnd>> {
+    fn turn<'a>(&'a self, request: &'a ModelRequest, sink: &'a mut dyn FnMut(ModelEvent) -> bool) -> BoxFuture<'a, PluginResult<TurnEnd>> {
         self.requests.borrow_mut().push(request.clone());
         let turn = self.turns.borrow_mut().pop_front().unwrap_or_default();
         Box::pin(async move {
             if let Some(message) = turn.error {
                 return Err(PluginError(message));
             }
+            let usage = Usage { input: 100, output: 20, cache_read: 0, cache_write: 0 };
             for text in turn.text {
-                sink(ModelEvent::Text(text));
+                if !sink(ModelEvent::Text(text)) {
+                    return Ok(TurnEnd { stop: StopReason::Stopped, usage, cost_micro_usd: Some(120) });
+                }
             }
-            let stop = if turn.calls.is_empty() { StopReason::EndTurn } else { StopReason::ToolUse };
+            let stop = if turn.max_tokens {
+                StopReason::MaxTokens
+            } else if turn.calls.is_empty() {
+                StopReason::EndTurn
+            } else {
+                StopReason::ToolUse
+            };
             for call in turn.calls {
                 sink(ModelEvent::ToolCall(call));
             }
-            Ok(TurnEnd { stop, usage: Usage { input: 100, output: 20, cache_read: 0, cache_write: 0 }, cost_micro_usd: Some(120) })
+            Ok(TurnEnd { stop, usage, cost_micro_usd: Some(120) })
         })
     }
 }

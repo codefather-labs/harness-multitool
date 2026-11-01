@@ -12,6 +12,7 @@ pub mod event;
 pub mod interfaces;
 pub mod model;
 pub mod platform;
+pub mod sse;
 pub mod state;
 
 pub use event::{Event, LogEntry};

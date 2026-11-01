@@ -64,12 +64,13 @@ impl SessionState {
                 self.usage.add(*usage);
                 self.cost_micro_usd += cost_micro_usd.unwrap_or(0);
             }
-            Event::ToolRequested { call, .. } => self.assistant_tail().push(Content::ToolUse {
+            Event::OpaqueBlock { block } => self.assistant_tail().push(Content::Opaque { block: block.clone() }),
+            Event::ModelToolCall { call } => self.assistant_tail().push(Content::ToolUse {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 input: call.input.clone(),
             }),
-            Event::ToolDecision { .. } => {}
+            Event::ToolRequested { .. } | Event::ToolDecision { .. } => {}
             Event::ToolResult { id, output, is_error } => {
                 let result = Content::ToolResult { id: id.clone(), output: output.clone(), is_error: *is_error };
                 // The results of one turn travel together in one user message.
@@ -121,10 +122,8 @@ mod tests {
                 usage: Usage { input: n, output: n, cache_read: 0, cache_write: 0 },
                 cost_micro_usd: Some(n),
             }),
-            "[a-z]{1,4}".prop_map(|id| Event::ToolRequested {
-                call: ToolCall { id, name: "t".into(), input: serde_json::json!({}) },
-                capabilities: vec![],
-            }),
+            "[a-z]{1,4}".prop_map(|id| Event::ModelToolCall { call: ToolCall { id, name: "t".into(), input: serde_json::json!({}) } }),
+            "[a-z]{1,4}".prop_map(|t| Event::OpaqueBlock { block: serde_json::json!({"type": "thinking", "thinking": t}) }),
             ("[a-z]{1,4}", "[a-z ]{0,8}", any::<bool>()).prop_map(|(id, output, is_error)| Event::ToolResult { id, output, is_error }),
             "[a-z ]{0,8}".prop_map(|evidence| Event::Verification { pass: false, evidence }),
         ]

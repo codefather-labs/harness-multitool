@@ -51,6 +51,19 @@ pub struct Workspace {
     /// Journal entries the transcript can unfold (the project's journal, as far as the session
     /// has fetched it).
     pub journal: Vec<JournalEvent>,
+    /// The tabs are real sessions: a plain message goes to the agent, not into the transcript.
+    pub live: bool,
+    /// What the user did that the running sessions must hear about; the app drains it.
+    pub outbox: Vec<Outgoing>,
+}
+
+/// A user's action for a running session, by the tab's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outgoing {
+    Prompt { tab: u64, text: String },
+    /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.
+    Answer { tab: u64, choice: usize },
+    Stop { tab: u64 },
 }
 
 /// A press on a map, until the release: where it started, what it started on.
@@ -84,6 +97,8 @@ pub struct PermissionView {
     pub policy: String,
     /// The button in focus: 0 allow once, 1 always allow, 2 deny.
     pub choice: usize,
+    /// The tab of the running session that asks; `None` for the debug sample.
+    pub tab: Option<u64>,
 }
 
 /// The settings window (settings-overlay-*): sections on the left, the section's page on the
@@ -120,7 +135,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new() }
+        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new() }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -134,10 +149,19 @@ impl Workspace {
 
 #[derive(Debug, Clone)]
 pub struct Tab {
+    /// Stable while the tab lives, unlike its position.
+    pub id: u64,
     pub title: String,
     pub icon: TabIcon,
     pub mark: TabMark,
     pub view: SessionView,
+}
+
+impl Tab {
+    pub fn new(title: &str, icon: TabIcon, mark: TabMark, view: SessionView) -> Tab {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Tab { id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), title: title.into(), icon, mark, view }
+    }
 }
 
 /// The glyph before a tab's title (session-tabs-*: `>_` a coding session, `↔` a peer agent,

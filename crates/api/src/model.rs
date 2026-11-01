@@ -16,6 +16,9 @@ pub enum Content {
     Text { text: String },
     ToolUse { id: String, name: String, input: Value },
     ToolResult { id: String, output: String, is_error: bool },
+    /// A provider's block the harness does not interpret (thinking, fallback markers): kept in
+    /// order and replayed unchanged, as the provider requires.
+    Opaque { block: Value },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,6 +63,8 @@ pub struct ModelRequest {
 pub enum ModelEvent {
     Text(String),
     ToolCall(ToolCall),
+    /// A block to replay unchanged on later requests.
+    Opaque(Value),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +90,9 @@ pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
+    /// The user stopped the turn while it streamed.
+    Stopped,
+    /// Anything else the provider reports, e.g. a refusal.
     Other(String),
 }
 

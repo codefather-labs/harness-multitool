@@ -446,10 +446,10 @@ pub fn session_tabs() -> AppState {
         ),
         ..Default::default()
     };
-    let other = |title: &str, icon, mark| Tab { title: title.into(), icon, mark, view: SessionView { status: status("0 / 200k", "$0.00", "$10.00"), ..Default::default() } };
+    let other = |title: &str, icon, mark| Tab::new(title, icon, mark, SessionView { status: status("0 / 200k", "$0.00", "$10.00"), ..Default::default() });
     let w = Workspace {
         tabs: vec![
-            Tab { title: "router".into(), icon: TabIcon::Prompt, mark: TabMark::None, view },
+            Tab::new("router", TabIcon::Prompt, TabMark::None, view),
             other("reviewer-2", TabIcon::Agent, TabMark::Busy),
             other("docs", TabIcon::Doc, TabMark::Unread(2)),
             other("release", TabIcon::Lock, TabMark::Attention),
@@ -459,6 +459,8 @@ pub fn session_tabs() -> AppState {
         overlay: None,
         drag: None,
         journal: crate::debug::known_entries(),
+        live: false,
+        outbox: Vec::new(),
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }

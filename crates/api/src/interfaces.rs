@@ -49,7 +49,9 @@ pub trait Auth {
 pub trait Provider {
     fn name(&self) -> &str;
     fn models(&self) -> Vec<ModelInfo>;
-    fn turn<'a>(&'a self, request: &'a ModelRequest, sink: &'a mut dyn FnMut(ModelEvent)) -> BoxFuture<'a, PluginResult<TurnEnd>>;
+    /// Streams a turn into `sink`. When `sink` returns `false` the user has stopped: end the
+    /// turn at once with `StopReason::Stopped`.
+    fn turn<'a>(&'a self, request: &'a ModelRequest, sink: &'a mut dyn FnMut(ModelEvent) -> bool) -> BoxFuture<'a, PluginResult<TurnEnd>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

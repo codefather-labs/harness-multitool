@@ -1,0 +1,11 @@
+[package]
+name = "harness-provider-openai"
+description = "OpenAI-compatible APIs and local models as a Provider (IF-1, CON-10)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"

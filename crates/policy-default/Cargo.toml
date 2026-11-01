@@ -1,0 +1,11 @@
+[package]
+name = "harness-policy-default"
+description = "The default Policy: allow reads inside the project, ask for the rest (IF-5)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"
