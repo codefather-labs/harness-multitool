@@ -101,7 +101,8 @@ enum Command {
     },
     /// Debug: one message through a real session with no UI; prints its log, one line per event.
     Run {
-        /// The message for the agent.
+        /// The message for the agent; `-` reads it from stdin, which keeps it off the command line,
+        /// where another program's `pkill -f` could match it.
         prompt: String,
         /// Answer every permission prompt with yes; otherwise no.
         #[arg(long)]
@@ -1294,6 +1295,8 @@ fn docs_check() -> Result<()> {
 }
 
 fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<Vec<String>>) -> Result<()> {
+    let from_stdin = if prompt == "-" { Some(std::io::read_to_string(std::io::stdin()).context("reading the prompt from stdin")?) } else { None };
+    let prompt = from_stdin.as_deref().unwrap_or(prompt);
     use harness_session::{FromSession, Sessions, real_factory};
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
     let data = config::data_dir()?;
