@@ -122,7 +122,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(widgets::queue_height(&v.queued)),
+        Constraint::Length(widgets::panel_height(v, area.width)),
         Constraint::Length(4),
     ])
     .areas(body);
@@ -156,7 +156,10 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(a) = &v.activity {
         widgets::activity(f, status, t, a);
     }
-    widgets::queue(f, queue, t, &v.queued);
+    match &v.question {
+        Some((question, cursor)) if !v.generating => widgets::question(f, queue, t, question, *cursor),
+        _ => widgets::queue(f, queue, t, &v.queued),
+    }
     let [input, _, button] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);

@@ -9,7 +9,7 @@ The harness specifies how its agent behaves, because a model will not reach for 
 
 - **Plan first.** Building an app, a prototype or a project, a feature, a fix, or any change that is not trivial starts with `plan_enter`, even if nobody said "plan" and even if the result was asked for directly. "Let's try" or "make a small app" state an intent; they do not approve a plan nobody has proposed yet. Answering, reading, diagnosing with no changes, and work inside an approved plan are exempt.
 - **In plan mode:** study, settle what is ambiguous, journal the decisions, make each work item a todo with its test protocol, map and chart what changes, mirror into the docs if the project has them; then `plan_exit`, and nothing is built before approval.
-- **After the plan.** A planned fix goes on in debug mode: reproduce, change, verify. A planned feature goes on in normal mode. Work ends with evidence, not a claim.
+- **After the plan.** A planned fix goes on in debug mode: reproduce, change, verify. A planned feature is built and run, then debugged in debug mode the same way (the owner, 2026-11-01, replacing "goes on in normal mode"). Work ends with evidence, not a claim.
 
 **This amends ADR 0013:** it kept step-debug away from small tasks because instrumenting costs more than it gives. The mode is now entered for every planned fix, for its instructions; only a pipeline gets a router and instrumentation, and a small bug is reproduced by a failing test.
 
@@ -18,3 +18,15 @@ The harness specifies how its agent behaves, because a model will not reach for 
 The rules are in every session's system prompt, and `plan_enter`'s description says when to use it. A built-in hook, `mode-guide`, watches for the first write in a message when no plan has been made in the session. `session.plan_first` says what it does: `remind` adds one reminder for one turn, `enforce` refuses the write and says why, `off` does nothing. It never touches reads or memory, and cannot loop.
 
 Whether a task needs a plan stays the model's judgment under these rules: the harness does not classify a user's words.
+
+## The whole cycle, held by reminders
+
+The owner tried the cycle on a small local model. It entered plan mode unprompted, then asked nothing, recorded nothing and retried refused writes. A long system prompt does not carry a small model through a long run, so `mode-guide` says each step when it is the step at hand (CON-66):
+
+- at every user message, and on entering plan mode, leaving it, and entering debug mode, the one step that is due, for one turn;
+- a `plan_exit` with no journal entry, map or flowchart made while planning goes back once, naming what is missing, and the user is not asked yet; under `enforce`, until they exist;
+- stopping after an approved plan, or in debug mode, makes the run go on once per message, with that step said again.
+
+While planning, `docs/` may be written, because a feature is described before it is built; everything else stays refused (CON-65). `plan_first = off` turns all of this off.
+
+A small model reaches for tools and does not end a turn by itself, so a question is a tool: `ask_user` shows it and ends the run (CON-67). And it repeats what fails: the same call failing the same way gets a reminder the third time and ends the run with a visible error the fifth, rather than spending the budget in silence (CON-68).

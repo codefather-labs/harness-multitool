@@ -683,6 +683,7 @@ fn plan_mode_refuses_changes_and_only_the_user_ends_it() {
         anthropic_turn(None, "Waiting for you."),
     ]);
     let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
     s.hooks = vec![HookSetting { event: Some("PlanEnter".into()), command: "echo planning".into(), name: Some("on-plan".into()) }];
     let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
     // Everything is answered yes: the refusals cannot be approved, and plan_exit can.
@@ -717,7 +718,9 @@ fn a_refused_plan_stays_on_and_a_resume_restores_the_mode() {
         anthropic_turn(Some(("q4", "plan_exit", json!({}))), "Empty."),
         anthropic_turn(None, "Asking what to change."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, _, asked) = drive(&mut sessions, &["plan it"], Answer::Deny);
     assert_eq!(asked, 1);
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
@@ -735,7 +738,9 @@ fn the_user_switches_plan_mode_and_a_task_does_not_finish_in_it() {
     let root = temp_dir("plan3");
     let data = temp_dir("plan3-data");
     let (url, _) = fake_endpoint(vec![anthropic_turn(None, "Done, I say."), anthropic_turn(None, "Now done.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
     sessions.plan(1, true);
     let (entries, end) = drive_task(&mut sessions, "do it", &["cargo --version"]);
     assert_eq!(end, "AwaitingInput", "no verification in plan mode");
@@ -802,6 +807,7 @@ fn step_debug_is_switched_logged_and_replayed() {
     ]);
     std::fs::write(format!("{root}/a.txt"), "a").unwrap();
     let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
     s.hooks = vec![HookSetting { event: Some("StepDebugEnter".into()), command: "echo debugging".into(), name: Some("on-debug".into()) }];
     let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["debug the pipeline"], Answer::AllowOnce);
@@ -958,12 +964,12 @@ fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
     assert!(requests[1]["system"].as_str().unwrap().contains("no plan has been made"), "the reminder reaches the next turn");
     assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "b", "a reminder blocks nothing");
     assert!(requests[0]["tools"].to_string().contains("even if nobody said plan"));
-    assert_eq!(entries.iter().filter(|e| matches!(&e.event, Event::HookRan { hook, .. } if hook == "mode-guide")).count(), 1);
+    assert_eq!(entries.iter().filter(|e| matches!(&e.event, Event::HookRan { hook, .. } if hook == "mode-guide")).count(), 2, "the first message, and the write");
 
     let root = temp_dir("rules2");
     let data = temp_dir("rules2-data");
     std::fs::write(format!("{root}/a.txt"), "a").unwrap();
-    let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("e3", "plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
+    let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("j", "journal_add", json!({"body": "Change a.", "category": "decision", "tags": ["a"]}))), "J."), anthropic_turn(Some(("m", "mindmap_new", json!({"title": "a"}))), "M."), anthropic_turn(Some(("f", "flowchart_new", json!({"title": "a"}))), "F."), anthropic_turn(Some(("e3", "plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
     let mut s = settings(&url, "k");
     s.plan_first = Some("enforce".into());
     let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
@@ -1109,4 +1115,87 @@ fn two_tabs_have_their_own_queues() {
     }
     assert_eq!(user_texts(&one), ["in one"]);
     assert_eq!(user_texts(&two), ["in two"]);
+}
+
+/// ADR 0021: the cycle held by `mode-guide` on a real session: a plan with nothing recorded goes
+/// back before the user is asked; stopping after approval goes on once, with the step said.
+#[test]
+fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
+    let root = temp_dir("guide");
+    let data = temp_dir("guide-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("g1", "plan_enter", json!({}))), ""),
+        anthropic_turn(Some(("g2", "plan_exit", json!({"plan": "do it"}))), ""),
+        anthropic_turn(Some(("g3", "plan_exit", json!({"plan": "do it"}))), ""),
+        anthropic_turn(None, "Built."),
+        anthropic_turn(None, "Now I would debug."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    sessions.prompt(1, "build a thing".to_string());
+    let (mut entries, mut asks, mut ends) = (Vec::new(), 0, 0);
+    while let Some(message) = sessions.next(Duration::from_secs(5)) {
+        match message {
+            FromSession::Entry { entry, .. } => entries.push(entry),
+            FromSession::Ask { tab, .. } => {
+                asks += 1;
+                sessions.answer(tab, Answer::AllowOnce);
+            }
+            FromSession::Ended { .. } => ends += 1,
+            FromSession::Unavailable { message, .. } => panic!("{message}"),
+        }
+    }
+    assert_eq!((asks, ends), (1, 1), "asked only for the second plan_exit; one run");
+    let back = entries.iter().find_map(|e| match &e.event {
+        Event::ToolResult { id, output, is_error: true } if id == "g2" => Some(output.clone()),
+        _ => None,
+    });
+    assert!(back.is_some_and(|o| o.contains("flowchart_new")), "sent back naming what is missing");
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 5, "the stop after approval went on once, and only once");
+    assert!(requests[0].contains("starts with plan_enter"), "said at the first message");
+    assert!(requests[1].contains("first ask the user"), "said on entering plan mode");
+    assert!(requests[3].contains("the plan is approved"), "said on approval");
+    assert!(requests[4].contains("otherwise go on"), "said at the stop");
+    assert!(!requests[2].contains("first ask the user"), "one turn each, not for ever");
+}
+
+/// CON-67: a question ends the run, its answer is the next message, and the history stays valid.
+#[test]
+fn ask_user_ends_the_run_and_the_answer_is_the_next_message() {
+    let root = temp_dir("ask");
+    let data = temp_dir("ask-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("a1", "ask_user", json!({"question": "CSV or JSON?", "options": ["CSV", {"label": "JSON"}]}))), ""), anthropic_turn(None, "CSV then.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, ends) = {
+        let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
+        (entries, seen.lock().unwrap().len())
+    };
+    assert_eq!(ends, 1, "nothing goes to the model before the answer");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { output, is_error: false, .. } if output.contains("CSV or JSON?") && output.contains("2. JSON"))), "the question and its options are in the log");
+    drive(&mut sessions, &["CSV"], Answer::AllowOnce);
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let body: serde_json::Value = serde_json::from_str(requests[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let last = body["messages"].as_array().unwrap().last().unwrap().clone();
+    let kinds: Vec<&str> = last["content"].as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["tool_result", "text"], "{last}");
+}
+
+/// CON-68: a call that keeps failing the same way is said at the third time, stopped at the fifth.
+#[test]
+fn the_same_failure_is_said_at_the_third_time_and_stopped_at_the_fifth() {
+    let root = temp_dir("repeat");
+    let data = temp_dir("repeat-data");
+    let read = |id: &'static str| anthropic_turn(Some((id, "read", json!({"path": "nope.txt"}))), "");
+    let (url, seen) = fake_endpoint(vec![read("r1"), read("r2"), read("r3"), read("r4"), read("r5"), read("r6"), anthropic_turn(None, "Other.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["read it"], Answer::AllowOnce);
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 5, "stopped at the fifth");
+    assert!(!requests[2].contains("exact read call"), "not before the third");
+    assert!(requests[3].contains("exact read call"), "said after the third");
+    assert!(!requests[4].contains("exact read call"), "for one turn");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::Error { source, message } if source == "repeat-guard" && message.contains("5 times"))), "the user sees why");
+    let (entries, _, _) = drive(&mut sessions, &["try again"], Answer::AllowOnce);
+    assert!(!entries.iter().any(|e| matches!(&e.event, Event::Error { .. })), "a new message starts over");
 }

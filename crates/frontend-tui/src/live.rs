@@ -54,6 +54,14 @@ impl Feed {
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
         self.note_activity(v, entry);
+        match &entry.event {
+            Event::ToolRequested { call, .. } if call.name == "ask_user" => {
+                v.question = harness_api::question::Question::parse(&call.input).ok().map(|q| (q, 0));
+            }
+            // Whatever the user said next is the answer.
+            Event::UserMessage { .. } => v.question = None,
+            _ => {}
+        }
         // It has reached the agent: its card takes over from the queue.
         if let Event::UserMessage { text } = &entry.event
             && let Some(at) = v.queued.iter().position(|q| q == text)
@@ -162,6 +170,9 @@ impl Feed {
                     }
                 }
             }
+            // The harness's own step-by-step reminders are for the model: drawn, they would be a
+            // card on every message. They stay in the log.
+            Event::HookRan { hook, outcome: LogOutcome::Reminder { .. } | LogOutcome::Continue { .. }, .. } if hook == "mode-guide" || hook == "repeat-guard" => {}
             Event::HookRan { point, hook, outcome, .. } => {
                 let run = HookRun { script: hook.clone(), outcome: hook_outcome(outcome), duration: String::new() };
                 let name = format!("{point:?}");
@@ -584,7 +595,7 @@ fn output_body(output: &str) -> ToolBody {
 fn hook_outcome(outcome: &LogOutcome) -> HookOutcome {
     match outcome {
         LogOutcome::Ok => HookOutcome::Ok,
-        LogOutcome::Context { lines } | LogOutcome::Reminder { lines } => HookOutcome::Context(lines.clone()),
+        LogOutcome::Context { lines } | LogOutcome::Reminder { lines } | LogOutcome::Continue { lines } => HookOutcome::Context(lines.clone()),
         LogOutcome::Blocked { reason } => HookOutcome::Blocked(reason.clone()),
         LogOutcome::Failed { message } => HookOutcome::Failed { code: 1, stderr: message.lines().map(str::to_string).collect() },
     }

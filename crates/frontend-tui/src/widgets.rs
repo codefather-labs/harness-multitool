@@ -188,3 +188,59 @@ pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[String]) {
     }
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
 }
+
+/// The rows above the composer: an open question, once the run has ended, or the queue.
+pub fn panel_height(v: &crate::model::SessionView, width: u16) -> u16 {
+    match &v.question {
+        Some((question, _)) if !v.generating => (question_lines(&question.text, width).len() + question.options.len() + 1) as u16,
+        _ => queue_height(&v.queued),
+    }
+}
+
+/// The longest a question grows, whatever a model writes: the card above holds all of it.
+const QUESTION_ROWS: usize = 6;
+
+fn question_lines(text: &str, width: u16) -> Vec<String> {
+    let room = (width as usize).saturating_sub(4).max(10);
+    let mut lines: Vec<String> = Vec::new();
+    for paragraph in text.lines() {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines.truncate(QUESTION_ROWS);
+    lines
+}
+
+/// What the agent asked, above the composer: its options to pick from, or the composer for a
+/// free answer.
+pub fn question(f: &mut Frame, area: Rect, t: &Theme, question: &harness_api::question::Question, cursor: usize) {
+    let (accent, muted) = (Style::default().fg(t.accent), Style::default().fg(t.text_muted));
+    let mut lines: Vec<Line> = question_lines(&question.text, area.width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| Line::from(vec![Span::styled(if i == 0 { " ? " } else { "   " }, accent), Span::styled(text, Style::default().fg(t.text).add_modifier(Modifier::BOLD))]))
+        .collect();
+    for (i, option) in question.options.iter().enumerate() {
+        let here = i == cursor;
+        let mut spans = vec![
+            Span::styled(if here { " ❯ " } else { "   " }, accent),
+            Span::styled(format!("{}. {}", i + 1, option.label), if here { accent.add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) }),
+        ];
+        if let Some(description) = &option.description {
+            spans.push(Span::styled(format!("  {description}"), muted));
+        }
+        lines.push(Line::from(spans));
+    }
+    let hint = if question.options.is_empty() { "   type your answer below" } else { "   ↑↓ and Enter, or a number  ·  or type your own answer" };
+    lines.push(Line::from(Span::styled(hint, muted.add_modifier(Modifier::DIM))));
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
+}

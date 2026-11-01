@@ -8,6 +8,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+pub mod question;
 pub mod event;
 pub mod interfaces;
 pub mod model;

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use harness_api::event::{DecidedBy, HookOutcome};
+use harness_api::event::{DecidedBy, HookOutcome, HookPointKind};
 use harness_api::{
     Answer, Capability, Content, Decision, Event, Frontend, HookPoint, JournalEntry, LogEntry, ModelEvent, ModelRequest, Protocol, Route, SessionState, Spent, StopReason, TaskState, ToolCall,
     ToolContext, ToolOutput, ToolSpec,
@@ -22,6 +22,11 @@ use crate::registry::Parts;
 /// The tool the engine answers itself: the mode is its own state.
 const DEBUG_MODE_TOOL: &str = "debug_mode";
 const NICK_TOOL: &str = "set_nick";
+const ASK_TOOL: &str = "ask_user";
+/// The same call failing the same way, within one user message: said at the first, stopped at
+/// the second (CON-68).
+const REPEAT_WARN: u32 = 3;
+const REPEAT_STOP: u32 = 5;
 const MAX_NICK: usize = 32;
 
 /// How many binding entries the check for unchecked specifications looks at.
@@ -60,6 +65,12 @@ pub enum RunEnd {
 }
 
 pub struct Engine {
+    /// `ask_user` was called: the run ends after this turn's calls.
+    asked: std::cell::Cell<bool>,
+    /// How many times each failure has come back in this message.
+    failures: RefCell<std::collections::HashMap<String, u32>>,
+    /// A `Stop` hook asked the run to go on.
+    go_on: std::cell::Cell<bool>,
     inbox: Inbox,
     parts: Parts,
     frontend: Rc<dyn Frontend>,
@@ -79,6 +90,9 @@ impl Engine {
     pub fn new(parts: Parts, frontend: Rc<dyn Frontend>, session: impl Into<String>, root: impl Into<String>) -> Self {
         let started_ms = parts.platform.clock.now_ms();
         Engine {
+            asked: std::cell::Cell::new(false),
+            failures: RefCell::default(),
+            go_on: std::cell::Cell::new(false),
             inbox: Inbox::default(),
             parts,
             frontend,
@@ -152,6 +166,42 @@ impl Engine {
         }
     }
 
+    /// Counts the failures of these calls. True when one has come back so often that going on
+    /// only spends the budget: the run ends and the user sees why.
+    fn stuck(&self, calls: &[ToolCall]) -> bool {
+        let results: Vec<(String, String)> = match self.state.borrow().messages.last() {
+            Some(last) => last.content.iter().filter_map(|c| match c {
+                Content::ToolResult { id, output, is_error: true } => Some((id.clone(), output.clone())),
+                _ => None,
+            }).collect(),
+            None => return false,
+        };
+        let mut worst = (0, String::new());
+        for (id, output) in results {
+            let Some(call) = calls.iter().find(|c| c.id == id) else { continue };
+            let mut failures = self.failures.borrow_mut();
+            let count = failures.entry(format!("{}\n{}\n{output}", call.name, call.input)).or_insert(0);
+            *count += 1;
+            if *count > worst.0 {
+                worst = (*count, call.name.clone());
+            }
+        }
+        let (count, name) = worst;
+        if count == REPEAT_WARN {
+            let line = if self.state.borrow().plan_mode {
+                format!("You have made this exact {name} call {count} times. You are in PLAN MODE: the environment is fine, this is refused on purpose, and nothing you tried to write exists. It runs after the user approves the plan. Record the plan with journal_add, mindmap_new and flowchart_new, then call plan_exit.")
+            } else {
+                format!("You have made this exact {name} call {count} times and it failed the same way each time. It will not work: do something different, or use ask_user.")
+            };
+            self.emit(Event::HookRan { point: HookPointKind::PostToolUse, hook: "repeat-guard".into(), outcome: HookOutcome::Reminder { lines: vec![line] }, detail: None });
+        }
+        if count >= REPEAT_STOP {
+            self.emit(Event::Error { source: "repeat-guard".into(), message: format!("Stopped: the same {name} call failed the same way {count} times. Say what to do next.") });
+            return true;
+        }
+        false
+    }
+
     fn has_queued(&self) -> bool {
         !self.inbox.lock().expect("inbox").is_empty()
     }
@@ -222,6 +272,9 @@ impl Engine {
         let mut veto = None;
         for hook in self.parts.hooks.iter().filter(|h| h.applies(&point)) {
             let outcome = hook.run(&point).await;
+            if matches!(outcome, HookOutcome::Continue { .. }) {
+                self.go_on.set(true);
+            }
             if let (HookOutcome::Blocked { reason }, None) = (&outcome, &veto) {
                 veto = Some((hook.name().to_string(), reason.clone()));
             }
@@ -245,6 +298,16 @@ impl Engine {
 
     fn tool_specs(&self) -> Vec<ToolSpec> {
         let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).collect();
+        // A small model believes a tool's description over the system prompt.
+        if self.state.borrow().plan_mode {
+            for spec in &mut specs {
+                match spec.name.as_str() {
+                    "edit" => spec.description = format!("PLAN MODE: only paths under docs/ can be written until the user approves plan_exit; anything else is refused and nothing is created. {}", spec.description),
+                    "shell" => spec.description = format!("PLAN MODE: only one read-only command at a time (ls, cat, grep, git log...); nothing can be run or created until the user approves plan_exit. {}", spec.description),
+                    _ => {}
+                }
+            }
+        }
         specs.push(ToolSpec {
             name: plan::ENTER_TOOL.into(),
             description: "Enter plan mode before building an app, a prototype, a feature or a fix, or any change that is not trivial, even if nobody said plan and even if the result was asked for directly. Study and plan there; nothing is built until the user approves.".into(),
@@ -252,8 +315,13 @@ impl Engine {
         });
         specs.push(ToolSpec {
             name: plan::EXIT_TOOL.into(),
-            description: "Show the user the plan, after journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
+            description: "Show the user the plan and design, after asking what only they can decide and journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
             schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
+        });
+        specs.push(ToolSpec {
+            name: ASK_TOOL.into(),
+            description: "Ask the user what only they can decide, and wait: the question is shown, your turn ends, and the answer comes as their next message. Offer options when the answers are known: the user picks one or types their own. One question per call.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "maxItems": harness_api::question::MAX_OPTIONS, "description": "The likely answers, best first.", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string", "description": "What choosing this means."}}, "required": ["label"]}}}, "required": ["question"]}),
         });
         specs.push(ToolSpec {
             name: NICK_TOOL.into(),
@@ -262,7 +330,7 @@ impl Engine {
         });
         specs.push(ToolSpec {
             name: DEBUG_MODE_TOOL.into(),
-            description: "Switch step-debug mode: event-driven debugging of a large pipeline, above all a distributed one. Only when the user asks, or when the task is debugging such a pipeline; not for a small program.".into(),
+            description: "Switch debug mode. Turn it on for every planned fix, before changing anything, and for every planned feature once it is built and running; turn it off when the result is verified and the evidence is in the journal. A large pipeline, above all a distributed one, is also walked step by step; a small program is checked by running it and by tests.".into(),
             schema: serde_json::json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
         });
         specs
@@ -295,9 +363,7 @@ impl Engine {
             return;
         }
         self.emit(Event::StepDebug { on, by: by.to_string() });
-        if on {
-            self.hooks(HookPoint::StepDebugEnter).await;
-        }
+        self.hooks(if on { HookPoint::StepDebugEnter } else { HookPoint::StepDebugExit }).await;
         let _ = self.flush().await;
     }
 
@@ -307,9 +373,7 @@ impl Engine {
             return;
         }
         self.emit(Event::PlanMode { on, by: by.to_string() });
-        if on {
-            self.hooks(HookPoint::PlanEnter).await;
-        }
+        self.hooks(if on { HookPoint::PlanEnter } else { HookPoint::PlanExit }).await;
         // A mode set between runs still reaches the log.
         let _ = self.flush().await;
     }
@@ -373,6 +437,10 @@ impl Engine {
         if call.input["plan"].as_str().is_none_or(|p| p.trim().is_empty()) {
             return result("plan is required: the plan to show the user".into(), true);
         }
+        // A hook may send it back first, to finish the plan; the user is not asked yet.
+        if let Some((_, reason)) = self.hooks(HookPoint::PreToolUse { call }).await {
+            return result(reason, true);
+        }
         // Always the user's call: nothing is remembered, and an "always" counts this once.
         let answer = self.frontend.ask(call, &[Capability::Command("leave plan mode and start the work".into())]).await;
         if answer == Answer::Deny {
@@ -381,7 +449,7 @@ impl Engine {
         }
         self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: None });
         self.set_plan_mode(false, "user").await;
-        result("The user approved the plan. Plan mode is off. If this is a fix, call debug_mode with on true now, reproduce it before changing anything, and verify after. Otherwise go on with the work.".into(), false);
+        result("The user approved the plan. Plan mode is off. A fix: call debug_mode with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call debug_mode with on true and debug it.".into(), false);
     }
 
     /// One user message: runs turns until the model stops, then verifies when there is a
@@ -408,6 +476,7 @@ impl Engine {
         if !self.started.replace(true) {
             self.hooks(HookPoint::SessionStart).await;
         }
+        self.failures.borrow_mut().clear();
         if self.state.borrow().task.is_final() {
             return RunEnd::Failed("the task has already ended".into());
         }
@@ -453,6 +522,14 @@ impl Engine {
                 for call in &calls {
                     self.tool_call(call).await;
                 }
+                if self.stuck(&calls) {
+                    let _ = self.flush().await;
+                    return RunEnd::AwaitingInput;
+                }
+                if self.asked.take() && !self.has_queued() {
+                    let _ = self.flush().await;
+                    return RunEnd::AwaitingInput;
+                }
                 continue;
             }
             // The user wrote meanwhile: the run goes on with it.
@@ -460,6 +537,9 @@ impl Engine {
                 continue;
             }
             self.hooks(HookPoint::Stop).await;
+            if self.go_on.take() {
+                continue;
+            }
             // Running a protocol is not planning: a task does not finish in plan mode.
             let Some(protocol) = protocol.filter(|_| !self.state.borrow().plan_mode) else {
                 return RunEnd::AwaitingInput;
@@ -518,6 +598,19 @@ impl Engine {
         if call.name == plan::ENTER_TOOL || call.name == plan::EXIT_TOOL {
             return self.plan_tool(call).await;
         }
+        if call.name == ASK_TOOL {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            let (output, is_error) = match harness_api::question::Question::parse(&call.input) {
+                Ok(question) => {
+                    self.asked.set(true);
+                    let options: String = question.options.iter().enumerate().map(|(i, o)| format!("\n{}. {}", i + 1, o.label)).collect();
+                    (format!("Asked the user: {}{options}\nTheir answer comes as their next message.", question.text), false)
+                }
+                Err(e) => (e, true),
+            };
+            self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
+            return;
+        }
         if call.name == NICK_TOOL {
             self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
             let answer = match call.input["nick"].as_str() {
@@ -558,7 +651,7 @@ impl Engine {
         self.emit(Event::ToolRequested { call: call.clone(), capabilities: capabilities.clone() });
 
         if self.state.borrow().plan_mode
-            && let Some(reason) = plan::refusal(&capabilities)
+            && let Some(reason) = plan::refusal(&capabilities, &self.root)
         {
             self.emit(Event::ToolDecision { id: call.id.clone(), allowed: false, by: DecidedBy::Mode, reason: Some(reason.clone()) });
             self.emit(Event::ToolResult { id: call.id.clone(), output: reason, is_error: true });

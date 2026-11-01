@@ -85,6 +85,9 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
             if let Some(o) = crate::overlay::key(w, k) {
                 return o;
             }
+            if answer_question(w, k) {
+                return Outcome::Stay;
+            }
             match k {
                 Key::Enter => {
                     if crate::debug::submit(w) == crate::debug::Sent::Quit {
@@ -343,6 +346,39 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
         }
         _ => Outcome::Stay,
     }
+}
+
+/// The options of an open question, while nothing is typed: typing is the free answer. The chosen
+/// label goes as the user's message, like anything else they say (CON-67).
+fn answer_question(w: &mut Workspace, k: Key) -> bool {
+    if w.view().generating || !w.view().composer.text.is_empty() {
+        return false;
+    }
+    let Some((question, cursor)) = &mut w.view_mut().question else { return false };
+    let count = question.options.len();
+    if count == 0 {
+        return false;
+    }
+    let chosen = match k {
+        Key::Up => {
+            *cursor = (*cursor + count - 1) % count;
+            return true;
+        }
+        Key::Down => {
+            *cursor = (*cursor + 1) % count;
+            return true;
+        }
+        Key::Enter => *cursor,
+        Key::Char(c) => match c.to_digit(10) {
+            Some(n) if (1..=count as u32).contains(&n) => n as usize - 1,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let label = question.options[chosen].label.clone();
+    w.view_mut().composer.text = label;
+    crate::debug::submit(w);
+    true
 }
 
 #[cfg(test)]

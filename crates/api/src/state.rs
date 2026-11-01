@@ -103,7 +103,7 @@ impl SessionState {
             Event::HookRan { outcome, .. } => {
                 match outcome {
                     HookOutcome::Context { lines } => self.hook_context.extend(lines.iter().cloned()),
-                    HookOutcome::Reminder { lines } => self.reminders.extend(lines.iter().cloned()),
+                    HookOutcome::Reminder { lines } | HookOutcome::Continue { lines } => self.reminders.extend(lines.iter().cloned()),
                     _ => {}
                 }
             }

@@ -93,7 +93,8 @@ impl Tool for Edit {
             } else {
                 let current = match cx.platform.fs.read(&full).await {
                     Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                    Err(e) => return ToolOutput::error(e.to_string()),
+                    // A model's usual slip: it means to create the file.
+                    Err(e) => return ToolOutput::error(format!("{e}. To create a file, give old_text empty.")),
                 };
                 match current.matches(old).count() {
                     1 => current.replacen(old, new, 1),

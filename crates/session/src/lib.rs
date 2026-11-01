@@ -146,7 +146,8 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
             Ok(Rc::new(tool))
         });
     }
-    let plan_first = harness_core::plan::PlanFirst::parse(settings.plan_first.as_deref());
+    // A delegate has none of the tools the guide speaks of.
+    let plan_first = if delegate_session { harness_core::plan::PlanFirst::Off } else { harness_core::plan::PlanFirst::parse(settings.plan_first.as_deref()) };
     r.hook("mode-guide", move |_| Ok(Rc::new(harness_core::plan::ModeGuide::new(plan_first))));
     let root_m = root.to_string();
     r.hook("docs-mirror", move |cx| {

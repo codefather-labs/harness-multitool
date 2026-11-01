@@ -150,7 +150,9 @@ pub enum HookPoint<'a> {
     Stop,
     PostCompact,
     PlanEnter,
+    PlanExit,
     StepDebugEnter,
+    StepDebugExit,
 }
 
 impl HookPoint<'_> {
@@ -163,7 +165,9 @@ impl HookPoint<'_> {
             HookPoint::Stop => HookPointKind::Stop,
             HookPoint::PostCompact => HookPointKind::PostCompact,
             HookPoint::PlanEnter => HookPointKind::PlanEnter,
+            HookPoint::PlanExit => HookPointKind::PlanExit,
             HookPoint::StepDebugEnter => HookPointKind::StepDebugEnter,
+            HookPoint::StepDebugExit => HookPointKind::StepDebugExit,
         }
     }
 }

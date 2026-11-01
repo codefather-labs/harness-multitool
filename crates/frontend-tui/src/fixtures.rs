@@ -26,6 +26,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "settings-callbacks", mockup: "settings-callbacks", build: settings_callbacks },
     Fixture { name: "settings-auth", mockup: "settings-overlay", build: settings_auth },
     Fixture { name: "queued-messages", mockup: "main-session", build: queued_messages },
+    Fixture { name: "question-options", mockup: "main-session", build: question_options },
     Fixture { name: "inbound-messages", mockup: "inbound-messages", build: inbound_messages },
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
@@ -104,6 +105,23 @@ pub fn settings_callbacks() -> AppState {
     s.callbacks.cursor = 2;
     s.callbacks.open = Some(2);
     with_overlay(crate::model::Overlay::Settings(s))
+}
+
+/// The agent asked, and waits for the answer.
+pub fn question_options() -> AppState {
+    use harness_api::question::{Question, QuestionOption};
+    let mut state = main_session();
+    if let Mode::Session(w) = &mut state.mode {
+        let option = |label: &str, description: Option<&str>| QuestionOption { label: label.into(), description: description.map(str::to_string) };
+        let v = w.view_mut();
+        v.generating = false;
+        v.activity = None;
+        v.question = Some((
+            Question { text: "What counts as a bad row?".into(), options: vec![option("Not a number", Some("negative values stay")), option("Not a number or negative", None), option("Any empty column", None)] },
+            1,
+        ));
+    }
+    state
 }
 
 /// A run under way, with messages waiting for it.

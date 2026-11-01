@@ -34,7 +34,9 @@ pub enum HookPointKind {
     Stop,
     PostCompact,
     PlanEnter,
+    PlanExit,
     StepDebugEnter,
+    StepDebugExit,
 }
 
 /// What a hook did (IF-6, ADR 0010).
@@ -46,6 +48,8 @@ pub enum HookOutcome {
     Context { lines: Vec<String> },
     /// Lines for the next model turn only, then gone.
     Reminder { lines: Vec<String> },
+    /// At `Stop` only: the same lines, and the run goes on instead of ending.
+    Continue { lines: Vec<String> },
     /// A veto of a before-event, with its reason.
     Blocked { reason: String },
     Failed { message: String },
