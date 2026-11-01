@@ -9,7 +9,7 @@ External systems (CI, deploy scripts, webhooks, monitors, other machines) send e
 
 | Kind | What the event does | Agent turn? |
 |---|---|---|
-| `message` | Shows in the bound session as an inbound CALLBACK card . The agent sees it as data on its next turn. | when the session next runs |
+| `notification` | Delivered into the agent's input (stdin) and shown in the bound session as an inbound CALLBACK card. (Called `message` until 2026-11-01.) | when the session next runs |
 | `skill` | Starts a run of a named skill with the event as its input: the agent takes the callback up **with the skill's mindset** (its instructions, tools and policy), in a new session or in a named one. | yes, started by the event |
 | `journal` | Writes the event to the project journal as an entry (category, tags, flags from the trigger, the body from the payload). Nothing runs. | never |
 
@@ -33,4 +33,4 @@ A trigger matches callbacks by label and payload fields, and names its action an
 - New invariant INV-12: a callback's payload is data, never instructions or permissions.
 - Open questions: the trigger configuration syntax and payload templating (Q-9); how a skill run reports back to the caller (Q-10).
 
-**Amended by [ADR 0015](0015-callback-handlers-are-plugins.md):** every callback carries a `uuid` and a `type`, and the daemon routes it by `type` to a `CallbackHandler`. The harness types are not renamings of the actions above: `notification` (a callback delivered into the agent's input, its stdin — the inbound CALLBACK card the TUI shows, `/callback` publishes one; the `message` action of ADR 0009 is this type); `flowstate_update` (an event that changes the state of one instance of a flowchart — a pass keyed by the client's pipeline id — never the reference chart). How the other actions above (`skill`, `journal`, `flow`) relate to handlers is open (Q-31). There is no default any more: a callback whose type has no handler reaches no agent, is logged, and the caller gets 400.
+**Amended by [ADR 0015](0015-callback-handlers-are-plugins.md):** every callback carries a `uuid` and a `type`, and the daemon routes it by `type` to a `CallbackHandler`; the kinds above are the harness types (the owner, 2026-11-01): `message` is removed — it is `notification`; `journal` only writes to the journal; `skill` stays as a concept and may be dropped; the `flow` kind of [ADR 0012](0012-flowcharts-as-live-pipelines.md) is renamed `flowstate_update`. There is no default any more: a callback whose type has no handler reaches no agent, is logged, and the caller gets 400.

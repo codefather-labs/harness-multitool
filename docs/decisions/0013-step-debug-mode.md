@@ -15,9 +15,9 @@ The harness has a **step-debug mode**: event-driven, step-by-step debugging of t
 
 1. **Charts.** The agent builds a flowchart for each pipeline it debugs, from the pipeline's design. Example: the project fbscout has two large pipelines — one of services joined by Kafka (the software side), one of agent events that take an input, do something and return a result — so two flowcharts.
 2. **Callbacks.** The agent instruments the project's code with callbacks into its own harness, at every place it needs, of three kinds:
-   - **information** — brings data to the agent (a `message` trigger, ADR 0009);
-   - **journal** — only records the event in the journal (a `journal` trigger);
-   - **flow** — changes the state of the pipeline's flowchart (a `flow` trigger, ADR 0012): it updates the run's data and marks the node it came from as active. The active node is always the one the most recent callback came from.
+   - **information** — brings data to the agent (a `notification` callback, ADR 0009);
+   - **journal** — only records the event in the journal (a `journal` callback);
+   - **flow** — changes the state of the pipeline's flowchart (a `flowstate_update` callback, ADR 0012): it updates the run's data and marks the node it came from as active. The active node is always the one the most recent callback came from.
 3. **Stepping lives in the target project.** The harness does not pause anyone's code. The agent makes the pipeline stepwise itself: after each callback the pipeline **waits for the agent's decision** before it goes on. For this the agent builds a **debug router** in the target project that lets a pipeline, step by step as its flowchart says, execute its next step only when the agent allows it.
 
 **Two routers, not to be confused — clarified by the owner.** The harness has one router of its own: its **daemon** (the carried-over memory daemon), which holds a callback URL for every open agent window and is the single entry point of callbacks to agents. The **debug router** is something else: a router in the *client app* the agent works on, which the agent builds — always by **one contract**, an OpenAPI-style specification (OpenAPI itself may be the base), so every app's debug router looks the same to the agent (CON-27):

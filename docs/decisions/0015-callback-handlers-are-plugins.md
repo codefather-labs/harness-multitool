@@ -7,7 +7,7 @@
 
 Callbacks have custom types (IF-13: a callback's `type` is a harness type or any product string), so custom behaviour needs custom handlers. **One interface, `CallbackHandler` (IF-16), handles callbacks of every type:**
 
-- the **standard types** are implemented through it and ship with the harness: `notification` (a callback delivered into the agent's input, its stdin — the inbound CALLBACK card the TUI shows, `/callback` publishes one; the `message` action of ADR 0009 is this type), `flowstate_update` (an event that changes the state of one instance of a flowchart — a pass keyed by the client's pipeline id — never the reference chart), and others to come;
+- the **standard types** are implemented through it and ship with the harness: `notification` (a callback into the agent's stdin — the CALLBACK card; `/callback` publishes one), `journal` (only writes to the journal), `flowstate_update` (changes one flowchart instance, never the reference chart) and `skill` (starts a skill run; a concept, may be dropped);
 - **custom callbacks** are implemented through the same interface by the agent or the user: the handler of a product type, its firing policy (a `Condition`, IF-15: when its batch reaches the agent) and its response policies (Markdown files, CON-26).
 
 A custom handler is a plugin like any other ([ADR 0002](0002-plugins-are-crates.md)): a crate in the local build. It is **plugged in through the TUI's settings** (the Callbacks tab below), which lists the handlers in the build. The settings are written to the configuration; the TUI is the place to do it, not the only one (a configuration file stays valid).
@@ -41,7 +41,7 @@ Rejected: loading plugins as dynamic libraries at run time — Rust has no stabl
 
 ## Why
 
-Product callbacks are as varied as products. A fixed set of actions would force every project into `message` and `journal`; one interface for the standard and the custom types keeps the core small and lets each project teach the harness its own events — the plugin-first principle applied to callbacks.
+Product callbacks are as varied as products. A fixed set of actions would force every project into `notification` and `journal`; one interface for the standard and the custom types keeps the core small and lets each project teach the harness its own events — the plugin-first principle applied to callbacks.
 
 ## Open
 
