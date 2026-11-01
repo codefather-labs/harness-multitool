@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::images::{Graphic, Icon, Placement, Tint};
-use crate::model::{
+use crate::model::{ThinkingView, 
     MapElement, DiffLine, FlowchartEvent, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapTool, MindMapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
 };
 use crate::theme::Theme;
@@ -248,6 +248,11 @@ pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], generating
             cv.finish(h)
         }
         Item::Inbound(m) => inbound(width, t, m),
+        Item::Thinking(v) => {
+            let mut cv = Canvas::new(width, t, known);
+            let h = thinking(&mut cv, 0, 0, width, v, t.background);
+            cv.finish(h)
+        }
         Item::Journal(j) => {
             let mut cv = Canvas::new(width, t, known);
             let h = journal(&mut cv, 0, 0, width, j, t.background);
@@ -382,13 +387,18 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
         cv.line_right(width - 2, 0, vec![Span::styled("◌ ", plain(t.accent)), Span::styled("generating…", plain(t.text_muted))], bg);
     }
     let mut y = 1;
+    // The reasoning comes before the answer it led to, wherever it arrived.
+    for (i, a) in attached.iter().enumerate().filter(|(_, a)| matches!(a, Item::Thinking(_))) {
+        cv.sub = Some(i);
+        y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
+    }
     for l in lines {
         for w in wrap(l, tw) {
             cv.line(CX, y, tw, vec![Span::styled(w, plain(t.text))], bg);
             y += 1;
         }
     }
-    for (i, a) in attached.iter().enumerate() {
+    for (i, a) in attached.iter().enumerate().filter(|(_, a)| !matches!(a, Item::Thinking(_))) {
         cv.sub = Some(i);
         y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
     }
@@ -410,6 +420,7 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
 fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, bg: Color) -> u16 {
     match it {
         Item::Tool(c) => tool(cv, x, y, w, c, bg),
+        Item::Thinking(v) => thinking(cv, x, y, w, v, bg),
         Item::Journal(j) => journal(cv, x, y, w, j, bg),
         Item::MapCreated(m) => map_created(cv, x, y, w, m, bg),
         Item::MindMap(e) => mind_map(cv, x, y, w, e, bg),
@@ -420,6 +431,49 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
             cv.embed(x, y, d)
         }
     }
+}
+
+/// A turn's reasoning (reasoning-*). Live: framed in the accent, with a timer and a cursor.
+/// Finished: one row, `▸ Thought for 38s`; unfolded, its text under that row. Always muted: it
+/// must not compete with the answer. Returns its height.
+fn thinking(cv: &mut Canvas, x: u16, y: u16, w: u16, v: &ThinkingView, bg: Color) -> u16 {
+    let t = cv.t;
+    if v.live {
+        let iw = w.saturating_sub(4);
+        let mut text: Vec<String> = v.lines.iter().flat_map(|l| wrap(l, iw.saturating_sub(2))).collect();
+        if text.is_empty() {
+            text.push(String::new());
+        }
+        let h = text.len() as u16 + 3;
+        cv.grow(y + h);
+        cv.frame(Rect::new(x, y, w, h), t.accent_line, bg);
+        cv.line(x + 2, y + 1, iw, vec![Span::styled("◌ ", plain(t.accent)), Span::styled("THINKING", bold(t.accent))], bg);
+        cv.line_right(x + w - 2, y + 1, vec![Span::styled(format!("{}s", v.secs), plain(t.text_muted))], bg);
+        let last = text.len() - 1;
+        for (i, l) in text.into_iter().enumerate() {
+            let mut spans = vec![Span::styled(l, plain(t.text_muted))];
+            if i == last {
+                spans.push(Span::styled(" █", plain(t.text_muted)));
+            }
+            cv.line(x + 2, y + 2 + i as u16, iw, spans, bg);
+        }
+        return h;
+    }
+    let row_bg = if bg == t.surface { t.surface_raised } else { t.surface };
+    cv.fill(Rect::new(x, y, w, 1), row_bg);
+    let chevron = if v.expanded { "▾" } else { "▸" };
+    cv.line(x + 1, y, w.saturating_sub(2), vec![Span::styled(format!("{chevron} Thought for {}s", v.secs), plain(t.text_muted))], row_bg);
+    let sub = cv.sub;
+    cv.hits.push((Rect::new(x, y, w, 1), sub, MapElement::Thinking));
+    let mut h = 1;
+    if v.expanded {
+        let iw = w.saturating_sub(4);
+        for l in v.lines.iter().flat_map(|l| wrap(l, iw)) {
+            cv.line(x + 2, y + h, iw, vec![Span::styled(l, plain(t.text_muted))], bg);
+            h += 1;
+        }
+    }
+    h
 }
 
 fn status_badge(c: &ToolCall, t: &Theme, bg: Color) -> (Vec<Span<'static>>, Color) {
@@ -718,7 +772,7 @@ fn opened(body: MapBody, open: MapElement) -> Vec<u32> {
         (MapBody::Mind(m), MapElement::Node(i)) => m.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Node(i)) => f.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
         (MapBody::Flow(f), MapElement::Arrow(i)) => f.arrows.get(i).map(|a| a.refs.clone()).unwrap_or_default(),
-        (MapBody::Mind(_), MapElement::Arrow(_)) | (_, MapElement::Area(..)) => vec![],
+        (MapBody::Mind(_), MapElement::Arrow(_)) | (_, MapElement::Area(..) | MapElement::Thinking) => vec![],
     }
 }
 

@@ -21,6 +21,8 @@ Reference mockups for the terminal UI. The implementation matches them pixel for
 Logo: `../logo/multitool.svg`, traced from `startup-light.png` (the operator's pick). Flow on launch: splash -> startup -> session.
 
 
+`reasoning-*`: a model's reasoning inside its turn, live, folded and unfolded. The build leaves out the mockup's token count: providers report a turn's whole output, not its reasoning apart.
+
 ## Designed in code, without a mockup
 
 Settled with the project owner on the live TUI and recorded in the journal; [`../../tui.md`](../../tui.md) lists the rules and the named states that show them.

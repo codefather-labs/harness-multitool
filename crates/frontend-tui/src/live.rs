@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::model::{
     Arrow, Branch, FlowDirection, FlowNode, Flowchart, FlowchartEvent, Gate, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Symbol,
 };
-use crate::model::{Inbound, InboundKind};
+use crate::model::{Inbound, InboundKind, ThinkingView};
 use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, PermissionView, Role, SessionView, Tone, ToolBody, ToolCall, ToolIcon, ToolState};
 
 /// Tool output lines shown before `+N more lines`.
@@ -27,6 +27,8 @@ pub struct Feed {
     cost_micro_usd: u64,
     context_window: u64,
     known: Vec<JournalEvent>,
+    /// When the reasoning being written began.
+    thinking_started: Option<u64>,
 }
 
 struct CallPlace {
@@ -39,7 +41,7 @@ struct CallPlace {
 
 impl Feed {
     pub fn new(time: TimeFormat, context_window: u64) -> Self {
-        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new() }
+        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new(), thinking_started: None }
     }
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
@@ -58,9 +60,16 @@ impl Feed {
                 set_status(v, "ADAPTER", provider);
                 set_status(v, "MODEL", model);
             }
-            Event::TextDelta { text } => append_text(v, time, text),
-            Event::ThinkingDelta { text } => append_thinking(v, text),
+            Event::TextDelta { text } => {
+                self.end_thinking(v, entry.at_ms);
+                append_text(v, time, text);
+            }
+            Event::ThinkingDelta { text } => {
+                let started = *self.thinking_started.get_or_insert(entry.at_ms);
+                append_thinking(v, time, text, entry.at_ms.saturating_sub(started).div_ceil(1000));
+            }
             Event::TurnFinished { stop, usage, cost_micro_usd, .. } => {
+                self.end_thinking(v, entry.at_ms);
                 self.cost_micro_usd += cost_micro_usd.unwrap_or(0);
                 // How full the context is: the last turn's whole prompt and its answer.
                 let used = usage.input + usage.cache_read + usage.cache_write + usage.output;
@@ -71,6 +80,7 @@ impl Feed {
                 }
             }
             Event::ToolRequested { call, .. } => {
+                self.end_thinking(v, entry.at_ms);
                 let card = ToolCall {
                     name: call.name.clone(),
                     args: summary(&call.input),
@@ -158,8 +168,18 @@ impl Feed {
         std::mem::take(&mut self.known)
     }
 
+    fn end_thinking(&mut self, v: &mut SessionView, at_ms: u64) {
+        if let Some(started) = self.thinking_started.take() {
+            finish_thinking(v, at_ms.saturating_sub(started).div_ceil(1000));
+        }
+    }
+
     /// The run has ended, however it ended: nothing is generating any more.
     pub fn run_ended(&mut self, v: &mut SessionView) {
+        if self.thinking_started.take().is_some() {
+            let secs = live_thinking(v).map_or(0, |t| t.secs);
+            finish_thinking(v, secs);
+        }
         v.generating = false;
     }
 
@@ -336,23 +356,46 @@ pub fn permission(tab: u64, call: &LogCall, capabilities: &[Capability], workdir
     }
 }
 
-/// The reasoning of the running turn grows one muted THINKING card.
-fn append_thinking(v: &mut SessionView, text: &str) {
-    const LABEL: &str = "THINKING";
-    if !matches!(v.transcript.last(), Some(Item::Tips { label, .. }) if label == LABEL) {
-        v.transcript.push(Item::Tips { label: LABEL.into(), lines: vec![String::new()] });
+/// The live reasoning of the newest turn, if any.
+fn live_thinking(v: &mut SessionView) -> Option<&mut ThinkingView> {
+    let Some(Item::Turn { attached, .. }) = v.transcript.last_mut() else { return None };
+    attached.iter_mut().find_map(|a| match a {
+        Item::Thinking(t) if t.live => Some(t),
+        _ => None,
+    })
+}
+
+/// The reasoning of the running turn grows one block, inside the turn, above its answer.
+fn append_thinking(v: &mut SessionView, time: String, text: &str, secs: u64) {
+    if live_thinking(v).is_none() {
+        let reusable = matches!(v.transcript.last(), Some(Item::Turn { role: Role::Assistant, lines, attached, .. }) if attached.is_empty() && lines.iter().all(|l| l.is_empty()));
+        if !reusable {
+            v.transcript.push(Item::Turn { role: Role::Assistant, time, lines: vec![], attached: vec![] });
+        }
+        if let Some(Item::Turn { attached, .. }) = v.transcript.last_mut() {
+            attached.push(Item::Thinking(ThinkingView { lines: vec![String::new()], live: true, secs, expanded: false }));
+        }
     }
-    let Some(Item::Tips { lines, .. }) = v.transcript.last_mut() else { return };
+    let Some(t) = live_thinking(v) else { return };
+    t.secs = secs;
     let mut parts = text.split('\n');
-    if let (Some(first), Some(last)) = (parts.next(), lines.last_mut()) {
+    if let (Some(first), Some(last)) = (parts.next(), t.lines.last_mut()) {
         last.push_str(first);
     }
-    lines.extend(parts.map(str::to_string));
+    t.lines.extend(parts.map(str::to_string));
+}
+
+/// The answer or a tool has begun: the reasoning folds to its one line.
+fn finish_thinking(v: &mut SessionView, secs: u64) {
+    if let Some(t) = live_thinking(v) {
+        t.live = false;
+        t.secs = secs;
+    }
 }
 
 fn append_text(v: &mut SessionView, time: String, text: &str) {
     // Text after a tool call starts a new message under it, in reading order.
-    let open = matches!(v.transcript.last(), Some(Item::Turn { role: Role::Assistant, attached, .. }) if attached.is_empty());
+    let open = matches!(v.transcript.last(), Some(Item::Turn { role: Role::Assistant, attached, .. }) if attached.iter().all(|a| matches!(a, Item::Thinking(_))));
     if !open {
         v.transcript.push(Item::Turn { role: Role::Assistant, time, lines: vec![String::new()], attached: vec![] });
     }
@@ -574,17 +617,51 @@ mod tests {
         assert!(f.take_known().is_empty());
     }
 
+    fn thinking_of(v: &SessionView, turn: usize) -> ThinkingView {
+        let Item::Turn { attached, .. } = &v.transcript[turn] else { panic!("not a turn") };
+        attached.iter().find_map(|a| if let Item::Thinking(t) = a { Some(t.clone()) } else { None }).expect("a reasoning block")
+    }
+
+    fn at(ms: u64, event: Event) -> LogEntry {
+        LogEntry { seq: ms, at_ms: ms, event }
+    }
+
     #[test]
-    fn reasoning_grows_one_card_and_stays_out_of_the_answer() {
+    fn reasoning_lives_in_the_turn_then_folds_when_the_answer_starts() {
         let (mut f, mut v) = (feed(), SessionView::default());
-        for (i, t) in ["The ", "user\nasks"].iter().enumerate() {
-            f.apply(&mut v, &entry(i as u64, Event::ThinkingDelta { text: t.to_string() }));
-        }
-        f.apply(&mut v, &entry(3, Event::TextDelta { text: "Four.".into() }));
+        f.apply(&mut v, &at(1000, Event::ThinkingDelta { text: "The ".into() }));
+        f.apply(&mut v, &at(3500, Event::ThinkingDelta { text: "user\nasks".into() }));
+        let live = thinking_of(&v, 0);
+        assert!(live.live);
+        assert_eq!((live.secs, live.lines.as_slice()), (3, &["The user".to_string(), "asks".to_string()][..]));
+        f.apply(&mut v, &at(5000, Event::TextDelta { text: "Four.".into() }));
+        assert_eq!(v.transcript.len(), 1, "the answer joins the same turn");
+        let done = thinking_of(&v, 0);
+        assert!(!done.live && !done.expanded);
+        assert_eq!(done.secs, 4);
+        let Item::Turn { lines, .. } = &v.transcript[0] else { panic!() };
+        assert_eq!(lines, &["Four."]);
+    }
+
+    #[test]
+    fn a_tool_or_the_end_of_a_run_folds_reasoning_too() {
+        let (mut f, mut v) = (feed(), SessionView::default());
+        f.apply(&mut v, &at(0, Event::ThinkingDelta { text: "hm".into() }));
+        f.apply(&mut v, &at(2000, call("c1")));
+        assert!(!thinking_of(&v, 0).live);
+        assert_eq!(first_tool_after_thinking(&v).name, "shell");
+        f.apply(&mut v, &at(2100, Event::ToolResult { id: "c1".into(), output: "ok".into(), is_error: false }));
+        // The next turn thinks anew, in a new message.
+        f.apply(&mut v, &at(3000, Event::ThinkingDelta { text: "next".into() }));
         assert_eq!(v.transcript.len(), 2);
-        let Item::Tips { label, lines } = &v.transcript[0] else { panic!() };
-        assert_eq!((label.as_str(), lines.as_slice()), ("THINKING", &["The user".to_string(), "asks".to_string()][..]));
-        assert!(matches!(&v.transcript[1], Item::Turn { lines, .. } if lines == &["Four."]));
+        assert!(thinking_of(&v, 1).live);
+        f.run_ended(&mut v);
+        assert!(!thinking_of(&v, 1).live, "a stopped run leaves nothing live");
+    }
+
+    fn first_tool_after_thinking(v: &SessionView) -> &ToolCall {
+        let Item::Turn { attached, .. } = &v.transcript[0] else { panic!() };
+        attached.iter().find_map(|a| if let Item::Tool(c) = a { Some(c) } else { None }).expect("a tool")
     }
 
     #[test]

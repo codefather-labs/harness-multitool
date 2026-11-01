@@ -299,6 +299,17 @@ pub struct SessionView {
     pub generating: bool,
 }
 
+/// The reasoning of one model turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThinkingView {
+    pub lines: Vec<String>,
+    /// Still being written: framed, with a timer and a cursor.
+    pub live: bool,
+    pub secs: u64,
+    /// Finished and unfolded; a finished one is folded to a line by default.
+    pub expanded: bool,
+}
+
 /// One entry of the transcript.
 #[derive(Debug, Clone)]
 pub enum Item {
@@ -314,6 +325,8 @@ pub enum Item {
     /// A message that reached the session from outside (inbound-messages-*).
     Inbound(Inbound),
     /// A journal entry the agent wrote (journal#136).
+    /// The model's reasoning: inside a turn, above its answer (reasoning-*).
+    Thinking(ThinkingView),
     Journal(JournalEvent),
     /// A mind map or a flowchart was created (no nodes yet: only the event shows).
     MapCreated(MapCreated),
@@ -430,6 +443,8 @@ pub enum MapElement {
     Node(usize),
     /// An arrow by index: its linked entries.
     Arrow(usize),
+    /// A reasoning block's header: a click folds or unfolds it.
+    Thinking,
     /// The map's area itself (pressing there starts a drag); how far it can be panned.
     Area(u16, u16),
 }

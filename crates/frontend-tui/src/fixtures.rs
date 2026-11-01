@@ -4,7 +4,7 @@
 use crate::images::{Eyes, Icon};
 use crate::model::{
     ActionKind, AppState, Brand, Composer, Diff, DiffLine, HeaderInfo, Inbound, InboundKind, Item, KeyHint, FlowchartEvent, MapCreated, MapTool, MindMapEvent,
-    Mode, QuickAction, RecentSession, Role, SessionView, SplashPoint, SplashView, StartupPanel, StartupView, StatusLine, Tab, TabIcon, TabMark,
+    Mode, QuickAction, RecentSession, Role, SessionView, SplashPoint, SplashView, StartupPanel, ThinkingView, StartupView, StatusLine, Tab, TabIcon, TabMark,
     TipPart, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 use crate::debug::{sample_flowchart, sample_journal, sample_tool};
@@ -21,6 +21,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "startup", mockup: "startup", build: startup },
     Fixture { name: "welcome", mockup: "welcome", build: welcome },
     Fixture { name: "main-session", mockup: "main-session", build: main_session },
+    Fixture { name: "reasoning", mockup: "reasoning", build: reasoning },
     Fixture { name: "inbound-messages", mockup: "inbound-messages", build: inbound_messages },
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
@@ -67,6 +68,64 @@ fn session_hints() -> Vec<KeyHint> {
         KeyHint::new("@", "file"),
         KeyHint::new("/", "command"),
     ]
+}
+
+/// A model's reasoning in its three states (reasoning-*).
+pub fn reasoning() -> AppState {
+    let think = |lines: &[&str], live, secs, expanded| Item::Thinking(ThinkingView { lines: lines.iter().map(|s| s.to_string()).collect(), live, secs, expanded });
+    let view = SessionView {
+        transcript: vec![
+            turn_with(
+                Role::Assistant,
+                "14:46",
+                &["Found the issue: `mean()` was using integer division. I changed it to float division and verified that all tests pass."],
+                vec![think(
+                    &["1. Read the test to understand the expected behaviour.", "2. Inspect `calc.py` and check the implementation of `mean()`.", "3. Spotted integer division (`//`) instead of float division (`/`).", "4. Change it to float division and keep the function signature.", "5. Run the tests to verify the fix."],
+                    false,
+                    6,
+                    true,
+                )],
+            ),
+            turn_with(
+                Role::Assistant,
+                "14:49",
+                &["The failing test was due to integer division in `mean()` returning a truncated value. I updated `calc.py` to use float division."],
+                vec![
+                    think(&["hidden until unfolded"], false, 38, false),
+                    Item::Tool(crate::debug::tool(
+                        "edit",
+                        "calc.py",
+                        ToolIcon::None,
+                        ToolState::Done,
+                        "applied",
+                        "128 ms",
+                        ToolBody::Diff(Diff {
+                            hunk: "@@ -24 +24 @@".into(),
+                            context: "def mean(values: list[int]) -> float:".into(),
+                            lines: vec![DiffLine::Removed("    return sum(values) // len(values)".into()), DiffLine::Added("    return sum(values) / len(values)".into())],
+                        }),
+                    )),
+                ],
+            ),
+            turn(Role::User, "14:52", &["fix the failing test in calc.py"]),
+            turn_with(
+                Role::Assistant,
+                "14:52",
+                &[],
+                vec![think(
+                    &["Let me open calc.py and the failing test to see the expected behaviour.", "Likely an edge case in the division handling (zero or type conversion).", "I'll check the test output, read the relevant code, and prepare a minimal fix.", "Then I'll apply the change and run the tests again to confirm."],
+                    true,
+                    12,
+                    false,
+                )],
+            ),
+        ],
+        status: status("8.4k / 200k", "$0.06", "$10.00"),
+        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints() },
+        generating: true,
+        ..Default::default()
+    };
+    AppState { header: header("session/calc"), eyes: Eyes::Open, pictures: false, mode: Mode::Session(ws(view, "calc")) }
 }
 
 pub fn welcome() -> AppState {

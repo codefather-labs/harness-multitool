@@ -113,6 +113,19 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                     crate::debug::open_tab(w, &title);
                 }
                 Key::Ctrl('w') => close_tab(w),
+                // The newest reasoning, for hands on the keyboard.
+                Key::Ctrl('o') => {
+                    let newest = w.view_mut().transcript.iter_mut().rev().find_map(|it| match it {
+                        crate::model::Item::Turn { attached, .. } => attached.iter_mut().rev().find_map(|a| match a {
+                            crate::model::Item::Thinking(v) if !v.live => Some(v),
+                            _ => None,
+                        }),
+                        _ => None,
+                    });
+                    if let Some(v) = newest {
+                        v.expanded = !v.expanded;
+                    }
+                }
                 Key::Alt(c) if c.is_ascii_digit() && c != '0' => switch_tab(w, c as usize - '1' as usize),
                 _ => {}
             }
@@ -175,6 +188,14 @@ pub fn release(s: &mut AppState) {
 /// already open (journal#262).
 fn toggle_map_part(w: &mut Workspace, item: usize, sub: Option<usize>, element: crate::model::MapElement) {
     use crate::model::{Item, MapElement};
+    if element == MapElement::Thinking {
+        if let Some(Item::Turn { attached, .. }) = w.view_mut().transcript.get_mut(item)
+            && let Some(Item::Thinking(v)) = sub.and_then(|s| attached.get_mut(s))
+        {
+            v.expanded = !v.expanded;
+        }
+        return;
+    }
     // The entries the open part shows: a click on one of their headers inside the ticket
     // only moves the focus.
     let refs = |e: &Item, open: MapElement| -> Vec<u32> {
@@ -483,5 +504,22 @@ mod tests {
         if let Mode::Session(w) = &s.mode {
             assert_eq!(w.view().scroll, 0);
         }
+    }
+
+    #[test]
+    fn ctrl_o_folds_and_unfolds_the_newest_finished_reasoning() {
+        use crate::model::Item;
+        let mut s = crate::fixtures::reasoning();
+        let expanded = |s: &AppState, turn: usize| {
+            let Mode::Session(w) = &s.mode else { panic!() };
+            let Item::Turn { attached, .. } = &w.view().transcript[turn] else { panic!() };
+            attached.iter().find_map(|a| if let Item::Thinking(v) = a { Some(v.expanded) } else { None }).unwrap()
+        };
+        assert!(!expanded(&s, 1));
+        key(&mut s, Key::Ctrl('o'));
+        assert!(expanded(&s, 1), "the newest finished one; the live one stays as it is");
+        assert!(expanded(&s, 0), "the older one is untouched");
+        key(&mut s, Key::Ctrl('o'));
+        assert!(!expanded(&s, 1));
     }
 }

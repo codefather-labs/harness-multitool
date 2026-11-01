@@ -6,7 +6,7 @@
 
 use crate::model::{
     Arrow, Branch, Diff, DiffLine, FlowDirection, FlowNode, Flowchart, FlowchartEvent, HookEvent, HookOutcome, HookRun, Inbound, InboundKind,
-    Item, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Outgoing, Role, SessionView, Symbol, Tab,
+    Item, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Outgoing, Role, ThinkingView, SessionView, Symbol, Tab,
     TabIcon, TabMark, Toast, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace,
 };
 
@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
     ("/journal", "journal entry event"),
+    ("/thinking", "a model's reasoning, live"),
     ("/mindmap-new · /flowchart-new", "a mind map / flowchart created (empty)"),
     ("/mindmap", "a mind map with every node kind, status and flowchart link"),
     ("/flowchart [down]", "every flowchart symbol and gate / a flow top to bottom"),
@@ -454,6 +455,11 @@ fn command(w: &mut Workspace, cmd: &str) {
                 label: "DEBUG COMMANDS".into(),
                 lines: COMMANDS.iter().map(|(c, d)| format!("{c:<44} {d}")).chain(std::iter::once("plain text: your message".to_string())).collect(),
             });
+        }
+        "thinking" => {
+            let live = Item::Thinking(ThinkingView { lines: vec!["Let me open the file and see what the test expects.".into(), "Likely an edge case in the division.".into()], live: true, secs: 12, expanded: false });
+            let time = now(w.view_mut());
+            w.view_mut().transcript.push(Item::Turn { role: Role::Assistant, time, lines: vec![], attached: vec![live] });
         }
         "agent" | "a" => {
             let time = now(v);

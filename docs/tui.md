@@ -71,6 +71,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | session | `/exit`, `/quit`, `/q`, Ctrl+C | quit |
 | session | Esc | stop a generating agent, else close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
+| session | Ctrl+O · click `▸ Thought for …` | fold or unfold the newest reasoning · that one |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
 | session | click `⚙ Settings` | open the settings window |
 | permission prompt | 1 · 2 · 3 · ←→ / Tab · Enter · Esc · click a button | allow once · always allow · deny · choose · confirm · deny |
@@ -93,6 +94,7 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/callback [text]` | an HTTP callback with its status |
 | `/reminder [text]` | a journal reminder |
 | `/journal` | a JOURNAL event |
+| `/thinking` | a model's reasoning, live |
 | `/mindmap-new` · `/flowchart-new` | a mind map / a flowchart created (empty) |
 | `/mindmap` | a mind map with every node kind and status, journal refs, a cross link, flowchart links |
 | `/flowchart` · `/flowchart down` | every flowchart symbol and logic gate · a flow drawn top to bottom |
@@ -113,7 +115,7 @@ Tool calls, journal and mind-map events attach to the newest assistant turn when
 - `multitool screen --scenario <name> --png out.png` draws the transcript that scenario leaves.
 - `multitool preview welcome --script <name>` runs a scenario on test doubles in the live UI.
 - `multitool run "<message>" [--yes]` sends one message through a real session with no UI and prints its log; `--yes` answers permission prompts with yes.
-- `MULTITOOL_WIRE_LOG=<file>` writes every request body and response chunk exchanged with a model to that file, never the headers, so the keys stay out of it. A model's reasoning, where the provider streams it, is a THINKING card in the transcript and a `thinking` line in `multitool run`.
+- `MULTITOOL_WIRE_LOG=<file>` writes every request body and response chunk exchanged with a model to that file, never the headers, so the keys stay out of it. A model's reasoning, where the provider streams it, shows inside its turn above the answer, live and then folded to one line, and as `thinking` lines in `multitool run`.
 - `tools/pty_session.py <absolute path to multitool>` drives the real UI in a pty against a fake provider endpoint: real HTTP, tools and permission prompts. It prints the screen at each step and the idle CPU. It needs the Python package `pyte`.
 
 ## Screens as images
@@ -126,6 +128,7 @@ Every mockup has a named state that renders through the same `draw` as the live 
 | `startup` | recent sessions, quick actions, status line, tip | `startup-*` |
 | `welcome` | a fresh session: welcome card, quick tips | `welcome-*` |
 | `main-session` | turns, tool rows, an expanded diff, status line, composer | `main-session-*` |
+| `reasoning` | a model's reasoning live, folded and unfolded, inside the turn above the answer | `reasoning-*` |
 | `inbound-messages` | Telegram, voice, agent-to-agent, callback, reminder; a toast | `inbound-messages-*` |
 | `tool-calls` | tool cards: numbered output with a fold, Telegram send, agent send, journal write, failure, running | `tool-calls-*` |
 | `journal-mindmap-events` | JOURNAL event, an empty map's creation, a drawn flowchart | `journal-mindmap-events-*` |
