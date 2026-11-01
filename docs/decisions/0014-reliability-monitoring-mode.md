@@ -23,7 +23,7 @@ What counts as "the same event", and when a condition re-arms, is open (Q-22). T
 
 **The harness does not unify the response.** What the agent does in each situation is described to it per project: policies differ from project to project, and they are not something to standardise at the harness level (Q-19). The harness delivers the condition's message and the project's policies; the project's policies decide the response.
 
-**How a policy is written is not designed yet** (Q-18). Policies are built for each project on their own; the authoring interface comes later.
+**Policies are Markdown files, linked from conditions — decided by the owner (answers Q-18).** Writing a response policy is the client's process: the client describes how to respond, and the agent writes it down as Markdown files in the project. Every condition carries links — paths — to the policy files that answer it, and the message a condition sends names those paths, so the agent reads the policy for exactly the event it got. A policy is changed the same way: the client says, the agent edits the file. Signals and condition messages never write or change a policy file (INV-12).
 
 **Sessions in this mode are open 24/7** (Q-20). A monitoring session is not started per incident: it stays open around the clock and receives condition messages as they come. It relies on compaction to keep its context bounded.
 
@@ -59,4 +59,4 @@ What the agent may do is the project's policy. Two existing harness rules still 
 
 ## Open
 
-What identifies one event and when a condition re-arms (Q-22); the interface for writing a project's policies (Q-18).
+What identifies one event and when a condition re-arms (Q-22).
