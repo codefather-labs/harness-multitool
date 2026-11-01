@@ -1,6 +1,6 @@
 # 0016 — Plan mode (idea)
 
-- **Status:** proposed — an idea of the project owner; nothing here binds until the owner accepts it · **Raised by:** the project owner, 2026-11-01
+- **Status:** proposed — an idea of the project owner; the parts marked decided bind, the rest is open · **Raised by:** the project owner, 2026-11-01
 - **Specs:** IF-0.5, IF-6, IF-7; a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode) and [ADR 0014](0014-reliability-monitoring-mode.md) (reliability monitoring)
 
 ## The idea
@@ -13,12 +13,16 @@ The harness gets a **plan mode**: the classic plan mode of agent harnesses, wher
 
 **A hook sets the agent's rules.** Entering plan mode fires a hook (IF-6) that adds to the agent's context the instructions for these tools: what to journal and how, when to open a mind map and what goes into it, when a flow deserves a flowchart. Leaving the mode is the user's approval of the plan.
 
+## Decided by the owner (2026-11-01)
+
+- **What plan mode allows.** The hook tells the agent: only the harness's tools (journal, mind maps, flowcharts), read operations (reading, searching, read-only commands) and **web search** are available now. No edits to the project, no commits, nothing with side effects. It also sets the mindset: concentrate on planning, do not get distracted by anything else.
+- **The plan is the journal.** The approved plan is not only text in the conversation: it is the set of journal todos, specifications and decisions the planning wrote, plus its mind map and flowcharts, so the next session and other agents find it.
+- **A framework, not instructions.** Where plan mode elsewhere is a prompt, here it is a framework: documented tools, attention to keeping the documentation current, spec-first (P-4, P-10).
+
 ## Proposed by the agent, to be confirmed
 
-- **What plan mode allows.** Like every plan mode: reading, searching and running read-only commands, but no edits to the project, no commits, nothing with side effects outside the harness. Writing to the journal, mind maps and flowcharts *is* allowed, since that is the point of the mode; it changes the harness's memory, not the project.
-- **The plan is the journal.** The approved plan is not only text in the conversation: it is the set of journal todos, specifications and decisions the planning wrote, plus its mind map and flowcharts, so the next session and other agents find it.
-- **Switching.** The user switches the mode on, or the agent proposes it for a task that needs a plan; leaving it always takes the user's approval.
+- **Switching.** The user switches the mode on, or the agent proposes it for a task that needs a plan; leaving it always takes the user's approval (Q-25).
 
 ## Open
 
-The proposals above (Q-25); whether a plan has a document of its own besides the journal entries, mind map and flowcharts (Q-26).
+How the mode is switched and left (Q-25); whether a plan has a document of its own besides the journal entries, mind map and flowcharts (Q-26).
