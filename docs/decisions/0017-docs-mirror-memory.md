@@ -55,7 +55,7 @@ Existing files are never overwritten; the skill fills only what is missing. Once
 
 **Asked once (answers Q-29, decided by the owner).** At the first start in a project with no `docs/` and no `.harness/`, the harness asks once whether to initialize the project. A project that says no is not mirrored until `project-init` is run; the question is not asked again. The agent's addition: a mode that needs a `.harness/` subfolder (step-debug's `debug/`, monitoring's `policies/`) creates just that subfolder when it is first used, so a project that declined the docs can still use the modes.
 
-Which parts of `.harness/` are committed to the repository and which are ignored is open (Q-30).
+**Everything in `.harness/` is committed (answers Q-30, decided by the owner).** For now the whole folder goes into the repository, step-debug runs included, and `project-init` writes no `.gitignore` lines; if something comes up in use, the policy changes.
 
 ## How the mirror is kept — decided by the owner (answers Q-27)
 
