@@ -16,6 +16,7 @@ harness-docs-mirror = { version = "0.1.0-dev", path = "../docs-mirror" }
 harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
 harness-auth-chatgpt = { version = "0.1.0-dev", path = "../auth-chatgpt" }
 harness-auth-apikey = { version = "0.1.0-dev", path = "../auth-apikey" }
+harness-provider-openai = { version = "0.1.0-dev", path = "../provider-openai" }
 harness-provider-anthropic = { version = "0.1.0-dev", path = "../provider-anthropic" }
 harness-session = { version = "0.1.0-dev", path = "../session" }
 harness-core = { version = "0.1.0-dev", path = "../core" }

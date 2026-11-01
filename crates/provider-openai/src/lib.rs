@@ -9,6 +9,7 @@ use harness_api::sse::SseParser;
 use harness_api::*;
 use serde_json::{Value, json};
 
+pub mod prices;
 pub mod responses;
 
 pub struct OpenAiCompatible {

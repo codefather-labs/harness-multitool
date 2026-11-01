@@ -267,7 +267,7 @@ fn answering(body: Value) -> (String, std::thread::JoinHandle<Vec<String>>) {
 
 #[test]
 fn model_lists_come_from_the_servers_in_each_form() {
-    let ids = |m: Vec<(String, String)>| m.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let ids = |m: Vec<ListedModel>| m.into_iter().map(|m| m.id).collect::<Vec<_>>();
     let (url, done) = answering(json!({"models": [{"slug": "a", "visibility": "list"}, {"slug": "b", "visibility": "hide"}]}));
     assert_eq!(ids(list_models(&url, "t").unwrap()), ["a"]);
     assert_eq!(done.join().unwrap(), ["/v1/models", "authorization: Bearer t"].map(|s| s.to_string()));
@@ -275,6 +275,13 @@ fn model_lists_come_from_the_servers_in_each_form() {
     let (url, done) = answering(json!({"data": [{"id": "gpt-x"}, {"id": "text-embedding-3"}, {"id": "whisper-1"}, {"id": "qwen"}]}));
     assert_eq!(ids(list_models(&url, "").unwrap()), ["gpt-x", "qwen"]);
     assert_eq!(done.join().unwrap().len(), 1, "no key, no header");
+
+    let (url, done) = answering(json!({"data": [{"id": "or-x", "context_length": 1000, "pricing": {"prompt": "0.000002", "completion": "0.00001"}}]}));
+    let listed = list_models(&url, "").unwrap();
+    done.join().unwrap();
+    assert_eq!(listed[0].context, Some(1000));
+    let (input, output) = listed[0].per_million.unwrap();
+    assert!((input - 2.0).abs() < 1e-9 && (output - 10.0).abs() < 1e-9, "{input} {output}");
 
     let (url, done) = answering(json!({"data": [{"id": "claude-x"}]}));
     assert_eq!(ids(list_anthropic_models(&url, "k", "v1").unwrap()), ["claude-x"]);

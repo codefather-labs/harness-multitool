@@ -499,6 +499,14 @@ impl Sessions {
     }
 
     /// Binds a tab to a stored session: its next message continues that log.
+    /// Moves a tab's session to the current factory, its history kept: what settings changed
+    /// reaches a session that has already started. Only between runs.
+    pub fn rebind(&mut self, tab: u64) {
+        if let Some(handle) = self.handles.remove(&tab) {
+            self.start(tab, Some(handle.session));
+        }
+    }
+
     pub fn resume(&mut self, tab: u64, session: &str) {
         self.start(tab, Some(session.to_string()));
     }

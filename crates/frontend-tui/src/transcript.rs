@@ -1038,10 +1038,9 @@ fn edge(d: &Drawn, row: u16, t: &Theme) -> Edge {
     Edge { surface, stripe }
 }
 
-/// The one row between two items (or above the first, below the last). Its top half is the
-/// bottom padding of the card above, its bottom half the top padding of the card below, and a
-/// thin line in the page colour runs between them: text sits off both card edges and cards are
-/// a hair apart, as in the mockups. The stripes end with quadrant blocks (rounded ends).
+/// The one row between two items, and above the first and below the last: half a row of padding
+/// for the card on each side, and between two cards a hair of the page colour, so text sits off
+/// the edges and the cards stay close (the owner's choice, 2026-11-01).
 fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Drawn {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
     let page = t.background;
@@ -1049,14 +1048,13 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
     let (ta, tb) = (above.as_ref().and_then(|e| e.stripe), below.as_ref().and_then(|e| e.stripe));
     for x in 0..width {
         let cell = &mut buf[(x, 0)];
-        // Quarter rows: a card's padding is three quarters of this row, the gap the other quarter;
-        // two spacer rows between cards make a half-row gap (operator, 2026-11-01). The stripe
-        // column ends the same way, so each stripe is exactly as tall as its card.
         let striped = x == 0 && (ta.is_some() || tb.is_some());
         let (above_c, below_c) = if striped { (ta, tb) } else { (sa, sb) };
         let (sym, fg, bg) = match (above_c, below_c) {
-            (Some(a), _) => ("▂", page, a),
-            (None, Some(b)) => ("▆", b, page),
+            (Some(a), Some(b)) if a == b => ("━", page, a),
+            (Some(a), Some(b)) => ("▄", b, a),
+            (Some(a), None) => ("▀", a, page),
+            (None, Some(b)) => ("▄", b, page),
             (None, None) => (" ", page, page),
         };
         cell.set_symbol(sym).set_fg(fg).set_bg(bg);
@@ -1081,19 +1079,19 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ge
         }
         let mut d = item(it, width, t, known, generating && Some(i) == last_assistant);
         d.item = Some(i);
-        acc = acc.saturating_add(d.buf.area.height + 2);
+        acc = acc.saturating_add(d.buf.area.height + 1);
         drawn.push(d);
     }
     drawn.reverse();
     let mut out = Vec::with_capacity(drawn.len() * 2 + 1);
-    // Every card gets its own half-row padding above and below, which its stripe runs through,
-    // so the stripe is as tall as the card; two cards are a row of page colour apart
-    // (operator's choice 2026-11-01 over a shared row, where the stripes had to stop short).
+    let mut above = None;
     for d in drawn {
-        out.push(spacer(None, Some(edge(&d, 0, t)), width, t));
-        let bottom = edge(&d, d.buf.area.height - 1, t);
+        out.push(spacer(above.take(), Some(edge(&d, 0, t)), width, t));
+        above = Some(edge(&d, d.buf.area.height - 1, t));
         out.push(d);
-        out.push(spacer(Some(bottom), None, width, t));
+    }
+    if above.is_some() {
+        out.push(spacer(above, None, width, t));
     }
     (out, whole)
 }

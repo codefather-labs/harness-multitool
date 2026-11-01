@@ -508,7 +508,7 @@ fn attach(v: &mut SessionView, time: String, item: Item) -> (usize, usize) {
     (index, attached.len() - 1)
 }
 
-fn set_status(v: &mut SessionView, key: &str, value: &str) {
+pub fn set_status(v: &mut SessionView, key: &str, value: &str) {
     match v.status.fields.iter_mut().find(|(k, _)| k == key) {
         Some((_, old)) => *old = value.to_string(),
         None => v.status.fields.push((key.to_string(), value.to_string())),

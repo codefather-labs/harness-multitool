@@ -46,6 +46,10 @@ pub enum Target {
     Section(usize),
     /// The sign-in button of the Provider page.
     AuthButton,
+    /// The model row: opens the dropdown.
+    ModelRow,
+    /// A row of the open dropdown.
+    ModelChoice(usize),
     /// A provider row on the settings window's provider page.
     Provider(usize),
     /// A row of the settings' Callbacks tab.
@@ -245,7 +249,12 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
     };
     let text_w = toast.text.chars().count().max(name.len() + toast.from.len() + 12) as u16;
     let w = (text_w + 12).min(area.width / 2).max(30.min(area.width));
-    let r = Rect { x: area.x + area.width.saturating_sub(w), y: area.y, width: w, height: 4 };
+    // The text wraps rather than being cut: the frame, the header line, then as many lines as it
+    // takes, with one to spare since words do not break where the count says.
+    let text_room = w.saturating_sub(11).max(1) as usize;
+    let chars = toast.text.chars().count();
+    let lines = if chars <= text_room { 1 } else { chars.div_ceil(text_room) + 1 } as u16;
+    let r = Rect { x: area.x + area.width.saturating_sub(w), y: area.y, width: w, height: (3 + lines).min(area.height) };
     f.render_widget(ratatui::widgets::Clear, r);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -263,7 +272,8 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
                 Span::styled(format!(" · {}  now", toast.from), Style::default().fg(t.text_muted)),
             ]),
             Line::from(Span::styled(toast.text.clone(), Style::default().fg(t.text))),
-        ]),
+        ])
+        .wrap(ratatui::widgets::Wrap { trim: true }),
         text,
     );
     let close = Rect { x: inner.x + inner.width.saturating_sub(2), y: inner.y, width: 1, height: 1 };

@@ -84,6 +84,11 @@ fn message(m: &Message) -> Value {
 
 /// Micro-dollars per token, i.e. dollars per million tokens: input, output, cache read, cache
 /// write. From the price table of 2026-10-06; cache writes are assumed at 1.25x input.
+/// A model's (input, output) price per 1M tokens, for showing.
+pub fn per_million(model: &str) -> Option<(f64, f64)> {
+    prices(model).map(|(input, output, ..)| (input, output))
+}
+
 fn prices(model: &str) -> Option<(f64, f64, f64, f64)> {
     let (input, output, cache_read) = match model {
         "claude-opus-5-5" => (4.0, 20.0, 0.20),

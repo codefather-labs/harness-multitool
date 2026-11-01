@@ -54,7 +54,7 @@ browser = home + "/browser.sh"
 open(browser, "w").write(f'#!/bin/sh\nprintf %s "$1" > {home}/url\n'); os.chmod(browser, 0o755)
 cfg = home + "/cfg/harness-multitool/config.toml"
 open(cfg, "w").write(f'[session.providers.chatgpt]\nkind="openai-responses"\nbase_url="{base}/v1"\n\n[session.auth.chatgpt]\noauth="chatgpt"\nissuer="{base}"\n\n[session.providers.openai]\nbase_url="{base}/openai/v1"\n')
-COLS, ROWS = 130, 46; bin_ = sys.argv[1]
+COLS, ROWS = 110, 26; bin_ = sys.argv[1]
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", MULTITOOL_BROWSER=browser, TERM="xterm-256color", MULTITOOL_GRAPHICS="off"); os.environ.pop("OPENAI_API_KEY", None)
@@ -77,6 +77,9 @@ pump(1.5)
 for _ in range(50):
     if "Ask about the repo" in text(): break
     pump(0.2)
+# A session that has already failed on another provider: the case the owner hit.
+for c in "before signing in\r": os.write(fd, c.encode()); time.sleep(0.005)
+pump(1.5); assert "no API key for anthropic" in text(), text()
 for c in "/settings\r": os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.5); assert "Settings" in text(), text()
 assert "claude-subscription" in text() and "not available" in text(), "the option stays, disabled"
@@ -86,22 +89,38 @@ assert "Keys" not in text() and " Auth" not in text(), "one tab is enough: " + t
 
 # Rows: Anthropic 0, OpenAI 1, Local 2, gpt-subscription 3, claude-subscription 4, the button 5.
 keys(DOWN, DOWN, DOWN, DOWN, ENTER); pump(0.2); show("claude-subscription pressed: a toast")
-assert "forbidden by Anthropic" in text(), text()
+assert "forbidden" in text() and "API key" in text(), "the toast is whole: " + text()
 keys(UP, ENTER); row = [l for l in text().splitlines() if "Default model" in l][0]; assert "sign in to see this plan's models" in row and "claude" not in row, "no Claude model on a plan: " + row
 keys(DOWN, DOWN); assert "Login" in text() and "Not signed in" in text(), text()
 keys(ENTER); pump(0.5); show("Login pressed"); assert "Cancel" in text(), text()
 first = open(home + "/url").read(); os.remove(home + "/url"); assert first.startswith(base + "/api/accounts/authorize?"), first
 keys(ENTER); pump(0.6); show("cancelled"); assert "cancelled" in text() and "Login" in text(), text()
 keys(ENTER); pump(0.5); assert "Could not start" not in text(), "the port is free again: " + text()
-url = open(home + "/url").read(); q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+url = open(home + "/url").read(); show("the address, on 26 rows"); 
+# Read it back off the screen, whole: the page's column, its width from where it first differs.
+lines = list(screen.display); first = next(i for i, l in enumerate(lines) if url[:30] in l); col = lines[first].index(url[:30])
+room = next((n for n in range(len(url)) if col + n >= COLS or lines[first][col + n] != url[n]), len(url))
+back = "".join(l[col:col + room] for l in lines[first:]).replace(" ", "")
+assert url in back or back.startswith(url), "the address fits on 26 rows: " + back
+assert open(home + "/data/harness-multitool/auth/chatgpt/login-url.txt").read() == url
+q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
 assert q["client_id"] == ["dynamic_agent_client"] and q["agent_name_hint"] == ["harness-multitool"], q
 state["nonce"] = q["nonce"][0]
 urllib.request.urlopen(f"{q['redirect_uri'][0]}?code=c&state={q['state'][0]}&client_id=oaiapp_test").read()
 pump(1.5); show("signed in"); assert "Signed in as you@example.com" in text() and "plan-model-a" in text(), text()
-keys(DOWN, ENTER); assert "plan-model-b" in text(), text()
-keys(b"\x13"); pump(0.8); show("saved"); assert "New sessions use chatgpt / plan-model-b" in text(), text()
+saved = open(cfg).read(); assert 'provider = "chatgpt"' in saved and "plan-model-a" in saved, "a sign-in applies by itself: " + saved
+assert not os.path.exists(home + "/data/harness-multitool/auth/chatgpt/login-url.txt")
+assert "in your plan" in text(), text()
+# The cursor is on the button; the next row is the model.
+keys(DOWN, ENTER); show("the dropdown"); assert "plan-model-b" in text(), text()
+keys(DOWN, ENTER); row = [l for l in text().splitlines() if "Default model" in l][0]; assert "plan-model-b" in row, row
+keys(b"\x13"); pump(0.8); show("saved"); assert "This session and new ones use chatgpt / plan-model-b" in text() and "chatgpt" in [l for l in text().splitlines() if "ADAPTER" in l][0], text()
 saved = open(cfg).read(); assert 'provider = "chatgpt"' in saved and "plan-model-b" in saved, saved
 assert ACCESS not in saved
+# Reopened: the window shows what was saved, not the provider before it.
+for c in "/settings\r": os.write(fd, c.encode()); time.sleep(0.005)
+pump(0.5); show("reopened"); assert "plan-model-b" in [l for l in text().splitlines() if "Default model" in l][0], text()
+keys(ESC); pump(0.3); assert "Not saved" not in text(), text()
 
 for c in "hello\r": os.write(fd, c.encode()); time.sleep(0.005)
 for _ in range(50):
@@ -109,6 +128,7 @@ for _ in range(50):
     pump(0.2)
 pump(1.0); show("a message on the plan"); auth, body = state["responses"][0]
 assert auth == f"Bearer {ACCESS}" and body["model"] == "plan-model-b" and body["store"] is False and body["stream"] is True, (auth, body)
+assert "before signing in" in json.dumps(body["input"]), "the started session went on, with its history"
 assert "Answered on the plan." in text(), text()
 
 # A key for another provider: typed masked, saved owner-only, on no screen.
@@ -118,8 +138,10 @@ keys(DOWN, DOWN, DOWN, DOWN); show("on an API provider"); assert "Enter a key" i
 keys(ENTER)
 for c in API_KEY: os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.3); show("typing a key"); assert API_KEY not in text() and "•" in text(), text()
-keys(ENTER); pump(1.0); show("key saved"); assert "Saved for" in text() and API_KEY not in text(), text()
-row = [l for l in text().splitlines() if "Default model" in l][0]; assert "gpt-api-one" in row and "2 models" in row, "this provider's own list: " + row
+keys(ENTER); pump(1.0); show("key saved"); assert "The key is saved" in text() and API_KEY not in text(), text()
+row = [l for l in text().splitlines() if "Default model" in l][0]; assert "gpt-api-one" in row, "this provider's own list: " + row
+keys(DOWN, ENTER); pump(0.2); show("its dropdown"); assert "gpt-api-two" in text() and "price unknown" in text(), text()
+keys(ESC)
 saved = open(cfg).read(); assert API_KEY in saved, saved
 assert oct(os.stat(cfg).st_mode & 0o777) == "0o600", oct(os.stat(cfg).st_mode)
 keys(ESC); pump(0.2)

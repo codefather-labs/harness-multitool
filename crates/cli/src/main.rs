@@ -402,13 +402,15 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 /// The sessions behind the tabs, and what ties them to the view.
 /// A sign-in's outcome: the account and its models, or why it failed.
 /// A provider row's models, or why there are none.
-type ModelList = (String, Result<Vec<String>, String>);
-type LoginOutcome = Result<(Option<String>, Vec<String>), String>;
+type ModelList = (String, Result<Vec<frontend_tui::model::ModelChoice>, String>);
+type LoginOutcome = Result<(Option<String>, Vec<frontend_tui::model::ModelChoice>), String>;
 type LoginEvents = (std::sync::mpsc::Sender<LoginOutcome>, std::sync::mpsc::Receiver<LoginOutcome>);
 
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    /// Tabs to move to new settings when their run ends.
+    rebind_after: std::collections::HashSet<u64>,
     toast_shown: Option<(String, std::time::Instant)>,
     /// Set while a browser sign-in waits: setting the flag cancels it.
     login_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -728,7 +730,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -811,6 +813,21 @@ impl Live {
         w.auth = Some(page);
     }
 
+    /// What was saved reaches the open tabs: each session goes on with its history under the new
+    /// settings, a running one once its run ends. The status line says so at once, which is also
+    /// where the settings window reads the current choice from.
+    fn apply_to_tabs(&mut self, w: &mut frontend_tui::model::Workspace, provider: &str, model: &str) {
+        for t in &mut w.tabs {
+            frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
+            frontend_tui::live::set_status(&mut t.view, "MODEL", model);
+            if t.view.generating {
+                self.rebind_after.insert(t.id);
+            } else {
+                self.sessions.rebind(t.id);
+            }
+        }
+    }
+
     /// The gpt-subscription pipeline: a listener, the browser, a thread that waits for the
     /// callback. Its outcome comes back through `tick_login`.
     fn start_login(&mut self, w: &mut frontend_tui::model::Workspace) {
@@ -837,7 +854,7 @@ impl Live {
         std::thread::spawn(move || {
             let outcome = pending.finish_or_cancel(&store, std::time::Duration::from_secs(600), &cancel);
             let event = outcome.map(|credential| {
-                let models = harness_auth_chatgpt::list_models(&base, &credential.access_token).map(|m| m.into_iter().map(|(slug, _)| slug).collect()).unwrap_or_default();
+                let models = harness_auth_chatgpt::list_models(&base, &credential.access_token).map(|m| choices(frontend_tui::model::PLAN_PROVIDER, m)).unwrap_or_default();
                 (credential.email, models)
             });
             let _ = sender.send(event);
@@ -845,7 +862,8 @@ impl Live {
         self.update_auth(w, |a| {
             a.pending = true;
             let first = if opened { "Sign in on the page that opened. If none did, open this:" } else { "Open this in your browser and sign in:" };
-            a.message = std::iter::once(first.to_string()).chain(std::iter::once(url)).chain(harness_auth_chatgpt::remote_hint(1455)).collect();
+            let kept = format!("The whole address is also in {}", harness_auth_chatgpt::login_url_path(&harness_session_store(&dir)).display());
+            a.message = [first.to_string(), url, String::new(), kept].into_iter().chain(harness_auth_chatgpt::remote_hint(1455)).collect();
         });
     }
 
@@ -859,13 +877,13 @@ impl Live {
             let plan = harness_auth_chatgpt::ChatGptAuth::new(&dir);
             if harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
                 let answer = pollster::block_on(harness_api::Auth::credentials(&plan, "chatgpt")).map_err(|e| e.to_string()).and_then(|token| harness_auth_chatgpt::list_models(&plan_base_url(&session), token.expose()));
-                let _ = sender.send((frontend_tui::model::PLAN_PROVIDER.to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
+                let _ = sender.send((frontend_tui::model::PLAN_PROVIDER.to_string(), answer.map(|m| choices(frontend_tui::model::PLAN_PROVIDER, m))));
             }
             let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
             if let Ok(key) = pollster::block_on(harness_api::Auth::credentials(&keys, "anthropic")) {
                 let base = session.providers.get("anthropic").and_then(|p| p["base_url"].as_str()).map_or("https://api.anthropic.com/v1".to_string(), |b| format!("{}/v1", b.trim_end_matches('/').trim_end_matches("/v1")));
                 let answer = harness_auth_chatgpt::list_anthropic_models(&base, key.expose(), harness_provider_anthropic::API_VERSION);
-                let _ = sender.send(("Anthropic API".to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
+                let _ = sender.send(("Anthropic API".to_string(), answer.map(|m| choices("Anthropic API", m))));
             }
             for row in ["OpenAI-compatible", "Local"] {
                 let id = provider_id(row);
@@ -873,7 +891,7 @@ impl Live {
                 // With no key there is nothing to ask a paid API; a local server needs none.
                 let Some(token) = token.or((id == "local").then(String::new)) else { continue };
                 let answer = harness_auth_chatgpt::list_models(&provider_base_url(&session, &id), &token);
-                let _ = sender.send((row.to_string(), answer.map(|m| m.into_iter().map(|(id, _)| id).collect())));
+                let _ = sender.send((row.to_string(), answer.map(|m| choices(row, m))));
             }
         });
     }
@@ -903,15 +921,35 @@ impl Live {
             Err(reason) => reason.chars().take(90).collect(),
         };
         w.toast = Some(frontend_tui::overlay::system_toast(&told));
+        // Signing in says what is wanted: the plan is put to use, with its first model, at once.
+        let use_plan = event.as_ref().ok().and_then(|(_, models)| models.first().map(|m| m.id.clone()));
+        let (mut applied, email) = (false, event.as_ref().ok().and_then(|(email, _)| email.clone()));
+        if let Some(model) = &use_plan
+            && self.save_settings("chatgpt", model).is_ok()
+        {
+            self.apply_to_tabs(w, "chatgpt", model);
+            applied = true;
+        }
         self.update_auth(w, |a| match event {
-            Ok((email, models)) => {
-                a.message = vec![format!("Signed in{}. Choose a model and press Ctrl+S.", email.map_or(String::new(), |e| format!(" as {e}")))];
+            Ok((_, models)) => {
+                let who = email.map_or(String::new(), |e| format!(" as {e}"));
+                a.message = vec![if applied { format!("Signed in{who}, and in use now. Choose another model below if you like; Ctrl+S saves it.") } else { format!("Signed in{who}. Its models could not be listed.") }];
                 a.models = models;
             }
             Err(reason) => a.message = vec![reason],
         });
+        let _ = std::fs::remove_file(config::data_dir().map(|d| harness_auth_chatgpt::login_url_path(&harness_session_store(&d))).unwrap_or_default());
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
             frontend_tui::overlay::fit_model(s);
+            if applied {
+                if let Some(i) = s.providers.iter().position(|p| p.name == frontend_tui::model::PLAN_PROVIDER) {
+                    s.provider = i;
+                }
+                s.saved = (s.provider, use_plan.clone().unwrap_or_default());
+                if let Some(model) = use_plan {
+                    s.model = model;
+                }
+            }
         }
         true
     }
@@ -1069,6 +1107,13 @@ impl Live {
                     let saved = self.save_key(&provider, &key);
                     if saved.is_ok() {
                         self.fetch_models();
+                        for t in &w.tabs {
+                            if t.view.generating {
+                                self.rebind_after.insert(t.id);
+                            } else {
+                                self.sessions.rebind(t.id);
+                            }
+                        }
                     }
                     let line = match saved {
                         Ok(id) => format!("Saved for {id} in the configuration, readable only by you. New sessions use it; a key in the environment still wins."),
@@ -1132,7 +1177,10 @@ impl Live {
                 Outgoing::SaveSettings { provider, model } => {
                     let provider = provider_id(&provider);
                     let note = match self.save_settings(&provider, &model) {
-                        Ok(()) => format!("New sessions use {provider} / {model}."),
+                        Ok(()) => {
+                            self.apply_to_tabs(w, &provider, &model);
+                            format!("This session and new ones use {provider} / {model}.")
+                        }
                         Err(e) => format!("Could not save the settings: {e}"),
                     };
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "SETTINGS".into(), lines: vec![note] });
@@ -1178,6 +1226,9 @@ impl Live {
                     }
                 }
                 FromSession::Ended { tab, .. } => {
+                    if self.rebind_after.remove(&tab) {
+                        self.sessions.rebind(tab);
+                    }
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.run_ended(&mut t.view);
@@ -1241,6 +1292,27 @@ fn open_browser(url: &str) -> bool {
     command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
 }
 
+/// What a provider's models cost and hold, as lines for the dropdown. A plan's tokens are not
+/// charged, so its line says so, with the API's price for comparison.
+fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<frontend_tui::model::ModelChoice> {
+    let money = |(input, output): (f64, f64)| format!("${input:.2} in / ${output:.2} out per 1M");
+    models
+        .into_iter()
+        .map(|m| {
+            let known = m.per_million.or_else(|| if row == "Anthropic API" { harness_provider_anthropic::per_million(&m.id) } else { harness_provider_openai::prices::per_million(&m.id) });
+            let cost = match (row, known) {
+                ("Local", _) => "local, free".to_string(),
+                (frontend_tui::model::PLAN_PROVIDER, Some(price)) => format!("in your plan (API {})", money(price)),
+                (frontend_tui::model::PLAN_PROVIDER, None) => "in your plan".to_string(),
+                (_, Some(price)) => money(price),
+                (_, None) => "price unknown".to_string(),
+            };
+            let context = m.context.map_or(String::new(), |c| format!(" · {}k", c / 1000));
+            frontend_tui::model::ModelChoice { id: m.id, detail: format!("{cost}{context}") }
+        })
+        .collect()
+}
+
 fn only_chatgpt(provider: &str) -> Result<()> {
     match provider {
         "chatgpt" => Ok(()),
@@ -1263,7 +1335,7 @@ fn login(provider: &str) -> Result<()> {
     match harness_auth_chatgpt::list_models(&base, &credential.access_token) {
         Ok(models) => {
             println!("Models this account can use:");
-            models.iter().for_each(|(slug, name)| println!("  {slug}  {name}"));
+            models.iter().for_each(|m| println!("  {}  {}", m.id, m.name));
         }
         Err(e) => println!("Could not list the models: {e}"),
     }

@@ -109,6 +109,8 @@ pub struct Drag {
 }
 
 #[derive(Debug, Clone)]
+// One overlay at a time, held by value: its size costs nothing that matters here.
+#[allow(clippy::large_enum_variant)]
 pub enum Overlay {
     Permission(PermissionView),
     Settings(SettingsView),
@@ -152,10 +154,21 @@ pub struct SettingsView {
     pub auth: AuthPage,
     /// The model name is being typed.
     pub editing_model: bool,
+    /// The model dropdown is open, on this row.
+    pub model_menu: Option<usize>,
+    /// The provider row and model as last saved, to tell if closing would lose a choice.
+    pub saved: (usize, String),
 }
 
 /// The provider row of a ChatGPT plan.
 pub const PLAN_PROVIDER: &str = "gpt-subscription";
+
+/// A model on offer: its id, and what it costs and holds, as a line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub id: String,
+    pub detail: String,
+}
 
 /// The chosen provider's sign-in, on the Provider page of the settings.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -170,9 +183,9 @@ pub struct AuthPage {
     /// The latest outcome, or the address to open.
     pub message: Vec<String>,
     /// The models this plan can use.
-    pub models: Vec<String>,
+    pub models: Vec<ModelChoice>,
     /// What other providers offer: (provider row, models).
-    pub provider_models: Vec<(String, Vec<String>)>,
+    pub provider_models: Vec<(String, Vec<ModelChoice>)>,
     /// A key being typed.
     pub entry: Option<String>,
 }

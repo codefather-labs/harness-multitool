@@ -253,6 +253,11 @@ pub fn begin_login(store: &Store, issuer: &str, port: u16) -> Result<Pending, St
     begin_login_for(store, issuer, port)
 }
 
+/// Where the address of the sign-in under way is kept, to copy it whole.
+pub fn login_url_path(store: &Store) -> PathBuf {
+    store.dir.join("login-url.txt")
+}
+
 /// A readable hint for a sign-in from a machine other than the browser's.
 pub fn remote_hint(port: u16) -> Option<String> {
     std::env::var_os("SSH_CONNECTION").map(|_| format!("Over SSH the browser needs this machine's port: ssh -L {port}:127.0.0.1:{port} <this host>"))
@@ -290,6 +295,7 @@ fn begin_login_for(store: &Store, issuer: &str, port: u16) -> Result<Pending, St
         }
     }
     let url = format!("{}/api/accounts/authorize?{}", issuer.trim_end_matches('/'), form(&params));
+    store.write("login-url.txt", &url)?;
     Ok(Pending { issuer: issuer.trim_end_matches('/').to_string(), server, url, redirect_uri, state, nonce, verifier, returning, host_id })
 }
 
@@ -301,6 +307,12 @@ impl Pending {
 
     /// The same; setting `cancel` ends the wait and frees the port.
     pub fn finish_or_cancel(self, store: &Store, timeout: Duration, cancel: &std::sync::atomic::AtomicBool) -> Result<Credential, String> {
+        let outcome = self.wait(store, timeout, cancel);
+        let _ = std::fs::remove_file(login_url_path(store));
+        outcome
+    }
+
+    fn wait(self, store: &Store, timeout: Duration, cancel: &std::sync::atomic::AtomicBool) -> Result<Credential, String> {
         let deadline = Instant::now() + timeout;
         let query = loop {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -471,9 +483,19 @@ pub fn status(store: &Store) -> (bool, String) {
 /// What is not a chat model, on a server that lists everything it has.
 const NOT_CHAT: [&str; 9] = ["embed", "whisper", "tts", "dall-e", "moderation", "image", "audio", "transcribe", "realtime"];
 
-/// The models a server offers, as (id, display name), in its order. It reads both forms: a plan's
-/// `models` with `slug` and `visibility`, and the usual `data` with `id`. No token means none sent.
-pub fn list_models(base_url: &str, token: &str) -> Result<Vec<(String, String)>, String> {
+/// A model as its server describes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListedModel {
+    pub id: String,
+    pub name: String,
+    pub context: Option<u64>,
+    /// Price per 1M tokens, (input, output), where the server states one, as OpenRouter does.
+    pub per_million: Option<(f64, f64)>,
+}
+
+/// The models a server offers, in its order. It reads both forms: a plan's `models` with `slug`
+/// and `visibility`, and the usual `data` with `id`. No token means none sent.
+pub fn list_models(base_url: &str, token: &str) -> Result<Vec<ListedModel>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let mut request = agent(15).get(&url);
     if !token.is_empty() {
@@ -483,20 +505,35 @@ pub fn list_models(base_url: &str, token: &str) -> Result<Vec<(String, String)>,
 }
 
 /// The same from Anthropic's server, which takes its key in its own header.
-pub fn list_anthropic_models(base_url: &str, key: &str, version: &str) -> Result<Vec<(String, String)>, String> {
+pub fn list_anthropic_models(base_url: &str, key: &str, version: &str) -> Result<Vec<ListedModel>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     read_models(agent(15).get(&url).header("x-api-key", key).header("anthropic-version", version), base_url)
 }
 
-fn read_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, base_url: &str) -> Result<Vec<(String, String)>, String> {
+fn read_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, base_url: &str) -> Result<Vec<ListedModel>, String> {
     let mut response = request.call().map_err(|e| format!("reaching {base_url}: {e}"))?;
     if response.status() != 200 {
         return Err(format!("listing the models of {base_url}: {}", response.status()));
     }
     let body: Value = response.body_mut().read_json().map_err(|e| format!("the model list: {e}"))?;
+    let token_price = |v: &Value| v.as_str().and_then(|p| p.parse::<f64>().ok()).or(v.as_f64()).map(|p| p * 1_000_000.0);
     if let Some(list) = body["models"].as_array() {
-        return Ok(list.iter().filter(|m| m["visibility"] == "list").filter_map(|m| Some((m["slug"].as_str()?.to_string(), m["display_name"].as_str().unwrap_or_default().to_string()))).collect());
+        return Ok(list
+            .iter()
+            .filter(|m| m["visibility"] == "list")
+            .filter_map(|m| Some(ListedModel { id: m["slug"].as_str()?.to_string(), name: m["display_name"].as_str().unwrap_or_default().to_string(), context: m["context_window"].as_u64(), per_million: None }))
+            .collect());
     }
     let list = body["data"].as_array().cloned().unwrap_or_default();
-    Ok(list.iter().filter_map(|m| m["id"].as_str()).filter(|id| !NOT_CHAT.iter().any(|n| id.contains(n))).map(|id| (id.to_string(), String::new())).collect())
+    Ok(list
+        .iter()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?;
+            if NOT_CHAT.iter().any(|n| id.contains(n)) {
+                return None;
+            }
+            let price = token_price(&m["pricing"]["prompt"]).zip(token_price(&m["pricing"]["completion"]));
+            Some(ListedModel { id: id.to_string(), name: m["display_name"].as_str().or(m["name"].as_str()).unwrap_or_default().to_string(), context: m["context_length"].as_u64().or(m["context_window"].as_u64()), per_million: price })
+        })
+        .collect())
 }
