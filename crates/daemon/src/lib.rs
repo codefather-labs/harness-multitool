@@ -56,6 +56,7 @@ struct State {
     windows: HashMap<String, Window>,
     seen: HashSet<String>,
     next_seq: u64,
+    shutting_down: bool,
 }
 
 /// A handler the build brought. It is shared between the server's threads.
@@ -130,7 +131,8 @@ impl Daemon {
 
         let daemon = Arc::new(Daemon {
             handlers,
-            state: Mutex::new(State { windows: HashMap::new(), seen, next_seq: 1 }),
+            // Numbered from the clock: a window listening across a restart still sees new events.
+            state: Mutex::new(State { windows: restore_windows(&dir), seen, next_seq: now_ms(), shutting_down: false }),
             wake: Condvar::new(),
             admin,
             data_dir: data_dir.to_path_buf(),
@@ -153,6 +155,14 @@ impl Daemon {
         self.port
     }
 
+    /// Blocks until a client asks the daemon to stop; the hot reload does, to replace it.
+    pub fn wait_for_shutdown(&self) {
+        let mut state = self.state.lock().expect("daemon state");
+        while !state.shutting_down {
+            state = self.wake.wait(state).expect("daemon state");
+        }
+    }
+
     pub fn admin_token(&self) -> &str {
         &self.admin
     }
@@ -172,9 +182,14 @@ impl Daemon {
             ("POST", "/register") if admin => self.register(&body),
             ("GET", "/events") if admin => self.events(query),
             ("POST", "/reload") if admin => self.reload(),
+            ("POST", "/shutdown") if admin => {
+                self.state.lock().expect("daemon state").shutting_down = true;
+                self.wake.notify_all();
+                (200, json!({"ok": true}))
+            }
             ("GET", "/handlers") if admin => (200, json!({"handlers": self.handlers.iter().map(|h| json!({"name": h.name(), "types": h.types()})).collect::<Vec<_>>()})),
             ("GET", "/handlers") => (401, json!({"error": "bad token"})),
-            ("POST", "/register") | ("POST", "/reload") | ("GET", "/events") => (401, json!({"error": "bad token"})),
+            ("POST", "/register") | ("POST", "/reload") | ("POST", "/shutdown") | ("GET", "/events") => (401, json!({"error": "bad token"})),
             ("POST", p) if p.starts_with("/callback/") => self.callback(&p["/callback/".len()..], &body),
             _ => (404, json!({"error": "no such route"})),
         };
@@ -194,7 +209,11 @@ impl Daemon {
             Err(message) => (Vec::new(), Some(message)),
         };
         let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), conditions: armed, off: off_types(root), project: conditions::read_project(root).unwrap_or_default() };
-        self.state.lock().expect("daemon state").windows.insert(id.clone(), window);
+        {
+            let mut state = self.state.lock().expect("daemon state");
+            state.windows.insert(id.clone(), window);
+            save_windows(&self.data_dir.join("daemon"), &state.windows);
+        }
         (200, json!({"window": id, "url": format!("http://127.0.0.1:{}/callback/{id}", self.port), "problem": problem}))
     }
 
@@ -436,6 +455,38 @@ impl Daemon {
         self.deliver(window, WindowEvent::Flow { map, instance, node, state: state_name, off_chart, path });
         Ok(json!({"off_chart": off_chart}))
     }
+}
+
+/// Windows are kept in a file, so callback URLs survive a daemon's restart.
+fn save_windows(dir: &Path, windows: &HashMap<String, Window>) {
+    let list: Vec<Value> = windows.values().map(|w| json!({"id": w.id, "root": w.root})).collect();
+    let _ = write_private(&dir.join("windows.json"), &Value::Array(list).to_string());
+}
+
+fn restore_windows(dir: &Path) -> HashMap<String, Window> {
+    let text = std::fs::read_to_string(dir.join("windows.json")).unwrap_or_default();
+    let list: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
+    list.iter()
+        .filter_map(|w| {
+            let (id, root) = (w["id"].as_str()?.to_string(), w["root"].as_str()?.to_string());
+            let window = Window {
+                id: id.clone(),
+                conditions: conditions::load(&root).unwrap_or_default(),
+                off: off_types(&root),
+                project: conditions::read_project(&root).unwrap_or_default(),
+                root,
+                events: Vec::new(),
+                instances: HashMap::new(),
+            };
+            Some((id, window))
+        })
+        .collect()
+}
+
+/// The port a daemon last used here: a restart keeps the callback URLs the same.
+pub fn last_port(data_dir: &Path) -> Option<u16> {
+    let text = std::fs::read_to_string(address_path(data_dir)).ok()?;
+    serde_json::from_str::<Address>(&text).ok().map(|a| a.port)
 }
 
 fn off_types(root: &str) -> HashSet<String> {

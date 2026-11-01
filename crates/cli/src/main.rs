@@ -10,6 +10,7 @@ use tui_snapshot::{Raster, side_by_side};
 
 mod config;
 mod plugins;
+mod reload;
 
 #[derive(Parser)]
 #[command(name = "multitool", version, about = "harness-multitool")]
@@ -30,6 +31,9 @@ enum Command {
         /// (see `multitool trace`).
         #[arg(long)]
         script: Option<String>,
+        /// Continue from a hand-off file: the hot reload's new process starts this way.
+        #[arg(long)]
+        handoff: Option<PathBuf>,
     },
     /// Debug the agent loop: run a named scenario on test doubles and print its log, one line per event.
     Trace {
@@ -114,18 +118,21 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None });
+    let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None, handoff: None });
     match command {
-        Command::Preview { name, theme, script } => preview(&name, &theme, script.as_deref()),
+        Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Run { prompt, yes } => run_once(&prompt, yes),
         Command::Daemon { port } => {
             let dir = config::data_dir()?;
-            let daemon = harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()).map_err(|e| anyhow!(e))?;
+            // The port it had before if it is free: callback URLs stay as they were.
+            let wanted = if port == 0 { harness_daemon::last_port(&dir).unwrap_or(0) } else { port };
+            let daemon = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers())
+                .or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()))
+                .map_err(|e| anyhow!(e))?;
             println!("daemon on 127.0.0.1:{}", daemon.port());
-            loop {
-                std::thread::park();
-            }
+            daemon.wait_for_shutdown();
+            Ok(())
         }
         Command::Setup { graphics } => {
             let mut c = config::load()?;
@@ -192,6 +199,29 @@ fn main() -> Result<()> {
 fn local_time(at_ms: u64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(at_ms as i64).single().map_or_else(String::new, |t| t.format("%H:%M").to_string())
+}
+
+/// The line that tells a tab's agent where callbacks reach it.
+fn callback_note(urls: &std::sync::Mutex<std::collections::HashMap<u64, String>>, tab: u64) -> Option<String> {
+    urls.lock().ok()?.get(&tab).map(|url| {
+        format!("Callbacks from outside reach this session at {url}: POST JSON with a unique uuid, a type (notification, journal, flowstate_update, or a type of this project) and its fields.")
+    })
+}
+
+/// What a session gets from this binary.
+fn host_for(note: std::sync::Arc<dyn Fn(u64) -> Option<String> + Send + Sync>, reload: std::sync::Arc<std::sync::atomic::AtomicBool>, summary: serde_json::Value) -> harness_session::Host {
+    let plugins = std::sync::Arc::new(move || {
+        let mut all = summary.clone();
+        let handlers = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).and_then(|c| c.handlers().ok()).unwrap_or_default();
+        all["callback_handlers_custom"] = serde_json::json!(handlers.iter().map(|(name, types)| serde_json::json!({"name": name, "types": types})).collect::<Vec<_>>());
+        all["callback_handlers_standard"] = serde_json::json!(["notification", "journal", "flowstate_update"]);
+        all
+    });
+    harness_session::Host { note, plugins, reload }
+}
+
+fn selection_summary(s: &harness_session::Settings) -> serde_json::Value {
+    serde_json::json!({"provider": s.provider, "model": s.model, "tools": s.tools, "hooks": s.hooks.iter().map(|h| h.name.clone().unwrap_or_else(|| h.command.clone())).collect::<Vec<_>>()})
 }
 
 /// A card that belongs to no turn of the agent's goes straight into the transcript.
@@ -277,6 +307,14 @@ struct Live {
     urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>,
     /// Tabs already registered with the daemon.
     windows: std::collections::HashSet<u64>,
+    /// Each tab's window at the daemon, for the hand-off.
+    registered: std::collections::HashMap<u64, harness_daemon::client::Registered>,
+    /// The agent's `plugins_reload` tool raises this.
+    reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A rebuild in progress.
+    reloading: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// Built; the swap waits for a safe point.
+    ready_to_swap: bool,
     window_events: (std::sync::mpsc::Sender<TabEvent>, std::sync::mpsc::Receiver<TabEvent>),
 }
 
@@ -297,31 +335,135 @@ impl Live {
             let Ok(program) = std::env::current_exe() else { continue };
             let Ok(client) = harness_daemon::client::Client::find_or_start(&dir, &program) else { continue };
             let Ok(window) = client.register(&self.root) else { continue };
-            if let Ok(mut urls) = self.urls.lock() {
-                urls.insert(tab, window.url);
-            }
-            let sender = self.window_events.0.clone();
-            std::thread::spawn(move || {
-                let mut after = 0;
-                loop {
-                    match client.poll(&window.window, after) {
-                        Ok(events) => {
-                            for e in events {
-                                after = after.max(e.seq);
-                                if sender.send((tab, e.event)).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
-                    }
-                }
-            });
+            self.listen(tab, client, window);
         }
         // The daemon may have just started: the settings should say so.
         if self.windows.len() != before {
             w.callbacks = Some(self.callbacks_page());
         }
+    }
+
+    /// Remembers a tab's window and hears its events from now on.
+    fn listen(&mut self, tab: u64, client: harness_daemon::client::Client, window: harness_daemon::client::Registered) {
+        if let Ok(mut urls) = self.urls.lock() {
+            urls.insert(tab, window.url.clone());
+        }
+        self.registered.insert(tab, window.clone());
+        let sender = self.window_events.0.clone();
+        std::thread::spawn(move || {
+            let mut after = 0;
+            loop {
+                match client.poll(&window.window, after) {
+                    Ok(events) => {
+                        for e in events {
+                            after = after.max(e.seq);
+                            if sender.send((tab, e.event)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
+                }
+            }
+        });
+    }
+
+    /// The new process after a hot reload: every tab back from its session's log.
+    fn restore(&mut self, handoff: &reload::Handoff) -> frontend_tui::AppState {
+        use frontend_tui::model::{Mode, Tab, TabIcon, TabMark};
+        let mut state = self.fresh_session();
+        let data = config::data_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+        let client = match (config::data_dir(), std::env::current_exe()) {
+            (Ok(dir), Ok(program)) => harness_daemon::client::Client::find_or_start(&dir, &program).ok(),
+            _ => None,
+        };
+        let Mode::Session(w) = &mut state.mode else { return state };
+        let template = w.view().clone();
+        w.tabs.clear();
+        for saved in &handoff.tabs {
+            let mut view = template.clone();
+            if saved.session.is_some() {
+                view.transcript.clear();
+            }
+            view.composer.text = saved.draft.clone();
+            view.scroll = saved.scroll;
+            let tab = Tab::new(&saved.title, TabIcon::Prompt, TabMark::None, view);
+            let id = tab.id;
+            w.tabs.push(tab);
+            let view = &mut w.tabs.last_mut().expect("just pushed").view;
+            if let Some(session) = &saved.session {
+                let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
+                for entry in harness_session::read_log(&data, &self.root, session) {
+                    feed.apply(view, &entry);
+                    w.journal.extend(feed.take_known());
+                }
+                feed.run_ended(view);
+                self.feeds.insert(id, feed);
+            }
+            if let (Some(client), Some(window), Some(url)) = (&client, &saved.window, &saved.url) {
+                self.windows.insert(id);
+                self.listen(id, client.clone(), harness_daemon::client::Registered { window: window.clone(), url: url.clone() });
+            }
+            // After the URL is known: the session's agent is told it.
+            if let Some(session) = &saved.session {
+                self.sessions.resume(id, session);
+            }
+        }
+        w.active = handoff.active.min(w.tabs.len().saturating_sub(1));
+        w.callbacks = Some(self.callbacks_page());
+        state
+    }
+
+    /// Moves a hot reload along: the build's result, then the swap at a safe point.
+    fn tick_reload(&mut self, state: &mut frontend_tui::AppState, theme: &str) -> Result<bool> {
+        use frontend_tui::model::{Item, Mode, Overlay};
+        let Mode::Session(w) = &mut state.mode else { return Ok(false) };
+        let note = |w: &mut frontend_tui::model::Workspace, text: String| {
+            w.view_mut().transcript.push(Item::Tips { label: "RELOAD".into(), lines: text.lines().map(str::to_string).collect() });
+        };
+        let mut changed = false;
+        if self.reload_asked.swap(false, std::sync::atomic::Ordering::SeqCst) && self.reloading.is_none() && !self.ready_to_swap {
+            self.reloading = Some(reload::start_build());
+            note(w, "Rebuilding…".to_string());
+            changed = true;
+        }
+        if let Some(result) = self.reloading.as_ref().and_then(|r| r.try_recv().ok()) {
+            self.reloading = None;
+            changed = true;
+            match result {
+                Ok(()) => self.ready_to_swap = true,
+                Err(message) => note(w, format!("Nothing was swapped: {message}")),
+            }
+        }
+        // CON-50: never during a model turn or a tool call, never over a permission prompt.
+        let busy = w.tabs.iter().any(|t| t.view.generating) || matches!(w.overlay, Some(Overlay::Permission(_))) || !self.asks.is_empty();
+        if !self.ready_to_swap || busy {
+            return Ok(changed);
+        }
+        let handoff = reload::Handoff {
+            active: w.active,
+            theme: theme.to_string(),
+            tabs: w
+                .tabs
+                .iter()
+                .map(|t| reload::TabHandoff {
+                    title: t.title.clone(),
+                    session: self.sessions.session_of(t.id).map(str::to_string),
+                    window: self.registered.get(&t.id).map(|r| r.window.clone()),
+                    url: self.registered.get(&t.id).map(|r| r.url.clone()),
+                    scroll: t.view.scroll,
+                    draft: t.view.composer.text.clone(),
+                })
+                .collect(),
+        };
+        let dir = config::data_dir()?;
+        let path = reload::write_handoff(&dir, &handoff)?;
+        // The daemon holds the custom handlers, so it is replaced too; the new process starts it.
+        if let Some(client) = harness_daemon::client::Client::find(&dir) {
+            let _ = client.shutdown();
+        }
+        reload::swap(&path, theme)?;
+        Ok(true)
     }
 
     /// What the daemon said reaches the view, or the agent.
@@ -358,6 +500,7 @@ impl Live {
         let settings = config::load()?.session;
         let budget = settings.max_cost_usd.map_or("none".to_string(), |d| format!("${d:.2}"));
         let urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> = Default::default();
+        let reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
         let (factory, provider, model, context_window): (harness_session::Factory, String, String, u64) = match script {
             Some(name) => {
                 harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
@@ -369,13 +512,12 @@ impl Live {
                 let (provider, model, window) = (settings.provider.clone(), settings.model.clone(), settings.context_window());
                 // A tab's agent is told its callback URL once the daemon gave it one.
                 let urls = urls.clone();
-                let note = std::sync::Arc::new(move |tab: u64| {
-                    urls.lock().ok()?.get(&tab).map(|url: &String| format!("Callbacks from outside reach this session at {url}: POST JSON with a unique uuid, a type (notification, journal, flowstate_update) and its fields."))
-                });
-                (harness_session::with_notes(settings, root.clone(), config::data_dir()?, note), provider, model, window)
+                let note = std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab));
+                let host = host_for(note, reload_asked.clone(), selection_summary(&settings));
+                (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel() })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -437,12 +579,12 @@ impl Live {
         config::save(&c)?;
         if self.real {
             self.context_window = c.session.context_window();
-            self.sessions.set_factory(harness_session::with_notes(c.session, self.root.clone(), config::data_dir()?, {
+            let note = {
                 let urls = self.urls.clone();
-                std::sync::Arc::new(move |tab: u64| {
-                    urls.lock().ok()?.get(&tab).map(|url: &String| format!("Callbacks from outside reach this session at {url}: POST JSON with a unique uuid, a type (notification, journal, flowstate_update) and its fields."))
-                })
-            }));
+                std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
+            };
+            let host = host_for(note, self.reload_asked.clone(), selection_summary(&c.session));
+            self.sessions.set_factory(harness_session::with_host(c.session, self.root.clone(), config::data_dir()?, host));
             self.provider = provider.to_string();
             self.model = model.to_string();
         }
@@ -529,6 +671,9 @@ impl Live {
                     };
                     w.callbacks = Some(self.callbacks_page());
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
+                }
+                Outgoing::Reload => {
+                    self.reload_asked.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 Outgoing::ReloadCallbacks => {
                     let note = self.reload_daemon();
@@ -650,7 +795,7 @@ fn trace(name: Option<&str>, json: bool) -> Result<()> {
 /// The live terminal UI on a fixture state. Same `AppState` and `draw` as `screen`; keys and
 /// clicks go through `frontend_tui::input`, and the next screen's data comes from fixtures until
 /// the core exists.
-fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
+fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::path::Path>) -> Result<()> {
     use std::collections::HashMap;
 
     use frontend_tui::images::{self, Graphic};
@@ -671,9 +816,10 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
     let fixture = fixtures::by_name(name).ok_or_else(|| anyhow!("unknown screen {name:?} (see `screen --list`)"))?;
     let mut live = Live::new(script)?;
     // The welcome state is a new session: it is real. The other states are design fixtures.
-    let mut state = match fixture.name {
-        "welcome" => live.fresh_session(),
-        "startup" => live.startup(),
+    let mut state = match (handoff, fixture.name) {
+        (Some(path), _) => live.restore(&reload::take_handoff(path)?),
+        (None, "welcome") => live.fresh_session(),
+        (None, "startup") => live.startup(),
         _ => (fixture.build)(),
     };
     let mut theme_idx = BUILTIN.iter().position(|(id, _)| *id == theme).ok_or_else(|| anyhow!("unknown theme {theme:?}"))?;
@@ -721,6 +867,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
             live.connect_windows(&mut state);
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
+            dirty |= live.tick_reload(&mut state, &current.id)?;
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {

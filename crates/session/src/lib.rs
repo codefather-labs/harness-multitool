@@ -12,6 +12,7 @@ use harness_core::{Engine, Parts, Registry, RunEnd, Selection, StopFlag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+mod host_tools;
 mod wire;
 
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
@@ -211,18 +212,40 @@ pub type Factory = Arc<dyn Fn(u64) -> Result<Parts, String> + Send + Sync>;
 
 /// The real plugins, chosen by the configuration.
 pub fn real_factory(settings: Settings, root: String, data_dir: PathBuf) -> Factory {
-    with_notes(settings, root, data_dir, Arc::new(|_| None))
+    with_host(settings, root, data_dir, Host::default())
 }
 
-/// The same, with a line for each tab's system prompt: where its callbacks go.
-pub fn with_notes(settings: Settings, root: String, data_dir: PathBuf, note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync>) -> Factory {
+/// What the running binary gives its sessions.
+#[derive(Clone)]
+pub struct Host {
+    /// A line for a tab's system prompt: where its callbacks go.
+    pub note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync>,
+    /// What `plugins_list` answers.
+    pub plugins: Arc<dyn Fn() -> Value + Send + Sync>,
+    /// `plugins_reload` raises this; the frontend does the rest at a safe point.
+    pub reload: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Default for Host {
+    fn default() -> Self {
+        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default() }
+    }
+}
+
+pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host) -> Factory {
     Arc::new(move |tab| {
         let data = data_dir.to_string_lossy().into_owned();
         let mut platform = harness_platform_native::platform(data_dir.clone());
         if let Some(path) = wire_log_path() {
             platform.net = Rc::new(wire::WireLog::new(platform.net.clone(), path));
         }
-        registry(&settings, &root, &data, note(tab)).resolve(&settings.selection(), platform).map_err(|e| e.to_string())
+        let mut selection = settings.selection();
+        selection.tools.extend(["plugins_list".to_string(), "plugins_reload".to_string()]);
+        let mut registry = registry(&settings, &root, &data, (host.note)(tab));
+        let (plugins, reload) = (host.plugins.clone(), host.reload.clone());
+        registry.tool("plugins_list", move |_| Ok(Rc::new(host_tools::PluginsList(plugins.clone()))));
+        registry.tool("plugins_reload", move |_| Ok(Rc::new(host_tools::PluginsReload(reload.clone()))));
+        registry.resolve(&selection, platform).map_err(|e| e.to_string())
     })
 }
 
@@ -245,6 +268,7 @@ enum Input {
 }
 
 struct Handle {
+    session: String,
     prompts: Sender<Input>,
     answers: Sender<Answer>,
     stop: StopFlag,
@@ -283,6 +307,11 @@ impl Sessions {
         let (to_frontend, from_sessions) = channel();
         let started_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         Sessions { factory, root, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
+    }
+
+    /// The stored session behind a tab, once it has one.
+    pub fn session_of(&self, tab: u64) -> Option<&str> {
+        self.handles.get(&tab).map(|h| h.session.as_str())
     }
 
     /// New sessions start from this; running ones keep what they have.
@@ -343,6 +372,7 @@ impl Sessions {
         let (factory, to_frontend, flag, root) = (self.factory.clone(), self.to_frontend.clone(), stop.clone(), self.root.clone());
         let resuming = resume.is_some();
         let session = resume.unwrap_or_else(|| format!("{}-{tab}", self.started_ms));
+        let stored_name = session.clone();
         std::thread::spawn(move || {
             let parts = match factory(tab) {
                 Ok(parts) => parts,
@@ -371,6 +401,6 @@ impl Sessions {
                 let _ = to_frontend.send(FromSession::Ended { tab, end });
             }
         });
-        self.handles.insert(tab, Handle { prompts, answers, stop });
+        self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop });
     }
 }

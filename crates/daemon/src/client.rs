@@ -85,6 +85,22 @@ impl Client {
         self.base.rsplit(':').next().unwrap_or_default()
     }
 
+    /// Asks the daemon to stop, and waits until it no longer answers.
+    pub fn shutdown(&self) -> Result<(), String> {
+        self.agent
+            .post(format!("{}/shutdown", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .send("{}")
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        for _ in 0..50 {
+            if !self.healthy() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err("the daemon did not stop".to_string())
+    }
+
     /// The custom handlers the daemon's build has: (name, types).
     pub fn handlers(&self) -> Result<Vec<(String, Vec<String>)>, String> {
         let mut response = self

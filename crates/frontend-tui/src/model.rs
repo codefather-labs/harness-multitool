@@ -69,6 +69,8 @@ pub enum Outgoing {
     Stop { tab: u64 },
     /// The Callbacks tab saved: each standard type's implementation, and what is switched off.
     SaveCallbacks { handlers: Vec<(String, String)>, disabled: Vec<String> },
+    /// Rebuild and swap the binary (ADR 0015).
+    Reload,
     /// Make the daemon read the project's callback files again.
     ReloadCallbacks,
     /// Settings saved: the provider's option name and the model, for new sessions.

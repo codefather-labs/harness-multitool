@@ -93,7 +93,7 @@ A session runs in a mode (IF-0.5); entering a mode fires a hook that adds the mo
 
 ## Plugins and hot reload
 
-Plugins are crates linked into the binary (CON-2). A reload rebuilds the local build and swaps the binary in the same terminal at a safe point, handing the in-memory view over to the new process, so sessions are not restarted ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md), CON-50).
+Plugins are crates linked into the binary (CON-2). A reload rebuilds the local build and swaps the binary in the same terminal at a safe point; the new process replays each session's log, so sessions are not restarted ([ADR 0015](../decisions/0015-callback-handlers-are-plugins.md), CON-50).
 
 ## Documentation mirror
 

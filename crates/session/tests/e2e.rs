@@ -442,3 +442,28 @@ fn the_wire_log_shows_bodies_and_never_keys() {
     assert!(text.contains("<<< 200") && text.contains("Visible answer."), "{text}");
     assert!(!text.contains(canary), "INV-6: the key is not in the wire log");
 }
+
+/// ADR 0015: the agent can list what is plugged in and ask for a reload, with permission.
+#[test]
+fn the_agent_lists_plugins_and_asks_for_a_reload() {
+    let root = temp_dir("host");
+    let data = temp_dir("host-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "plugins_list", json!({}))), "Looking."),
+        anthropic_turn(Some(("t2", "plugins_reload", json!({}))), "Reloading."),
+        anthropic_turn(None, "Done."),
+        anthropic_turn(Some(("t3", "plugins_reload", json!({}))), "Again."),
+        anthropic_turn(None, "Fine."),
+    ]);
+    let reload: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+    let host = Host { plugins: std::sync::Arc::new(|| json!({"provider": "anthropic", "callback_handlers_custom": [{"name": "acme"}]})), reload: reload.clone(), ..Default::default() };
+    let mut sessions = Sessions::new(with_host(settings(&url, "k"), root.clone(), data.into(), host), root);
+    let (entries, _, asked) = drive(&mut sessions, &["what is plugged in?"], Answer::AllowOnce);
+    assert_eq!(asked, 1, "listing runs by itself, reloading asks");
+    assert!(reload.swap(false, std::sync::atomic::Ordering::SeqCst), "the frontend is told");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { output, .. } if output.contains("acme"))));
+
+    let (_, _, asked) = drive(&mut sessions, &["again"], Answer::Deny);
+    assert_eq!(asked, 1);
+    assert!(!reload.load(std::sync::atomic::Ordering::SeqCst), "a denied reload does nothing");
+}

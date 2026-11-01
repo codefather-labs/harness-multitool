@@ -19,6 +19,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/a2a [text]", "agent-to-agent message"),
     ("/callback [text]", "HTTP callback"),
     ("/reminder [text]", "journal reminder"),
+    ("/reload", "rebuild, swap the binary, keep the sessions"),
     ("/journal", "journal entry event"),
     ("/thinking", "a model's reasoning, live"),
     ("/mindmap-new · /flowchart-new", "a mind map / flowchart created (empty)"),
@@ -455,6 +456,13 @@ fn command(w: &mut Workspace, cmd: &str) {
                 label: "DEBUG COMMANDS".into(),
                 lines: COMMANDS.iter().map(|(c, d)| format!("{c:<44} {d}")).chain(std::iter::once("plain text: your message".to_string())).collect(),
             });
+        }
+        "reload" => {
+            if w.live {
+                w.outbox.push(Outgoing::Reload);
+            } else {
+                w.view_mut().transcript.push(Item::Tips { label: "RELOAD".into(), lines: vec!["Only a live session can reload.".into()] });
+            }
         }
         "thinking" => {
             let live = Item::Thinking(ThinkingView { lines: vec!["Let me open the file and see what the test expects.".into(), "Likely an edge case in the division.".into()], live: true, secs: 12, expanded: false });

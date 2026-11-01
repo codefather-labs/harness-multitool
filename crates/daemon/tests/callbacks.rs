@@ -386,3 +386,17 @@ fn a_custom_handler_can_be_switched_off_or_chosen_over_a_standard_type() {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
     assert_eq!(agent.get(format!("{base}/handlers")).call().unwrap().status().as_u16(), 401);
 }
+
+/// A restart keeps the windows, so a callback URL given out earlier still works.
+#[test]
+fn windows_survive_a_restart() {
+    let f = fixture();
+    assert_eq!(last_port(&f.data_path), Some(f.daemon.port()));
+    let second = Daemon::start(&f.data_path, 0).unwrap();
+    let client = Client::find(&f.data_path).unwrap();
+    let url = f.url.replace(&f.daemon.port().to_string(), &second.port().to_string());
+    assert_eq!(post(&url, &json!({"uuid": "w1", "type": "notification", "text": "still here"}).to_string()).0, 200);
+    let got = client.poll(&f.window, 0).unwrap();
+    assert_eq!(got.len(), 1);
+    assert!(got[0].seq > 1_000_000, "numbered from the clock");
+}
