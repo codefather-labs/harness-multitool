@@ -10,6 +10,7 @@ pub mod flowchart;
 pub mod home;
 pub mod images;
 pub mod maps;
+pub mod markdown;
 pub mod mindmap;
 pub mod input;
 pub mod live;

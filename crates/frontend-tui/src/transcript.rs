@@ -392,10 +392,63 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
         cv.sub = Some(i);
         y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
     }
+    let mut in_fence = false;
     for l in lines {
-        for w in wrap(l, tw) {
-            cv.line(CX, y, tw, vec![Span::styled(w, plain(t.text))], bg);
-            y += 1;
+        if role == Role::User {
+            for w in wrap(l, tw) {
+                cv.line(CX, y, tw, vec![Span::styled(w, plain(t.text))], bg);
+                y += 1;
+            }
+            continue;
+        }
+        // An assistant's answer is Markdown; a person's message is shown as typed.
+        match crate::markdown::classify(l, &mut in_fence) {
+            crate::markdown::Block::Fence => {}
+            crate::markdown::Block::Code(code) => {
+                let raised = if bg == t.surface { t.surface_raised } else { t.surface };
+                for w in wrap_keeping_indent(code, tw.saturating_sub(2)) {
+                    cv.fill(Rect::new(CX, y, tw, 1), raised);
+                    cv.line(CX + 1, y, tw.saturating_sub(2), vec![Span::styled(w, plain(t.text))], raised);
+                    y += 1;
+                }
+            }
+            crate::markdown::Block::Heading(text) => {
+                for w in wrap(text, tw) {
+                    cv.line(CX, y, tw, vec![Span::styled(w, bold(t.accent))], bg);
+                    y += 1;
+                }
+            }
+            crate::markdown::Block::Text(text) => {
+                let raised = if bg == t.surface { t.surface_raised } else { t.surface };
+                let chars = crate::markdown::inline(text);
+                let flat: String = chars.iter().map(|(c, _)| *c).collect();
+                let mut at = 0;
+                for row in wrap(&flat, tw) {
+                    // Each row is a stretch of the flat text; the wrap drops spaces at breaks.
+                    while chars.get(at).is_some_and(|(c, _)| c.is_whitespace()) && !row.starts_with(chars[at].0) {
+                        at += 1;
+                    }
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    let mut run = String::new();
+                    let mut style = None;
+                    for _ in row.chars() {
+                        let Some((c, s)) = chars.get(at).copied() else { break };
+                        at += 1;
+                        if style != Some(s) {
+                            if let Some(done) = style.filter(|_| !run.is_empty()) {
+                                spans.push(Span::styled(std::mem::take(&mut run), md_style(done, t, raised)));
+                            }
+                            style = Some(s);
+                        }
+                        run.push(c);
+                    }
+                    if let Some(done) = style.filter(|_| !run.is_empty()) {
+                        spans.push(Span::styled(run, md_style(done, t, raised)));
+                    }
+                    cv.line(CX, y, tw, spans, bg);
+                    y += 1;
+                }
+            }
         }
     }
     for (i, a) in attached.iter().enumerate().filter(|(_, a)| !matches!(a, Item::Thinking(_))) {
@@ -414,6 +467,23 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
         }
     }
     cv.finish(y)
+}
+
+fn md_style(s: crate::markdown::Inline, t: &Theme, raised: Color) -> Style {
+    match s {
+        crate::markdown::Inline::Plain => plain(t.text),
+        crate::markdown::Inline::Bold => bold(t.text),
+        crate::markdown::Inline::Code => plain(t.text).bg(raised),
+    }
+}
+
+/// Code keeps its indentation; a long line simply continues on the next row.
+fn wrap_keeping_indent(code: &str, width: u16) -> Vec<String> {
+    let chars: Vec<char> = code.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars.chunks(width.max(1) as usize).map(|c| c.iter().collect()).collect()
 }
 
 /// An item inside an assistant turn's card. Returns its height.
@@ -1087,5 +1157,39 @@ mod tests {
         assert_eq!(item(&short, 40, &t, &[], false).buf.area.height, 2);
         let long = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["word ".repeat(20)], attached: vec![] };
         assert!(item(&long, 40, &t, &[], false).buf.area.height > 3);
+    }
+
+    /// The marks do not reach the screen, a bold run keeps its style across a wrap, and the text
+    /// is complete after wrapping.
+    #[test]
+    fn an_answer_draws_as_markdown_and_a_person_as_typed() {
+        use ratatui::style::Modifier;
+        let t = Theme::builtin("dark").unwrap();
+        let row = |d: &Drawn, y: u16, w: u16| -> String { (0..w).map(|x| d.buf[(x, y)].symbol().chars().next().unwrap_or(' ')).collect() };
+        let answer = "The answer is **a bold stretch long enough to wrap around the narrow card here** and `code`.";
+        let turn = |role| Item::Turn { role, time: "1".into(), lines: vec![answer.into(), "```".into(), "    x = 1".into(), "```".into()], attached: vec![] };
+        let d = item(&turn(Role::Assistant), 40, &t, &[], false);
+        let all: String = (0..d.buf.area.height).map(|y| row(&d, y, 40)).collect::<Vec<_>>().join("|");
+        assert!(!all.contains("**") && !all.contains('`'), "{all}");
+        for word in ["answer", "bold", "stretch", "narrow", "wrap", "code", "x = 1"] {
+            assert!(all.contains(word), "{word} in {all}");
+        }
+        assert!(!all.contains("``"), "{all}");
+        let bold_at = |word: &str| -> bool {
+            for y in 0..d.buf.area.height {
+                let r = row(&d, y, 40);
+                if let Some(x) = r.find(word) {
+                    let x = r[..x].chars().count() as u16;
+                    return d.buf[(x, y)].modifier.contains(Modifier::BOLD);
+                }
+            }
+            panic!("{word} not drawn");
+        };
+        assert!(bold_at("stretch") && bold_at("narrow"), "bold on both sides of the wrap");
+        assert!(!bold_at("answer"));
+
+        let d = item(&turn(Role::User), 40, &t, &[], false);
+        let all: String = (0..d.buf.area.height).map(|y| row(&d, y, 40)).collect::<Vec<_>>().join("|");
+        assert!(all.contains("**") && all.contains("```"), "as typed: {all}");
     }
 }
