@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 pub mod client;
 pub mod conditions;
+pub mod memory;
 
 /// How long `GET /events` holds a request open when there is nothing to say.
 const POLL: Duration = Duration::from_secs(20);
@@ -70,6 +71,8 @@ pub struct Daemon {
     data_dir: PathBuf,
     log: Mutex<std::fs::File>,
     port: u16,
+    /// Memory calls served, for `multitool daemon --status`.
+    memory_ops: std::sync::atomic::AtomicU64,
 }
 
 /// Where a running daemon says how to reach it.
@@ -138,6 +141,7 @@ impl Daemon {
             data_dir: data_dir.to_path_buf(),
             log: Mutex::new(log),
             port,
+            memory_ops: std::sync::atomic::AtomicU64::new(0),
         });
         // Long polls hold a thread each, so serve from several.
         for _ in 0..8 {
@@ -182,6 +186,9 @@ impl Daemon {
             ("POST", "/register") if admin => self.register(&body),
             ("GET", "/events") if admin => self.events(query),
             ("POST", "/reload") if admin => self.reload(),
+            ("POST", "/memory") if admin => self.memory_op(&body),
+            ("GET", "/stats") if admin => (200, json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port})),
+            ("POST", "/memory") | ("GET", "/stats") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 self.state.lock().expect("daemon state").shutting_down = true;
                 self.wake.notify_all();
@@ -407,8 +414,25 @@ impl Daemon {
     }
 
     fn memory(&self, root: &str) -> Result<JournalMemory, String> {
+        self.memory_of(root, "daemon")
+    }
+
+    fn memory_of(&self, root: &str, owner: &str) -> Result<JournalMemory, String> {
         let key = key_for(git_origin(root).as_deref(), Path::new(root));
-        JournalMemory::open(&self.data_dir.join("journals"), &key, "daemon")
+        JournalMemory::open(&self.data_dir.join("journals"), &key, owner)
+    }
+
+    /// CON-20: a session's Memory call, against the journal of the project it names.
+    fn memory_op(&self, body: &str) -> (u16, Value) {
+        let Ok(request) = serde_json::from_str::<memory::Request>(body) else {
+            return (400, json!({"error": "not a memory request"}));
+        };
+        self.memory_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let answer = self.memory_of(&request.root, &request.owner).and_then(|store| memory::serve(&store, request.call));
+        match answer {
+            Ok(result) => (200, json!({"result": result})),
+            Err(error) => (500, json!({"error": error})),
+        }
     }
 
     fn journal(&self, window: &str, root: &str, input: &Value) -> Result<Value, String> {

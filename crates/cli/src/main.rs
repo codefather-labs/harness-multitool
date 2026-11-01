@@ -48,6 +48,9 @@ enum Command {
         /// The port on localhost; by default one is picked.
         #[arg(long, default_value_t = 0)]
         port: u16,
+        /// Don't start one: print what the running daemon counts.
+        #[arg(long)]
+        status: bool,
     },
     /// Debug: one message through a real session with no UI; prints its log, one line per event.
     Run {
@@ -123,7 +126,12 @@ fn main() -> Result<()> {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Run { prompt, yes } => run_once(&prompt, yes),
-        Command::Daemon { port } => {
+        Command::Daemon { status: true, .. } => {
+            let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
+            println!("{}", client.stats().map_err(|e| anyhow!(e))?);
+            Ok(())
+        }
+        Command::Daemon { port, .. } => {
             let dir = config::data_dir()?;
             // The port it had before if it is free: callback URLs stay as they were.
             let wanted = if port == 0 { harness_daemon::last_port(&dir).unwrap_or(0) } else { port };

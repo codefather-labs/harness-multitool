@@ -105,7 +105,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
     let context_budget = settings.compact_at_tokens.unwrap_or(settings.context_window() * 7 / 10);
     let sessions_dir = sessions_dir(data_dir, root);
-    let (root_d, journals_dir) = (root.to_string(), format!("{}/journals", data_dir.trim_end_matches('/')));
+    let (root_d, data_d) = (root.to_string(), std::path::PathBuf::from(data_dir));
     r.auth("api-key", |cx| Ok(Rc::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
@@ -116,8 +116,13 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
         .policy("default", move |_| Ok(Rc::new(harness_policy_default::DefaultPolicy::new(&root_a))))
         .memory("none", |_| Ok(Rc::new(harness_context_default::NoMemory)))
         .memory("journal", move |_| {
+            // CON-20: the daemon owns the store. With none running (a debug run, a test) the
+            // session opens it itself; SQLite in WAL mode keeps the two safe together.
+            if let Some(client) = harness_daemon::client::Client::find(&data_d) {
+                return Ok(Rc::new(harness_daemon::memory::DaemonMemory::new(client, data_d.clone(), &root_d, "multitool")));
+            }
             let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
-            Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(std::path::Path::new(&journals_dir), &key, "multitool")?))
+            Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(&data_d.join("journals"), &key, "multitool")?))
         })
         .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))

@@ -129,6 +129,38 @@ impl Client {
         response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))
     }
 
+    /// What the daemon counts, for a look from outside.
+    pub fn stats(&self) -> Result<Value, String> {
+        let mut response = self
+            .agent
+            .get(format!("{}/stats", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .call()
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))
+    }
+
+    /// One Memory call. `Stale` means nothing was done and the address may be out of date.
+    pub fn memory(&self, request: &crate::memory::Request) -> Result<Value, crate::memory::CallError> {
+        use crate::memory::CallError;
+        let body = serde_json::to_string(request).map_err(|e| CallError::Failed(e.to_string()))?;
+        let sent = self.agent.post(format!("{}/memory", self.base)).header("authorization", &format!("Bearer {}", self.admin)).send(body);
+        let mut response = match sent {
+            Ok(response) => response,
+            Err(ureq::Error::ConnectionFailed) => return Err(CallError::Stale("the daemon does not answer".to_string())),
+            Err(ureq::Error::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Err(CallError::Stale(e.to_string())),
+            Err(e) => return Err(CallError::Failed(format!("reaching the daemon: {e}"))),
+        };
+        if response.status() == 401 {
+            return Err(CallError::Stale("the daemon has another token".to_string()));
+        }
+        let mut body: Value = response.body_mut().read_json().map_err(|e| CallError::Failed(format!("the daemon's answer: {e}")))?;
+        match body["error"].as_str() {
+            Some(error) => Err(CallError::Failed(error.to_string())),
+            None => Ok(body["result"].take()),
+        }
+    }
+
     /// Events after `after`, waiting a while for some.
     pub fn poll(&self, window: &str, after: u64) -> Result<Vec<Numbered>, String> {
         let mut response = self

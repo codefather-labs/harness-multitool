@@ -529,3 +529,25 @@ fn context_comes_from_memory_and_survives_compaction() {
     assert_eq!(state.compacted_upto, *cuts.last().unwrap());
     assert_eq!(stored.iter().filter(|e| matches!(e.event, Event::UserMessage { .. })).count(), 7, "INV-5: nothing is gone");
 }
+
+/// CON-20: with a daemon running, a session's memory goes through it.
+#[test]
+fn a_sessions_memory_goes_through_a_running_daemon() {
+    let root = temp_dir("own");
+    let data = temp_dir("own-data");
+    let _daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("s1", "journal_add", json!({"body": "Owned by the daemon.", "category": "decision", "tags": ["own"]}))), "Noting."),
+        anthropic_turn(None, "Done."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (_, ends, _) = drive(&mut sessions, &["note it"], Answer::Deny);
+    assert_eq!(ends, ["AwaitingInput"]);
+    let ops = client.stats().unwrap()["memory_ops"].as_u64().unwrap();
+    assert!(ops >= 5, "two turns of context, and the add: {ops}");
+    let key = harness_memory_journal::project::key_for(None, std::path::Path::new(&root));
+    let store = harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(&data).join("journals"), &key, "t").unwrap();
+    let found = pollster::block_on(harness_api::Memory::journal_search(&store, "daemon")).unwrap();
+    assert_eq!(found.len(), 1);
+}

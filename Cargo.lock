@@ -1097,6 +1097,7 @@ dependencies = [
  "harness-auth-apikey",
  "harness-context-default",
  "harness-core",
+ "harness-daemon",
  "harness-hooks-shell",
  "harness-memory-journal",
  "harness-platform-native",

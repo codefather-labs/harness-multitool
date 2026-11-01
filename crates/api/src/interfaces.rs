@@ -209,7 +209,7 @@ pub struct MapData {
 }
 
 /// A new node: under `parent` in a mind map, after `after` in a flowchart.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NewMapNode {
     pub text: String,
     pub kind: String,
