@@ -339,7 +339,11 @@ fn shell_hooks_add_context_veto_and_fail() {
     s.hooks = vec![
         hook("SessionStart", "echo Journal your decisions."),
         // Vetoes the shell tool only: the hook sees the call.
-        hook("PreToolUse", r#"case "$HOOK_CALL" in *'"name":"shell"'*) echo no shell today >&2; exit 2;; esac"#),
+        hook("PreToolUse", if cfg!(windows) {
+            r#"echo %HOOK_CALL% | findstr /C:"shell" >nul && (echo no shell today 1>&2 & exit 2)"#
+        } else {
+            r#"case "$HOOK_CALL" in *'"name":"shell"'*) echo no shell today >&2; exit 2;; esac"#
+        }),
         hook("PostToolUse", "exit 7"),
     ];
     let mut sessions = Sessions::new(real_factory(s, root.clone(), data.into()), root.clone());
