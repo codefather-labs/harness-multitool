@@ -383,8 +383,7 @@ mod tests {
             .hits
             .iter()
             .find(|h| matches!(h.target, Target::MapPart { sub: Some(0), element: MapElement::Area(x, _), .. } if x > 0))
-            .expect("the flowchart beside its ticket can be panned")
-            .clone();
+            .expect("the flowchart beside its ticket can be panned");
         let MapElement::Area(limit, _) = (match area.target {
             Target::MapPart { element, .. } => element,
             _ => unreachable!(),

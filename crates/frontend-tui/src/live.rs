@@ -254,7 +254,7 @@ fn summary(input: &Value) -> String {
 
 fn short(n: u64) -> String {
     match n {
-        1_000_000.. if n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
+        1_000_000.. if n.is_multiple_of(1_000_000) => format!("{}M", n / 1_000_000),
         1000.. => format!("{}k", n / 1000),
         _ => n.to_string(),
     }
