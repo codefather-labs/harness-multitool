@@ -312,6 +312,7 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
             parts.backend = Some(delegate(&settings, &root)?);
+            parts.conversations = Some(Rc::from(conversation_source("claude-code")?));
         }
         Ok(parts)
     })
@@ -326,7 +327,7 @@ fn delegate(settings: &Settings, root: &str) -> Result<Rc<dyn AgentBackend>, Str
 
 /// Where conversations held by another agent are read from, in a build that has one (IF-18).
 #[cfg(feature = "claude-code")]
-pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationSource>, String> {
+pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationFormat>, String> {
     match name {
         harness_backend_claude_code::NAME => Ok(Box::new(harness_backend_claude_code::conversations::ClaudeCodeConversations::from_env().map_err(|e| e.to_string())?)),
         other => Err(format!("no conversations from {other}; known: {}", harness_backend_claude_code::NAME)),
@@ -334,7 +335,7 @@ pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationSource>, St
 }
 
 #[cfg(not(feature = "claude-code"))]
-pub fn conversation_source(_name: &str) -> Result<Box<dyn ConversationSource>, String> {
+pub fn conversation_source(_name: &str) -> Result<Box<dyn ConversationFormat>, String> {
     Err("this build reads no conversations: build with --features claude-code".to_string())
 }
 

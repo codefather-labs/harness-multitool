@@ -43,7 +43,7 @@ impl ClaudeCodeConversations {
     }
 }
 
-impl ConversationSource for ClaudeCodeConversations {
+impl ConversationFormat for ClaudeCodeConversations {
     fn name(&self) -> &str {
         NAME
     }
@@ -81,6 +81,54 @@ impl ConversationSource for ClaudeCodeConversations {
         entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::ConversationImported { source: NAME.to_string(), id: id.to_string(), title: title.clone() } });
         Ok(ImportedConversation { info: ConversationInfo { id: id.to_string(), title, last_ms, bytes }, entries, damaged })
     }
+
+    fn write(&self, root: &str, title: &str, history: &[Message]) -> PluginResult<String> {
+        let folder = self.folder(root);
+        std::fs::create_dir_all(&folder).map_err(|e| PluginError::new(format!("{}: {e}", folder.display())))?;
+        let id = uuid();
+        let path = folder.join(format!("{id}.jsonl"));
+        let staging = folder.join(format!("{id}.partial"));
+        std::fs::write(&staging, transcript(&id, root, title, history)).map_err(|e| PluginError::new(format!("{}: {e}", staging.display())))?;
+        // Whole or not at all: Claude Code lists what it finds.
+        std::fs::rename(&staging, &path).map_err(|e| PluginError::new(format!("{}: {e}", path.display())))?;
+        Ok(id)
+    }
+}
+
+/// A random id in the form Claude Code's sessions and lines use.
+fn uuid() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let part = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let (a, b) = (part(), part());
+    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}", a >> 32, (a >> 16) & 0xffff, a & 0xfff, 0x8000 | ((b >> 48) & 0x3fff), b & 0xffff_ffff_ffff)
+}
+
+/// The history as a transcript Claude Code resumes. Its reasoning blocks stay out: they are signed
+/// for the conversation they were made in, and another provider's mean nothing to it.
+fn transcript(id: &str, root: &str, title: &str, history: &[Message]) -> String {
+    let stamp = "2000-01-01T00:00:00.000Z";
+    let mut out = json!({"type": "custom-title", "customTitle": title, "sessionId": id}).to_string();
+    out.push('\n');
+    let mut parent: Option<String> = None;
+    for message in history {
+        let uuid = uuid();
+        let content: Vec<Value> = message.content.iter().filter_map(|c| match c {
+            Content::Text { text } => Some(json!({"type": "text", "text": text})),
+            Content::ToolUse { id, name, input } => Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
+            Content::ToolResult { id, output, is_error } => Some(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error})),
+            Content::Opaque { .. } => None,
+        }).collect();
+        let body = match message.role {
+            Role::User => json!({"role": "user", "content": content}),
+            Role::Assistant => json!({"id": format!("msg_{}", uuid.replace('-', "")), "type": "message", "role": "assistant", "model": "harness-import", "content": content, "stop_reason": "end_turn", "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}),
+        };
+        let kind = if message.role == Role::User { "user" } else { "assistant" };
+        let line = json!({"type": kind, "uuid": uuid, "parentUuid": parent, "isSidechain": false, "userType": "external", "cwd": root, "sessionId": id, "version": "harness", "timestamp": stamp, "message": body});
+        out.push_str(&line.to_string());
+        out.push('\n');
+        parent = Some(uuid);
+    }
+    out
 }
 
 /// What the file says of a title, the last one written: a name the user gave wins.
@@ -245,6 +293,24 @@ fn to_entries(nodes: &[Node], chain: &[usize]) -> Vec<LogEntry> {
     let (mut at_ms, mut turn) = (0, 0);
     // The message whose lines are coming: its id, and the line that says how it ended.
     let mut open: Option<(String, Value)> = None;
+    // A call cut off by an interruption or a compaction has no result in the record: its card must
+    // not stay running for ever, and the history must stay valid for a provider.
+    let answer_rest = |events: &mut Vec<(u64, Event)>, at_ms: u64| {
+        let back = events.iter().rev().map(|(_, e)| e).take_while(|e| !matches!(e, Event::UserMessage { .. } | Event::ContextSummary { .. }));
+        let (mut calls, mut answered) = (Vec::new(), HashSet::new());
+        for event in back {
+            match event {
+                Event::ModelToolCall { call } => calls.push(call.id.clone()),
+                Event::ToolResult { id, .. } => {
+                    answered.insert(id.clone());
+                }
+                _ => {}
+            }
+        }
+        calls.retain(|id| !answered.contains(id));
+        calls.reverse();
+        events.extend(calls.into_iter().map(|id| (at_ms, Event::ToolResult { id, output: "no result in the record".to_string(), is_error: true })));
+    };
     let finish = |open: &mut Option<(String, Value)>, turn: u32, at_ms: u64, events: &mut Vec<(u64, Event)>| {
         if let Some((_, message)) = open.take() {
             events.push((at_ms, Event::TurnFinished { turn, stop: stop_of(&message), usage: usage_of(&message), cost_micro_usd: None }));
@@ -257,6 +323,7 @@ fn to_entries(nodes: &[Node], chain: &[usize]) -> Vec<LogEntry> {
                 let id = value["message"]["id"].as_str().unwrap_or_default().to_string();
                 if open.as_ref().is_none_or(|(current, _)| *current != id) {
                     finish(&mut open, turn, at_ms, &mut events);
+                    answer_rest(&mut events, at_ms);
                     turn += 1;
                     events.push((at_ms, Event::TurnStarted { turn, provider: NAME.to_string(), model: value["message"]["model"].as_str().unwrap_or_default().to_string() }));
                 }
@@ -275,22 +342,21 @@ fn to_entries(nodes: &[Node], chain: &[usize]) -> Vec<LogEntry> {
                     }
                 }
                 if let Some(text) = user_text(value) {
+                    answer_rest(&mut events, at_ms);
                     events.push((at_ms, Event::UserMessage { text }));
+                } else if value["isCompactSummary"] == true {
+                    answer_rest(&mut events, at_ms);
+                    events.push((at_ms, Event::ContextSummary { text: crate::result_text(&value["message"]["content"]) }));
                 }
             }
             _ => {
+                // A boundary: its summary follows in the next line.
                 finish(&mut open, turn, at_ms, &mut events);
-                let tokens = |k: &str| value["compactMetadata"][k].as_u64().unwrap_or(0);
-                events.push((at_ms, Event::Compacted { upto: 0, tokens_before: tokens("preTokens"), tokens_after: tokens("postTokens") }));
             }
         }
     }
     finish(&mut open, turn, at_ms, &mut events);
-    // A call cut off by an interruption or a compaction has no result in the record: its card must
-    // not stay running for ever.
-    let answered: HashSet<String> = events.iter().filter_map(|(_, e)| if let Event::ToolResult { id, .. } = e { Some(id.clone()) } else { None }).collect();
-    let unanswered: Vec<String> = events.iter().filter_map(|(_, e)| if let Event::ToolRequested { call, .. } = e { (!answered.contains(&call.id)).then(|| call.id.clone()) } else { None }).collect();
-    events.extend(unanswered.into_iter().map(|id| (at_ms, Event::ToolResult { id, output: "no result in the record".to_string(), is_error: true })));
+    answer_rest(&mut events, at_ms);
     events.into_iter().enumerate().map(|(seq, (at_ms, event))| LogEntry { seq: seq as u64, at_ms, event }).collect()
 }
 
@@ -348,7 +414,10 @@ mod tests {
             user("u2", Some("sum"), "after"),
         ]);
         assert_eq!(users(&c), ["before", "after"]);
-        assert!(c.entries.iter().any(|e| matches!(e.event, Event::Compacted { tokens_before: 900, tokens_after: 90, .. })));
+        assert!(c.entries.iter().any(|e| matches!(&e.event, Event::ContextSummary { text } if text == "the summary")));
+        let state = SessionState::fold(c.entries.iter().map(|e| &e.event));
+        assert_eq!(state.compacted_upto, 1, "what precedes the summary is not sent");
+        assert!(state.backend_fork);
     }
 
     #[test]
@@ -363,10 +432,10 @@ mod tests {
             line("i1", Some("r1"), json!({"type": "user", "message": {"content": [{"type": "text", "text": "look"}, {"type": "image", "source": {"data": "AAAA"}}]}})),
         ]);
         let kinds: Vec<&str> = c.entries.iter().map(|e| match &e.event {
-            Event::UserMessage { .. } => "user", Event::TurnStarted { .. } => "start", Event::TextDelta { .. } => "text", Event::ToolRequested { .. } => "call",
+            Event::UserMessage { .. } => "user", Event::TurnStarted { .. } => "start", Event::TextDelta { .. } => "text", Event::ModelToolCall { .. } => "model-call", Event::ToolRequested { .. } => "card",
             Event::TurnFinished { .. } => "finish", Event::ToolResult { .. } => "result", Event::ConversationImported { .. } => "imported", _ => "other",
         }).collect();
-        assert_eq!(kinds, ["user", "start", "text", "call", "finish", "result", "user", "imported"]);
+        assert_eq!(kinds, ["user", "start", "text", "model-call", "card", "finish", "result", "user", "imported"]);
         let text = format!("{:?}", c.entries);
         assert!(!text.contains("private") && !text.contains("AAAA"));
         let output = c.entries.iter().find_map(|e| if let Event::ToolResult { output, .. } = &e.event { Some(output.clone()) } else { None }).unwrap();
@@ -385,6 +454,31 @@ mod tests {
     fn a_call_with_no_result_does_not_stay_running() {
         let c = import(&[user("u1", None, "go"), assistant("a1", "u1", "m1", json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}))]);
         assert!(c.entries.iter().any(|e| matches!(&e.event, Event::ToolResult { id, is_error: true, .. } if id == "t1")));
+    }
+
+    /// The log is the format: what came from one provider's form goes back to it whole.
+    #[test]
+    fn a_history_written_reads_back_and_is_valid_for_a_provider() {
+        let text = |t: &str| Content::Text { text: t.to_string() };
+        let history = vec![
+            Message { role: Role::User, content: vec![text("first")] },
+            Message { role: Role::Assistant, content: vec![text("running"), Content::Opaque { block: json!({"type": "thinking", "signature": "other's"}) }, Content::ToolUse { id: "t1".into(), name: "Bash".into(), input: json!({"command": "ls"}) }] },
+            Message { role: Role::User, content: vec![Content::ToolResult { id: "t1".into(), output: "a.txt".into(), is_error: false }] },
+            Message { role: Role::Assistant, content: vec![text("done")] },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let source = ClaudeCodeConversations::new(dir.path());
+        let id = source.write("/work/p", "my talk", &history).unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.as_bytes()[14], b'4', "a version 4 uuid: {id}");
+        let back = source.read("/work/p", &id).unwrap();
+        assert_eq!(back.info.title, "my talk");
+        assert!(!format!("{:?}", back.entries).contains("other's"), "a reasoning block stays out");
+        let state = SessionState::fold(back.entries.iter().map(|e| &e.event));
+        let mut expected = history.clone();
+        expected[1].content.remove(1);
+        assert_eq!(provider_ready(&state.messages), expected);
+        assert_eq!(source.list("/work/p").unwrap()[0].id, id);
     }
 
     #[test]

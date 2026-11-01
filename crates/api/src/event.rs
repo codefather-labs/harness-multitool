@@ -79,6 +79,10 @@ pub enum Event {
     Verification { pass: bool, evidence: String },
     /// The session id of an agent backend, for going on with it (IF-17).
     BackendSession { id: String },
+    /// Another provider took the session over: a backend's own session no longer holds all of it.
+    BackendSessionLost,
+    /// The conversation as a summary says it was up to here; what precedes is not sent any more.
+    ContextSummary { text: String },
     /// What an agent backend says its session has cost in all: it counts across resumes, so a
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },

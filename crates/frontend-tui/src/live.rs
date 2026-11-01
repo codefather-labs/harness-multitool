@@ -185,7 +185,8 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
-            Event::BackendSession { .. } | Event::BackendCost { .. } => {}
+            Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost => {}
+            Event::ContextSummary { .. } => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["What is above went into a summary here.".to_string()] }),
             Event::ConversationImported { source, title, .. } => {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It goes on here in a fork at your next message; the original stays as it was.")] });
             }

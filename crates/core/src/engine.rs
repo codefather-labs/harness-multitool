@@ -378,10 +378,31 @@ impl Engine {
         let _ = self.flush().await;
     }
 
+    /// A session made on another provider goes on here: its history is written in the backend's own
+    /// form first (IF-18). All but this message's own words, which go as the prompt.
+    async fn hand_over(&self) -> Result<(), String> {
+        let state = self.state.borrow().clone();
+        let Some(format) = self.parts.conversations.clone().filter(|_| state.backend_session.is_none() && state.messages.len() > 1) else { return Ok(()) };
+        let mut history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+        if let Some(last) = history.last_mut().filter(|m| m.role == harness_api::Role::User) {
+            last.content.retain(|c| !matches!(c, Content::Text { .. }));
+        }
+        history.retain(|m| !m.content.is_empty());
+        if history.is_empty() {
+            return Ok(());
+        }
+        let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
+        self.emit(Event::BackendSession { id });
+        Ok(())
+    }
+
     /// The turns of a message on an agent backend (IF-17): it does the work, and the engine keeps
     /// the log, the stop and the verdict.
     async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>) -> RunEnd {
         let source = backend.name().to_string();
+        if let Err(message) = self.hand_over().await {
+            return self.fail(&source, message, protocol);
+        }
         loop {
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
@@ -491,6 +512,10 @@ impl Engine {
         if let Some(backend) = self.parts.backend.clone() {
             return self.run_backend(backend.as_ref(), protocol).await;
         }
+        // From here on the backend's own session lacks what this provider does.
+        if self.state.borrow().backend_session.is_some() {
+            self.emit(Event::BackendSessionLost);
+        }
 
         loop {
             if let Err(message) = self.flush().await {
@@ -555,7 +580,8 @@ impl Engine {
     async fn turn(&self, route: &Route) -> Result<(Vec<ToolCall>, StopReason), String> {
         let provider = self.parts.providers.get(&route.provider).ok_or_else(|| format!("the router chose an unknown provider: {}", route.provider))?;
         let context = {
-            let state = self.state.borrow().clone();
+            let mut state = self.state.borrow().clone();
+            state.enter_model(&route.provider, &route.model);
             self.parts.context.build(&state, self.parts.memory.as_ref()).await.map_err(|e| format!("context: {e}"))?
         };
         if let Some(cut) = context.compacted {

@@ -423,10 +423,14 @@ pub struct ImportedConversation {
     pub damaged: usize,
 }
 
-/// IF-18: where conversations held by another agent are read from. A source only ever reads.
-pub trait ConversationSource {
+/// IF-18: a provider's own form of a conversation, read into the harness's log and written from
+/// it. The log is the conversation; this is how it reaches a provider that keeps its own.
+pub trait ConversationFormat {
     fn name(&self) -> &str;
     /// The conversations of this project, newest first.
     fn list(&self, root: &str) -> PluginResult<Vec<ConversationInfo>>;
     fn read(&self, root: &str, id: &str) -> PluginResult<ImportedConversation>;
+    /// Writes this history as a new conversation of the provider and returns its id. The history
+    /// ends where the next message will go on.
+    fn write(&self, root: &str, title: &str, history: &[Message]) -> PluginResult<String>;
 }

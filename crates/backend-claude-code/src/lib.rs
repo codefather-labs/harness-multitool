@@ -73,6 +73,8 @@ impl Mapper {
                         "text" if !self.streamed => out.push(Mapped::Event(Event::TextDelta { text: block["text"].as_str().unwrap_or_default().to_string() })),
                         "tool_use" => {
                             let call = ToolCall { id: block["id"].as_str().unwrap_or_default().to_string(), name: block["name"].as_str().unwrap_or_default().to_string(), input: block["input"].clone() };
+                            // The call is part of the conversation, as well as a card.
+                            out.push(Mapped::Event(Event::ModelToolCall { call: call.clone() }));
                             out.push(Mapped::Event(Event::ToolRequested { call, capabilities: vec![] }));
                         }
                         _ => {}
@@ -312,6 +314,7 @@ mod tests {
             e(Event::TurnStarted { turn: 1, provider: NAME.into(), model: "m1".into() }),
             e(Event::ThinkingDelta { text: String::new() }),
             e(Event::TextDelta { text: "Hi".into() }),
+            e(Event::ModelToolCall { call: ToolCall { id: "t1".into(), name: "Read".into(), input: json!({"file_path": "a"}) } }),
             e(Event::ToolRequested { call: ToolCall { id: "t1".into(), name: "Read".into(), input: json!({"file_path": "a"}) }, capabilities: vec![] }),
             e(Event::ToolResult { id: "t1".into(), output: "body".into(), is_error: false }),
             e(Event::TurnFinished { turn: 1, stop: StopReason::EndTurn, usage: Usage { input: 2, output: 5, cache_read: 40, cache_write: 7 }, cost_micro_usd: Some(12_500) }),

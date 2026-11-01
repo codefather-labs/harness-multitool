@@ -140,3 +140,90 @@ impl ToolOutput {
         ToolOutput { text: text.into(), is_error: true }
     }
 }
+
+/// A history any provider takes, whatever it came from: roles alternate; every call is answered in
+/// the next message, results first; a result with no call before it is left out. A log can hold
+/// such things after a cut, a stop, or a conversation brought in from elsewhere.
+pub fn provider_ready(messages: &[Message]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
+    let mut open: Vec<String> = Vec::new();
+    let answer = |out: &mut Vec<Message>, open: &mut Vec<String>, mut user: Vec<Content>| {
+        let mut results: Vec<Content> = Vec::new();
+        for id in open.drain(..) {
+            let found = user.iter().position(|c| matches!(c, Content::ToolResult { id: i, .. } if *i == id));
+            results.push(match found {
+                Some(at) => user.remove(at),
+                None => Content::ToolResult { id, output: "no result in the record".to_string(), is_error: true },
+            });
+        }
+        user.retain(|c| !matches!(c, Content::ToolResult { .. }));
+        results.append(&mut user);
+        if !results.is_empty() {
+            match out.last_mut() {
+                Some(last) if last.role == Role::User => last.content.append(&mut results),
+                _ => out.push(Message { role: Role::User, content: results }),
+            }
+        }
+    };
+    for message in messages {
+        match message.role {
+            Role::User => answer(&mut out, &mut open, message.content.clone()),
+            Role::Assistant => {
+                if !open.is_empty() {
+                    answer(&mut out, &mut open, Vec::new());
+                }
+                open.extend(message.content.iter().filter_map(|c| if let Content::ToolUse { id, .. } = c { Some(id.clone()) } else { None }));
+                match out.last_mut() {
+                    Some(last) if last.role == Role::Assistant => last.content.extend(message.content.iter().cloned()),
+                    _ => out.push(message.clone()),
+                }
+            }
+        }
+    }
+    if !open.is_empty() {
+        answer(&mut out, &mut open, Vec::new());
+    }
+    out
+}
+
+#[cfg(test)]
+mod ready_tests {
+    use super::*;
+
+    fn result(id: &str) -> Content {
+        Content::ToolResult { id: id.into(), output: "r".into(), is_error: false }
+    }
+    fn call(id: &str) -> Content {
+        Content::ToolUse { id: id.into(), name: "t".into(), input: serde_json::Value::Null }
+    }
+    fn says(role: Role, content: Vec<Content>) -> Message {
+        Message { role, content }
+    }
+
+    #[test]
+    fn a_broken_history_becomes_one_a_provider_takes() {
+        let text = |t: &str| Content::Text { text: t.into() };
+        let ready = provider_ready(&[
+            says(Role::User, vec![result("before-the-cut"), text("hello")]),
+            says(Role::User, vec![text("and")]),
+            says(Role::Assistant, vec![call("a"), call("b")]),
+            says(Role::User, vec![text("typed first"), result("b")]),
+            says(Role::Assistant, vec![call("c")]),
+            says(Role::Assistant, vec![text("no answer to c came")]),
+        ]);
+        assert_eq!(ready[0], says(Role::User, vec![text("hello"), text("and")]), "the orphan is out, and the two are one");
+        let Content::ToolResult { id, is_error, .. } = &ready[2].content[0] else { panic!("{:?}", ready[2]) };
+        assert_eq!((id.as_str(), *is_error), ("a", true), "an unanswered call is answered");
+        assert_eq!(ready[2].content[1], result("b"));
+        assert_eq!(ready[2].content[2], text("typed first"), "results first");
+        assert!(matches!(&ready[4].content[0], Content::ToolResult { id, .. } if id == "c"));
+        assert_eq!(ready[5].role, Role::Assistant);
+        assert!(ready.windows(2).all(|w| w[0].role != w[1].role), "{ready:?}");
+    }
+
+    #[test]
+    fn a_good_history_is_left_as_it_is() {
+        let good = vec![says(Role::User, vec![Content::Text { text: "x".into() }]), says(Role::Assistant, vec![call("a")]), says(Role::User, vec![result("a")])];
+        assert_eq!(provider_ready(&good), good);
+    }
+}

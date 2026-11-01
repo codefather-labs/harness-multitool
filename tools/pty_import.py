@@ -33,6 +33,9 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
     os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
     row = f'binary = "{fake}"\n'
 open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovider = "claude-code"\nmodel = "{model}"\n\n[session.providers.claude-code]\nkind = "claude-code"\n{row}')
+if os.environ.get("ON_GPT") == "1":  # The owner's plan: their sign-in by a link, nothing read or copied.
+    os.makedirs(home + "/data/harness-multitool"); os.symlink(os.path.expanduser("~/.local/share/harness-multitool/auth"), home + "/data/harness-multitool/auth")
+    open(home + "/cfg/harness-multitool/config.toml", "w").write('[session]\nprovider="chatgpt"\nmodel="gpt-6.1-sol"\nmax_tokens=4000\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n')
 env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=config_dir, TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 original = f"{config_dir}/projects/" + "".join(c if c.isascii() and c.isalnum() else "-" for c in root) + f"/{cid}.jsonl"
 size_before = os.path.getsize(original)

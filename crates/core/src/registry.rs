@@ -80,6 +80,8 @@ impl std::error::Error for RegistryError {}
 pub struct Parts {
     /// Runs turns instead of the providers, when set (IF-17).
     pub backend: Option<Rc<dyn harness_api::AgentBackend>>,
+    /// The backend's own form of a conversation, to hand it a session made elsewhere (IF-18).
+    pub conversations: Option<Rc<dyn harness_api::ConversationFormat>>,
     pub providers: BTreeMap<String, Rc<dyn Provider>>,
     pub router: Rc<dyn Router>,
     pub tools: BTreeMap<String, Rc<dyn Tool>>,
@@ -184,6 +186,7 @@ impl Registry {
         }
         Ok(Parts {
             backend: None,
+            conversations: None,
             providers,
             router: self.routers.build(&selection.router, &cx("router", &selection.router))?,
             tools,

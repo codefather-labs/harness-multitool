@@ -21,6 +21,7 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0015](0015-callback-handlers-are-plugins.md) | Callback handlers are plugins: one interface for the standard and custom types, plugged in through the TUI's settings | accepted |
 | [0021](0021-agent-behaviour.md) | How the agent behaves: plan first, then the mode the work needs | accepted |
 | [0022](0022-claude-code-conversations.md) | Moving a Claude Code conversation onto the harness | accepted |
+| [0023](0023-the-log-is-the-conversation.md) | The log is the conversation; each provider's form is written from it | accepted |
 | [0020](0020-claude-code-delegate.md) | Claude Code as a delegate agent, outside the default build | proposed |
 | [0019](0019-vendor-documented-sign-in.md) | A subscription sign-in ships where the vendor documents it for other apps | accepted |
 | [0016](0016-plan-mode.md) | Plan mode: the classic plan mode with the accent on the journal, mind maps and flowcharts | accepted |

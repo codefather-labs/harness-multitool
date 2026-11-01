@@ -1211,3 +1211,43 @@ fn the_agent_cannot_enter_debug_mode_while_planning() {
     assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { id, output, is_error: true } if id == "d" && output.contains("plan_exit"))));
     assert!(!entries.iter().any(|e| matches!(&e.event, Event::StepDebug { .. })));
 }
+
+/// CON-73: a session made elsewhere goes on with any provider, and what it is sent is valid.
+#[test]
+fn a_conversation_brought_in_goes_on_with_another_provider_and_valid_history() {
+    let root = temp_dir("carry");
+    let data = temp_dir("carry-data");
+    let call = ToolCall { id: "old1".into(), name: "Bash".into(), input: json!({"command": "ls"}) };
+    let events = vec![
+        Event::UserMessage { text: "long gone".into() },
+        Event::TurnStarted { turn: 1, provider: "claude-code".into(), model: "m".into() },
+        Event::TextDelta { text: "dropped by the summary".into() },
+        Event::ContextSummary { text: "we were building a parser".into() },
+        Event::UserMessage { text: "go on".into() },
+        Event::TurnStarted { turn: 2, provider: "claude-code".into(), model: "m".into() },
+        Event::OpaqueBlock { block: json!({"type": "thinking", "signature": "someone else's"}) },
+        Event::ModelToolCall { call: call.clone() },
+        Event::ToolRequested { call, capabilities: vec![] },
+        Event::UserMessage { text: "interrupted, the call has no result".into() },
+        Event::ConversationImported { source: "claude-code".into(), id: "their-id".into(), title: "old talk".into() },
+    ];
+    let entries: Vec<LogEntry> = events.into_iter().enumerate().map(|(seq, event)| LogEntry { seq: seq as u64, at_ms: 1000, event }).collect();
+    let info = ConversationInfo { id: "their-id".into(), title: "old talk".into(), last_ms: 1000, bytes: 1 };
+    let session = harness_session::store_imported(&data, &root, &ImportedConversation { info, entries, damaged: 0 }, 5).unwrap();
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Going on.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    sessions.resume(1, &session);
+    let (entries, _, _) = drive(&mut sessions, &["what were we building?"], Answer::AllowOnce);
+    assert!(entries.iter().any(|e| matches!(e.event, Event::BackendSessionLost)), "the other provider's session no longer holds it");
+    let requests = seen.lock().unwrap();
+    let body: serde_json::Value = serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let sent = body["messages"].to_string();
+    assert!(sent.contains("we were building a parser") && sent.contains("what were we building?"));
+    assert!(!sent.contains("dropped by the summary"), "only from the summary on; older asks stay as a one-line note");
+    let messages = body["messages"].as_array().unwrap();
+    assert!(messages.windows(2).all(|w| w[0]["role"] != w[1]["role"]), "{sent}");
+    assert!(!sent.contains("someone else's"), "what another signed goes to no one else: {sent}");
+    let at = messages.iter().position(|m| m["content"].to_string().contains("\"tool_use\"")).unwrap();
+    assert_eq!(messages[at + 1]["content"][0]["type"], "tool_result", "the cut-off call is answered, first thing: {sent}");
+    assert_eq!(messages[at + 1]["content"][0]["tool_use_id"], "old1");
+}

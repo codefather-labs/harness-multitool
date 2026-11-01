@@ -157,7 +157,7 @@ impl ContextStrategy for JournalAware {
                 upto = cut;
                 compacted = Some(Compaction { upto: cut, tokens_before, tokens_after: estimate(&state.messages[cut..]) });
             }
-            Ok(TurnContext { system: Some(system), messages: from_cut(&state.messages, upto), compacted })
+            Ok(TurnContext { system: Some(system), messages: harness_api::provider_ready(&from_cut(&state.messages, upto)), compacted })
         })
     }
 }
