@@ -68,7 +68,7 @@ print("url:",url,"daemon pid",before["pid"])
 hold[0]=6.0; typ("a slow one\r"); pump(0.6)
 typ("/reload\r"); pump(0.3); typ("half a thought")
 show("the reload asked during a slow turn")
-assert "generating" in text()
+assert "Esc stops" in text()
 t0=time.time()
 os_pid=pid
 assert wait_for("Answer number 2",20), text()

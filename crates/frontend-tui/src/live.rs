@@ -11,8 +11,12 @@ use serde_json::Value;
 use crate::model::{
     Arrow, Branch, FlowDirection, FlowNode, Flowchart, FlowchartEvent, Gate, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Symbol,
 };
-use crate::model::{FlowInstanceView, Inbound, InboundKind, ThinkingView};
+use crate::model::{Activity, FlowInstanceView, Inbound, InboundKind, ThinkingView};
 use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, PermissionView, Role, SessionView, Tone, ToolBody, ToolCall, ToolIcon, ToolState};
+
+const WAITING: &str = "Waiting for the model";
+/// How often the spinner moves.
+pub const SPIN_MS: u64 = 100;
 
 /// Tool output lines shown before `+N more lines`.
 const OUTPUT_LINES: usize = 8;
@@ -22,6 +26,8 @@ pub type TimeFormat = fn(u64) -> String;
 
 /// What the mapping remembers between entries: where each tool call's card is.
 pub struct Feed {
+    /// The tool a run is on, for the activity line.
+    running: String,
     time: TimeFormat,
     calls: HashMap<String, CallPlace>,
     cost_micro_usd: u64,
@@ -43,10 +49,11 @@ struct CallPlace {
 
 impl Feed {
     pub fn new(time: TimeFormat, context_window: u64) -> Self {
-        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new(), thinking_started: None, instances: HashMap::new() }
+        Feed { running: String::new(), time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new(), thinking_started: None, instances: HashMap::new() }
     }
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
+        self.note_activity(v, entry);
         let time = (self.time)(entry.at_ms);
         match &entry.event {
             Event::UserMessage { text } => {
@@ -238,7 +245,35 @@ impl Feed {
     }
 
     /// The run has ended, however it ended: nothing is generating any more.
+    /// What the status line's TOKENS is out of, once the model changes.
+    pub fn set_context_window(&mut self, window: u64) {
+        self.context_window = window;
+    }
+
+    /// The activity on the status line follows the log.
+    fn note_activity(&mut self, v: &mut SessionView, entry: &LogEntry) {
+        let state = match &entry.event {
+            Event::UserMessage { .. } | Event::Inbound { .. } => WAITING.to_string(),
+            Event::TurnStarted { model, .. } => format!("Waiting for {model}"),
+            Event::ThinkingDelta { .. } => "Thinking".to_string(),
+            Event::TextDelta { .. } => "Writing".to_string(),
+            Event::ToolRequested { call, .. } | Event::ModelToolCall { call } => {
+                self.running = call.name.clone();
+                format!("Running {}", call.name)
+            }
+            Event::ToolDecision { allowed: true, .. } => format!("Running {}", self.running),
+            Event::ToolResult { .. } => WAITING.to_string(),
+            Event::Verification { .. } => "Checking the result".to_string(),
+            Event::TaskState { to: harness_api::TaskState::Verifying, .. } => "Checking the result".to_string(),
+            Event::Compacted { .. } => "Compacting the conversation".to_string(),
+            _ => return,
+        };
+        let activity = v.activity.get_or_insert_with(|| Activity { started_ms: entry.at_ms, now_ms: entry.at_ms, ..Default::default() });
+        activity.state = state;
+    }
+
     pub fn run_ended(&mut self, v: &mut SessionView) {
+        v.activity = None;
         if self.thinking_started.take().is_some() {
             let secs = live_thinking(v).map_or(0, |t| t.secs);
             finish_thinking(v, secs);
@@ -382,6 +417,20 @@ pub const PULSE_MS: u64 = 1000;
 
 /// Moves the running pulses on: soft, up and down by colour. Returns whether any is still alive,
 /// so the app knows to keep drawing.
+/// Keeps the activity line going: it starts with the run, before the log has said anything, moves
+/// on ten times a second, and redraws nothing between runs. True if it changed.
+pub fn tick_activity(v: &mut SessionView, now_ms: u64) -> bool {
+    if !v.generating {
+        return v.activity.take().is_some();
+    }
+    let activity = v.activity.get_or_insert_with(|| Activity { state: WAITING.to_string(), started_ms: now_ms, now_ms: 0 });
+    if activity.now_ms / SPIN_MS == now_ms / SPIN_MS {
+        return false;
+    }
+    activity.now_ms = now_ms;
+    true
+}
+
 pub fn tick_pulses(v: &mut SessionView, now_ms: u64) -> bool {
     let mut any = false;
     for item in &mut v.transcript {
@@ -569,6 +618,58 @@ fn short(n: u64) -> String {
 
 fn duration(ms: u64) -> String {
     if ms >= 1000 { format!("{:.1}s", ms as f64 / 1000.0) } else { format!("{ms}ms") }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use harness_api::event::LogEntry as Entry;
+
+    fn at(at_ms: u64, event: Event) -> Entry {
+        Entry { seq: 0, at_ms, event }
+    }
+
+    #[test]
+    fn the_line_follows_the_run_and_counts_from_its_start() {
+        let mut f = Feed::new(|_| String::new(), 1000);
+        let mut v = SessionView::default();
+        assert!(!tick_activity(&mut v, 500), "idle: nothing to redraw");
+        v.generating = true;
+        assert!(tick_activity(&mut v, 1000));
+        assert_eq!(v.activity.as_ref().map(|a| (a.state.as_str(), a.started_ms)), Some(("Waiting for the model", 1000)));
+        assert!(!tick_activity(&mut v, 1050), "same frame, no redraw");
+        assert!(tick_activity(&mut v, 1100));
+
+        let state = |v: &SessionView| v.activity.as_ref().map(|a| a.state.clone()).unwrap();
+        let call = LogCall { id: "c".into(), name: "shell".into(), input: serde_json::json!({}) };
+        f.apply(&mut v, &at(1200, Event::TurnStarted { turn: 1, provider: "p".into(), model: "m1".into() }));
+        assert_eq!(state(&v), "Waiting for m1");
+        f.apply(&mut v, &at(1300, Event::ThinkingDelta { text: "hm".into() }));
+        assert_eq!(state(&v), "Thinking");
+        f.apply(&mut v, &at(1400, Event::TextDelta { text: "ok".into() }));
+        assert_eq!(state(&v), "Writing");
+        f.apply(&mut v, &at(1500, Event::ToolRequested { call: call.clone(), capabilities: vec![] }));
+        assert_eq!(state(&v), "Running shell");
+        v.activity.as_mut().unwrap().state = "Waiting for your answer".into();
+        f.apply(&mut v, &at(1600, Event::ToolDecision { id: "c".into(), allowed: true, by: harness_api::event::DecidedBy::User, reason: None }));
+        assert_eq!(state(&v), "Running shell");
+        f.apply(&mut v, &at(1700, Event::ToolResult { id: "c".into(), output: "x".into(), is_error: false }));
+        assert_eq!(state(&v), "Waiting for the model");
+        assert_eq!(v.activity.as_ref().unwrap().started_ms, 1000, "the count is the run's, not the state's");
+
+        f.run_ended(&mut v);
+        assert!(v.activity.is_none());
+    }
+
+    #[test]
+    fn an_old_log_replayed_leaves_no_line() {
+        let mut f = Feed::new(|_| String::new(), 1000);
+        let mut v = SessionView::default();
+        f.apply(&mut v, &at(5, Event::UserMessage { text: "hi".into() }));
+        f.run_ended(&mut v);
+        assert!(v.activity.is_none());
+        assert!(!tick_activity(&mut v, 99_000));
+    }
 }
 
 #[cfg(test)]

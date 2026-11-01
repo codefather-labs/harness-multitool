@@ -168,6 +168,8 @@ pub const PLAN_PROVIDER: &str = "gpt-subscription";
 pub struct ModelChoice {
     pub id: String,
     pub detail: String,
+    /// Its context window, where the server says.
+    pub context: Option<u64>,
 }
 
 /// The chosen provider's sign-in, on the Provider page of the settings.
@@ -409,6 +411,14 @@ pub struct TipPart {
     pub code: bool,
 }
 
+/// What the agent is doing during a run, for the line above the status line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Activity {
+    pub state: String,
+    pub started_ms: u64,
+    pub now_ms: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionView {
     pub transcript: Vec<Item>,
@@ -420,6 +430,8 @@ pub struct SessionView {
     pub clock: u32,
     /// The agent is producing a reply (`generating…` on the last assistant turn).
     pub generating: bool,
+    /// What the run is doing now; `None` between runs.
+    pub activity: Option<Activity>,
     /// `/task` armed the next message as a task, with these commands.
     pub task: Option<Vec<String>>,
 }

@@ -23,6 +23,9 @@ use crate::theme::Theme;
 /// between cards (a cell holds two colours; a half-cell stripe could not end with them).
 const STRIPE: &str = "█";
 
+/// How many lines of live reasoning its window shows.
+const THINKING_LINES: usize = 5;
+
 /// Where a card's text starts: the stripe, then two cells of air.
 const CX: u16 = 3;
 /// Rows between two items: none; every item ends with a half-row separator instead (see
@@ -227,8 +230,8 @@ fn plain(c: Color) -> Style {
     Style::default().fg(c)
 }
 
-/// Draws one item `width` columns wide. `generating` marks the newest assistant turn as busy.
-pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], generating: bool) -> Drawn {
+/// Draws one item `width` columns wide.
+pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent]) -> Drawn {
     match it {
         Item::Welcome { title, tagline } => card(width, t, t.accent_line, vec![Span::styled("WELCOME", bold(t.accent))], vec![
             vec![Span::styled(title.clone(), bold(t.text))],
@@ -241,7 +244,7 @@ pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], generating
             vec![Span::styled(label.clone(), bold(t.accent))],
             lines.iter().map(|l| vec![Span::styled(" • ", plain(t.text_muted)), Span::styled(l.clone(), plain(t.text))]).collect(),
         ),
-        Item::Turn { role, time, lines, attached } => turn(width, t, known, *role, time, lines, attached, generating),
+        Item::Turn { role, time, lines, attached } => turn(width, t, known, *role, time, lines, attached),
         Item::Tool(c) => {
             let mut cv = Canvas::new(width, t, known);
             let h = tool(&mut cv, 0, 0, width, c, t.surface);
@@ -379,7 +382,7 @@ fn card(width: u16, t: &Theme, stripe: Color, label: Vec<Span<'static>>, body: V
 }
 
 #[allow(clippy::too_many_arguments)]
-fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item], generating: bool) -> Drawn {
+fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item]) -> Drawn {
     let mut cv = Canvas::new(width, t, known);
     let tw = width.saturating_sub(CX + 2);
     let name = match role {
@@ -388,9 +391,6 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
     };
     let bg = t.surface;
     cv.line(CX, 0, tw, vec![Span::styled(name, bold(t.accent)), Span::styled(format!("  {time}"), plain(t.text_muted))], bg);
-    if generating {
-        cv.line_right(width - 2, 0, vec![Span::styled("◌ ", plain(t.accent)), Span::styled("generating…", plain(t.text_muted))], bg);
-    }
     let mut y = 1;
     // The reasoning comes before the answer it led to, wherever it arrived.
     for (i, a) in attached.iter().enumerate().filter(|(_, a)| matches!(a, Item::Thinking(_))) {
@@ -503,7 +503,7 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
         Item::Flowchart(e) => flowchart(cv, x, y, w, e, bg),
         Item::Hook(e) => hook(cv, x, y, w, e, bg),
         other => {
-            let d = item(other, w, t, cv.journal, false);
+            let d = item(other, w, t, cv.journal);
             cv.embed(x, y, d)
         }
     }
@@ -547,6 +547,9 @@ fn thinking(cv: &mut Canvas, x: u16, y: u16, w: u16, v: &ThinkingView, bg: Color
         if text.is_empty() {
             text.push(String::new());
         }
+        // A small window: the latest lines, so long reasoning does not push the answer away.
+        let skip = text.len().saturating_sub(THINKING_LINES);
+        text.drain(..skip);
         let h = text.len() as u16 + 3;
         cv.grow(y + h);
         cv.frame(Rect::new(x, y, w, h), t.accent_line, bg);
@@ -568,15 +571,19 @@ fn thinking(cv: &mut Canvas, x: u16, y: u16, w: u16, v: &ThinkingView, bg: Color
     cv.line(x + 1, y, w.saturating_sub(2), vec![Span::styled(format!("{chevron} Thought for {}s", v.secs), plain(t.text_muted))], row_bg);
     let sub = cv.sub;
     cv.hits.push((Rect::new(x, y, w, 1), sub, MapElement::Thinking));
-    let mut h = 1;
-    if v.expanded {
-        let iw = w.saturating_sub(4);
-        for l in v.lines.iter().flat_map(|l| wrap(l, iw)) {
-            cv.line(x + 2, y + h, iw, vec![Span::styled(l, plain(t.text_muted))], bg);
-            h += 1;
-        }
+    if !v.expanded {
+        return 1;
     }
-    h
+    // Unfolded, it is a window of its own in the message, under its line.
+    let iw = w.saturating_sub(4);
+    let text: Vec<String> = v.lines.iter().flat_map(|l| wrap(l, iw)).collect();
+    let h = text.len() as u16 + 2;
+    cv.grow(y + 1 + h);
+    cv.frame(Rect::new(x, y + 1, w, h), t.border_subtle, bg);
+    for (i, l) in text.into_iter().enumerate() {
+        cv.line(x + 2, y + 2 + i as u16, iw, vec![Span::styled(l, plain(t.text_muted))], bg);
+    }
+    1 + h
 }
 
 fn status_badge(c: &ToolCall, t: &Theme, bg: Color) -> (Vec<Span<'static>>, Color) {
@@ -1064,11 +1071,10 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
 
 /// The items that reach into a view `rows` tall (the transcript's height plus the rows
 /// scrolled back), drawn at `width`, oldest first, with a spacer row before each and after the
-/// last; the newest assistant turn is marked busy when `generating`. The second value says
+/// last. The second value says
 /// whether the first item was reached, i.e. the whole transcript is in the stack. Older items
 /// are not drawn at all, so a frame costs what is on screen, not the length of the session.
-pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], generating: bool, rows: u16) -> (Vec<Drawn>, bool) {
-    let last_assistant = items.iter().rposition(|i| matches!(i, Item::Turn { role: Role::Assistant, .. }));
+pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], rows: u16) -> (Vec<Drawn>, bool) {
     let mut drawn: Vec<Drawn> = Vec::new();
     let mut acc = 0u16;
     let mut whole = true;
@@ -1077,7 +1083,7 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ge
             whole = false;
             break;
         }
-        let mut d = item(it, width, t, known, generating && Some(i) == last_assistant);
+        let mut d = item(it, width, t, known);
         d.item = Some(i);
         acc = acc.saturating_add(d.buf.area.height + 1);
         drawn.push(d);
@@ -1097,8 +1103,8 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ge
 }
 
 /// Every item drawn at `width` (tests and tools; the view draws only what is visible).
-pub fn all(items: &[Item], width: u16, t: &Theme, generating: bool) -> Vec<Drawn> {
-    visible(items, width, t, &[], generating, u16::MAX).0
+pub fn all(items: &[Item], width: u16, t: &Theme) -> Vec<Drawn> {
+    visible(items, width, t, &[], u16::MAX).0
 }
 
 /// The transcript's total height in rows: items plus the gaps between them.
@@ -1155,6 +1161,44 @@ pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> (Ve
 }
 
 #[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    fn rows(d: &Drawn) -> Vec<String> {
+        (0..d.buf.area.height).map(|y| (0..d.buf.area.width).map(|x| d.buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    fn turn_with(view: ThinkingView) -> Item {
+        Item::Turn { role: Role::Assistant, time: "12:00".into(), lines: vec!["The answer.".into()], attached: vec![Item::Thinking(view)] }
+    }
+
+    #[test]
+    fn reasoning_has_a_small_window_in_the_message() {
+        let t = Theme::builtin("dark").unwrap();
+        let lines: Vec<String> = (0..20).map(|i| format!("thought {i}")).collect();
+        let live = rows(&item(&turn_with(ThinkingView { lines: lines.clone(), live: true, secs: 3, expanded: false }), 60, &t, &[]));
+        let all = live.join("\n");
+        assert!(all.contains("THINKING") && all.contains("thought 19") && !all.contains("thought 14 "), "{all}");
+        assert!(all.contains("thought 15") && all.contains("The answer."), "{all}");
+        assert!(live.iter().any(|r| r.contains('╭')), "framed: {all}");
+
+        let folded = rows(&item(&turn_with(ThinkingView { lines: lines.clone(), live: false, secs: 3, expanded: false }), 60, &t, &[])).join("\n");
+        assert!(folded.contains("Thought for 3s") && !folded.contains("thought 1"), "{folded}");
+
+        let open = rows(&item(&turn_with(ThinkingView { lines, live: false, secs: 3, expanded: true }), 60, &t, &[]));
+        let text = open.join("\n");
+        assert!(text.contains("thought 0") && text.contains("thought 19") && open.iter().any(|r| r.contains('╭')), "{text}");
+    }
+
+    #[test]
+    fn no_card_says_generating() {
+        let t = Theme::builtin("dark").unwrap();
+        let text = rows(&item(&turn_with(ThinkingView::default()), 60, &t, &[])).join("\n");
+        assert!(!text.contains("generating"), "{text}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1169,7 +1213,7 @@ mod tests {
         }
         let start = std::time::Instant::now();
         for _ in 0..10 {
-            let d = all(&w.view().transcript, 186, &t, false);
+            let d = all(&w.view().transcript, 186, &t);
             std::hint::black_box(d);
         }
         eprintln!("items {} frame {:?}", w.view().transcript.len(), start.elapsed() / 10);
@@ -1186,9 +1230,9 @@ mod tests {
     fn a_turn_grows_with_its_text_and_attachments() {
         let t = Theme::builtin("dark").unwrap();
         let short = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["hi".into()], attached: vec![] };
-        assert_eq!(item(&short, 40, &t, &[], false).buf.area.height, 2);
+        assert_eq!(item(&short, 40, &t, &[]).buf.area.height, 2);
         let long = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["word ".repeat(20)], attached: vec![] };
-        assert!(item(&long, 40, &t, &[], false).buf.area.height > 3);
+        assert!(item(&long, 40, &t, &[]).buf.area.height > 3);
     }
 
     /// The marks do not reach the screen, a bold run keeps its style across a wrap, and the text
@@ -1200,7 +1244,7 @@ mod tests {
         let row = |d: &Drawn, y: u16, w: u16| -> String { (0..w).map(|x| d.buf[(x, y)].symbol().chars().next().unwrap_or(' ')).collect() };
         let answer = "The answer is **a bold stretch long enough to wrap around the narrow card here** and `code`.";
         let turn = |role| Item::Turn { role, time: "1".into(), lines: vec![answer.into(), "```".into(), "    x = 1".into(), "```".into()], attached: vec![] };
-        let d = item(&turn(Role::Assistant), 40, &t, &[], false);
+        let d = item(&turn(Role::Assistant), 40, &t, &[]);
         let all: String = (0..d.buf.area.height).map(|y| row(&d, y, 40)).collect::<Vec<_>>().join("|");
         assert!(!all.contains("**") && !all.contains('`'), "{all}");
         for word in ["answer", "bold", "stretch", "narrow", "wrap", "code", "x = 1"] {
@@ -1220,7 +1264,7 @@ mod tests {
         assert!(bold_at("stretch") && bold_at("narrow"), "bold on both sides of the wrap");
         assert!(!bold_at("answer"));
 
-        let d = item(&turn(Role::User), 40, &t, &[], false);
+        let d = item(&turn(Role::User), 40, &t, &[]);
         let all: String = (0..d.buf.area.height).map(|y| row(&d, y, 40)).collect::<Vec<_>>().join("|");
         assert!(all.contains("**") && all.contains("```"), "as typed: {all}");
     }

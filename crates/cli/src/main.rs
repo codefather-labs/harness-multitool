@@ -409,6 +409,8 @@ type LoginEvents = (std::sync::mpsc::Sender<LoginOutcome>, std::sync::mpsc::Rece
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    /// What each tab's plan usage would cost on the API, in micro-dollars.
+    plan_cost: std::collections::HashMap<u64, u64>,
     /// Tabs to move to new settings when their run ends.
     rebind_after: std::collections::HashSet<u64>,
     toast_shown: Option<(String, std::time::Instant)>,
@@ -730,7 +732,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -817,6 +819,9 @@ impl Live {
     /// settings, a running one once its run ends. The status line says so at once, which is also
     /// where the settings window reads the current choice from.
     fn apply_to_tabs(&mut self, w: &mut frontend_tui::model::Workspace, provider: &str, model: &str) {
+        for feed in self.feeds.values_mut() {
+            feed.set_context_window(self.context_window);
+        }
         for t in &mut w.tabs {
             frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
             frontend_tui::live::set_status(&mut t.view, "MODEL", model);
@@ -923,9 +928,10 @@ impl Live {
         w.toast = Some(frontend_tui::overlay::system_toast(&told));
         // Signing in says what is wanted: the plan is put to use, with its first model, at once.
         let use_plan = event.as_ref().ok().and_then(|(_, models)| models.first().map(|m| m.id.clone()));
+        let plan_context = event.as_ref().ok().and_then(|(_, models)| models.first().and_then(|m| m.context));
         let (mut applied, email) = (false, event.as_ref().ok().and_then(|(email, _)| email.clone()));
         if let Some(model) = &use_plan
-            && self.save_settings("chatgpt", model).is_ok()
+            && self.save_settings("chatgpt", model, plan_context).is_ok()
         {
             self.apply_to_tabs(w, "chatgpt", model);
             applied = true;
@@ -977,7 +983,7 @@ impl Live {
         Ok(())
     }
 
-    fn save_settings(&mut self, provider: &str, model: &str) -> Result<()> {
+    fn save_settings(&mut self, provider: &str, model: &str, context: Option<u64>) -> Result<()> {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
@@ -988,6 +994,10 @@ impl Live {
         if provider == "chatgpt" {
             c.session.providers.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai-responses"}));
             c.session.auth.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"oauth": "chatgpt"}));
+        }
+        // What the server said this model holds: TOKENS and compaction go by it.
+        if let Some(window) = context {
+            c.session.providers.entry(provider.to_string()).or_insert_with(|| serde_json::json!({}))["context_window"] = serde_json::json!(window);
         }
         config::save(&c)?;
         if self.real {
@@ -1176,7 +1186,9 @@ impl Live {
                 }
                 Outgoing::SaveSettings { provider, model } => {
                     let provider = provider_id(&provider);
-                    let note = match self.save_settings(&provider, &model) {
+                    let auth = w.auth.clone().unwrap_or_default();
+                    let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
+                    let note = match self.save_settings(&provider, &model, context) {
                         Ok(()) => {
                             self.apply_to_tabs(w, &provider, &model);
                             format!("This session and new ones use {provider} / {model}.")
@@ -1208,6 +1220,16 @@ impl Live {
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.apply(&mut t.view, &entry);
+                        // A plan is not billed per token: its COST says so, and what the same
+                        // tokens would cost on the API.
+                        if let harness_api::Event::TurnFinished { usage, .. } = &entry.event {
+                            let field = |name: &str| t.view.status.fields.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).unwrap_or_default();
+                            if field("ADAPTER") == "chatgpt" {
+                                let total = self.plan_cost.entry(tab).or_default();
+                                *total += harness_provider_openai::prices::cost_micro_usd(&field("MODEL"), usage).unwrap_or(0);
+                                frontend_tui::live::set_status(&mut t.view, "COST", &format!("in plan (~${:.2} at API)", *total as f64 / 1e6));
+                            }
+                        }
                         w.journal.extend(feed.take_known());
                         if Some(tab) != active && matches!(entry.event, harness_api::Event::TurnFinished { .. }) {
                             t.mark = match t.mark {
@@ -1218,6 +1240,9 @@ impl Live {
                     }
                 }
                 FromSession::Ask { tab, call, capabilities } => {
+                    if let Some(a) = w.tabs.iter_mut().find(|t| t.id == tab).and_then(|t| t.view.activity.as_mut()) {
+                        a.state = "Waiting for your answer".to_string();
+                    }
                     let view = permission(tab, &call, &capabilities, &self.root);
                     if w.overlay.is_none() {
                         w.overlay = Some(Overlay::Permission(view));
@@ -1308,7 +1333,7 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
                 (_, None) => "price unknown".to_string(),
             };
             let context = m.context.map_or(String::new(), |c| format!(" · {}k", c / 1000));
-            frontend_tui::model::ModelChoice { id: m.id, detail: format!("{cost}{context}") }
+            frontend_tui::model::ModelChoice { id: m.id, detail: format!("{cost}{context}"), context: m.context }
         })
         .collect()
 }
@@ -1537,6 +1562,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
+                dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_activity(&mut t.view, now) | any);
                 dirty |= live.tick_prompt(w);
                 live.tick_first_start(w);
                 dirty |= live.tick_toast(w);

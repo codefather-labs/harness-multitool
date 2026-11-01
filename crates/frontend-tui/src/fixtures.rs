@@ -169,6 +169,7 @@ pub fn reasoning() -> AppState {
         status: status("8.4k / 200k", "$0.06", "$10.00"),
         composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints() },
         generating: true,
+        activity: Some(crate::model::Activity { state: "Thinking".into(), started_ms: 0, now_ms: 12_000 }),
         ..Default::default()
     };
     AppState { header: header("session/calc"), eyes: Eyes::Open, pictures: false, mode: Mode::Session(ws(view, "calc")) }
@@ -435,6 +436,7 @@ pub fn inbound_messages() -> AppState {
         status: status("24.7k / 200k", "$0.58", "$9.42"),
         composer: composer("Type a message, use / for commands, or drop files...", session_hints()),
         generating: true,
+        activity: Some(crate::model::Activity { state: "Thinking".into(), started_ms: 0, now_ms: 12_000 }),
         ..Default::default()
     };
     let mut w = ws(view, "4f7e3c2a");

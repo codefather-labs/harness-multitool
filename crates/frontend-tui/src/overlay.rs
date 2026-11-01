@@ -111,7 +111,7 @@ pub fn sample_auth() -> AuthPage {
         keys: vec![("Anthropic API".into(), "not set".into()), ("OpenAI-compatible".into(), "from OPENAI_API_KEY".into()), ("Local".into(), "none needed".into())],
         plan_status: "Signed in as you@example.com".into(),
         signed_in: true,
-        models: vec![ModelChoice { id: "gpt-5.5".into(), detail: "in your plan · 272k context".into() }, ModelChoice { id: "gpt-5.5-mini".into(), detail: "in your plan · 128k context".into() }],
+        models: vec![ModelChoice { id: "gpt-5.5".into(), detail: "in your plan · 272k context".into(), context: Some(272_000) }, ModelChoice { id: "gpt-5.5-mini".into(), detail: "in your plan · 128k context".into(), context: Some(128_000) }],
         ..Default::default()
     }
 }
@@ -587,7 +587,7 @@ fn models_for(s: &SettingsView) -> Vec<ModelChoice> {
     let listed = s.auth.provider_models.iter().find(|(p, _)| p == row).map_or(Vec::new(), |(_, m)| m.clone());
     // Anthropic's list needs a key too; until there is one, the models the harness knows.
     if listed.is_empty() && row == "Anthropic API" {
-        return MODELS.iter().map(|m| ModelChoice { id: m.to_string(), detail: String::new() }).collect();
+        return MODELS.iter().map(|m| ModelChoice { id: m.to_string(), detail: String::new(), context: None }).collect();
     }
     listed
 }
@@ -968,7 +968,7 @@ mod tests {
     use super::*;
 
     fn pick(id: &str) -> ModelChoice {
-        ModelChoice { id: id.into(), detail: format!("{id} costs") }
+        ModelChoice { id: id.into(), detail: format!("{id} costs"), context: None }
     }
 
     #[test]

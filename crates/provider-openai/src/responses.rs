@@ -16,11 +16,13 @@ pub struct Responses {
     base_url: String,
     context_window: u64,
     reasoning_summary: Option<String>,
+    /// The tokens are included in a plan, so nothing is charged per token.
+    on_plan: bool,
 }
 
 impl Responses {
-    /// Settings: `base_url`, `context_window`, `reasoning_summary` ("auto" shows the model's
-    /// reasoning, on models that have it).
+    /// Settings: `base_url`, `context_window`, `reasoning_summary`: "auto" by default, which shows
+    /// the model's reasoning; "off" asks for none, for a model that refuses the field.
     pub fn new(name: &str, auth: Rc<dyn Auth>, net: Rc<dyn Net>, settings: &Value) -> Self {
         Responses {
             name: name.to_string(),
@@ -28,8 +30,15 @@ impl Responses {
             net,
             base_url: settings["base_url"].as_str().unwrap_or("https://api.openai.com/v1").trim_end_matches('/').to_string(),
             context_window: settings["context_window"].as_u64().unwrap_or(128_000),
-            reasoning_summary: settings["reasoning_summary"].as_str().map(str::to_string),
+            reasoning_summary: Some(settings["reasoning_summary"].as_str().unwrap_or("auto")).filter(|s| *s != "off").map(str::to_string),
+            on_plan: false,
         }
+    }
+
+    /// Its tokens come from a plan, not a per-token bill.
+    pub fn on_plan(mut self, on_plan: bool) -> Self {
+        self.on_plan = on_plan;
+        self
     }
 
     fn body(&self, request: &ModelRequest) -> Value {
@@ -177,7 +186,11 @@ impl Provider for Responses {
                     }
                 }
             }
-            reader.finish()
+            let mut end = reader.finish()?;
+            if !self.on_plan && self.base_url.contains("api.openai.com") {
+                end.cost_micro_usd = crate::prices::cost_micro_usd(&request.model, &end.usage);
+            }
+            Ok(end)
         })
     }
 }
@@ -219,7 +232,7 @@ mod tests {
         let body = p.body(&request());
         assert_eq!((body["store"].clone(), body["stream"].clone()), (json!(false), json!(true)));
         assert_eq!(body["instructions"], "be brief");
-        for refused in ["max_output_tokens", "temperature", "previous_response_id", "metadata", "top_p", "user", "reasoning"] {
+        for refused in ["max_output_tokens", "temperature", "previous_response_id", "metadata", "top_p", "user"] {
             assert!(body.get(refused).is_none(), "{refused}");
         }
         assert!(!body["input"].to_string().contains("\"system\""), "system goes in instructions");
@@ -228,8 +241,9 @@ mod tests {
         assert_eq!(body["input"][2]["arguments"], "{\"path\":\"a\"}");
         assert_eq!(body["input"][3], json!({"type": "function_call_output", "call_id": "c1", "output": "text"}));
         assert_eq!(body["tools"][0]["parameters"], json!({"type": "object"}));
-        let with = Responses::new("c", Rc::new(NoAuth), Rc::new(NoNet), &json!({"reasoning_summary": "auto"}));
-        assert_eq!(with.body(&request())["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["summary"], "auto", "reasoning is shown by default");
+        let off = Responses::new("c", Rc::new(NoAuth), Rc::new(NoNet), &json!({"reasoning_summary": "off"}));
+        assert!(off.body(&request()).get("reasoning").is_none());
     }
 
     fn read(events: &[Value]) -> (Vec<ModelEvent>, PluginResult<TurnEnd>) {

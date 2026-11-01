@@ -98,7 +98,9 @@ impl TurnReader {
         }
         let Ok(e) = serde_json::from_str::<Value>(data) else { return true };
         if let Some(u) = e.get("usage").filter(|u| u.is_object()) {
-            self.usage.input = u["prompt_tokens"].as_u64().unwrap_or(0);
+            // The prompt's count includes what came from the cache, which costs less.
+            self.usage.cache_read = u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+            self.usage.input = u["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(self.usage.cache_read);
             self.usage.output = u["completion_tokens"].as_u64().unwrap_or(0);
         }
         let choice = &e["choices"][0];
@@ -199,7 +201,12 @@ impl Provider for OpenAiCompatible {
                     }
                 }
             }
-            reader.finish(sink)
+            let mut end = reader.finish(sink)?;
+            // The price table is OpenAI's: another server's same name may cost something else.
+            if self.base_url.contains("api.openai.com") {
+                end.cost_micro_usd = prices::cost_micro_usd(&request.model, &end.usage);
+            }
+            Ok(end)
         })
     }
 }

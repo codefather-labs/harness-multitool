@@ -127,7 +127,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     .areas(body);
     let tr = inset(transcript);
     let want = (v.scroll as u16).min(5000);
-    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, v.generating, tr.height.saturating_add(want));
+    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, tr.height.saturating_add(want));
     let total = crate::transcript::total_height(&drawn);
     // Scrolling stops at the first item; while older items exist beyond the stack, the stack
     // already covers the rows asked for.
@@ -152,6 +152,9 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     }
     widgets::rule(f, rule, t);
     widgets::status_line(f, status, t, &v.status);
+    if let Some(a) = &v.activity {
+        widgets::activity(f, status, t, a);
+    }
     let [input, _, button] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);

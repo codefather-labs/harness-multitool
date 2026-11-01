@@ -154,10 +154,11 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
     for name in std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str)) {
         let kind = settings.providers.get(name).and_then(|p| p["kind"].as_str()).map(str::to_string).unwrap_or_else(|| if name == "anthropic" { "anthropic".to_string() } else { "openai".to_string() });
         let provider_name = name.to_string();
+        let on_plan = settings.auth.get(name).is_some_and(|a| a["oauth"] == "chatgpt");
         r.provider(name, move |cx| {
             let auth = cx.auth.clone().ok_or("the provider was built before Auth")?;
             let provider: Rc<dyn Provider> = if kind == "openai-responses" {
-                Rc::new(harness_provider_openai::responses::Responses::new(&provider_name, auth, cx.platform.net.clone(), cx.settings))
+                Rc::new(harness_provider_openai::responses::Responses::new(&provider_name, auth, cx.platform.net.clone(), cx.settings).on_plan(on_plan))
             } else if kind == "anthropic" {
                 Rc::new(harness_provider_anthropic::Anthropic::new(auth, cx.platform.net.clone(), cx.platform.clock.clone(), cx.settings))
             } else {
