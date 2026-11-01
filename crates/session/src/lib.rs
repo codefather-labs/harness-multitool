@@ -34,6 +34,8 @@ pub struct Settings {
     pub max_tokens: u32,
     pub max_turns: Option<u32>,
     pub max_cost_usd: Option<f64>,
+    /// What the hook mode-guide does on a write with no plan: remind (default), enforce or off.
+    pub plan_first: Option<String>,
     /// Compact the conversation above this many tokens; 70% of the context window by default.
     pub compact_at_tokens: Option<u64>,
     pub tools: Vec<String>,
@@ -54,6 +56,7 @@ impl Default for Settings {
             max_turns: None,
             max_cost_usd: None,
             compact_at_tokens: None,
+            plan_first: None,
             tools: ["read", "edit", "shell", "search", "fetch"].into_iter().chain(harness_tools_memory::NAMES).map(String::from).collect(),
             hooks: Vec::new(),
             providers: BTreeMap::new(),
@@ -81,7 +84,7 @@ impl Settings {
             router: "one-model".into(),
             tools: self.tools.clone(),
             policy: "default".into(),
-            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(std::iter::once("docs-mirror".to_string())).collect(),
+            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(["docs-mirror".to_string(), "mode-guide".to_string()]).collect(),
             memory: "journal".into(),
             context: "journal-aware".into(),
             store: "files".into(),
@@ -109,6 +112,7 @@ fn env(name: &str) -> Option<String> {
 pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
+    let delegate_session = settings.runs_delegate();
     let context_budget = settings.compact_at_tokens.unwrap_or(settings.context_window() * 7 / 10);
     let sessions_dir = sessions_dir(data_dir, root);
     let (root_d, data_d) = (root.to_string(), std::path::PathBuf::from(data_dir));
@@ -131,7 +135,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
             let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
             Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(&data_d.join("journals"), &key, "multitool")?))
         })
-        .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget })))
+        .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget, mode_rules: !delegate_session })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
     for name in harness_tools_memory::NAMES {
@@ -141,6 +145,8 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<St
             Ok(Rc::new(tool))
         });
     }
+    let plan_first = harness_core::plan::PlanFirst::parse(settings.plan_first.as_deref());
+    r.hook("mode-guide", move |_| Ok(Rc::new(harness_core::plan::ModeGuide::new(plan_first))));
     let root_m = root.to_string();
     r.hook("docs-mirror", move |cx| {
         let memory = cx.memory.clone().ok_or("the docs mirror needs memory")?;

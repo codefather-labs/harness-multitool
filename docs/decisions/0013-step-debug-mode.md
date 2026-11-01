@@ -1,6 +1,6 @@
 # 0013 — Step-debug mode
 
-- **Status:** accepted, open to additions · **Decided by:** the project owner, 2026-11-01
+- **Status:** accepted, open to additions; when the mode is entered is amended by [ADR 0021](0021-agent-behaviour.md) · **Decided by:** the project owner, 2026-11-01
 - **Specs:** IF-0.5, IF-4, IF-6, IF-7, IF-11, IF-13, CON-24, CON-25, CON-27, CON-28, CON-29, INV-13; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers) and [ADR 0012](0012-flowcharts-as-live-pipelines.md) (live flowcharts)
 
 ## Decision

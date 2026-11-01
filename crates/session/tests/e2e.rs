@@ -941,3 +941,36 @@ fn a_build_without_the_delegate_says_so() {
     };
     assert!(message.contains("--features claude-code"), "{message}");
 }
+
+/// ADR 0021: the rules are in the prompt; a write with no plan reminds once, or is refused.
+#[test]
+fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
+    let root = temp_dir("rules");
+    let data = temp_dir("rules-data");
+    std::fs::write(format!("{root}/a.txt"), "a").unwrap();
+    let edit = |id: &'static str| anthropic_turn(Some((id, "edit", json!({"path": "a.txt", "old_text": "a", "new_text": "b"}))), "Editing.");
+    let (url, seen) = fake_endpoint(vec![edit("r1"), anthropic_turn(None, "Done.")]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    assert!(requests[0]["system"].as_str().unwrap().contains("call plan_enter first"));
+    assert!(!requests[0]["system"].as_str().unwrap().contains("no plan has been made"));
+    assert!(requests[1]["system"].as_str().unwrap().contains("no plan has been made"), "the reminder reaches the next turn");
+    assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "b", "a reminder blocks nothing");
+    assert!(requests[0]["tools"].to_string().contains("even if nobody said plan"));
+    assert_eq!(entries.iter().filter(|e| matches!(&e.event, Event::HookRan { hook, .. } if hook == "mode-guide")).count(), 1);
+
+    let root = temp_dir("rules2");
+    let data = temp_dir("rules2-data");
+    std::fs::write(format!("{root}/a.txt"), "a").unwrap();
+    let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("e3", "plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("enforce".into());
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
+    let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
+    assert!(result("e1").1 && result("e1").0.contains("plan_enter"), "{:?}", result("e1"));
+    assert!(result("e3").0.contains("debug_mode"), "{:?}", result("e3"));
+    assert!(!result("e4").1, "{:?}", result("e4"));
+    assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "b");
+}

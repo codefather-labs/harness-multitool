@@ -218,12 +218,12 @@ impl Engine {
         let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).collect();
         specs.push(ToolSpec {
             name: plan::ENTER_TOOL.into(),
-            description: "Enter plan mode to study a task and plan it before changing anything. Use it when asked to plan.".into(),
+            description: "Enter plan mode before building an app, a prototype, a feature or a fix, or any change that is not trivial, even if nobody said plan and even if the result was asked for directly. Study and plan there; nothing is built until the user approves.".into(),
             schema: serde_json::json!({"type": "object", "properties": {}}),
         });
         specs.push(ToolSpec {
             name: plan::EXIT_TOOL.into(),
-            description: "Show the user the plan and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
+            description: "Show the user the plan, after journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
             schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
         });
         specs.push(ToolSpec {
@@ -349,7 +349,7 @@ impl Engine {
         }
         self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: None });
         self.set_plan_mode(false, "user").await;
-        result("The user approved the plan. Plan mode is off: go on with the work.".into(), false);
+        result("The user approved the plan. Plan mode is off. If this is a fix, call debug_mode with on true now, reproduce it before changing anything, and verify after. Otherwise go on with the work.".into(), false);
     }
 
     /// One user message: runs turns until the model stops, then verifies when there is a

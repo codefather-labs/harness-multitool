@@ -12,11 +12,14 @@ const BINDING_CHARS: usize = 400;
 const ASK_CHARS: usize = 160;
 const LAST_ASK_CHARS: usize = 4000;
 
+/// In every session's prompt (ADR 0021): a model does not reach for a mode by itself.
+const AGENT_RULES: &str = "\n\nHow you work here. Before building an app, a prototype or a project, a feature or a fix, or any change that is not trivial, call plan_enter first: even if nobody said plan, even if the result was asked for directly. 'Let's try' or 'make a small app' state an intent; they do not approve a plan nobody has proposed yet. Switching a mode gives you its instructions and tools, so do not skip it. Exempt: answering, reading and diagnosing with no changes, and work inside a plan already approved. After an approved plan: a fix goes on in debug mode (debug_mode on: reproduce it before changing anything, verify after, then off); a feature goes on normally. Work ends with evidence in the journal, not a claim.";
+
 /// In the prompt only while the mode is on (ADR 0016).
 const PLAN_RULES: &str = "\n\nPLAN MODE is on. Plan, do not build; do not get distracted by anything else. Available now: the journal, mind maps and flowcharts, reading, searching, single read-only commands, and fetching from the web. Nothing else runs: no edits, no commits, nothing with side effects.\n- Journal every decision, finding, assumption and open question as you reach it.\n- Each work item of the plan is a journal todo with its test protocol: what to test, regressions included, how, under which conditions, what evidence proves it. Rules the work must follow are specifications and constraints.\n- Open a mind map for what is known about the task: decisions, questions, constraints, alternatives rejected.\n- Draw a flowchart for each flow the plan changes or adds.\nWhen the plan is ready, call plan_exit with it: only the user's approval ends this mode. The plan is what the journal and maps hold, so the next session finds it.";
 
 /// In the prompt only while the mode is on (ADR 0013).
-const STEP_DEBUG_RULES: &str = "\n\nSTEP-DEBUG MODE is on: you walk a running pipeline step by step.\n1. Build a flowchart for each pipeline from its design, ending in nodes of kind end.\n2. Instrument the project with callbacks to your callback URL: notification brings data to you, journal only records, flowstate_update (map, node, instance, state, data) moves the chart. Each needs a uuid and a type.\n3. Make the pipeline wait after each callback for your approve, with no timeout and no default action: it never advances on its own.\n4. Build the debug router by the one contract: debug_contract gives it. Approve always; step back only where it is really possible, otherwise no route and no stub. A product route imports and calls what the real code calls and holds no logic of its own.\n5. All of this runs only with MULTITOOL_DEBUG_MODE=1 and with authorization; without the gate the code is inert. Check your router with: multitool debug check <url>, with the token in MULTITOOL_DEBUG_TOKEN.\nHold one pass at a time, so you can check each event. At an end node the run is saved to .harness/debug/runs.sqlite and the chart starts over; debug_runs reads them. Call debug_mode with on false when done.";
+const STEP_DEBUG_RULES: &str = "\n\nSTEP-DEBUG MODE is on. For a fix: reproduce it before changing anything, and verify after. A small bug, one process and no pipeline: a failing test is the reproduction, and the rest of this does not apply. A pipeline: you walk it while it runs, step by step.\n1. Build a flowchart for each pipeline from its design, ending in nodes of kind end.\n2. Instrument the project with callbacks to your callback URL: notification brings data to you, journal only records, flowstate_update (map, node, instance, state, data) moves the chart. Each needs a uuid and a type.\n3. Make the pipeline wait after each callback for your approve, with no timeout and no default action: it never advances on its own.\n4. Build the debug router by the one contract: debug_contract gives it. Approve always; step back only where it is really possible, otherwise no route and no stub. A product route imports and calls what the real code calls and holds no logic of its own.\n5. All of this runs only with MULTITOOL_DEBUG_MODE=1 and with authorization; without the gate the code is inert. Check your router with: multitool debug check <url>, with the token in MULTITOOL_DEBUG_TOKEN.\nHold one pass at a time, so you can check each event. At an end node the run is saved to .harness/debug/runs.sqlite and the chart starts over; debug_runs reads them. Call debug_mode with on false when done.";
 
 pub struct JournalAware {
     pub root: String,
@@ -24,6 +27,8 @@ pub struct JournalAware {
     pub note: Option<String>,
     /// Compact when the conversation is estimated above this many tokens.
     pub budget_tokens: u64,
+    /// The rules on how to work; a delegate has not the tools they name yet.
+    pub mode_rules: bool,
 }
 
 /// A rough size: four characters a token. It only has to be stable and on the safe side.
@@ -117,6 +122,9 @@ impl JournalAware {
             for (id, title) in maps {
                 system.push_str(&format!("\n- #{id}: {title}"));
             }
+        }
+        if self.mode_rules {
+            system.push_str(AGENT_RULES);
         }
         if let Some(name) = &state.agent_name {
             system.push_str(&format!("\n\nYou go by the name {name} in this session."));
@@ -285,7 +293,7 @@ mod tests {
             m.push(call(&format!("c{i}")));
             m.push(result(&format!("c{i}")));
         }
-        let s = JournalAware { root: "/r".into(), note: None, budget_tokens: 500 };
+        let s = JournalAware { root: "/r".into(), note: None, budget_tokens: 500, mode_rules: true };
         let cut = s.next_cut(&m, 0).expect("a cut");
         assert_eq!(m[cut].role, Role::Assistant);
         let kept = from_cut(&m, cut);

@@ -1,7 +1,10 @@
 //! Plan mode (ADR 0016): what may run while the agent plans. The engine refuses the rest before
 //! hooks and policy, so no approval or remembered answer gets past it.
 
-use harness_api::Capability;
+use std::cell::Cell;
+
+use harness_api::event::HookOutcome;
+use harness_api::{BoxFuture, Capability, Hook, HookPoint, ToolCall};
 
 pub const ENTER_TOOL: &str = "plan_enter";
 pub const EXIT_TOOL: &str = "plan_exit";
@@ -38,6 +41,82 @@ pub fn refusal(capabilities: &[Capability]) -> Option<String> {
     })
 }
 
+/// What `mode-guide` does on a write with no plan made in the session (CON-64).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanFirst {
+    Remind,
+    Enforce,
+    Off,
+}
+
+impl PlanFirst {
+    pub fn parse(setting: Option<&str>) -> Self {
+        match setting {
+            Some("enforce") => PlanFirst::Enforce,
+            Some("off") => PlanFirst::Off,
+            _ => PlanFirst::Remind,
+        }
+    }
+}
+
+const WHY: &str = "This changes the project and no plan has been made in this session. If this is an app, a feature, a fix or any change that is not trivial, call plan_enter first.";
+
+/// The built-in hook holding to ADR 0021. Whether a task needs a plan stays the model's judgment:
+/// this only makes sure the question is asked, once per message, and never touches a read.
+pub struct ModeGuide {
+    plan_first: PlanFirst,
+    planned: Cell<bool>,
+    reminded: Cell<bool>,
+}
+
+impl ModeGuide {
+    pub fn new(plan_first: PlanFirst) -> Self {
+        ModeGuide { plan_first, planned: Cell::new(false), reminded: Cell::new(false) }
+    }
+
+    fn writes(call: &ToolCall) -> bool {
+        match call.name.as_str() {
+            "edit" => true,
+            "shell" => !call.input["command"].as_str().is_some_and(read_only_command),
+            _ => false,
+        }
+    }
+}
+
+impl Hook for ModeGuide {
+    fn name(&self) -> &str {
+        "mode-guide"
+    }
+
+    fn quiet_when_ok(&self) -> bool {
+        true
+    }
+
+    fn applies(&self, point: &HookPoint<'_>) -> bool {
+        self.plan_first != PlanFirst::Off && matches!(point, HookPoint::UserPromptSubmit { .. } | HookPoint::PlanEnter | HookPoint::PreToolUse { .. })
+    }
+
+    fn run<'a>(&'a self, point: &'a HookPoint<'a>) -> BoxFuture<'a, HookOutcome> {
+        let outcome = match point {
+            HookPoint::UserPromptSubmit { .. } => {
+                self.reminded.set(false);
+                HookOutcome::Ok
+            }
+            HookPoint::PlanEnter => {
+                self.planned.set(true);
+                HookOutcome::Ok
+            }
+            HookPoint::PreToolUse { call } if !self.planned.get() && Self::writes(call) => match self.plan_first {
+                PlanFirst::Enforce => HookOutcome::Blocked { reason: WHY.to_string() },
+                _ if self.reminded.replace(true) => HookOutcome::Ok,
+                _ => HookOutcome::Reminder { lines: vec![WHY.to_string()] },
+            },
+            _ => HookOutcome::Ok,
+        };
+        Box::pin(std::future::ready(outcome))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +132,47 @@ mod tests {
         ] {
             assert!(!read_only_command(no), "{no}");
         }
+    }
+
+    fn run(g: &ModeGuide, point: HookPoint<'_>) -> HookOutcome {
+        let mut future = g.run(&point);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(o) => o,
+            std::task::Poll::Pending => panic!("should be ready"),
+        }
+    }
+
+    fn call(name: &str, input: serde_json::Value) -> ToolCall {
+        ToolCall { id: "c".into(), name: name.into(), input }
+    }
+
+    #[test]
+    fn the_guide_reminds_once_a_message_and_only_on_writes() {
+        let g = ModeGuide::new(PlanFirst::Remind);
+        let (edit, ls, journal, rm) = (call("edit", serde_json::json!({})), call("shell", serde_json::json!({"command": "ls"})), call("journal_add", serde_json::json!({})), call("shell", serde_json::json!({"command": "rm a"})));
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &ls }), HookOutcome::Ok);
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &journal }), HookOutcome::Ok);
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &rm }), HookOutcome::Reminder { lines } if lines[0].contains("plan_enter")));
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Ok, "once");
+        run(&g, HookPoint::UserPromptSubmit { text: "next" });
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Reminder { .. }), "once a message");
+        run(&g, HookPoint::PlanEnter);
+        run(&g, HookPoint::UserPromptSubmit { text: "next" });
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Ok, "a plan was made");
+    }
+
+    #[test]
+    fn enforce_refuses_until_a_plan_and_off_does_nothing() {
+        let g = ModeGuide::new(PlanFirst::Enforce);
+        let edit = call("edit", serde_json::json!({}));
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Blocked { reason } if reason.contains("plan_enter")));
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Blocked { .. }), "every time");
+        run(&g, HookPoint::PlanEnter);
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Ok);
+        let off = ModeGuide::new(PlanFirst::parse(Some("off")));
+        assert!(!off.applies(&HookPoint::PreToolUse { call: &edit }));
+        assert_eq!(PlanFirst::parse(None), PlanFirst::Remind);
     }
 
     #[test]
