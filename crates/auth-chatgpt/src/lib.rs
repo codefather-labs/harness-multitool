@@ -250,6 +250,15 @@ fn random() -> String {
 
 /// Starts the callback listener and makes the URL for the user's browser.
 pub fn begin_login(store: &Store, issuer: &str, port: u16) -> Result<Pending, String> {
+    begin_login_for(store, issuer, port)
+}
+
+/// A readable hint for a sign-in from a machine other than the browser's.
+pub fn remote_hint(port: u16) -> Option<String> {
+    std::env::var_os("SSH_CONNECTION").map(|_| format!("Over SSH the browser needs this machine's port: ssh -L {port}:127.0.0.1:{port} <this host>"))
+}
+
+fn begin_login_for(store: &Store, issuer: &str, port: u16) -> Result<Pending, String> {
     let host_id = store.host_id()?;
     let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| format!("listening on 127.0.0.1:{port}: {e}"))?;
     let port = server.server_addr().to_ip().map_or(port, |a| a.port());
@@ -287,10 +296,20 @@ pub fn begin_login(store: &Store, issuer: &str, port: u16) -> Result<Pending, St
 impl Pending {
     /// Waits for the callback, then exchanges and checks everything before saving anything.
     pub fn finish(self, store: &Store, timeout: Duration) -> Result<Credential, String> {
+        self.finish_or_cancel(store, timeout, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// The same; setting `cancel` ends the wait and frees the port.
+    pub fn finish_or_cancel(self, store: &Store, timeout: Duration, cancel: &std::sync::atomic::AtomicBool) -> Result<Credential, String> {
         let deadline = Instant::now() + timeout;
         let query = loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            let request = self.server.recv_timeout(left).map_err(|e| e.to_string())?.ok_or("the sign-in timed out")?;
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("the sign-in was cancelled".to_string());
+            }
+            if Instant::now() >= deadline {
+                return Err("the sign-in timed out".to_string());
+            }
+            let Some(request) = self.server.recv_timeout(Duration::from_millis(200)).map_err(|e| e.to_string())? else { continue };
             let url = request.url().to_string();
             let Some(("/auth/callback", query)) = url.split_once('?') else {
                 let _ = request.respond(tiny_http::Response::from_string("").with_status_code(404));
@@ -438,6 +457,14 @@ impl Auth for ChatGptAuth {
     fn credentials(&self, _provider: &str) -> BoxFuture<'_, PluginResult<Secret>> {
         let answer = self.token().map(Secret::new).map_err(PluginError::new);
         Box::pin(std::future::ready(answer))
+    }
+}
+
+/// The sign-in's state without its tokens, for the settings.
+pub fn status(store: &Store) -> (bool, String) {
+    match store.load() {
+        Some(c) => (true, format!("Signed in{}", c.email.map_or(String::new(), |e| format!(" as {e}")))),
+        None => (false, "Not signed in".to_string()),
     }
 }
 

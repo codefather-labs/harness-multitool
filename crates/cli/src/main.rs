@@ -399,9 +399,18 @@ fn scenario_session(name: &str) -> Result<frontend_tui::AppState> {
 type TabEvent = (u64, harness_daemon::WindowEvent);
 
 /// The sessions behind the tabs, and what ties them to the view.
+/// A sign-in's outcome: the account and its models, or why it failed.
+type LoginOutcome = Result<(Option<String>, Vec<String>), String>;
+type LoginEvents = (std::sync::mpsc::Sender<LoginOutcome>, std::sync::mpsc::Receiver<LoginOutcome>);
+
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    /// Set while a browser sign-in waits: setting the flag cancels it.
+    login_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    login_events: LoginEvents,
+    plan_models: (std::sync::mpsc::Sender<Vec<String>>, std::sync::mpsc::Receiver<Vec<String>>),
+    plan_models_asked: bool,
     step_debug_tabs: std::collections::HashSet<u64>,
     window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
     first_start_done: bool,
@@ -457,6 +466,8 @@ impl Live {
         // The daemon may have just started: the settings should say so.
         if self.windows.len() != before {
             w.callbacks = Some(self.callbacks_page());
+            w.auth = Some(self.auth_page(w.auth.clone()));
+            self.fetch_plan_models();
         }
     }
 
@@ -693,7 +704,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), plan_models_asked: false, step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -748,10 +759,147 @@ impl Live {
     }
 
     /// Saves the choice and makes it the base of new sessions. A running session keeps its model.
+    /// The Auth tab as things stand, keeping what the user is doing on it.
+    fn auth_page(&self, keep: Option<frontend_tui::model::AuthPage>) -> frontend_tui::model::AuthPage {
+        let mut page = keep.unwrap_or_default();
+        let session = config::load().map(|c| c.session).unwrap_or_default();
+        let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
+        page.keys = ["Anthropic API", "OpenAI-compatible", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
+        if let Ok(dir) = config::data_dir() {
+            (page.signed_in, page.plan_status) = harness_auth_chatgpt::status(&harness_session_store(&dir));
+        }
+        page.pending = self.login_cancel.is_some();
+        page
+    }
+
+    /// Changes the Auth tab both where it is drawn and where it is kept.
+    fn update_auth(&self, w: &mut frontend_tui::model::Workspace, change: impl FnOnce(&mut frontend_tui::model::AuthPage)) {
+        use frontend_tui::model::Overlay;
+        let open = match &w.overlay {
+            Some(Overlay::Settings(s)) => Some(s.auth.clone()),
+            _ => w.auth.clone(),
+        };
+        let mut page = self.auth_page(open);
+        change(&mut page);
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth = page.clone();
+        }
+        w.auth = Some(page);
+    }
+
+    /// The gpt-subscription pipeline: a listener, the browser, a thread that waits for the
+    /// callback. Its outcome comes back through `tick_login`.
+    fn start_login(&mut self, w: &mut frontend_tui::model::Workspace) {
+        if self.login_cancel.is_some() {
+            return;
+        }
+        let Ok(dir) = config::data_dir() else { return };
+        let session = config::load().map(|c| c.session).unwrap_or_default();
+        let issuer = session.auth.get("chatgpt").and_then(|a| a["issuer"].as_str()).unwrap_or(harness_auth_chatgpt::ISSUER).to_string();
+        let base = plan_base_url(&session);
+        let store = harness_session_store(&dir);
+        let pending = match harness_auth_chatgpt::begin_login(&store, &issuer, 1455) {
+            Ok(pending) => pending,
+            Err(e) => {
+                self.update_auth(w, |a| a.message = vec![format!("Could not start the sign-in: {e}")]);
+                return;
+            }
+        };
+        let opened = open_browser(&pending.url);
+        let url = pending.url.clone();
+        let cancel: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        self.login_cancel = Some(cancel.clone());
+        let sender = self.login_events.0.clone();
+        std::thread::spawn(move || {
+            let outcome = pending.finish_or_cancel(&store, std::time::Duration::from_secs(600), &cancel);
+            let event = outcome.map(|credential| {
+                let models = harness_auth_chatgpt::list_models(&base, &credential.access_token).map(|m| m.into_iter().map(|(slug, _)| slug).collect()).unwrap_or_default();
+                (credential.email, models)
+            });
+            let _ = sender.send(event);
+        });
+        self.update_auth(w, |a| {
+            a.pending = true;
+            let first = if opened { "Sign in on the page that opened. If none did, open this:" } else { "Open this in your browser and sign in:" };
+            a.message = std::iter::once(first.to_string()).chain(std::iter::once(url)).chain(harness_auth_chatgpt::remote_hint(1455)).collect();
+        });
+    }
+
+    /// Already signed in: the plan's models, in the background, for the Auth tab.
+    fn fetch_plan_models(&mut self) {
+        let Ok(dir) = config::data_dir() else { return };
+        if self.plan_models_asked || !harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
+            return;
+        }
+        self.plan_models_asked = true;
+        let base = plan_base_url(&config::load().map(|c| c.session).unwrap_or_default());
+        let sender = self.plan_models.0.clone();
+        std::thread::spawn(move || {
+            let auth = harness_auth_chatgpt::ChatGptAuth::new(&dir);
+            if let Ok(token) = pollster::block_on(harness_api::Auth::credentials(&auth, "chatgpt"))
+                && let Ok(models) = harness_auth_chatgpt::list_models(&base, token.expose())
+            {
+                let _ = sender.send(models.into_iter().map(|(slug, _)| slug).collect());
+            }
+        });
+    }
+
+    /// A sign-in that ended. True if something changed.
+    fn tick_login(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        if let Ok(models) = self.plan_models.1.try_recv() {
+            self.update_auth(w, |a| a.models = models);
+        }
+        let Ok(event) = self.login_events.1.try_recv() else { return false };
+        self.login_cancel = None;
+        self.update_auth(w, |a| match event {
+            Ok((email, models)) => {
+                a.message = vec![format!("Signed in{}. Choose a model and press Ctrl+S.", email.map_or(String::new(), |e| format!(" as {e}")))];
+                a.cursor = 3;
+                a.models = models;
+            }
+            Err(reason) => a.message = vec![reason],
+        });
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay
+            && !s.auth.models.is_empty()
+            && !s.auth.models.contains(&s.model)
+            && s.providers.get(s.provider).is_some_and(|p| p.name == frontend_tui::model::PLAN_PROVIDER)
+        {
+            s.model = s.auth.models[0].clone();
+        }
+        true
+    }
+
+    /// Saves a typed key and rebuilds the sessions' factory. Returns the provider's id.
+    fn save_key(&mut self, row: &str, key: &harness_api::Secret) -> Result<String> {
+        let id = provider_id(row);
+        let mut c = config::load()?;
+        let entry = c.session.auth.entry(id.clone()).or_insert_with(|| serde_json::json!({}));
+        entry["key"] = serde_json::json!(key.expose());
+        config::save(&c)?;
+        self.rebuild_factory(c.session)?;
+        Ok(id)
+    }
+
+    fn rebuild_factory(&mut self, session: harness_session::Settings) -> Result<()> {
+        if self.real {
+            let note = {
+                let urls = self.urls.clone();
+                std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
+            };
+            let host = host_for(note, self.reload_asked.clone(), selection_summary(&session));
+            self.sessions.set_factory(harness_session::with_host(session, self.root.clone(), config::data_dir()?, host));
+        }
+        Ok(())
+    }
+
     fn save_settings(&mut self, provider: &str, model: &str) -> Result<()> {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
+        if provider == "chatgpt" {
+            c.session.providers.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai-responses"}));
+            c.session.auth.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"oauth": "chatgpt"}));
+        }
         config::save(&c)?;
         if self.real {
             self.context_window = c.session.context_window();
@@ -849,6 +997,30 @@ impl Live {
                         }
                     }
                 }
+                Outgoing::Login => self.start_login(w),
+                Outgoing::LoginCancel => {
+                    if let Some(cancel) = &self.login_cancel {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                Outgoing::Logout => {
+                    let line = match config::data_dir().map(|d| harness_session_store(&d)).map_err(|e| e.to_string()).and_then(|s| harness_auth_chatgpt::logout(&s)) {
+                        Ok(true) => "Signed out, and the token is revoked.".to_string(),
+                        Ok(false) => "Signed out here, but OpenAI did not confirm the revocation: disconnect the app in ChatGPT's settings.".to_string(),
+                        Err(e) => format!("Could not sign out: {e}"),
+                    };
+                    self.update_auth(w, |a| {
+                        a.message = vec![line];
+                        a.models.clear();
+                    });
+                }
+                Outgoing::SaveKey { provider, key } => {
+                    let line = match self.save_key(&provider, &key) {
+                        Ok(id) => format!("Saved for {id} in the configuration, readable only by you. New sessions use it; a key in the environment still wins."),
+                        Err(e) => format!("Could not save the key: {e}"),
+                    };
+                    self.update_auth(w, |a| a.message = vec![line]);
+                }
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
                 Outgoing::StepDebug { tab, on } => self.sessions.step_debug(tab, on),
                 Outgoing::Init { tab } => {
@@ -902,12 +1074,7 @@ impl Live {
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::SaveSettings { provider, model } => {
-                    let provider = match provider.as_str() {
-                        "Anthropic API" => "anthropic".to_string(),
-                        "OpenAI-compatible" => "openai".to_string(),
-                        "Local" => "local".to_string(),
-                        other => other.to_string(),
-                    };
+                    let provider = provider_id(&provider);
                     let note = match self.save_settings(&provider, &model) {
                         Ok(()) => format!("New sessions use {provider} / {model}."),
                         Err(e) => format!("Could not save the settings: {e}"),
@@ -973,6 +1140,42 @@ impl Live {
 }
 
 /// `multitool run`: a real session without the UI, for debugging a provider or a tool.
+/// A provider row of the settings as the configuration names it.
+fn provider_id(row: &str) -> String {
+    match row {
+        "Anthropic API" => "anthropic".to_string(),
+        "OpenAI-compatible" => "openai".to_string(),
+        "Local" => "local".to_string(),
+        frontend_tui::model::PLAN_PROVIDER => "chatgpt".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn harness_session_store(data_dir: &std::path::Path) -> harness_auth_chatgpt::Store {
+    harness_auth_chatgpt::Store::new(data_dir)
+}
+
+fn plan_base_url(session: &harness_session::Settings) -> String {
+    session.providers.get("chatgpt").and_then(|p| p["base_url"].as_str()).unwrap_or("https://api.openai.com/v1").to_string()
+}
+
+/// Opens the user's browser. MULTITOOL_BROWSER names another command, or `none`.
+fn open_browser(url: &str) -> bool {
+    use std::process::{Command, Stdio};
+    let mut command = match std::env::var("MULTITOOL_BROWSER") {
+        Ok(name) if name == "none" => return false,
+        Ok(name) => Command::new(name),
+        Err(_) if cfg!(target_os = "macos") => Command::new("open"),
+        Err(_) if cfg!(windows) => {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        }
+        Err(_) => Command::new("xdg-open"),
+    };
+    command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
+}
+
 fn only_chatgpt(provider: &str) -> Result<()> {
     match provider {
         "chatgpt" => Ok(()),
@@ -1197,6 +1400,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
                 dirty |= live.tick_prompt(w);
                 live.tick_first_start(w);
+                dirty |= live.tick_login(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.

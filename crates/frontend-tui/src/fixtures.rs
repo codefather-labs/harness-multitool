@@ -24,6 +24,7 @@ pub const ALL: &[Fixture] = &[
     Fixture { name: "reasoning", mockup: "reasoning", build: reasoning },
     Fixture { name: "flow-instances", mockup: "tool-calls", build: flow_instances },
     Fixture { name: "settings-callbacks", mockup: "settings-callbacks", build: settings_callbacks },
+    Fixture { name: "settings-auth", mockup: "settings-overlay", build: settings_auth },
     Fixture { name: "inbound-messages", mockup: "inbound-messages", build: inbound_messages },
     Fixture { name: "tool-calls", mockup: "tool-calls", build: tool_calls },
     Fixture { name: "journal-mindmap-events", mockup: "journal-mindmap-events", build: journal_mindmap_events },
@@ -101,6 +102,18 @@ pub fn settings_callbacks() -> AppState {
     s.callbacks = crate::overlay::sample_callbacks();
     s.callbacks.cursor = 2;
     s.callbacks.open = Some(2);
+    with_overlay(crate::model::Overlay::Settings(s))
+}
+
+/// The settings on the Auth tab, signed in to a plan.
+pub fn settings_auth() -> AppState {
+    let mut s = crate::overlay::sample_settings();
+    s.section = s.sections.iter().position(|n| n == "Auth").unwrap_or(0);
+    s.focus = crate::model::SettingsPane::Page;
+    s.provider = s.providers.iter().position(|p| p.name == crate::model::PLAN_PROVIDER).unwrap_or(0);
+    s.model = "gpt-5.5".into();
+    s.auth = crate::overlay::sample_auth();
+    s.auth.cursor = 2;
     with_overlay(crate::model::Overlay::Settings(s))
 }
 
@@ -555,6 +568,7 @@ pub fn session_tabs() -> AppState {
         live: false,
         outbox: Vec::new(),
         callbacks: None,
+        auth: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }

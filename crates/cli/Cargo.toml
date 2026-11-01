@@ -15,6 +15,7 @@ harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
 harness-docs-mirror = { version = "0.1.0-dev", path = "../docs-mirror" }
 harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
 harness-auth-chatgpt = { version = "0.1.0-dev", path = "../auth-chatgpt" }
+harness-auth-apikey = { version = "0.1.0-dev", path = "../auth-apikey" }
 harness-session = { version = "0.1.0-dev", path = "../session" }
 harness-core = { version = "0.1.0-dev", path = "../core" }
 harness-api = { version = "0.1.0-dev", path = "../api" }

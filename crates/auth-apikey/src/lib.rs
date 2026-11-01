@@ -21,6 +21,22 @@ impl ApiKeyAuth {
         ApiKeyAuth { env, settings }
     }
 
+    /// Where this provider's key comes from, for the settings; never the key.
+    pub fn source(&self, provider: &str) -> String {
+        let entry = self.settings.get(provider);
+        let default_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+        let var = entry.and_then(|e| e["env"].as_str()).unwrap_or(&default_var);
+        if (self.env)(var).is_some_and(|k| !k.is_empty()) {
+            format!("from {var}")
+        } else if entry.and_then(|e| e["key"].as_str()).is_some_and(|k| !k.is_empty()) {
+            "saved in the configuration".to_string()
+        } else if entry.and_then(|e| e["none"].as_bool()) == Some(true) {
+            "none needed".to_string()
+        } else {
+            format!("not set (or {var})")
+        }
+    }
+
     fn lookup(&self, provider: &str) -> PluginResult<Secret> {
         let entry = self.settings.get(provider);
         let default_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));

@@ -1,6 +1,6 @@
 # 0003 — Authentication: API keys shipped, no subscription login shipped
 
-- **Status:** accepted · **Decided by:** the project owner, 2026-10-31
+- **Status:** accepted, part replaced by [ADR 0019](0019-vendor-documented-sign-in.md) · **Decided by:** the project owner, 2026-10-31
 - **Specs:** P-8, INV-6, INV-9, CON-11, IF-2
 
 ## Decision

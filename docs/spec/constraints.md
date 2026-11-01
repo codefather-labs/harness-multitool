@@ -18,7 +18,7 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | Id | Constraint |
 |---|---|
 | **CON-10** | v1 providers: the Anthropic API, OpenAI-compatible APIs (OpenAI, OpenRouter and the like), and local models served over an OpenAI-compatible endpoint. |
-| **CON-11** | Shipped `Auth` implementations: API keys (from the environment, the config, or the OS keychain on native targets). See INV-9 for what is not shipped. |
+| **CON-11** | Shipped `Auth` implementations: API keys (from the environment, the config, or the OS keychain on native targets) and `gpt-subscription` (CON-55). See INV-9 for what is not shipped. |
 
 ## Memory and sessions
 

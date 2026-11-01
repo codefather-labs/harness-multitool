@@ -58,6 +58,8 @@ pub struct Workspace {
     pub outbox: Vec<Outgoing>,
     /// What the settings' Callbacks tab shows when opened, as the app knows it.
     pub callbacks: Option<CallbacksPage>,
+    /// The Auth tab as the running harness knows it.
+    pub auth: Option<AuthPage>,
 }
 
 /// A user's action for a running session, by the tab's id.
@@ -66,6 +68,12 @@ pub enum Outgoing {
     Prompt { tab: u64, text: String },
     /// A message that is a task: done only when its checks pass (INV-4).
     Task { tab: u64, text: String, steps: Vec<String> },
+    /// The Login button of gpt-subscription, and what follows it.
+    Login,
+    LoginCancel,
+    Logout,
+    /// A key typed in the Auth tab, for this provider row.
+    SaveKey { provider: String, key: harness_api::Secret },
     /// `/init`: create the docs tree and `.harness/`.
     Init { tab: u64 },
     /// `/stepdebug`: step-debug mode on or off.
@@ -141,6 +149,39 @@ pub struct SettingsView {
     pub timeout_s: u32,
     pub fallback: bool,
     pub callbacks: CallbacksPage,
+    pub auth: AuthPage,
+    /// The model name is being typed.
+    pub editing_model: bool,
+}
+
+/// The provider row of a ChatGPT plan: choosing it is choosing `gpt-subscription`.
+pub const PLAN_PROVIDER: &str = "ChatGPT plan";
+
+/// The Auth tab of the settings: which adapter signs in, and its login.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct AuthPage {
+    /// What the chosen provider's key comes from: (provider row, where).
+    pub keys: Vec<(String, String)>,
+    /// `Signed in as ...` or `Not signed in`, for gpt-subscription.
+    pub plan_status: String,
+    pub signed_in: bool,
+    /// A browser sign-in is under way.
+    pub pending: bool,
+    /// The latest outcome, or the address to open.
+    pub message: Vec<String>,
+    /// The models this plan can use.
+    pub models: Vec<String>,
+    /// 0 api-key, 1 gpt-subscription, 2 the button, 3 the model.
+    pub cursor: usize,
+    /// A key being typed.
+    pub entry: Option<String>,
+}
+
+/// Prints no key.
+impl std::fmt::Debug for AuthPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthPage").field("plan_status", &self.plan_status).field("pending", &self.pending).field("cursor", &self.cursor).field("typing_a_key", &self.entry.is_some()).finish()
+    }
 }
 
 /// The Callbacks tab of the settings (settings-callbacks-*, ADR 0015).
@@ -200,11 +241,13 @@ pub struct ProviderOption {
     pub description: String,
     /// A plugin built into the user's local build rather than shipped with the project.
     pub local_build: bool,
+    /// Shown but not selectable, with this reason.
+    pub disabled: Option<String>,
 }
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), callbacks: None }
+        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None }
     }
 
     pub fn view(&self) -> &SessionView {

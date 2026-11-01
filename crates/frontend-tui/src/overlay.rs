@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
+use crate::model::{AuthPage, PLAN_PROVIDER};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -40,6 +41,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.callbacks {
         s.callbacks = page.clone();
     }
+    if let Some(page) = &w.auth {
+        s.auth = page.clone();
+    }
     for (key, value) in &w.view().status.fields {
         match key.as_str() {
             "MODEL" => s.model = value.clone(),
@@ -48,6 +52,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
                     "anthropic" | "anthropic-api" => "Anthropic API",
                     "openai" | "openai-compatible" => "OpenAI-compatible",
                     "local" => "Local",
+                    "chatgpt" => PLAN_PROVIDER,
                     other => other,
                 };
                 if let Some(i) = s.providers.iter().position(|p| p.name == name) {
@@ -61,7 +66,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
 }
 
 pub fn sample_settings() -> SettingsView {
-    let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build };
+    let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
         sections: ["Provider", "Auth", "Tools", "Policy", "Memory", "Router", "Frontend", "Keys", "Callbacks", "Theme"].iter().map(|s| s.to_string()).collect(),
         section: 0,
@@ -70,9 +75,8 @@ pub fn sample_settings() -> SettingsView {
             p("Anthropic API", "Claude, official API", false),
             p("OpenAI-compatible", "OpenAI, Azure, Groq, OpenRouter, ...", false),
             p("Local", "Ollama, vLLM, LM Studio, ...", false),
-            // A user's own plugin (INV-9: a subscription login is never shipped; journal#248).
-            p("claude-subscription", "your own build of a subscription login", true),
-            p("custom-provider-acme", "Acme internal provider (experimental)", true),
+            p(PLAN_PROVIDER, "your ChatGPT plan, through gpt-subscription", false),
+            ProviderOption { name: CLAUDE_SUBSCRIPTION.into(), description: CLAUDE_REASON.into(), local_build: false, disabled: Some(CLAUDE_REASON.into()) },
         ],
         provider: 0,
         cursor: 0,
@@ -80,6 +84,23 @@ pub fn sample_settings() -> SettingsView {
         timeout_s: 60,
         fallback: true,
         callbacks: CallbacksPage::default(),
+        auth: AuthPage::default(),
+        editing_model: false,
+    }
+}
+
+/// Shown so the choice is visible; nothing implements it (CON-56).
+const CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
+const CLAUDE_REASON: &str = "not available: Anthropic's terms";
+
+/// The design sample of the Auth tab.
+pub fn sample_auth() -> AuthPage {
+    AuthPage {
+        keys: vec![("Anthropic API".into(), "not set".into()), ("OpenAI-compatible".into(), "from OPENAI_API_KEY".into()), ("Local".into(), "none needed".into())],
+        plan_status: "Signed in as you@example.com".into(),
+        signed_in: true,
+        models: vec!["gpt-5.5".into(), "gpt-5.5-mini".into()],
+        ..Default::default()
     }
 }
 
@@ -429,6 +450,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     text(f, px, body_y, pw, vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))], bg);
     if name == "Callbacks" {
         callbacks_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
+    } else if name == "Auth" {
+        auth_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if s.section != 0 {
         text(f, px, body_y + 1, pw, vec![Span::styled(format!("{name} settings come with their stage."), Style::default().fg(t.text_muted))], bg);
     } else {
@@ -442,6 +465,147 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         t,
         bg,
     );
+}
+
+/// What the Login button says, for the chosen adapter and its state.
+fn login_label(s: &SettingsView) -> &'static str {
+    match (on_plan(s), s.auth.pending, s.auth.signed_in) {
+        (true, true, _) => "Cancel",
+        (true, false, true) => "Log out",
+        (true, false, false) => "Login",
+        (false, ..) => "Enter a key",
+    }
+}
+
+fn on_plan(s: &SettingsView) -> bool {
+    s.providers.get(s.provider).is_some_and(|p| p.name == PLAN_PROVIDER)
+}
+
+fn auth_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
+    let page_focus = s.focus == SettingsPane::Page;
+    let a = &s.auth;
+    text(f, r.x, r.y, r.width, vec![Span::styled("How this harness signs in to the model.", Style::default().fg(t.text_muted))], bg);
+    let group = modal(f, Rect::new(r.x, r.y + 2, r.width, 5), t.border_subtle, bg);
+    let dim = Style::default().fg(t.text_muted);
+    text(f, group.x, group.y + 2, group.width, vec![Span::styled(" (   )  ", dim), Span::styled(format!("{CLAUDE_SUBSCRIPTION:<21}"), dim), Span::styled(CLAUDE_REASON, dim)], bg);
+    for (i, (name, description)) in [("api-key", "a key for the chosen provider"), ("gpt-subscription", "your ChatGPT plan, on OpenAI's page")].into_iter().enumerate() {
+        let chosen = on_plan(s) == (i == 1);
+        let under = page_focus && a.cursor == i;
+        let row_bg = if under { t.surface_raised } else { bg };
+        let row = Rect::new(group.x, group.y + i as u16, group.width, 1);
+        let mut spans = if chosen {
+            vec![Span::styled(" ( ", Style::default().fg(t.text)), Span::styled("●", Style::default().fg(t.success)), Span::styled(" )  ", Style::default().fg(t.text))]
+        } else {
+            vec![Span::styled(" (   )  ", Style::default().fg(t.text_muted))]
+        };
+        spans.push(Span::styled(format!("{name:<21}"), Style::default().fg(t.text).add_modifier(if chosen { Modifier::BOLD } else { Modifier::empty() })));
+        spans.push(Span::styled(description, Style::default().fg(t.text_muted)));
+        text(f, row.x, row.y, row.width, spans, row_bg);
+        out.hits.push(Hit { rect: row, target: Target::AuthRow(i) });
+    }
+    let mut y = group.y + group.height + 1;
+    let line = |f: &mut Frame, y: u16, label: &str, value: Vec<Span<'static>>, row_bg: Color| {
+        let mut spans = vec![Span::styled(format!("{label:<12}"), Style::default().fg(t.text))];
+        spans.extend(value);
+        text(f, r.x, y, r.width, spans, row_bg);
+    };
+    let provider = s.providers.get(s.provider).map_or("", |p| p.name.as_str());
+    let status = if on_plan(s) { a.plan_status.clone() } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("{provider}: {w}")) };
+    line(f, y, "Status", vec![Span::styled(status, Style::default().fg(if on_plan(s) && a.signed_in { t.success } else { t.text_muted }))], bg);
+    y += 2;
+    if let Some(entry) = &a.entry {
+        let dots = "•".repeat(entry.chars().count());
+        line(f, y, "Key", vec![Span::styled(format!("[ {dots}▏ ]"), Style::default().fg(t.text)), Span::styled("  Enter saves, Esc cancels", Style::default().fg(t.text_muted))], bg);
+    } else {
+        let under = page_focus && a.cursor == 2;
+        let button = Style::default().fg(if under { t.surface } else { t.text }).bg(if under { t.accent } else { t.surface_raised }).add_modifier(Modifier::BOLD);
+        let row = Rect::new(r.x, y, r.width, 1);
+        line(f, y, "", vec![Span::styled(format!("  {}  ", login_label(s)), button)], bg);
+        out.hits.push(Hit { rect: row, target: Target::AuthRow(2) });
+    }
+    y += 2;
+    if on_plan(s) && !a.models.is_empty() {
+        let under = page_focus && a.cursor == 3;
+        let value = vec![Span::styled("[ ", Style::default().fg(t.text_muted)), Span::styled(s.model.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)), Span::styled(" ▾ ]", Style::default().fg(t.text_muted))];
+        line(f, y, "Model", value, if under { t.surface_raised } else { bg });
+        out.hits.push(Hit { rect: Rect::new(r.x, y, r.width, 1), target: Target::AuthRow(3) });
+        y += 2;
+    }
+    // The outcome, wrapped: a sign-in address is long, and has to stay whole.
+    let width = r.width.max(1) as usize;
+    for message in &a.message {
+        let chars: Vec<char> = message.chars().collect();
+        for part in chars.chunks(width) {
+            if y >= r.y + r.height {
+                return;
+            }
+            text(f, r.x, y, r.width, vec![Span::styled(part.iter().collect::<String>(), Style::default().fg(t.text_muted))], bg);
+            y += 1;
+        }
+    }
+}
+
+/// A key on the Auth tab. False if the window's general keys should handle it.
+fn auth_key(w: &mut Workspace, k: Key) -> bool {
+    let Some(Overlay::Settings(s)) = &mut w.overlay else { return false };
+    if let Some(entry) = &mut s.auth.entry {
+        match k {
+            Key::Char(c) => entry.push(c),
+            Key::Backspace => {
+                entry.pop();
+            }
+            Key::Esc => s.auth.entry = None,
+            Key::Enter => {
+                let key = s.auth.entry.take().unwrap_or_default();
+                if !key.trim().is_empty() {
+                    let provider = s.providers[s.provider].name.clone();
+                    w.outbox.push(Outgoing::SaveKey { provider, key: harness_api::Secret::new(key.trim().to_string()) });
+                }
+            }
+            _ => {}
+        }
+        return true;
+    }
+    if s.focus != SettingsPane::Page {
+        return false;
+    }
+    let last = if on_plan(s) && !s.auth.models.is_empty() { 3 } else { 2 };
+    match k {
+        Key::Up => s.auth.cursor = s.auth.cursor.saturating_sub(1),
+        Key::Down => s.auth.cursor = (s.auth.cursor + 1).min(last),
+        Key::Enter | Key::Char(' ') => activate_auth(w),
+        _ => return false,
+    }
+    true
+}
+
+/// The row under the cursor acts.
+fn activate_auth(w: &mut Workspace) {
+    let Some(Overlay::Settings(s)) = &mut w.overlay else { return };
+    match s.auth.cursor {
+        0 if on_plan(s) => s.provider = s.providers.iter().position(|p| p.name != PLAN_PROVIDER && p.disabled.is_none()).unwrap_or(0),
+        1 => {
+            if let Some(i) = s.providers.iter().position(|p| p.name == PLAN_PROVIDER) {
+                s.provider = i;
+            }
+            // A Claude model means nothing on this plan.
+            if !s.auth.models.is_empty() && !s.auth.models.contains(&s.model) {
+                s.model = s.auth.models[0].clone();
+            }
+        }
+        2 => match (on_plan(s), s.auth.pending, s.auth.signed_in) {
+            (true, true, _) => w.outbox.push(Outgoing::LoginCancel),
+            (true, false, true) => w.outbox.push(Outgoing::Logout),
+            (true, false, false) => w.outbox.push(Outgoing::Login),
+            (false, ..) if s.providers[s.provider].name == "Local" => s.auth.message = vec!["A local model needs no key.".to_string()],
+            (false, ..) => s.auth.entry = Some(String::new()),
+        },
+        3 if !s.auth.models.is_empty() => {
+            let at = s.auth.models.iter().position(|m| *m == s.model).map_or(0, |i| (i + 1) % s.auth.models.len());
+            s.model = s.auth.models[at].clone();
+        }
+        _ => {}
+    }
 }
 
 fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
@@ -466,10 +630,15 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
         let mut spans = radio;
         spans.push(Span::styled(p.name.clone(), Style::default().fg(t.text).add_modifier(if s.provider == i { Modifier::BOLD } else { Modifier::empty() })));
         // The description only for the row under the cursor, where there is room for it.
-        if under && !p.local_build {
+        if under && !p.local_build && p.disabled.is_none() {
             spans.push(Span::styled(format!("   {}", p.description), Style::default().fg(t.text_muted)));
         }
         let row = Rect::new(group.x, y, group.width, 1);
+        if let Some(reason) = &p.disabled {
+            // Dim, always with its reason, and no radio to fill.
+            let dim = Style::default().fg(t.text_muted);
+            spans = vec![Span::styled(" (   )  ", dim), Span::styled(p.name.clone(), dim), Span::styled(format!("   {reason}"), dim)];
+        }
         text(f, row.x, row.y, row.width, spans, row_bg);
         if p.local_build {
             let pill = crate::transcript::pill_spans("local build", t.text, t.surface_raised, row_bg);
@@ -503,7 +672,7 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
         vec![Span::styled("[ ]  Disabled", Style::default().fg(t.text_muted))]
     };
     for (spans, row_bg) in [
-        field("Default model", bracket(s.model.clone(), true), 0),
+        field("Default model", bracket(if s.editing_model { format!("{}▏", s.model) } else { s.model.clone() }, !s.editing_model), 0),
         field("Timeout", bracket(format!("{}s", s.timeout_s), false), 1),
         field("Fallback on error", check, 2),
     ] {
@@ -517,6 +686,22 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
 
 /// What a key does while an overlay is open. Returns None when no overlay is open.
 pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
+    if let Some(Overlay::Settings(s)) = &mut w.overlay {
+        if s.editing_model {
+            match k {
+                Key::Char(c) => s.model.push(c),
+                Key::Backspace => {
+                    s.model.pop();
+                }
+                Key::Enter | Key::Esc => s.editing_model = false,
+                _ => {}
+            }
+            return Some(Outcome::Stay);
+        }
+        if s.sections.get(s.section).is_some_and(|n| n == "Auth") && auth_key(w, k) {
+            return Some(Outcome::Stay);
+        }
+    }
     let overlay = w.overlay.as_mut()?;
     match overlay {
         Overlay::Permission(p) => {
@@ -593,6 +778,8 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 SettingsPane::Sections => s.section = (s.section + 1).min(s.sections.len() - 1),
                 SettingsPane::Page => s.cursor = (s.cursor + 1).min(s.providers.len() + 2),
             },
+            // Enter types a model's name; the list only knows a few.
+            Key::Enter if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() => s.editing_model = true,
             Key::Char(' ') | Key::Enter if s.focus == SettingsPane::Page => activate(s),
             Key::Enter => s.focus = SettingsPane::Page,
             _ => {}
@@ -605,7 +792,11 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
 fn activate(s: &mut SettingsView) {
     let n = s.providers.len();
     match s.cursor {
-        i if i < n => s.provider = i,
+        i if i < n => {
+            if s.providers[i].disabled.is_none() {
+                s.provider = i;
+            }
+        }
         i if i == n => {
             let at = MODELS.iter().position(|m| *m == s.model).unwrap_or(0);
             s.model = MODELS[(at + 1) % MODELS.len()].into();
@@ -669,9 +860,16 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             activate_callback(&mut s.callbacks);
         }
         (Some(Overlay::Settings(s)), Target::Provider(i)) => {
-            s.provider = i;
+            if s.providers[i].disabled.is_none() {
+                s.provider = i;
+            }
             s.cursor = i;
             s.focus = SettingsPane::Page;
+        }
+        (Some(Overlay::Settings(s)), Target::AuthRow(i)) => {
+            s.auth.cursor = i;
+            s.focus = SettingsPane::Page;
+            activate_auth(w);
         }
         (Some(_), Target::CloseOverlay) => w.overlay = None,
         _ => {}
@@ -682,6 +880,119 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn on_auth_tab() -> Workspace {
+        let mut w = match crate::fixtures::welcome().mode {
+            Mode::Session(w) => w,
+            _ => unreachable!(),
+        };
+        w.live = true;
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == "Auth").unwrap();
+        s.focus = SettingsPane::Page;
+        s.auth = AuthPage { plan_status: "Not signed in".into(), ..sample_auth() };
+        s.auth.signed_in = false;
+        w.overlay = Some(Overlay::Settings(s));
+        w
+    }
+
+    fn page(w: &Workspace) -> &SettingsView {
+        match &w.overlay {
+            Some(Overlay::Settings(s)) => s,
+            _ => panic!("no settings"),
+        }
+    }
+
+    fn press(w: &mut Workspace, keys: &[Key]) {
+        for k in keys {
+            assert!(key(w, *k).is_some());
+        }
+    }
+
+    #[test]
+    fn choosing_an_adapter_moves_the_provider_and_back() {
+        let mut w = on_auth_tab();
+        assert!(!on_plan(page(&w)));
+        press(&mut w, &[Key::Down, Key::Enter]);
+        assert!(on_plan(page(&w)));
+        assert_eq!(page(&w).model, "gpt-5.5", "a Claude model means nothing on this plan");
+        press(&mut w, &[Key::Up, Key::Enter]);
+        assert!(!on_plan(page(&w)));
+    }
+
+    #[test]
+    fn the_button_runs_the_chosen_adapters_pipeline() {
+        let mut w = on_auth_tab();
+        press(&mut w, &[Key::Down, Key::Enter, Key::Down, Key::Enter]);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::Login)), "{:?}", w.outbox);
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth.pending = true;
+            assert_eq!(login_label(s), "Cancel");
+        }
+        press(&mut w, &[Key::Enter]);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::LoginCancel)));
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth.pending = false;
+            s.auth.signed_in = true;
+            assert_eq!(login_label(s), "Log out");
+        }
+        press(&mut w, &[Key::Enter]);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::Logout)));
+    }
+
+    #[test]
+    fn a_key_is_typed_masked_and_never_printed() {
+        let mut w = on_auth_tab();
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.provider = s.providers.iter().position(|p| p.name == "OpenAI-compatible").unwrap();
+            s.auth.cursor = 2;
+            assert_eq!(login_label(s), "Enter a key");
+        }
+        press(&mut w, &[Key::Enter, Key::Char('s'), Key::Char('k'), Key::Char('x'), Key::Backspace, Key::Char('9')]);
+        assert_eq!(page(&w).auth.entry.as_deref(), Some("sk9"));
+        let printed = format!("{:?} {:?}", page(&w).auth, w.outbox);
+        assert!(!printed.contains("sk9"), "{printed}");
+        press(&mut w, &[Key::Enter]);
+        let Some(Outgoing::SaveKey { provider, key: secret }) = w.outbox.last() else { panic!("{:?}", w.outbox) };
+        assert_eq!((provider.as_str(), secret.expose()), ("OpenAI-compatible", "sk9"));
+        assert!(!format!("{:?}", w.outbox).contains("sk9"), "the outbox hides it");
+        assert!(page(&w).auth.entry.is_none());
+
+        press(&mut w, &[Key::Enter, Key::Char('a'), Key::Esc]);
+        assert!(page(&w).auth.entry.is_none() && w.overlay.is_some(), "Esc drops the key and keeps the window");
+        assert_eq!(w.outbox.len(), 1);
+    }
+
+    #[test]
+    fn a_models_name_can_be_typed() {
+        let mut w = on_auth_tab();
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.section = 0;
+            s.cursor = s.providers.len();
+            s.model = "x".into();
+        }
+        press(&mut w, &[Key::Enter, Key::Backspace, Key::Char('g'), Key::Char(' '), Key::Enter]);
+        assert_eq!((page(&w).model.as_str(), page(&w).editing_model), ("g ", false));
+    }
+
+    #[test]
+    fn the_claude_subscription_option_shows_and_cannot_be_chosen() {
+        let names: Vec<String> = sample_settings().providers.into_iter().map(|p| p.name).collect();
+        assert!(names.contains(&PLAN_PROVIDER.to_string()));
+        assert!(!names.iter().any(|n| n.contains("acme")), "{names:?}");
+        let mut s = sample_settings();
+        let row = s.providers.iter().position(|p| p.name == CLAUDE_SUBSCRIPTION).expect("it stays listed");
+        assert!(s.providers[row].disabled.is_some());
+        s.cursor = row;
+        activate(&mut s);
+        assert_ne!(s.provider, row, "by key");
+        let mut w = on_auth_tab();
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.section = 0;
+        }
+        click(&mut w, Target::Provider(row));
+        assert_ne!(page(&w).provider, row, "by click");
+    }
 
     #[test]
     fn a_locked_prompt_answers_only_deny() {

@@ -1711,6 +1711,7 @@ dependencies = [
  "dirs",
  "frontend-tui",
  "harness-api",
+ "harness-auth-apikey",
  "harness-auth-chatgpt",
  "harness-core",
  "harness-daemon",

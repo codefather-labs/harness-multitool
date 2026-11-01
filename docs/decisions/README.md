@@ -19,6 +19,7 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0013](0013-step-debug-mode.md) | Step-debug mode: charts, callbacks and a debug router the agent builds in the target project | accepted, open to additions |
 | [0014](0014-reliability-monitoring-mode.md) | Reliability-monitoring mode: metrics, SLOs and a response policy per event | concept |
 | [0015](0015-callback-handlers-are-plugins.md) | Callback handlers are plugins: one interface for the standard and custom types, plugged in through the TUI's settings | accepted |
+| [0019](0019-vendor-documented-sign-in.md) | A subscription sign-in ships where the vendor documents it for other apps | accepted |
 | [0016](0016-plan-mode.md) | Plan mode: the classic plan mode with the accent on the journal, mind maps and flowcharts | accepted |
 | [0017](0017-docs-mirror-memory.md) | Project initialization (docs tree + `.harness/`); documentation mirrors the journal, mind maps and flowcharts | accepted |
 | [0018](0018-generated-documentation-site.md) | Generated documentation like rustdoc: a linked HTML site and a PDF from the docs, maps and charts | proposed (an idea) |
