@@ -50,6 +50,9 @@ pub struct SessionState {
     pub reminders: Vec<String>,
     /// A backend's own session, to go on with.
     pub backend_session: Option<String>,
+    /// The next run forks `backend_session`, which is another session's own.
+    pub backend_fork: bool,
+    pub backend_cost_total: u64,
     /// The name the agent goes by in this session.
     pub agent_name: Option<String>,
     /// Step-debug mode (ADR 0013).
@@ -108,7 +111,19 @@ impl SessionState {
                 }
             }
             Event::Verification { evidence, .. } => self.evidence = Some(evidence.clone()),
-            Event::BackendSession { id } => self.backend_session = Some(id.clone()),
+            Event::BackendSession { id } => {
+                self.backend_session = Some(id.clone());
+                self.backend_fork = false;
+            }
+            Event::BackendCost { total_micro_usd } => self.backend_cost_total = *total_micro_usd,
+            Event::ConversationImported { id, .. } => {
+                self.backend_session = Some(id.clone());
+                self.backend_fork = true;
+                // The next message is a new one: it does not join an unanswered last message.
+                if self.messages.last().is_some_and(|m| m.role == Role::User) {
+                    self.messages.push(Message { role: Role::Assistant, content: vec![Content::Text { text: "[the conversation goes on here]".into() }] });
+                }
+            }
             Event::AgentName { name, .. } => self.agent_name = Some(name.clone()),
             Event::PlanMode { on, .. } => self.plan_mode = *on,
             Event::StepDebug { on, .. } => self.step_debug = *on,

@@ -16,10 +16,15 @@ GO_ON = "Продолжай."
 os.makedirs(out + "/proj"); root, home = out + "/proj", tempfile.mkdtemp(prefix="home-", dir=out)
 os.makedirs(home + "/cfg/harness-multitool")
 open(root + "/numbers.csv", "w").write("name,value\na,1\nb,2.5\nc,oops\nd,-3\ne,4\n")
-open(home + "/cfg/harness-multitool/config.toml", "w").write(
-    f'[session]\nprovider="local"\nmodel="{model}"\nmax_tokens=8000\nmax_turns=40\n\n'
-    '[session.providers.local]\nkind="openai"\nbase_url="http://127.0.0.1:11434/v1"\ncontext_window=32000\n\n'
-    '[session.auth.local]\nnone=true\n')
+if model.startswith("gpt-"):
+    # The owner's plan: their sign-in by a link, so no token is read or copied, while the run's
+    # journal, sessions and daemon stay in this folder.
+    os.makedirs(home + "/data/harness-multitool")
+    os.symlink(os.path.expanduser("~/.local/share/harness-multitool/auth"), home + "/data/harness-multitool/auth")
+    provider = '[session]\nprovider="chatgpt"\nmodel="' + model + '"\nmax_tokens=16000\nmax_turns=60\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n'
+else:
+    provider = f'[session]\nprovider="local"\nmodel="{model}"\nmax_tokens=8000\nmax_turns=40\n\n[session.providers.local]\nkind="openai"\nbase_url="http://127.0.0.1:11434/v1"\ncontext_window=32000\n\n[session.auth.local]\nnone=true\n'
+open(home + "/cfg/harness-multitool/config.toml", "w").write(provider)
 log = open(out + "/cycle.log", "a", buffering=1)
 start = time.time()
 def say(*a): print(f"{int(time.time() - start):5d}s", *a, file=log)
@@ -59,7 +64,9 @@ def read_log():
             c = ev["call"]; seen["tools"][c["name"]] = seen["tools"].get(c["name"], 0) + 1
             say("TOOL", c["name"], json.dumps(c["input"], ensure_ascii=False)[:400])
             if c["name"] == "ask_user": last_text[0] = "?"
-        elif k == "tool_result": say("  ->", "ERR" if ev.get("is_error") else "ok", str(ev.get("output"))[:240].replace("\n", " | "))
+        elif k == "tool_result":
+            say("  ->", "ERR" if ev.get("is_error") else "ok", str(ev.get("output"))[:240].replace("\n", " | "))
+            if seen["tools"].get("ask_user") and "Asked the user" in str(ev.get("output")): say("QUESTION", str(ev.get("output"))[:900].replace("\n", " | "))
         elif k == "plan_mode": seen["plan_on" if ev["on"] else "plan_off"] += 1; say("PLAN", ev["on"], "by", ev.get("by"))
         elif k == "step_debug": seen["debug_on" if ev["on"] else "debug_off"] += 1; say("DEBUG", ev["on"], "by", ev.get("by"))
         elif k == "user_message": say("USER", ev["text"][:200])
@@ -98,8 +105,8 @@ while time.time() - start < minutes * 60:
     idle_since = None
     if seen["debug_off"] and waited_after_debug: say("the modes went through; only the verdict below says the work did"); break
     if seen["debug_off"]: waited_after_debug = True
-    if nudges + answers >= 14: say("gave up: too many nudges"); break
-    if "?" in last_text[0] and answers < 2: answers += 1; say("ANSWER"); type_line(ANSWER)
+    if nudges >= 6 or answers >= 6: say("gave up: too many nudges"); break
+    if "?" in last_text[0] and answers < 5: answers += 1; say("ANSWER"); type_line(ANSWER)
     else: nudges += 1; say("NUDGE"); type_line(GO_ON)
     last_text[0] = ""; pump(1.0)
 summary()

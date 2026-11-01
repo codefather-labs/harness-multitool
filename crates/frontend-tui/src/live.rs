@@ -185,7 +185,10 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
-            Event::BackendSession { .. } => {}
+            Event::BackendSession { .. } | Event::BackendCost { .. } => {}
+            Event::ConversationImported { source, title, .. } => {
+                v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It goes on here in a fork at your next message; the original stays as it was.")] });
+            }
             Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
             Event::StepDebug { on, by } => {
                 set_status(v, "DEBUG", if *on { "step" } else { "off" });

@@ -247,6 +247,8 @@ pub fn line(entry: &LogEntry) -> String {
         Event::PlanMode { on, by } => format!("plan mode   {} by {by}", if *on { "on" } else { "off" }),
         Event::Compacted { upto, tokens_before, tokens_after } => format!("compacted   before message {upto}: {tokens_before} -> {tokens_after} tokens"),
         Event::Error { source, message } => format!("error       {source}: {message}"),
+        Event::BackendCost { total_micro_usd } => format!("cost        {total_micro_usd} in all"),
+        Event::ConversationImported { source, id, .. } => format!("imported    {source} {id}"),
     };
     format!("{:>4} {:>6}ms  {body}", entry.seq, entry.at_ms)
 }

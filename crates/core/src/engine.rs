@@ -391,7 +391,7 @@ impl Engine {
             let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
             let system = context.ok().and_then(|c| c.system);
             let stopped = || self.stop.is_set();
-            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
+            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
             let mut sink = |event: Event| {
                 self.emit(event);
                 !self.stop.is_set()

@@ -212,6 +212,24 @@ pub struct SessionInfo {
     pub last_ms: u64,
 }
 
+/// Stores a conversation brought in from elsewhere as a session of this project, so it opens like
+/// any other. The file appears whole or not at all. Returns the session's id.
+pub fn store_imported(data_dir: &str, root: &str, imported: &ImportedConversation, now_ms: u64) -> Result<String, String> {
+    let short: String = imported.info.id.chars().take(8).collect();
+    let id = format!("imported-{short}-{now_ms}");
+    let dir = sessions_dir(data_dir, root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+    let (path, staging) = (format!("{dir}/{id}.jsonl"), format!("{dir}/{id}.partial"));
+    let mut text = String::new();
+    for entry in &imported.entries {
+        text.push_str(&harness_api::event::to_line(entry));
+        text.push('\n');
+    }
+    std::fs::write(&staging, text).map_err(|e| format!("{staging}: {e}"))?;
+    std::fs::rename(&staging, &path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(id)
+}
+
 /// A stored session's entries, cut off at a damaged last line (a crash can leave one).
 pub fn read_log(data_dir: &str, root: &str, id: &str) -> Vec<LogEntry> {
     let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
@@ -304,6 +322,20 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
 fn delegate(settings: &Settings, root: &str) -> Result<Rc<dyn AgentBackend>, String> {
     let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
     Ok(Rc::new(harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row)))
+}
+
+/// Where conversations held by another agent are read from, in a build that has one (IF-18).
+#[cfg(feature = "claude-code")]
+pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationSource>, String> {
+    match name {
+        harness_backend_claude_code::NAME => Ok(Box::new(harness_backend_claude_code::conversations::ClaudeCodeConversations::from_env().map_err(|e| e.to_string())?)),
+        other => Err(format!("no conversations from {other}; known: {}", harness_backend_claude_code::NAME)),
+    }
+}
+
+#[cfg(not(feature = "claude-code"))]
+pub fn conversation_source(_name: &str) -> Result<Box<dyn ConversationSource>, String> {
+    Err("this build reads no conversations: build with --features claude-code".to_string())
 }
 
 #[cfg(not(feature = "claude-code"))]

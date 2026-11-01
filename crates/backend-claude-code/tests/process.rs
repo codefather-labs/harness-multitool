@@ -14,6 +14,13 @@ struct Fake {
     dir: tempfile::TempDir,
 }
 
+/// One at a time: a fork in another test inherits the script's open write handle, and running it
+/// then fails with "Text file busy".
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn fake(body: &str) -> Fake {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
@@ -34,13 +41,14 @@ fn run(backend: &ClaudeCode, stopped: &dyn Fn() -> bool) -> (Vec<Event>, PluginR
         events.push(e);
         true
     };
-    let request = BackendRequest { prompt: "the prompt", session: Some("s9"), system: None, plan_mode: false, turn: 3, stopped };
+    let request = BackendRequest { prompt: "the prompt", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 3, stopped };
     let end = pollster::block_on(backend.run(request, &mut sink));
     (events, end)
 }
 
 #[test]
 fn it_reads_the_stream_gets_the_prompt_on_stdin_and_inherits_no_session() {
+    let _serial = serial();
     let f = fake(r#"cat > got-stdin
 printf '%s\n' "$*" > got-args
 env > got-env
@@ -69,6 +77,7 @@ echo '{"type":"result","is_error":false,"stop_reason":"end_turn","total_cost_usd
 
 #[test]
 fn a_missing_binary_a_silent_exit_and_an_error_result_are_errors() {
+    let _serial = serial();
     let gone = ClaudeCode::new("m", "/tmp", &json!({"binary": "/no/such/claude"}));
     let (_, end) = run(&gone, &NEVER);
     assert!(end.unwrap_err().to_string().contains("not installed"));
@@ -83,6 +92,7 @@ fn a_missing_binary_a_silent_exit_and_an_error_result_are_errors() {
 
 #[test]
 fn a_stop_ends_the_process_at_once() {
+    let _serial = serial();
     let f = fake(r#"echo '{"type":"system","subtype":"init","session_id":"s","model":"m"}'; exec sleep 30"#);
     let start = std::time::Instant::now();
     let stopped = move || start.elapsed() > std::time::Duration::from_millis(300);

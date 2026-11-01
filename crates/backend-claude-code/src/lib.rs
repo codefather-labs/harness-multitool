@@ -3,6 +3,8 @@
 //! user signs in to Claude Code itself. Claude Code keeps its own prompt and tools, and the harness
 //! only adds to them. Mode `oneshot`: one process per message, `--resume` between them (CON-58).
 
+pub mod conversations;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
@@ -31,11 +33,19 @@ pub struct Mapper {
     model: String,
     /// A text block's words came as partial messages already.
     streamed: bool,
+    /// Its total so far; `None` when that is not known, as for a fork of someone else's session.
+    cost_total: Option<u64>,
 }
 
 impl Mapper {
     pub fn new(first_turn: u32) -> Self {
-        Mapper { turn: first_turn, ..Default::default() }
+        Mapper { turn: first_turn, cost_total: Some(0), ..Default::default() }
+    }
+
+    /// From what the session's log says so far. Its first total on a fork only sets the base.
+    pub fn with_cost(mut self, total_micro_usd: u64, fork: bool) -> Self {
+        self.cost_total = (!fork).then_some(total_micro_usd);
+        self
     }
 
     fn turn_started(&mut self, out: &mut Vec<Mapped>) {
@@ -90,8 +100,13 @@ impl Mapper {
                     Some("end_turn") | None => StopReason::EndTurn,
                     Some(other) => StopReason::Other(other.to_string()),
                 };
-                let cost_micro_usd = e["total_cost_usd"].as_f64().map(|c| (c * 1e6).round() as u64);
+                let total = e["total_cost_usd"].as_f64().map(|c| (c * 1e6).round() as u64);
+                let cost_micro_usd = total.and_then(|total| Some(total.saturating_sub(self.cost_total?)));
                 out.push(Mapped::Event(Event::TurnFinished { turn: self.turn, stop, usage, cost_micro_usd }));
+                if let Some(total) = total {
+                    self.cost_total = Some(total);
+                    out.push(Mapped::Event(Event::BackendCost { total_micro_usd: total }));
+                }
                 let failed = e["is_error"] == true;
                 out.push(Mapped::End(if failed { Err(e["result"].as_str().map_or_else(|| "Claude Code reported an error".to_string(), str::to_string)) } else { Ok(()) }));
             }
@@ -135,31 +150,45 @@ pub struct ClaudeCode {
     model: String,
     root: String,
     allowed_tools: String,
+    /// The user's own settings, hooks, servers and environment, not an isolated child (CON-69).
+    own_environment: bool,
+    /// No prompts at all: the user's own choice, as they may run Claude Code themselves (CON-70).
+    skip_permissions: bool,
 }
 
 impl ClaudeCode {
-    /// Settings: `binary` (default `claude`), `allowed_tools` (a comma list, default read-only).
+    /// Settings: `binary` (default `claude`), `allowed_tools` (a comma list, default read-only),
+    /// `environment` (`isolated` by default, or `user`), `permissions` (`skip` to run with none).
     pub fn new(model: &str, root: &str, settings: &Value) -> Self {
         ClaudeCode {
             binary: settings["binary"].as_str().unwrap_or("claude").to_string(),
             model: model.to_string(),
             root: root.to_string(),
             allowed_tools: settings["allowed_tools"].as_str().unwrap_or(READ_ONLY_TOOLS).to_string(),
+            own_environment: settings["environment"] == "user",
+            skip_permissions: settings["permissions"] == "skip",
         }
     }
 
     /// The arguments of one run. The user's own hooks and servers stay out of it (CON-61).
     pub fn args(&self, request: &BackendRequest<'_>) -> Vec<String> {
-        let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#, "--permission-prompts", "none"]
-            .iter()
-            .map(|a| a.to_string())
-            .collect();
-        args.extend(["--allowedTools".to_string(), self.allowed_tools.clone()]);
+        let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
+        if !self.own_environment {
+            args.extend(["--setting-sources", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#].iter().map(|a| a.to_string()));
+        }
+        if self.skip_permissions {
+            args.push("--dangerously-skip-permissions".to_string());
+        } else {
+            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), self.allowed_tools.clone()]);
+        }
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);
         }
         if let Some(id) = request.session {
             args.extend(["--resume".to_string(), id.to_string()]);
+            if request.fork {
+                args.push("--fork-session".to_string());
+            }
         }
         if let Some(system) = request.system.filter(|s| !s.is_empty()) {
             args.extend(["--append-system-prompt".to_string(), system.to_string()]);
@@ -177,7 +206,10 @@ impl ClaudeCode {
         // configuration lives, which is where the user signed in.
         for (name, _) in std::env::vars_os() {
             let name = name.to_string_lossy().into_owned();
-            if name.starts_with("CLAUDE") && name != "CLAUDE_CONFIG_DIR" {
+            // Its own environment keeps what the user's hooks need, all but what marks a session
+            // of its own as already running.
+            let drop = if self.own_environment { name == "CLAUDECODE" || name.starts_with("CLAUDE_CODE_") } else { name.starts_with("CLAUDE") && name != "CLAUDE_CONFIG_DIR" };
+            if drop {
                 command.env_remove(name);
             }
         }
@@ -204,7 +236,7 @@ impl ClaudeCode {
             let _ = stderr.read_to_string(&mut text);
             text
         });
-        let mut mapper = Mapper::new(request.turn);
+        let mut mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, request.fork);
         let stop_now = |child: &mut std::process::Child| {
             let _ = child.kill();
             let _ = child.wait();
@@ -283,6 +315,7 @@ mod tests {
             e(Event::ToolRequested { call: ToolCall { id: "t1".into(), name: "Read".into(), input: json!({"file_path": "a"}) }, capabilities: vec![] }),
             e(Event::ToolResult { id: "t1".into(), output: "body".into(), is_error: false }),
             e(Event::TurnFinished { turn: 1, stop: StopReason::EndTurn, usage: Usage { input: 2, output: 5, cache_read: 40, cache_write: 7 }, cost_micro_usd: Some(12_500) }),
+            e(Event::BackendCost { total_micro_usd: 12_500 }),
             Mapped::End(Ok(())),
         ], "text said by partial messages is not repeated");
     }
@@ -305,7 +338,7 @@ mod tests {
     }
 
     fn request<'a>(session: Option<&'a str>, system: Option<&'a str>, plan_mode: bool, stopped: &'a dyn Fn() -> bool) -> BackendRequest<'a> {
-        BackendRequest { prompt: "secret prompt", session, system, plan_mode, turn: 1, stopped }
+        BackendRequest { prompt: "secret prompt", session, system, plan_mode, fork: false, cost_total_micro_usd: 0, turn: 1, stopped }
     }
 
     #[test]
@@ -326,5 +359,40 @@ mod tests {
         assert_eq!(args[at("--resume") + 1], "s1");
         assert_eq!(args[at("--append-system-prompt") + 1], "note");
         assert_eq!(args[at("--permission-mode") + 1], "plan");
+    }
+
+    #[test]
+    fn a_conversation_from_elsewhere_is_forked_and_its_row_opens_what_it_needs() {
+        let stopped = || false;
+        let request = BackendRequest { prompt: "p", session: Some("s1"), system: None, plan_mode: false, fork: true, cost_total_micro_usd: 0, turn: 1, stopped: &stopped };
+        let isolated = ClaudeCode::new("m", "/r", &serde_json::json!({})).args(&request);
+        assert!(isolated.iter().any(|a| a == "--fork-session") && isolated.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(!isolated.iter().any(|a| a == "--dangerously-skip-permissions"), "never by default");
+        let own = ClaudeCode::new("m", "/r", &serde_json::json!({"environment": "user", "permissions": "skip"})).args(&request);
+        for gone in ["--setting-sources", "--strict-mcp-config", "--mcp-config", "--permission-prompts", "--allowedTools"] {
+            assert!(!own.iter().any(|a| a == gone), "{gone}");
+        }
+        assert!(own.iter().any(|a| a == "--dangerously-skip-permissions"));
+        let next = BackendRequest { fork: false, ..request };
+        assert!(!ClaudeCode::new("m", "/r", &serde_json::json!({})).args(&next).iter().any(|a| a == "--fork-session"), "only the first message forks");
+    }
+
+    #[test]
+    fn a_total_is_turned_into_what_this_turn_cost() {
+        let result = |total: f64| json!({"type": "result", "total_cost_usd": total, "usage": {}}).to_string();
+        let cost = |mapper: &mut Mapper, total: f64| {
+            mapper.line(&result(total)).into_iter().find_map(|m| match m {
+                Mapped::Event(Event::TurnFinished { cost_micro_usd, .. }) => Some(cost_micro_usd),
+                _ => None,
+            }).unwrap()
+        };
+        let mut fresh = Mapper::new(1);
+        assert_eq!(cost(&mut fresh, 1.0), Some(1_000_000));
+        let mut resumed = Mapper::new(2).with_cost(1_000_000, false);
+        assert_eq!(cost(&mut resumed, 1.5), Some(500_000), "the difference, not the total");
+        assert!(resumed.line(&result(1.5)).iter().any(|m| matches!(m, Mapped::Event(Event::BackendCost { total_micro_usd: 1_500_000 }))), "kept for the next process");
+        let mut forked = Mapper::new(9).with_cost(0, true);
+        assert_eq!(cost(&mut forked, 300.0), None, "the past was not spent here");
+        assert_eq!(cost(&mut forked, 300.25), Some(250_000));
     }
 }

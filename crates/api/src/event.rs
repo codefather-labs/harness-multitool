@@ -79,6 +79,12 @@ pub enum Event {
     Verification { pass: bool, evidence: String },
     /// The session id of an agent backend, for going on with it (IF-17).
     BackendSession { id: String },
+    /// What an agent backend says its session has cost in all: it counts across resumes, so a
+    /// turn's own cost is the difference from the last of these.
+    BackendCost { total_micro_usd: u64 },
+    /// This session goes on with a conversation brought in from `source`: what precedes it in the
+    /// log is that conversation, drawn; its next message forks it (ADR 0022).
+    ConversationImported { source: String, id: String, title: String },
     /// The agent's name in this session, and who gave it: `user` or `agent`.
     AgentName { name: String, by: String },
     /// Plan mode on or off, and who did it: `user` or `agent`.

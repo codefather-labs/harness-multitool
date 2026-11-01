@@ -54,6 +54,10 @@ pub struct BackendRequest<'a> {
     /// What the harness adds to the backend's own instructions.
     pub system: Option<&'a str>,
     pub plan_mode: bool,
+    /// `session` is someone else's: go on in a copy of it, under a new id (ADR 0022).
+    pub fork: bool,
+    /// What it said its session has cost so far.
+    pub cost_total_micro_usd: u64,
     pub turn: u32,
     pub stopped: &'a dyn Fn() -> bool,
 }
@@ -399,4 +403,30 @@ pub trait CallbackHandler {
     /// The custom types it serves; empty for one that only overrides standard types.
     fn types(&self) -> Vec<String>;
     fn handle<'a>(&'a self, callback: &'a Callback) -> BoxFuture<'a, PluginResult<HandlerEffect>>;
+}
+
+/// A conversation another agent keeps, as a source lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationInfo {
+    pub id: String,
+    pub title: String,
+    pub last_ms: u64,
+    pub bytes: u64,
+}
+
+/// A conversation as this harness's log, ending in `Event::ConversationImported`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedConversation {
+    pub info: ConversationInfo,
+    pub entries: Vec<crate::event::LogEntry>,
+    /// Lines of the source that could not be read.
+    pub damaged: usize,
+}
+
+/// IF-18: where conversations held by another agent are read from. A source only ever reads.
+pub trait ConversationSource {
+    fn name(&self) -> &str;
+    /// The conversations of this project, newest first.
+    fn list(&self, root: &str) -> PluginResult<Vec<ConversationInfo>>;
+    fn read(&self, root: &str, id: &str) -> PluginResult<ImportedConversation>;
 }

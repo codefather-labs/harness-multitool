@@ -70,6 +70,13 @@ enum Command {
         /// `chatgpt`
         provider: String,
     },
+    /// Bring in a conversation another agent keeps for this directory; with no id, list them.
+    /// The original is only read, and goes on in a fork (ADR 0022).
+    Import {
+        /// `claude-code`
+        source: String,
+        id: Option<String>,
+    },
     /// Create what is missing of docs/ and .harness/, overwriting nothing.
     Init,
     /// The documentation: `check` compares the docs tree with itself and the journal.
@@ -194,6 +201,7 @@ fn main() -> Result<()> {
             println!("{}", if confirmed { "signed out" } else { "signed out here, but OpenAI did not confirm the revocation: disconnect the app in ChatGPT's settings" });
             Ok(())
         }
+        Command::Import { source, id } => import_conversation(&source, id.as_deref()),
         Command::Init => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let created = init_project(&root).map_err(|e| anyhow!(e))?;
@@ -1469,6 +1477,31 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             FromSession::Unavailable { message, .. } => bail!("{message}"),
         }
     }
+}
+
+/// `multitool import`: lists a source's conversations, or brings one in as a session here.
+fn import_conversation(source: &str, id: Option<&str>) -> Result<()> {
+    let root = std::env::current_dir()?.to_string_lossy().into_owned();
+    let conversations = harness_session::conversation_source(source).map_err(|e| anyhow!(e))?;
+    let Some(id) = id else {
+        let found = conversations.list(&root).map_err(|e| anyhow!(e.to_string()))?;
+        if found.is_empty() {
+            println!("{source} has no conversations for this directory");
+        }
+        for c in found {
+            println!("{}  {:>8.1} MB  {}", c.id, c.bytes as f64 / 1e6, c.title);
+        }
+        return Ok(());
+    };
+    let imported = conversations.read(&root, id).map_err(|e| anyhow!(e.to_string()))?;
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
+    let data_dir = config::data_dir()?;
+    let session = harness_session::store_imported(&data_dir.to_string_lossy(), &root, &imported, now_ms).map_err(|e| anyhow!(e))?;
+    println!("imported \"{}\": {} entries, {} damaged lines passed over", imported.info.title, imported.entries.len(), imported.damaged);
+    println!("session: {session}");
+    println!("The original is untouched. It goes on in a fork at your first message, so it opens in {source} as before.");
+    println!("Open it from the start page with the provider set to {source}, in this directory.");
+    Ok(())
 }
 
 /// `multitool trace`: the debug view of the loop.
