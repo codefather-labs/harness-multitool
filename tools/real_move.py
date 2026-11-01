@@ -12,7 +12,7 @@ import pyte
 bin_ = sys.argv[1]; MODEL = "claude-haiku-5-5"
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-mv-root")); home = tempfile.mkdtemp(prefix="mt-mv-home"); os.makedirs(home + "/cfg/harness-multitool"); os.makedirs(home + "/data/harness-multitool")
 os.symlink(os.path.expanduser("~/.local/share/harness-multitool/auth"), home + "/data/harness-multitool/auth")
-ROW = f'\n[session.providers.claude-code]\nkind="claude-code"\n'
+ROW = '\n[session.providers.claude-code]\nkind="claude-code"\n' + os.environ.get("ROW_EXTRA", "").replace("\\n", "\n")
 CONFIG = {
     "gpt": '[session]\nprovider="chatgpt"\nmodel="gpt-6.1-sol"\nmax_tokens=4000\nplan_first="off"\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n' + ROW,
     "claude": f'[session]\nprovider="claude-code"\nmodel="{MODEL}"\n' + ROW,
