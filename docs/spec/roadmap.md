@@ -12,6 +12,8 @@ Each milestone ends with its specifications checked, not with its features writt
 | **M5 — Browser** | platform-wasm, frontend-web, the demo on the project site | the demo runs a task in the page; INV-10 checked |
 | **M6 — Branches and mesh** | rewind and branch, parallel worktree attempts, agent mesh, routing with budgets, `skill` triggers (IF-13, IF-14), callback handlers as plugins with a Callbacks tab in the TUI's settings and hot reload of plugins (IF-16, ADR 0015, CON-30), `flow` triggers with live flowchart runs and run history (ADR 0012), step-debug mode (ADR 0013) | ADR 0007 items 3 and 4 shipped with their specifications; INV-13 checked |
 
+**Ideas, not yet on a milestone:** plan mode — the classic plan mode with the accent on the journal, mind maps and flowcharts, and a hook with their instructions ([ADR 0016](../decisions/0016-plan-mode.md)).
+
 **Concepts, not yet on a milestone:** reliability-monitoring mode — signals accumulate, conditions wake the agent with one message per batch, per-project response policies in `.harness/policies/` ([ADR 0014](../decisions/0014-reliability-monitoring-mode.md)).
 
 ## Hot reload of plugins (M6; ADR 0015, CON-30)
