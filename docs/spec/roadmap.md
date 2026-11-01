@@ -11,3 +11,5 @@ Each milestone ends with its specifications checked, not with its features writt
 | **M4 — Proof** | `Verifier`, the done gate, specifications as acceptance checks | INV-4, INV-11 checked |
 | **M5 — Browser** | platform-wasm, frontend-web, the demo on the project site | the demo runs a task in the page; INV-10 checked |
 | **M6 — Branches and mesh** | rewind and branch, parallel worktree attempts, agent mesh, routing with budgets, `skill` triggers (IF-13, IF-14), `flow` triggers with live flowchart runs and run history (ADR 0012), step-debug mode (ADR 0013) | ADR 0007 items 3 and 4 shipped with their specifications; INV-13 checked |
+
+**Ideas, not yet on a milestone:** reliability-monitoring mode — SLOs, error budgets and response policies for incoming metrics ([ADR 0014](../decisions/0014-reliability-monitoring-mode.md), proposed).

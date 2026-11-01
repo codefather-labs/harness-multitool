@@ -17,3 +17,7 @@
 | **Q-13** | Run history: retention, size limits, and which windows watch a chart (a named session, every session of the project, the one that created it). | design |
 | **Q-14** | Step-debug: how a target project's debug router receives the agent's decisions (it polls the harness, a callback reply, a socket, a file) and what a decision can carry (continue, stop, skip, changed input?). | design |
 | **Q-16** | Step-debug: what a waiting step does when no decision comes (wait forever, time out and continue, time out and stop), and how several pipelines step at once. | design |
+| **Q-17** | Reliability monitoring (ADR 0014, an idea): where metrics come from (Prometheus/Alertmanager, Grafana, OpenTelemetry, a project's own script), how they reach the harness, and whether an `alert` trigger kind is needed or `message`/`skill` are enough. | the owner, design |
+| **Q-18** | Reliability monitoring: the format and storage of SLIs, SLOs, error budgets and response policies (runbooks), and who may change them. | the owner, design |
+| **Q-19** | Reliability monitoring: which mitigations an agent may apply on its own, which need a human's approval, and how a human is paged (Telegram, on-call tool). | the owner |
+| **Q-20** | Reliability monitoring: a mode that watches for days, while sessions are short — a daemon-side watcher that starts a session per incident, or one long session? | design |
