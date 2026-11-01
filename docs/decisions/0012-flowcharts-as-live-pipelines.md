@@ -34,3 +34,5 @@ The owner wants charts to serve beyond documentation: as the live view and the f
 How a run is identified across events, how arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.
 
 Used by [ADR 0013](0013-step-debug-mode.md): step-debug mode builds on live charts — the active node is the one the latest flow callback came from, and a run that reaches a terminal block is saved to the project's `.harness/debug/` SQLite and the chart reset.
+
+**Clarified by the owner, 2026-11-01:** a chart changes visually only when callbacks come for it; building those callback calls into the client's code is the agent's task. For now a chart's state driven by events serves only to visualise how a project's pipeline works. Mechanisms that act on a chart's nodes — automations fired at a node — are an idea for later, not part of this decision.

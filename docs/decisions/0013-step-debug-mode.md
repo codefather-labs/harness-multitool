@@ -34,7 +34,9 @@ The debug router works only behind the environment gate and **always with author
 
 So the mode turns a flowchart into a live map of a running pipeline that the agent walks through step by step: it sees where the pipeline is, what each step reported, decides whether it goes on, and keeps every cycle for later.
 
-**Strictly behind an environment gate, with authorization.** Everything the mode puts into the target project — the debug router, the step waits, the mode's callbacks — is active only when the project runs with `MULTITOOL_STEP_DEBUG=1`, and the debug router only with authorization. Without it the code is inert: no callback is sent, no step waits, the pipeline runs as it would without the instrumentation. The gate keeps the debug code from stalling a production pipeline it was shipped into by mistake (proposed by the agent, decided by the owner, 2026-11-01; CON-25).
+**Strictly behind an environment gate, with authorization.** Everything the mode puts into the target project — the debug router, the step waits, the mode's callbacks — is active only when the project runs with `MULTITOOL_DEBUG_MODE=1`, and the debug router only with authorization. Without it the code is inert: no callback is sent, no step waits, the pipeline runs as it would without the instrumentation. The gate keeps the debug code from stalling a production pipeline it was shipped into by mistake (proposed by the agent, decided by the owner, 2026-11-01; CON-25).
+
+**A waiting step waits — decided by the owner (answers Q-16).** After a callback the pipeline waits for `approve` and nothing else: no timeouts, the agent needs time to think. If something goes wrong — the agent crashes, the session ends — the project still does nothing on its own; it never advances without the agent's approval. Each waiting pipeline waits for its own `approve`. A health-check event from the project to the daemon was considered and rejected as over-engineering: under debug conditions it would almost never be needed.
 
 ## Why
 
@@ -42,4 +44,4 @@ Logs tell what happened after the fact; a debugger stops the program where it ru
 
 ## Open
 
-The debug-router contract itself is to be written (CON-27). What a waiting step does when no decision comes (Q-16). The owner may add to this decision.
+The debug-router contract itself is to be written (CON-27). The owner may add to this decision.
