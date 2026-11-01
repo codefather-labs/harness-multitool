@@ -16,7 +16,7 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; the consistency check is a built-in, id-linked, advisory hook plus `multitool docs check` in CI (CON-45); the `project-init` skill creates the tree with an example entry in every file.
 
-**Ideas, not yet on a milestone:** plan mode — the classic plan mode with the accent on the journal, mind maps and flowcharts, and a hook with their instructions ([ADR 0016](../decisions/0016-plan-mode.md)).
+**Ideas, not yet on a milestone:** generated documentation like rustdoc — `multitool doc` builds a linked HTML site and a PDF from the docs, maps and charts ([ADR 0018](../decisions/0018-generated-documentation-site.md)). plan mode — the classic plan mode with the accent on the journal, mind maps and flowcharts, and a hook with their instructions ([ADR 0016](../decisions/0016-plan-mode.md)).
 
 **Concepts, not yet on a milestone:** reliability-monitoring mode — signals accumulate, conditions wake the agent with one message per batch, per-project response policies in `.harness/policies/` (IF-15, INV-14, CON-26; [ADR 0014](../decisions/0014-reliability-monitoring-mode.md)).
 
