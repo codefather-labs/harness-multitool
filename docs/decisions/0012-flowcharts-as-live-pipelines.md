@@ -13,6 +13,8 @@ A flowchart is not only documentation: it can be bound to a real process or pipe
 
 **Live state.** Every watching window shows the chart's current run: the active node highlighted, the path already taken marked, a failed node in the error colour, the time spent per node. Every `flowstate_update` event that changes the chart **renders it in the terminal**: the chart is drawn into the transcript the same way the `/flowchart` command draws it, already in its new state — active node, path taken, failures. The user sees the pipeline move step by step: the work is visibly going on. (Decided by the owner, 2026-11-01; replaces the earlier "updated in place, not appended on every event" rule.)
 
+**Runs are instances of a reference chart — decided by the owner (answers Q-11).** The flowchart the agent draws for a pipeline is its **reference**. One new pass of the pipeline is one new **instance**: a new flowchart made from the reference, with its own state. The client identifies the pass by its own unique id — a `correlation_id` of a request chain or any other identifier its product logic guarantees — and sends it with every `flowstate_update` of that pass; that id ties events to their instance, idempotently from the client to the instance. With N instances open at once, the one whose event came **last is active and expanded**; the others are collapsed, so they do not clutter the view. Earlier cards of the same instance collapse too (the agent's reading: only the latest card is expanded).
+
 **Run history.** Every event of every run is kept, in order, with its time (INV-13). Runs can be listed, opened and replayed step by step; two runs can be compared. This makes a chart a tool for **retrospective validation**: did the callbacks fire as designed, did the process take the path the chart says, where does it stall or fail, which runs differed.
 
 **Checks the chart enables.** An event naming a node or an arrow that is not in the chart, or a step that does not follow an arrow from the run's current node, is recorded as an **off-chart** event and shown as such — the process and its chart disagree. A run that reaches an end node is complete; a run without events for longer than its node allows is stalled.
@@ -31,7 +33,7 @@ The owner wants charts to serve beyond documentation: as the live view and the f
 
 ## Open
 
-How a run is identified across events, how arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.
+How arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.
 
 Used by [ADR 0013](0013-step-debug-mode.md): step-debug mode builds on live charts — the active node is the one the latest flow callback came from, and a run that reaches a terminal block is saved to the project's `.harness/debug/` SQLite and the chart reset.
 

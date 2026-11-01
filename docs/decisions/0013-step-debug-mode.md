@@ -38,6 +38,8 @@ So the mode turns a flowchart into a live map of a running pipeline that the age
 
 **A waiting step waits — decided by the owner (answers Q-16).** After a callback the pipeline waits for `approve` and nothing else: no timeouts, the agent needs time to think. If something goes wrong — the agent crashes, the session ends — the project still does nothing on its own; it never advances without the agent's approval. Each waiting pipeline waits for its own `approve`. A health-check event from the project to the daemon was considered and rejected as over-engineering: under debug conditions it would almost never be needed.
 
+**One pass under control.** In step-debug mode the agent is meant to hold **one pass** of a pipeline at a time: then it can check every event and decide whether there is a bug. Several instances at once are allowed (ADR 0012), but they fill the view; the agent keeps that in mind.
+
 ## Why
 
 Logs tell what happened after the fact; a debugger stops the program where it runs. Pipelines spread over services, queues and agents have no debugger that spans them. Callbacks into the harness plus a router that waits for the agent give that: the agent sees each step on the chart as it happens and decides the next one, and every cycle is kept to check afterwards.
