@@ -29,6 +29,8 @@ pub struct BuildContext<'a> {
     pub platform: &'a Platform,
     /// `None` only while the `Auth` implementation itself is being built.
     pub auth: Option<Rc<dyn Auth>>,
+    /// `None` until the `Memory` implementation is built; tools over it see it.
+    pub memory: Option<Rc<dyn Memory>>,
     pub settings: &'a Value,
 }
 
@@ -153,11 +155,15 @@ impl Registry {
 
     pub fn resolve(&self, selection: &Selection, platform: Platform) -> Result<Parts, RegistryError> {
         let none = Value::Null;
-        let auth_cx = BuildContext { platform: &platform, auth: None, settings: self.settings.get(&format!("auth.{}", selection.auth)).unwrap_or(&none) };
+        let auth_cx = BuildContext { platform: &platform, auth: None, memory: None, settings: self.settings.get(&format!("auth.{}", selection.auth)).unwrap_or(&none) };
         let auth = self.auth.build(&selection.auth, &auth_cx)?;
+        let memory_cx = BuildContext { platform: &platform, auth: Some(auth.clone()), memory: None, settings: self.settings.get(&format!("memory.{}", selection.memory)).unwrap_or(&none) };
+        let memory = self.memories.build(&selection.memory, &memory_cx)?;
+        let tools_memory = memory.clone();
         let cx = |interface: &str, name: &str| BuildContext {
             platform: &platform,
             auth: Some(auth.clone()),
+            memory: Some(tools_memory.clone()),
             settings: self.settings.get(&format!("{interface}.{name}")).unwrap_or(&none),
         };
 
@@ -180,7 +186,7 @@ impl Registry {
             tools,
             policy: self.policies.build(&selection.policy, &cx("policy", &selection.policy))?,
             hooks,
-            memory: self.memories.build(&selection.memory, &cx("memory", &selection.memory))?,
+            memory,
             context: self.contexts.build(&selection.context, &cx("context", &selection.context))?,
             store: self.stores.build(&selection.store, &cx("store", &selection.store))?,
             verifier: self.verifiers.build(&selection.verifier, &cx("verifier", &selection.verifier))?,

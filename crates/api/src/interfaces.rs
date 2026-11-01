@@ -148,17 +148,86 @@ pub trait Hook {
     fn run<'a>(&'a self, point: &'a HookPoint<'a>) -> BoxFuture<'a, HookOutcome>;
 }
 
+/// A new journal entry (CON-21).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct JournalEntry {
     pub body: String,
     pub category: String,
     pub tags: Vec<String>,
+    pub flags: Vec<String>,
+    pub salience: Option<String>,
+    pub feature: Option<String>,
 }
 
-/// IF-7. Grows with its milestones (M3); this is what the loop needs now.
+/// A stored journal entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct JournalRecord {
+    pub id: u64,
+    pub created: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub body: String,
+    pub flags: Vec<String>,
+}
+
+/// The two map tools (ADR 0011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapKind {
+    MindMap,
+    Flowchart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MapNode {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub kind: String,
+    pub text: String,
+    pub state: String,
+    pub refs: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MapEdge {
+    pub from: u64,
+    pub to: u64,
+    pub label: String,
+    pub refs: Vec<u64>,
+}
+
+/// A map as a whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapData {
+    pub id: u64,
+    pub title: String,
+    pub kind: MapKind,
+    pub direction: String,
+    pub root: u64,
+    pub nodes: Vec<MapNode>,
+    pub edges: Vec<MapEdge>,
+}
+
+/// A new node: under `parent` in a mind map, after `after` in a flowchart.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewMapNode {
+    pub text: String,
+    pub kind: String,
+    pub parent: Option<u64>,
+    pub after: Option<u64>,
+    pub label: String,
+    pub refs: Vec<u64>,
+}
+
+/// IF-7. Grows with its milestones.
 pub trait Memory {
-    fn journal_add(&self, entry: JournalEntry) -> BoxFuture<'_, PluginResult<u64>>;
-    fn journal_search(&self, query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalEntry>>>;
+    fn journal_add(&self, entry: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>>;
+    fn journal_search(&self, query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>>;
+    fn journal_get(&self, id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>>;
+    fn journal_close(&self, id: u64, resolution: &str) -> BoxFuture<'_, PluginResult<()>>;
+    fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>>;
+    fn map_add(&self, map: u64, node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>>;
+    fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>>;
 }
 
 /// The context of one turn.

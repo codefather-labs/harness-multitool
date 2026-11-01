@@ -371,3 +371,54 @@ fn shell_hooks_add_context_veto_and_fail() {
     // The failing PostToolUse hook blocked nothing: the read's result still reached the model.
     assert!(third["messages"].to_string().contains("\"x\\n\""));
 }
+
+/// IF-7, CON-22: the agent's memory tools reach a real journal and real maps, and every checkout
+/// of a repository shares them.
+#[test]
+fn memory_tools_write_a_real_journal_shared_by_every_checkout() {
+    let data = temp_dir("mem-data");
+    let git = |root: &str, url: &str| {
+        for args in [vec!["init", "-q"], vec!["remote", "add", "origin", url]] {
+            let ok = std::process::Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+            assert!(ok);
+        }
+    };
+    let (a, b) = (temp_dir("mem-a"), temp_dir("mem-b"));
+    git(&a, "git@github.com:acme/app.git");
+    git(&b, "https://github.com/acme/app");
+
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "journal_add", json!({"body": "Chose SQLite because readers block.", "category": "decision", "tags": ["sqlite"], "flags": ["important"]}))), "Noting."),
+        anthropic_turn(Some(("t2", "flowchart_new", json!({"title": "deploy", "direction": "down"}))), "Charting."),
+        anthropic_turn(Some(("t3", "flowchart_add", json!({"map": 1, "text": "build", "kind": "process", "after": 1, "label": "go"}))), "Adding."),
+        anthropic_turn(None, "Done."),
+        anthropic_turn(Some(("t4", "journal_search", json!({"query": "SQLite"}))), "Looking."),
+        anthropic_turn(Some(("t5", "flowchart_show", json!({"map": 1}))), "Showing."),
+        anthropic_turn(None, "Found it."),
+    ]);
+    let mut first = Sessions::new(real_factory(settings(&url, "k"), a.clone(), data.clone().into()), a);
+    let (entries, _, asked) = drive(&mut first, &["note it"], Answer::Deny);
+    assert_eq!(asked, 0, "memory writes need no prompt");
+    let outputs = |entries: &[LogEntry]| -> Vec<serde_json::Value> {
+        entries.iter().filter_map(|e| match &e.event {
+            Event::ToolResult { output, is_error, .. } => {
+                assert!(!is_error, "{output}");
+                Some(serde_json::from_str(output).unwrap())
+            }
+            _ => None,
+        }).collect()
+    };
+    let results = outputs(&entries);
+    assert_eq!(results[0]["id"], 1);
+    assert_eq!(results[0]["flags"][0], "important");
+    assert_eq!(results[1]["kind"], "flowchart");
+    assert_eq!(results[2]["edges"][0]["label"], "go");
+
+    // Another checkout of the same repository, another process's worth of state.
+    let mut second = Sessions::new(real_factory(settings(&url, "k"), b.clone(), data.clone().into()), b);
+    let (entries, _, _) = drive(&mut second, &["find it"], Answer::Deny);
+    let results = outputs(&entries);
+    assert_eq!(results[0]["entries"][0]["body"], "Chose SQLite because readers block.");
+    assert_eq!(results[1]["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(std::fs::read_dir(format!("{data}/journals")).unwrap().filter(|f| f.as_ref().unwrap().path().extension().is_some_and(|e| e == "db")).count(), 1, "one journal file");
+}

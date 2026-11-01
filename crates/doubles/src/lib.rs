@@ -178,20 +178,56 @@ impl Hook for FixedHook {
     }
 }
 
-/// IF-7.
+/// IF-7. Entries and maps in memory.
 #[derive(Default)]
 pub struct InMemoryJournal {
-    pub entries: RefCell<Vec<JournalEntry>>,
+    pub entries: RefCell<Vec<JournalRecord>>,
+    pub maps: RefCell<Vec<MapData>>,
 }
 
 impl Memory for InMemoryJournal {
-    fn journal_add(&self, entry: JournalEntry) -> BoxFuture<'_, PluginResult<u64>> {
-        self.entries.borrow_mut().push(entry);
-        ready(Ok(self.entries.borrow().len() as u64))
+    fn journal_add(&self, entry: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>> {
+        let id = self.entries.borrow().len() as u64 + 1;
+        let record = JournalRecord { id, created: String::new(), category: entry.category, tags: entry.tags, body: entry.body, flags: entry.flags };
+        self.entries.borrow_mut().push(record.clone());
+        ready(Ok(record))
     }
 
-    fn journal_search(&self, query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalEntry>>> {
+    fn journal_search(&self, query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         ready(Ok(self.entries.borrow().iter().filter(|e| e.body.contains(query)).cloned().collect()))
+    }
+
+    fn journal_get(&self, id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>> {
+        ready(Ok(self.entries.borrow().iter().find(|e| e.id == id).cloned()))
+    }
+
+    fn journal_close(&self, _id: u64, _resolution: &str) -> BoxFuture<'_, PluginResult<()>> {
+        ready(Ok(()))
+    }
+
+    fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
+        let id = self.maps.borrow().len() as u64 + 1;
+        let root = MapNode { id: 1, parent: None, kind: "topic".into(), text: title.into(), state: "open".into(), refs: vec![] };
+        let map = MapData { id, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![] };
+        self.maps.borrow_mut().push(map.clone());
+        ready(Ok(map))
+    }
+
+    fn map_add(&self, map: u64, node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>> {
+        let mut maps = self.maps.borrow_mut();
+        let result = maps.iter_mut().find(|m| m.id == map).map(|m| {
+            let id = m.nodes.len() as u64 + 1;
+            m.nodes.push(MapNode { id, parent: node.parent.or(Some(m.root)), kind: node.kind.clone(), text: node.text.clone(), state: "open".into(), refs: node.refs.clone() });
+            if let Some(from) = node.after {
+                m.edges.push(MapEdge { from, to: id, label: node.label.clone(), refs: vec![] });
+            }
+            m.clone()
+        });
+        ready(result.ok_or_else(|| PluginError::new(format!("no map #{map}"))))
+    }
+
+    fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>> {
+        ready(Ok(self.maps.borrow().iter().find(|m| m.id == map).cloned()))
     }
 }
 

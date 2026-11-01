@@ -1,6 +1,5 @@
 //! The default context (IF-8): the whole conversation, with hook context and the project's root
-//! in the system prompt. Journal- and map-aware compaction arrives with the daemon (M3), and
-//! until then there is a `Memory` that says so.
+//! in the system prompt. Journal- and map-aware compaction comes with M3.
 
 use harness_api::*;
 
@@ -21,12 +20,36 @@ impl ContextStrategy for WholeConversation {
 
 pub struct NoMemory;
 
+fn none<'a, T: 'a>() -> BoxFuture<'a, PluginResult<T>> {
+    Box::pin(std::future::ready(Err(PluginError::new("no memory backend is selected"))))
+}
+
 impl Memory for NoMemory {
-    fn journal_add(&self, _entry: JournalEntry) -> BoxFuture<'_, PluginResult<u64>> {
-        Box::pin(std::future::ready(Err(PluginError::new("no memory backend is connected yet"))))
+    fn journal_add(&self, _entry: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>> {
+        none()
     }
 
-    fn journal_search(&self, _query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalEntry>>> {
+    fn journal_search(&self, _query: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    fn journal_get(&self, _id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    fn journal_close(&self, _id: u64, _resolution: &str) -> BoxFuture<'_, PluginResult<()>> {
+        none()
+    }
+
+    fn map_new(&self, _kind: MapKind, _title: &str, _direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
+        none()
+    }
+
+    fn map_add(&self, _map: u64, _node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>> {
+        none()
+    }
+
+    fn map_read(&self, _map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>> {
+        Box::pin(std::future::ready(Ok(None)))
     }
 }

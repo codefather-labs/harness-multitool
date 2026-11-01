@@ -395,6 +395,7 @@ impl Live {
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.apply(&mut t.view, &entry);
+                        w.journal.extend(feed.take_known());
                         if Some(tab) != active && matches!(entry.event, harness_api::Event::TurnFinished { .. }) {
                             t.mark = match t.mark {
                                 TabMark::Unread(n) => TabMark::Unread(n + 1),

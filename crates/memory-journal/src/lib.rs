@@ -6,6 +6,8 @@ pub mod journal;
 pub mod mindmap;
 pub mod mindmap_flow;
 pub mod mindmap_svg;
+pub mod plugin;
+pub mod project;
 
 use std::sync::Once;
 

@@ -5,9 +5,12 @@
 use std::collections::HashMap;
 
 use harness_api::event::{DecidedBy, HookOutcome as LogOutcome};
-use harness_api::{Capability, Event, LogEntry, StopReason, ToolCall as LogCall};
+use harness_api::{Capability, Event, LogEntry, MapData, MapKind, StopReason, ToolCall as LogCall};
 use serde_json::Value;
 
+use crate::model::{
+    Arrow, Branch, FlowDirection, FlowNode, Flowchart, FlowchartEvent, Gate, JournalEvent, MapCreated, MapTool, MindKind, MindLink, MindMap, MindMapEvent, MindNode, NodeStatus, Symbol,
+};
 use crate::model::{Diff, DiffLine, HookEvent, HookOutcome, HookRun, Item, PermissionView, Role, SessionView, Tone, ToolBody, ToolCall, ToolIcon, ToolState};
 
 /// Tool output lines shown before `+N more lines`.
@@ -22,6 +25,7 @@ pub struct Feed {
     calls: HashMap<String, CallPlace>,
     cost_micro_usd: u64,
     context_window: u64,
+    known: Vec<JournalEvent>,
 }
 
 struct CallPlace {
@@ -34,7 +38,7 @@ struct CallPlace {
 
 impl Feed {
     pub fn new(time: TimeFormat, context_window: u64) -> Self {
-        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window }
+        Feed { time, calls: HashMap::new(), cost_micro_usd: 0, context_window, known: Vec::new() }
     }
 
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
@@ -95,6 +99,16 @@ impl Feed {
             Event::ToolResult { id, output, is_error } => {
                 let started = self.calls.get(id).map(|c| c.started_ms);
                 let diff = self.calls.get(id).filter(|c| c.name == "edit" && !*is_error).and_then(|c| edit_diff(&c.input));
+                let memory_card = self.calls.get(id).filter(|_| !*is_error).and_then(|c| memory_card(&c.name, output, &time));
+                if let Some(card) = memory_card {
+                    if let Item::Journal(j) = &card {
+                        self.known.push(j.clone());
+                    }
+                    if let Some(slot) = self.calls.get(id).and_then(|place| slot(v, place)) {
+                        *slot = card;
+                    }
+                    return;
+                }
                 if let Some(card) = self.card(v, id) {
                     let denied = card.state == ToolState::Failed;
                     card.state = if *is_error { ToolState::Failed } else { ToolState::Done };
@@ -133,6 +147,11 @@ impl Feed {
         }
     }
 
+    /// Journal entries seen since the last call, for the view's unfolding tickets.
+    pub fn take_known(&mut self) -> Vec<JournalEvent> {
+        std::mem::take(&mut self.known)
+    }
+
     /// The run has ended, however it ended: nothing is generating any more.
     pub fn run_ended(&mut self, v: &mut SessionView) {
         v.generating = false;
@@ -147,6 +166,125 @@ impl Feed {
             },
             _ => None,
         }
+    }
+}
+
+fn slot<'a>(v: &'a mut SessionView, place: &CallPlace) -> Option<&'a mut Item> {
+    match v.transcript.get_mut(place.item)? {
+        Item::Turn { attached, .. } => attached.get_mut(place.attached),
+        _ => None,
+    }
+}
+
+/// A memory tool's result as its own card: JOURNAL, MINDMAP or FLOWCHART (ADR 0011).
+fn memory_card(tool: &str, output: &str, date: &str) -> Option<Item> {
+    match tool {
+        "journal_add" => {
+            let r: harness_api::JournalRecord = serde_json::from_str(output).ok()?;
+            Some(Item::Journal(JournalEvent { id: r.id as u32, category: r.category, tags: r.tags, date: date.to_string(), text: r.body }))
+        }
+        "mindmap_new" | "flowchart_new" => {
+            let m: MapData = serde_json::from_str(output).ok()?;
+            let map_tool = if m.kind == MapKind::Flowchart { MapTool::Flowchart } else { MapTool::MindMap };
+            Some(Item::MapCreated(MapCreated { tool: map_tool, id: m.id as u32, title: m.title, shared: true }))
+        }
+        "mindmap_add" | "mindmap_show" => {
+            let m: MapData = serde_json::from_str(output).ok()?;
+            let change = if tool == "mindmap_add" { "+node".to_string() } else { "shown".to_string() };
+            Some(Item::MindMap(MindMapEvent { id: m.id as u32, change, date: date.to_string(), map: mind_map(&m, tool == "mindmap_add"), open: None, focus: None, pan: (0, 0) }))
+        }
+        "flowchart_add" | "flowchart_show" => {
+            let m: MapData = serde_json::from_str(output).ok()?;
+            let change = if tool == "flowchart_add" { "+node".to_string() } else { "shown".to_string() };
+            Some(Item::Flowchart(FlowchartEvent { id: m.id as u32, change, date: date.to_string(), chart: flowchart(&m, tool == "flowchart_add"), open: None, focus: None, pan: (0, 0) }))
+        }
+        _ => None,
+    }
+}
+
+fn node_id(id: u64) -> String {
+    format!("n{id}")
+}
+
+fn refs(r: &[u64]) -> Vec<u32> {
+    r.iter().map(|x| *x as u32).collect()
+}
+
+fn mind_map(m: &MapData, newest_changed: bool) -> MindMap {
+    let newest = m.nodes.iter().map(|n| n.id).max();
+    MindMap {
+        nodes: m
+            .nodes
+            .iter()
+            .map(|n| MindNode {
+                id: node_id(n.id),
+                text: n.text.clone(),
+                kind: match n.kind.as_str() {
+                    "topic" => MindKind::Topic,
+                    "goal" => MindKind::Goal,
+                    "decision" => MindKind::Decision,
+                    "fact" => MindKind::Fact,
+                    "hypothesis" => MindKind::Hypothesis,
+                    "question" => MindKind::Question,
+                    "task" => MindKind::Task,
+                    "idea" => MindKind::Idea,
+                    "dead-end" => MindKind::DeadEnd,
+                    _ => MindKind::Note,
+                },
+                status: match n.state.as_str() {
+                    "done" => NodeStatus::Done,
+                    "dropped" => NodeStatus::Dropped,
+                    _ => NodeStatus::Open,
+                },
+                refs: refs(&n.refs),
+                flows: vec![],
+                changed: newest_changed && Some(n.id) == newest,
+            })
+            .collect(),
+        branches: m.nodes.iter().filter_map(|n| n.parent.map(|p| Branch { from: node_id(p), to: node_id(n.id), flows: vec![] })).collect(),
+        links: m.edges.iter().map(|e| MindLink { from: node_id(e.from), to: node_id(e.to), label: e.label.clone(), flows: vec![] }).collect(),
+    }
+}
+
+fn flowchart(m: &MapData, newest_changed: bool) -> Flowchart {
+    let newest = m.nodes.iter().map(|n| n.id).max();
+    Flowchart {
+        direction: if m.direction == "down" { FlowDirection::Down } else { FlowDirection::Right },
+        nodes: m
+            .nodes
+            .iter()
+            .map(|n| FlowNode {
+                id: node_id(n.id),
+                text: n.text.clone(),
+                symbol: match n.kind.as_str() {
+                    // A chart's root is its starting point.
+                    "start" | "topic" => Symbol::Start,
+                    "end" => Symbol::End,
+                    "decision" => Symbol::Decision,
+                    "io" => Symbol::Io,
+                    "subprocess" => Symbol::Subprocess,
+                    "document" => Symbol::Document,
+                    "data" => Symbol::Data,
+                    "manual" => Symbol::Manual,
+                    "prep" => Symbol::Prep,
+                    "connector" => Symbol::Connector,
+                    "delay" => Symbol::Delay,
+                    "note" => Symbol::Note,
+                    "and" => Symbol::Gate(Gate::And),
+                    "or" => Symbol::Gate(Gate::Or),
+                    "not" => Symbol::Gate(Gate::Not),
+                    "nand" => Symbol::Gate(Gate::Nand),
+                    "nor" => Symbol::Gate(Gate::Nor),
+                    "xor" => Symbol::Gate(Gate::Xor),
+                    "xnor" => Symbol::Gate(Gate::Xnor),
+                    _ => Symbol::Process,
+                },
+                refs: refs(&n.refs),
+                changed: newest_changed && Some(n.id) == newest,
+                active: false,
+            })
+            .collect(),
+        arrows: m.edges.iter().map(|e| Arrow { from: node_id(e.from), to: node_id(e.to), label: (!e.label.is_empty()).then(|| e.label.clone()), refs: refs(&e.refs) }).collect(),
     }
 }
 
@@ -363,6 +501,39 @@ mod tests {
         let card = first_tool(&v, 0);
         assert_eq!((card.args.as_str(), card.outcome.as_str(), card.diffstat), ("a.rs", "applied", Some((2, 1))));
         assert!(matches!(&card.body, ToolBody::Diff(d) if d.lines.len() == 3));
+    }
+
+    #[test]
+    fn memory_tools_draw_their_own_cards() {
+        let (mut f, mut v) = (feed(), SessionView::default());
+        let run = |f: &mut Feed, v: &mut SessionView, id: &str, name: &str, output: serde_json::Value| {
+            f.apply(v, &entry(1, Event::ToolRequested { call: LogCall { id: id.into(), name: name.into(), input: json!({}) }, capabilities: vec![] }));
+            f.apply(v, &entry(2, Event::ToolResult { id: id.into(), output: output.to_string(), is_error: false }));
+        };
+        run(&mut f, &mut v, "a", "journal_add", json!({"id": 7, "created": "", "category": "decision", "tags": ["x"], "body": "why", "flags": []}));
+        let map = json!({"id": 1, "title": "t", "kind": "flowchart", "direction": "down", "root": 1,
+            "nodes": [{"id": 1, "parent": null, "kind": "start", "text": "go", "state": "open", "refs": []}, {"id": 2, "parent": 1, "kind": "and", "text": "both", "state": "open", "refs": [7]}],
+            "edges": [{"from": 1, "to": 2, "label": "yes", "refs": []}]});
+        run(&mut f, &mut v, "b", "flowchart_new", map.clone());
+        run(&mut f, &mut v, "c", "flowchart_add", map.clone());
+        let mut mind = map.clone();
+        mind["kind"] = json!("mindmap");
+        mind["nodes"][1]["kind"] = json!("dead-end");
+        run(&mut f, &mut v, "d", "mindmap_add", mind);
+
+        let Item::Turn { attached, .. } = &v.transcript[0] else { panic!() };
+        assert!(matches!(&attached[0], Item::Journal(j) if j.id == 7 && j.text == "why"));
+        assert!(matches!(&attached[1], Item::MapCreated(m) if m.tool == MapTool::Flowchart));
+        let Item::Flowchart(chart) = &attached[2] else { panic!() };
+        assert_eq!(chart.chart.direction, FlowDirection::Down);
+        assert_eq!(chart.chart.nodes[1].symbol, Symbol::Gate(Gate::And));
+        assert_eq!(chart.chart.arrows[0].label.as_deref(), Some("yes"));
+        assert!(chart.chart.nodes[1].changed && !chart.chart.nodes[0].changed);
+        let Item::MindMap(m) = &attached[3] else { panic!() };
+        assert_eq!(m.map.nodes[1].kind, MindKind::DeadEnd);
+        assert_eq!(m.map.branches.len(), 1);
+        assert_eq!(f.take_known().len(), 1);
+        assert!(f.take_known().is_empty());
     }
 
     #[test]

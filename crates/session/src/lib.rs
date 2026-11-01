@@ -48,7 +48,7 @@ impl Default for Settings {
             max_tokens: 64_000,
             max_turns: None,
             max_cost_usd: None,
-            tools: ["read", "edit", "shell", "search", "fetch"].map(String::from).to_vec(),
+            tools: ["read", "edit", "shell", "search", "fetch"].into_iter().chain(harness_tools_memory::NAMES).map(String::from).collect(),
             hooks: Vec::new(),
             providers: BTreeMap::new(),
             auth: BTreeMap::new(),
@@ -70,12 +70,18 @@ impl Settings {
             tools: self.tools.clone(),
             policy: "default".into(),
             hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).collect(),
-            memory: "none".into(),
+            memory: "journal".into(),
             context: "whole-conversation".into(),
             store: "files".into(),
             verifier: "protocol".into(),
         }
     }
+}
+
+/// The folder's `origin` URL, if it is a repository with one.
+fn git_origin(root: &str) -> Option<String> {
+    let out = std::process::Command::new("git").args(["-C", root, "config", "--get", "remote.origin.url"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|u| !u.is_empty())
 }
 
 fn env(name: &str) -> Option<String> {
@@ -87,6 +93,7 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
     let sessions_dir = sessions_dir(data_dir, root);
+    let (root_d, journals_dir) = (root.to_string(), format!("{}/journals", data_dir.trim_end_matches('/')));
     r.auth("api-key", |cx| Ok(Rc::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
@@ -96,9 +103,20 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
         .tool("fetch", |_| Ok(Rc::new(harness_tools_builtin::Fetch)))
         .policy("default", move |_| Ok(Rc::new(harness_policy_default::DefaultPolicy::new(&root_a))))
         .memory("none", |_| Ok(Rc::new(harness_context_default::NoMemory)))
+        .memory("journal", move |_| {
+            let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
+            Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(std::path::Path::new(&journals_dir), &key, "multitool")?))
+        })
         .context("whole-conversation", move |_| Ok(Rc::new(harness_context_default::WholeConversation { root: root_b.clone() })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
+    for name in harness_tools_memory::NAMES {
+        r.tool(name, move |cx| {
+            let memory = cx.memory.clone().ok_or("the tool was built before Memory")?;
+            let tool = harness_tools_memory::tool(memory, name).ok_or("no such memory tool")?;
+            Ok(Rc::new(tool))
+        });
+    }
     for (i, hook) in settings.hooks.iter().enumerate() {
         let (hook, root) = (hook.clone(), root.to_string());
         r.hook(&format!("shell-{i}"), move |cx| {
