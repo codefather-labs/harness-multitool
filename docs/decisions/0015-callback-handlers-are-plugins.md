@@ -7,7 +7,7 @@
 
 Callbacks have custom types (IF-13: a callback's `type` is a harness type or any product string), so custom behaviour needs custom handlers. **One interface, `CallbackHandler` (IF-16), handles callbacks of every type:**
 
-- the **standard types** are implemented through it and ship with the harness: `notification` (a callback delivered into the agent's input, its stdin: the agent receives it and acts on it), `flowstate_update` (an event that changes the state of one instance of a flowchart — a pass keyed by the client's pipeline id — never the reference chart), and others to come;
+- the **standard types** are implemented through it and ship with the harness: `notification` (a callback delivered into the agent's input, its stdin — the inbound CALLBACK card the TUI shows, `/callback` publishes one; the `message` action of ADR 0009 is this type), `flowstate_update` (an event that changes the state of one instance of a flowchart — a pass keyed by the client's pipeline id — never the reference chart), and others to come;
 - **custom callbacks** are implemented through the same interface by the agent or the user: the handler of a product type, its firing policy (a `Condition`, IF-15: when its batch reaches the agent) and its response policies (Markdown files, CON-26).
 
 A custom handler is a plugin like any other ([ADR 0002](0002-plugins-are-crates.md)): a crate in the local build. It is **plugged in through the TUI's settings** (the Callbacks tab below), which lists the handlers in the build. The settings are written to the configuration; the TUI is the place to do it, not the only one (a configuration file stays valid).
