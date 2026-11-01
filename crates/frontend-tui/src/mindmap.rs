@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::maps::{CH, CW, Put, esc, fit, hex, mix, svg_open};
-use crate::model::{MindKind, MindMap, NodeStatus};
+use crate::model::{MapElement, MindKind, MindMap, NodeStatus};
 use crate::theme::Theme;
 
 /// Rows between siblings.
@@ -169,11 +169,26 @@ fn junction(up: bool, down: bool, left: bool, right: bool) -> &'static str {
     }
 }
 
-/// The map in text, centred in `area`.
-pub fn draw_text(buf: &mut Buffer, area: Rect, map: &MindMap, t: &Theme, bg: Color) {
+/// The map in text, centred in `area`. Returns its clickable parts in buffer cells: each node
+/// with journal refs, and each `#N` ref chip on it (drawn later, so a chip wins over its node).
+pub fn draw_text(buf: &mut Buffer, area: Rect, map: &MindMap, t: &Theme, bg: Color) -> Vec<(Rect, MapElement)> {
     let l = layout(map);
     let ox = area.x + area.width.saturating_sub(l.width) / 2;
     let oy = area.y + area.height.saturating_sub(l.height) / 2;
+    let mut hits = Vec::new();
+    for (i, (p, nd)) in l.nodes.iter().zip(&map.nodes).enumerate() {
+        if nd.refs.is_empty() {
+            continue;
+        }
+        hits.push((Rect::new(ox + p.x, oy + p.y, p.w, 1), MapElement::Node(i)));
+        // The chips follow the text: "  #137" each.
+        let mut at = (p.label.chars().count() - p.refs_len) as u16;
+        for r in &nd.refs {
+            let w = format!("#{r}").chars().count() as u16;
+            hits.push((Rect::new(ox + p.x + 3 + at + 2, oy + p.y, w, 1), MapElement::Entry(*r)));
+            at += 2 + w;
+        }
+    }
     let mut put = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| {
         let pos = (ox + x, oy + y);
         if area.contains(pos.into()) {
@@ -181,6 +196,7 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, map: &MindMap, t: &Theme, bg: Col
         }
     };
     text(buf, &l, map, t, bg, &mut put);
+    hits
 }
 
 fn text(buf: &mut Buffer, l: &Layout, map: &MindMap, t: &Theme, bg: Color, put: &mut Put) {

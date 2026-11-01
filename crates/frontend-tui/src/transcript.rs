@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::images::{Graphic, Icon, Placement, Tint};
 use crate::model::{
-    DiffLine, FlowchartEvent, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapTool, MindMapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
+    MapElement, DiffLine, FlowchartEvent, Inbound, InboundKind, Item, JournalEvent, MapCreated, MapTool, MindMapEvent, Role, Tone, ToolBody, ToolCall, ToolIcon, ToolState,
 };
 use crate::theme::Theme;
 
@@ -31,10 +31,15 @@ pub const GAP: u16 = 0;
 /// The tallest an item may draw.
 const MAX_H: u16 = 400;
 
-/// An item drawn on its own: its cells and its pictures (relative to the buffer's origin).
+/// An item drawn on its own: its cells, its pictures and its clickable map parts (relative to
+/// the buffer's origin), and which transcript item it is.
 pub struct Drawn {
     pub buf: Buffer,
     pub placements: Vec<Placement>,
+    /// Map parts: (cells, the attached item's index inside a turn, the part).
+    pub hits: Vec<(Rect, Option<usize>, MapElement)>,
+    /// The transcript index of the item (None for spacer rows).
+    pub item: Option<usize>,
 }
 
 /// `text` broken into lines of at most `width` columns, at spaces where possible.
@@ -78,13 +83,18 @@ pub fn tint(fg: Color, bg: Color, alpha: f32) -> Color {
 struct Canvas<'a> {
     buf: Buffer,
     placements: Vec<Placement>,
+    hits: Vec<(Rect, Option<usize>, MapElement)>,
     width: u16,
     t: &'a Theme,
+    /// Entries a map can unfold beside itself.
+    journal: &'a [JournalEvent],
+    /// The attached item being drawn inside a turn, for the hits it reports.
+    sub: Option<usize>,
 }
 
 impl<'a> Canvas<'a> {
-    fn new(width: u16, t: &'a Theme) -> Canvas<'a> {
-        Canvas { buf: Buffer::empty(Rect::new(0, 0, width, 4)), placements: Vec::new(), width, t }
+    fn new(width: u16, t: &'a Theme, journal: &'a [JournalEvent]) -> Canvas<'a> {
+        Canvas { buf: Buffer::empty(Rect::new(0, 0, width, 4)), placements: Vec::new(), hits: Vec::new(), width, t, journal, sub: None }
     }
 
     /// Makes the buffer at least `h` rows tall (it starts small and doubles: most items are a
@@ -175,6 +185,11 @@ impl<'a> Canvas<'a> {
             p.rect.y += y;
             self.placements.push(p);
         }
+        for (mut r, sub, e) in d.hits {
+            r.x += x;
+            r.y += y;
+            self.hits.push((r, sub.or(self.sub), e));
+        }
         h
     }
 
@@ -187,7 +202,12 @@ impl<'a> Canvas<'a> {
                 buf[(x, y)] = self.buf[(x, y)].clone();
             }
         }
-        Drawn { buf, placements: self.placements.into_iter().filter(|p| p.rect.y + p.rect.height <= h).collect() }
+        Drawn {
+            buf,
+            placements: self.placements.into_iter().filter(|p| p.rect.y + p.rect.height <= h).collect(),
+            hits: self.hits.into_iter().filter(|(r, _, _)| r.y < h).collect(),
+            item: None,
+        }
     }
 }
 
@@ -208,7 +228,7 @@ fn plain(c: Color) -> Style {
 }
 
 /// Draws one item `width` columns wide. `generating` marks the newest assistant turn as busy.
-pub fn item(it: &Item, width: u16, t: &Theme, generating: bool) -> Drawn {
+pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], generating: bool) -> Drawn {
     match it {
         Item::Welcome { title, tagline } => card(width, t, t.accent_line, vec![Span::styled("WELCOME", bold(t.accent))], vec![
             vec![Span::styled(title.clone(), bold(t.text))],
@@ -221,35 +241,35 @@ pub fn item(it: &Item, width: u16, t: &Theme, generating: bool) -> Drawn {
             vec![Span::styled(label.clone(), bold(t.accent))],
             lines.iter().map(|l| vec![Span::styled(" • ", plain(t.text_muted)), Span::styled(l.clone(), plain(t.text))]).collect(),
         ),
-        Item::Turn { role, time, lines, attached } => turn(width, t, *role, time, lines, attached, generating),
+        Item::Turn { role, time, lines, attached } => turn(width, t, known, *role, time, lines, attached, generating),
         Item::Tool(c) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = tool(&mut cv, 0, 0, width, c, t.surface);
             cv.finish(h)
         }
         Item::Inbound(m) => inbound(width, t, m),
         Item::Journal(j) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = journal(&mut cv, 0, 0, width, j, t.background);
             cv.finish(h)
         }
         Item::MapCreated(m) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = map_created(&mut cv, 0, 0, width, m, t.background);
             cv.finish(h)
         }
         Item::MindMap(e) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = mind_map(&mut cv, 0, 0, width, e, t.background);
             cv.finish(h)
         }
         Item::Flowchart(e) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = flowchart(&mut cv, 0, 0, width, e, t.background);
             cv.finish(h)
         }
         Item::Hook(e) => {
-            let mut cv = Canvas::new(width, t);
+            let mut cv = Canvas::new(width, t, known);
             let h = hook(&mut cv, 0, 0, width, e, t.background);
             cv.finish(h)
         }
@@ -325,7 +345,7 @@ fn hook(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &crate::model::HookEvent, bg
 
 /// A plain card: stripe, a label row, body rows (wrapped), on the surface.
 fn card(width: u16, t: &Theme, stripe: Color, label: Vec<Span<'static>>, body: Vec<Vec<Span<'static>>>) -> Drawn {
-    let mut cv = Canvas::new(width, t);
+    let mut cv = Canvas::new(width, t, &[]);
     let tw = width.saturating_sub(CX + 2);
     let mut rows: Vec<Vec<Span<'static>>> = vec![label];
     for spans in body {
@@ -348,8 +368,9 @@ fn card(width: u16, t: &Theme, stripe: Color, label: Vec<Span<'static>>, body: V
     cv.finish(h)
 }
 
-fn turn(width: u16, t: &Theme, role: Role, time: &str, lines: &[String], attached: &[Item], generating: bool) -> Drawn {
-    let mut cv = Canvas::new(width, t);
+#[allow(clippy::too_many_arguments)]
+fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item], generating: bool) -> Drawn {
+    let mut cv = Canvas::new(width, t, known);
     let tw = width.saturating_sub(CX + 2);
     let name = match role {
         Role::User => "USER",
@@ -367,9 +388,11 @@ fn turn(width: u16, t: &Theme, role: Role, time: &str, lines: &[String], attache
             y += 1;
         }
     }
-    for a in attached {
+    for (i, a) in attached.iter().enumerate() {
+        cv.sub = Some(i);
         y += attached_item(&mut cv, CX, y, width.saturating_sub(CX + 1), a, t, bg);
     }
+    cv.sub = None;
     cv.stripe(0, y, t.accent_line, bg);
     // Everything not drawn on yet takes the card's surface.
     cv.grow(y);
@@ -393,7 +416,7 @@ fn attached_item(cv: &mut Canvas, x: u16, y: u16, w: u16, it: &Item, t: &Theme, 
         Item::Flowchart(e) => flowchart(cv, x, y, w, e, bg),
         Item::Hook(e) => hook(cv, x, y, w, e, bg),
         other => {
-            let d = item(other, w, t, false);
+            let d = item(other, w, t, cv.journal, false);
             cv.embed(x, y, d)
         }
     }
@@ -567,7 +590,7 @@ fn inbound_style(m: &Inbound, t: &Theme) -> (Color, &'static str, Icon, Tint) {
 /// A message from outside (inbound-messages-*): stripe and icon in the channel's colour, the
 /// channel label, sender and meta, then the text.
 fn inbound(width: u16, t: &Theme, m: &Inbound) -> Drawn {
-    let mut cv = Canvas::new(width, t);
+    let mut cv = Canvas::new(width, t, &[]);
     let bg = t.surface;
     let (color, label, icon, tint_) = inbound_style(m, t);
     let tx = CX + 5;
@@ -691,32 +714,110 @@ fn map_created(cv: &mut Canvas, x: u16, y: u16, w: u16, m: &MapCreated, bg: Colo
 /// A map that changed: the event line, then the map - a mind map as a tree, a flowchart as a
 /// block diagram. With pictures it is an SVG made for its cells; without, the same layout in
 /// block and box-drawing characters.
-fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, date): (u32, &str, &str), body: MapBody, bg: Color) -> u16 {
+/// The journal entries an open map part unfolds: a chip's entry, or a node's or an arrow's refs.
+fn opened(body: MapBody, open: MapElement) -> Vec<u32> {
+    match (body, open) {
+        (_, MapElement::Entry(id)) => vec![id],
+        (MapBody::Mind(m), MapElement::Node(i)) => m.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
+        (MapBody::Flow(f), MapElement::Node(i)) => f.nodes.get(i).map(|n| n.refs.clone()).unwrap_or_default(),
+        (MapBody::Flow(f), MapElement::Arrow(i)) => f.arrows.get(i).map(|a| a.refs.clone()).unwrap_or_default(),
+        (MapBody::Mind(_), MapElement::Arrow(_)) => vec![],
+    }
+}
+
+/// The width of the ticket panel beside a map.
+const TICKET_W: u16 = 46;
+
+/// The rows of the ticket panel: a framed card per entry (#id category, date, tags, text).
+fn ticket_rows(ids: &[u32], known: &[JournalEvent], w: u16, t: &Theme) -> Vec<Vec<Span<'static>>> {
+    let tw = w.saturating_sub(4);
+    let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled("JOURNAL", bold(t.accent)), Span::styled("   click again to fold", plain(t.text_muted))]];
+    for id in ids {
+        rows.push(vec![]);
+        match known.iter().find(|e| e.id == *id) {
+            Some(e) => {
+                rows.push(vec![Span::styled(format!("#{}", e.id), bold(t.info)), Span::styled(format!("  {}", e.category), bold(t.text))]);
+                rows.push(vec![Span::styled(e.date.clone(), plain(t.text_muted)), Span::styled(format!("  {}", e.tags.iter().map(|g| format!("#{g}")).collect::<Vec<_>>().join(" ")), plain(t.agent))]);
+                for l in wrap(&e.text, tw) {
+                    rows.push(vec![Span::styled(l, plain(t.text))]);
+                }
+            }
+            None => rows.push(vec![Span::styled(format!("#{id}"), bold(t.info)), Span::styled("  not fetched yet", plain(t.text_muted))]),
+        }
+    }
+    rows
+}
+
+/// A map that changed: the event line, then the map - a mind map as a tree, a flowchart as a
+/// block diagram (an SVG made for its cells with pictures, the same layout in characters
+/// without). An open part unfolds its journal entries as a ticket on the right of the card.
+fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, date): (u32, &str, &str), body: MapBody, open: Option<MapElement>, bg: Color) -> u16 {
     let t = cv.t;
     let (ix, iw) = (x + 2, w.saturating_sub(4));
     let (label, noun, icon) = tool_names(tool);
-    let map_h = match body {
-        MapBody::Mind(m) => crate::mindmap::layout(m).height,
-        MapBody::Flow(f) => crate::flowchart::layout(f).height,
-    } + 2;
-    let h = 3 + map_h;
+    let (layout_w, layout_h) = match body {
+        MapBody::Mind(m) => {
+            let l = crate::mindmap::layout(m);
+            (l.width, l.height)
+        }
+        MapBody::Flow(f) => {
+            let l = crate::flowchart::layout(f);
+            (l.width, l.height)
+        }
+    };
+    // The ticket goes on the right when the map still fits beside it, else under the map:
+    // the map is never cut.
+    let panel_w = TICKET_W.min(iw / 2);
+    let beside = layout_w + panel_w + 2 <= iw;
+    let ticket_w = if beside { panel_w } else { iw.min(TICKET_W * 2) };
+    let ticket = open.map(|o| ticket_rows(&opened(body, o), cv.journal, ticket_w, t));
+    let ticket_h = ticket.as_ref().map_or(0, |r| r.len() as u16 + 2);
+    let (map_h, below) = match (&ticket, beside) {
+        (Some(_), true) => (layout_h.max(ticket_h) + 2, 0),
+        (Some(_), false) => (layout_h + 2, ticket_h + 1),
+        (None, _) => (layout_h + 2, 0),
+    };
+    let h = 3 + map_h + below;
     cv.frame(Rect::new(x, y, w, h), t.border_subtle, bg);
     cv.icon(ix, y + 1, 2, 1, icon, Tint::Accent);
     cv.line(ix + 3, y + 1, iw, vec![Span::styled(label, bold(t.accent)), Span::styled(format!("   {noun} #{id} updated: {change}"), plain(t.text))], bg);
     cv.line_right(ix + iw, y + 1, vec![Span::styled(date.to_string(), plain(t.text_muted))], bg);
-    let area = Rect::new(ix, y + 2, iw, map_h);
+    let side = if ticket.is_some() && beside { panel_w + 2 } else { 0 };
+    let area = Rect::new(ix, y + 2, iw - side, map_h);
     cv.grow(y + h);
-    let svg = match body {
+    let (svg, hits) = match body {
         MapBody::Mind(m) => {
-            crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg);
-            crate::mindmap::svg(m, t, area.width, area.height)
+            let hits = crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg);
+            (crate::mindmap::svg(m, t, area.width, area.height), hits)
         }
         MapBody::Flow(f) => {
-            crate::flowchart::draw_text(&mut cv.buf, area, f, t, bg);
-            crate::flowchart::svg(f, t, area.width, area.height)
+            let hits = crate::flowchart::draw_text(&mut cv.buf, area, f, t, bg);
+            (crate::flowchart::svg(f, t, area.width, area.height), hits)
         }
     };
+    let sub = cv.sub;
+    cv.hits.extend(hits.into_iter().map(|(r, e)| (r, sub, e)));
     cv.placements.push(Placement { rect: area, graphic: Graphic::Svg(svg) });
+    if let Some(rows) = ticket {
+        // The ticket: a frame in the accent beside the map, its rows inside.
+        let pr = if beside {
+            Rect::new(ix + iw - panel_w, y + 2, panel_w, (rows.len() as u16 + 2).min(map_h))
+        } else {
+            Rect::new(ix, y + 2 + map_h, ticket_w, rows.len() as u16 + 2)
+        };
+        cv.frame(pr, t.accent_line, bg);
+        for (i, r) in rows.into_iter().enumerate() {
+            let ry = pr.y + 1 + i as u16;
+            if ry + 1 >= pr.y + pr.height {
+                break;
+            }
+            cv.line(pr.x + 2, ry, pr.width.saturating_sub(4), r, bg);
+        }
+        if let Some(o) = open {
+            // Clicking the ticket folds it, like clicking the part again.
+            cv.hits.push((pr, sub, o));
+        }
+    }
     h
 }
 
@@ -727,11 +828,11 @@ enum MapBody<'a> {
 }
 
 fn mind_map(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &MindMapEvent, bg: Color) -> u16 {
-    map(cv, (x, y, w), MapTool::MindMap, (e.id, &e.change, &e.date), MapBody::Mind(&e.map), bg)
+    map(cv, (x, y, w), MapTool::MindMap, (e.id, &e.change, &e.date), MapBody::Mind(&e.map), e.open, bg)
 }
 
 fn flowchart(cv: &mut Canvas, x: u16, y: u16, w: u16, e: &FlowchartEvent, bg: Color) -> u16 {
-    map(cv, (x, y, w), MapTool::Flowchart, (e.id, &e.change, &e.date), MapBody::Flow(&e.chart), bg)
+    map(cv, (x, y, w), MapTool::Flowchart, (e.id, &e.change, &e.date), MapBody::Flow(&e.chart), e.open, bg)
 }
 
 /// What a spacer row needs to know about the card on one side of it.
@@ -774,7 +875,7 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
         };
         cell.set_symbol(sym).set_fg(fg).set_bg(bg);
     }
-    Drawn { buf, placements: Vec::new() }
+    Drawn { buf, placements: Vec::new(), hits: Vec::new(), item: None }
 }
 
 /// The items that reach into a view `rows` tall (the transcript's height plus the rows
@@ -782,7 +883,7 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
 /// last; the newest assistant turn is marked busy when `generating`. The second value says
 /// whether the first item was reached, i.e. the whole transcript is in the stack. Older items
 /// are not drawn at all, so a frame costs what is on screen, not the length of the session.
-pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u16) -> (Vec<Drawn>, bool) {
+pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], generating: bool, rows: u16) -> (Vec<Drawn>, bool) {
     let last_assistant = items.iter().rposition(|i| matches!(i, Item::Turn { role: Role::Assistant, .. }));
     let mut drawn: Vec<Drawn> = Vec::new();
     let mut acc = 0u16;
@@ -792,7 +893,8 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u1
             whole = false;
             break;
         }
-        let d = item(it, width, t, generating && Some(i) == last_assistant);
+        let mut d = item(it, width, t, known, generating && Some(i) == last_assistant);
+        d.item = Some(i);
         acc = acc.saturating_add(d.buf.area.height + 2);
         drawn.push(d);
     }
@@ -812,7 +914,7 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, generating: bool, rows: u1
 
 /// Every item drawn at `width` (tests and tools; the view draws only what is visible).
 pub fn all(items: &[Item], width: u16, t: &Theme, generating: bool) -> Vec<Drawn> {
-    visible(items, width, t, generating, u16::MAX).0
+    visible(items, width, t, &[], generating, u16::MAX).0
 }
 
 /// The transcript's total height in rows: items plus the gaps between them.
@@ -823,11 +925,15 @@ pub fn total_height(drawn: &[Drawn]) -> u16 {
 
 /// Copies the visible part of the stack into `buf` at `area`: the bottom of the stack, raised
 /// by `scroll` rows. Returns the pictures that are fully visible, in screen cells.
-pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> Vec<Placement> {
+/// A map part on screen: its cells, the transcript item, the attached item inside it, the part.
+pub type MapHit = (Rect, usize, Option<usize>, MapElement);
+
+pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> (Vec<Placement>, Vec<MapHit>) {
     let total = total_height(&drawn);
     // Row of the stack shown at the top of `area`.
     let top = total.saturating_sub(area.height).saturating_sub(scroll);
     let mut out = Vec::new();
+    let mut hits = Vec::new();
     let mut y0 = 0u16;
     for d in drawn {
         let h = d.buf.area.height;
@@ -849,9 +955,19 @@ pub fn blit(buf: &mut Buffer, area: Rect, drawn: Vec<Drawn>, scroll: u16) -> Vec
                 out.push(p);
             }
         }
+        // Clickable map parts: the rows of them that are in view.
+        if let Some(item) = d.item {
+            for (r, sub, e) in d.hits {
+                let ry = y0 + r.y;
+                let (from, to) = (ry.max(top), (ry + r.height).min(top + area.height));
+                if from < to {
+                    hits.push((Rect::new(area.x + r.x, area.y + from - top, r.width, to - from), item, sub, e));
+                }
+            }
+        }
         y0 += h + GAP;
     }
-    out
+    (out, hits)
 }
 
 #[cfg(test)]
@@ -886,8 +1002,8 @@ mod tests {
     fn a_turn_grows_with_its_text_and_attachments() {
         let t = Theme::builtin("dark").unwrap();
         let short = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["hi".into()], attached: vec![] };
-        assert_eq!(item(&short, 40, &t, false).buf.area.height, 2);
+        assert_eq!(item(&short, 40, &t, &[], false).buf.area.height, 2);
         let long = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["word ".repeat(20)], attached: vec![] };
-        assert!(item(&long, 40, &t, false).buf.area.height > 3);
+        assert!(item(&long, 40, &t, &[], false).buf.area.height > 3);
     }
 }

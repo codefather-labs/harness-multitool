@@ -33,6 +33,7 @@ splash (OK / Enter) → startup page (recent sessions, quick actions) → sessio
 | session | click `⚙ Settings` | open the settings window |
 | permission prompt | 1 · 2 · 3 · ←→ / Tab · Enter · Esc · click a button | allow once · always allow · deny · choose · confirm · deny |
 | settings | Tab · ↑↓ · Space / Enter · Ctrl+S · Esc · click | change pane · move · select (provider, field, box) · save · close |
+| maps | Ctrl+click a `#N` ref (mind map) · click a node or an arrow pill with refs (flowchart) · click again or the ticket | unfold the journal entry as a ticket beside the map (below it when the map needs the width) · fold it |
 | anywhere | F2 | next theme (dark, light, nord, monokai, cyan) |
 
 ## Debug commands
@@ -103,7 +104,7 @@ Settled with the project owner while matching the mockups; the journal holds eac
 
 ## Maps
 
-Two separate tools ([ADR 0011](decisions/0011-mind-maps-and-flowcharts.md)): a mind map maps what is known, a flowchart shows how something flows. Their events are MINDMAP and FLOWCHART cards. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches; a node, a branch or a link can point at flowcharts (`▸ flow #3`). A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). A flowchart runs left to right or top to bottom (its direction). The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.
+Two separate tools ([ADR 0011](decisions/0011-mind-maps-and-flowcharts.md)): a mind map maps what is known, a flowchart shows how something flows. Their events are MINDMAP and FLOWCHART cards. A **mind map** is a tree from its root: topic ◆, goal ◎, decision ◈, fact ●, hypothesis ◐, question ?, task ☐/☑, idea ✦, dead end ✕, note ✎; a node can be done (muted) or dropped (struck through), point at journal entries (#137), and cross links (dashed, labelled) join branches; a node, a branch or a link can point at flowcharts (`▸ flow #3`). A **flowchart** is a block diagram by the canon: start/end, process, decision, input/output, subprocess, document, data store, manual input, preparation, connector, delay, note, and the logic gates AND, OR, NOT, NAND, NOR, XOR, XNOR (IEC symbols, `o` = inverted output). A flowchart runs left to right or top to bottom (its direction); a node lists its journal refs on its last line, an arrow on its pill ("no #131"). Clicking a ref unfolds the entry as a ticket inside the map card. The node changed by an event is tinted with the accent. One layout draws both forms: filled cards and box-drawing lines in text, SVG in graphics terminals.
 
 ## Hooks
 

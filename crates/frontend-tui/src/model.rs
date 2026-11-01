@@ -46,6 +46,9 @@ pub struct Workspace {
     pub toast: Option<Toast>,
     /// A modal window over the session: it takes the keys until it closes.
     pub overlay: Option<Overlay>,
+    /// Journal entries the transcript can unfold (the project's journal, as far as the session
+    /// has fetched it).
+    pub journal: Vec<JournalEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +105,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None }
+        Workspace { tabs: vec![Tab { title: title.into(), icon: TabIcon::Prompt, mark: TabMark::None, view }], active: 0, toast: None, overlay: None, journal: Vec::new() }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -353,6 +356,19 @@ pub struct MindMapEvent {
     pub change: String,
     pub date: String,
     pub map: MindMap,
+    /// The element whose journal entries are unfolded beside the map.
+    pub open: Option<MapElement>,
+}
+
+/// A clickable part of a map: a journal ref of a node, a node, an arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MapElement {
+    /// One journal entry, by id (a `#137` chip).
+    Entry(u32),
+    /// A node by index: its linked entries.
+    Node(usize),
+    /// An arrow by index: its linked entries.
+    Arrow(usize),
 }
 
 /// A flowchart changed: the event line and the chart itself.
@@ -363,6 +379,8 @@ pub struct FlowchartEvent {
     pub change: String,
     pub date: String,
     pub chart: Flowchart,
+    /// The element whose journal entries are unfolded beside the chart.
+    pub open: Option<MapElement>,
 }
 
 /// A tree of what is known about one topic: the first node is the root; branches join a parent
@@ -494,6 +512,8 @@ pub struct Arrow {
     pub to: String,
     /// A condition, e.g. "yes" or "no".
     pub label: Option<String>,
+    /// Journal entries the arrow points at.
+    pub refs: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

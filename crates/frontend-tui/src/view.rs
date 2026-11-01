@@ -48,6 +48,9 @@ pub enum Target {
     Provider(usize),
     /// The close mark of an overlay.
     CloseOverlay,
+    /// A clickable part of a map in the transcript: item index, the attached item inside a
+    /// turn, the part.
+    MapPart { item: usize, sub: Option<usize>, element: crate::model::MapElement },
 }
 
 impl Drawn {
@@ -116,13 +119,18 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     .areas(body);
     let tr = inset(transcript);
     let want = (v.scroll as u16).min(5000);
-    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, v.generating, tr.height.saturating_add(want));
+    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, v.generating, tr.height.saturating_add(want));
     let total = crate::transcript::total_height(&drawn);
     // Scrolling stops at the first item; while older items exist beyond the stack, the stack
     // already covers the rows asked for.
     let scroll = if whole { want.min(total.saturating_sub(tr.height)) } else { want };
-    out.placements.extend(crate::transcript::blit(f.buffer_mut(), tr, drawn, scroll));
+    let (pictures, map_hits) = crate::transcript::blit(f.buffer_mut(), tr, drawn, scroll);
+    out.placements.extend(pictures);
     out.hits.push(Hit { rect: tr, target: Target::Transcript });
+    // Map parts after the transcript itself, so they win where they lie.
+    for (rect, item, sub, element) in map_hits {
+        out.hits.push(Hit { rect, target: Target::MapPart { item, sub, element } });
+    }
     if scroll > 0 {
         let more = Rect { y: tr.y + tr.height.saturating_sub(1), height: 1, ..tr };
         f.render_widget(

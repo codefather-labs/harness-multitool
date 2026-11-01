@@ -223,13 +223,28 @@ fn fnode(id: &str, text: &str, symbol: Symbol) -> FlowNode {
 }
 
 fn arrow(a: &str, b: &str, label: Option<&str>) -> Arrow {
-    Arrow { from: a.into(), to: b.into(), label: label.map(String::from) }
+    Arrow { from: a.into(), to: b.into(), label: label.map(String::from), refs: vec![] }
+}
+
+/// The journal entries the samples point at, as the session would have fetched them.
+pub fn known_entries() -> Vec<JournalEvent> {
+    vec![
+        sample_journal(),
+        JournalEvent {
+            id: 131,
+            category: "finding".into(),
+            tags: vec!["router".into(), "metrics".into()],
+            date: "2026-10-27 18:02".into(),
+            text: "The primary adapter fails about 2% of requests at peak hours (metrics 2026-10-27, 14:00-16:00); every failure is a timeout, none is a 5xx.".into(),
+        },
+    ]
 }
 
 /// The router fallback flowchart of journal-mindmap-events-*.
 pub fn sample_flowchart() -> Flowchart {
     let mut n4 = fnode("n4", "Use fallback (model / local)", Symbol::Process);
     n4.changed = true;
+    n4.refs = vec![137];
     Flowchart {
         direction: FlowDirection::Right,
         nodes: vec![
@@ -264,7 +279,7 @@ pub fn sample_flow_gallery() -> Flowchart {
         nodes: vec![
             fnode("s1", "Start", Symbol::Start),
             fnode("i1", "Read input", Symbol::Io),
-            fnode("d1", "Valid?", Symbol::Decision),
+            FlowNode { refs: vec![137], ..fnode("d1", "Valid?", Symbol::Decision) },
             fnode("p1", "Process", Symbol::Process),
             fnode("e1", "End", Symbol::End),
             fnode("m1", "Manual fix", Symbol::Manual),
@@ -289,7 +304,7 @@ pub fn sample_flow_gallery() -> Flowchart {
             arrow("s1", "i1", None),
             arrow("i1", "d1", None),
             arrow("d1", "p1", Some("yes")),
-            arrow("d1", "m1", Some("no")),
+            Arrow { refs: vec![131], ..arrow("d1", "m1", Some("no")) },
             arrow("p1", "e1", None),
             arrow("r1", "u1", None),
             arrow("u1", "o1", None),
@@ -483,7 +498,7 @@ fn command(w: &mut Workspace, cmd: &str) {
         }
         "mindmap" | "mind" => attach(
             v,
-            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status; flowcharts linked from n6 and a branch".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery() }),
+            Item::MindMap(MindMapEvent { id: 5, change: "every node kind and status; flowcharts linked from n6 and a branch".into(), date: "2026-11-01 01:20".into(), map: sample_mind_gallery(), open: None }),
         ),
         "flowchart" | "flow" | "map" => {
             let (change, chart) = if arg.trim() == "down" {
@@ -491,7 +506,7 @@ fn command(w: &mut Workspace, cmd: &str) {
             } else {
                 ("every symbol and logic gate", sample_flow_gallery())
             };
-            attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart }))
+            attach(v, Item::Flowchart(FlowchartEvent { id: 4, change: change.into(), date: "2026-11-01 01:20".into(), chart, open: None }))
         }
         "permission" => w.overlay = Some(crate::model::Overlay::Permission(crate::overlay::sample_permission())),
         "settings" => w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings())),

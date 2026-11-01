@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::maps::{CH, CW, Put, esc, hex, mix, svg_open, wrap};
-use crate::model::{FlowDirection, Flowchart, Gate, Symbol};
+use crate::model::{FlowDirection, Flowchart, Gate, MapElement, Symbol};
 use crate::theme::Theme;
 
 /// Between two ranks: columns when the flow runs right, rows when it runs down.
@@ -29,6 +29,10 @@ struct Placed {
     lines: Vec<String>,
     symbol: Symbol,
     changed: bool,
+    /// The last line lists the node's journal refs.
+    refs_line: bool,
+    /// Where the node's rank column ends (the flow runs right): arrows turn after it.
+    col_end: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -57,8 +61,16 @@ pub fn gate_symbol(g: Gate) -> (&'static str, &'static str) {
 pub fn layout(chart: &Flowchart) -> Layout {
     let n = chart.nodes.len();
     let index = |id: &str| chart.nodes.iter().position(|x| x.id == id);
-    let arrows: Vec<(usize, usize, Option<String>)> =
-        chart.arrows.iter().filter_map(|a| Some((index(&a.from)?, index(&a.to)?, a.label.clone()))).collect();
+    // An arrow's pill: its condition and its journal refs ("no #131").
+    let arrows: Vec<(usize, usize, Option<String>)> = chart
+        .arrows
+        .iter()
+        .filter_map(|a| {
+            let refs: Vec<String> = a.refs.iter().map(|r| format!("#{r}")).collect();
+            let pill: Vec<String> = a.label.iter().cloned().chain(refs).collect();
+            Some((index(&a.from)?, index(&a.to)?, (!pill.is_empty()).then(|| pill.join(" "))))
+        })
+        .collect();
     // Rank: longest path from a node without incoming arrows (loops cut by the iteration cap).
     let mut rank = vec![0usize; n];
     for _ in 0..n {
@@ -85,6 +97,11 @@ pub fn layout(chart: &Flowchart) -> Layout {
                     l
                 }
             };
+            let refs_line = !nd.refs.is_empty();
+            let mut lines = lines;
+            if refs_line {
+                lines.push(nd.refs.iter().map(|r| format!("#{r}")).collect::<Vec<_>>().join(" "));
+            }
             let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(1) as u16;
             let extra = match nd.symbol {
                 Symbol::Decision => 8,
@@ -93,31 +110,35 @@ pub fn layout(chart: &Flowchart) -> Layout {
                 _ => 4,
             };
             let h = lines.len() as u16 + 2 + u16::from(nd.symbol == Symbol::Data);
-            Placed { x: 0, y: 0, w: text_w + extra, h, lines, symbol: nd.symbol, changed: nd.changed }
+            Placed { x: 0, y: 0, w: text_w + extra, h, lines, symbol: nd.symbol, changed: nd.changed, refs_line, col_end: 0 }
         })
         .collect();
     let members: Vec<Vec<usize>> = (0..ranks).map(|r| (0..n).filter(|&i| rank[i] == r).collect()).collect();
     let (width, height) = match chart.direction {
         FlowDirection::Right => {
-            // Ranks are columns; a rank's nodes stack, centred on the tallest column.
+            // Ranks are columns; a rank's nodes stack, centred on the tallest column. The gap
+            // fits the longest arrow pill on the run into the next node.
+            let pill = arrows.iter().filter_map(|a| a.2.as_ref()).map(|l| l.chars().count() as u16 + 2).max().unwrap_or(0);
+            let rank_gap = RANK_GAP_RIGHT.max(pill + 5);
             let mut x = 0u16;
             let mut cols = Vec::new();
             for m in &members {
                 let w = m.iter().map(|&i| nodes[i].w).max().unwrap_or(0);
                 let h: u16 = m.iter().map(|&i| nodes[i].h).sum::<u16>() + NODE_GAP_RIGHT * m.len().saturating_sub(1) as u16;
                 cols.push((x, w, h));
-                x += w + RANK_GAP_RIGHT;
+                x += w + rank_gap;
             }
             let height = cols.iter().map(|c| c.2).max().unwrap_or(0);
             for (m, &(cx, cw, ch)) in members.iter().zip(&cols) {
                 let mut y = (height - ch) / 2;
                 for &i in m {
                     nodes[i].x = cx + (cw - nodes[i].w) / 2;
+                    nodes[i].col_end = cx + cw;
                     nodes[i].y = y;
                     y += nodes[i].h + NODE_GAP_RIGHT;
                 }
             }
-            (x.saturating_sub(RANK_GAP_RIGHT), height)
+            (x.saturating_sub(rank_gap), height)
         }
         FlowDirection::Down => {
             // Ranks are rows; a rank's nodes sit side by side, centred on the widest row.
@@ -151,9 +172,11 @@ fn route(l: &Layout, a: usize, b: usize) -> ((u16, u16), u16, (u16, u16)) {
     let (pa, pb) = (&l.nodes[a], &l.nodes[b]);
     match l.direction {
         FlowDirection::Right => {
+            // The bend sits just after the source's column (past wider neighbours), leaving
+            // the long run into the target for the arrow's pill.
             let (x0, y0) = (pa.x + pa.w, pa.y + pa.h / 2);
             let (x1, y1) = (pb.x, pb.y + pb.h / 2);
-            ((x0, y0), x0 + x1.saturating_sub(x0) / 2, (x1, y1))
+            ((x0, y0), (pa.col_end.max(x0) + 2).min(x1.saturating_sub(1)), (x1, y1))
         }
         FlowDirection::Down => {
             let (x0, y0) = (pa.x + pa.w / 2, pa.y + pa.h);
@@ -180,9 +203,11 @@ fn colours(p: &Placed, t: &Theme, bg: Color) -> (Color, Color) {
     }
 }
 
-/// The chart in text, centred in `area`.
-pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg: Color) {
+/// The chart in text, centred in `area`. Returns its clickable parts in buffer cells: every
+/// node and every arrow pill that has journal entries linked.
+pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg: Color) -> Vec<(Rect, MapElement)> {
     let l = layout(chart);
+    let mut hits = Vec::new();
     let ox = area.x + area.width.saturating_sub(l.width) / 2;
     let oy = area.y + area.height.saturating_sub(l.height) / 2;
     let mut put = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| {
@@ -214,6 +239,7 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
                 put(buf, x1.saturating_sub(1), y1, "▶", edge);
                 if let Some(lb) = label {
                     pill(buf, bend + 1, y1, lb, t, bg, &mut put);
+                    hits.push((ox + bend + 1, oy + y1, lb.chars().count() as u16 + 2));
                 }
             }
             FlowDirection::Down => {
@@ -235,6 +261,7 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
                 put(buf, x1, y1.saturating_sub(1), "▼", edge);
                 if let Some(lb) = label {
                     pill(buf, x1 + 1, bend + 1, lb, t, bg, &mut put);
+                    hits.push((ox + x1 + 1, oy + bend + 1, lb.chars().count() as u16 + 2));
                 }
             }
         }
@@ -242,6 +269,23 @@ pub fn draw_text(buf: &mut Buffer, area: Rect, chart: &Flowchart, t: &Theme, bg:
     for p in &l.nodes {
         node(buf, p, t, bg, &mut put);
     }
+    // Pills per arrow, in arrow order; keep those of arrows with refs, then the nodes.
+    let mut out: Vec<(Rect, MapElement)> = Vec::new();
+    let mut pills = hits.into_iter();
+    for (i, (_, _, label)) in l.arrows.iter().enumerate() {
+        if label.is_some() {
+            let (x, y, w) = pills.next().unwrap_or_default();
+            if !chart.arrows[i].refs.is_empty() {
+                out.push((Rect::new(x, y, w, 1), MapElement::Arrow(i)));
+            }
+        }
+    }
+    for (i, (p, nd)) in l.nodes.iter().zip(&chart.nodes).enumerate() {
+        if !nd.refs.is_empty() {
+            out.push((Rect::new(ox + p.x, oy + p.y, p.w, p.h), MapElement::Node(i)));
+        }
+    }
+    out
 }
 
 /// A condition label as a pill sitting on the arrow.
@@ -377,6 +421,7 @@ fn node(buf: &mut Buffer, p: &Placed, t: &Theme, bg: Color, put: &mut Put) {
             (Symbol::Connector, _) | (Symbol::Gate(_), 1) => Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             (Symbol::Gate(_), 0) => Style::default().fg(line),
             (Symbol::Note, _) => Style::default().fg(t.text_muted).add_modifier(Modifier::ITALIC),
+            _ if p.refs_line && i + 1 == p.lines.len() => Style::default().fg(t.info),
             (_, 0) => Style::default().fg(t.text_muted),
             _ => Style::default().fg(t.text).add_modifier(Modifier::BOLD),
         };
@@ -496,6 +541,7 @@ pub fn svg(chart: &Flowchart, t: &Theme, cols: u16, rows: u16) -> String {
                 _ => ln.clone(),
             };
             let (fill, weight) = match (p.symbol, i) {
+                _ if p.refs_line && i + 1 == p.lines.len() => (hex(t.info), ""),
                 (Symbol::Connector, _) | (Symbol::Gate(_), 1) => (text.clone(), r#" font-weight="bold""#),
                 (_, 0) => (muted.clone(), ""),
                 _ => (text.clone(), ""),
@@ -514,7 +560,7 @@ mod tests {
 
     fn chart(direction: FlowDirection) -> Flowchart {
         let n = |id: &str, symbol| FlowNode { id: id.into(), text: id.into(), symbol, refs: vec![], changed: false };
-        let a = |f: &str, t: &str| Arrow { from: f.into(), to: t.into(), label: None };
+        let a = |f: &str, t: &str| Arrow { from: f.into(), to: t.into(), label: None, refs: vec![] };
         Flowchart {
             direction,
             nodes: vec![n("n1", Symbol::Start), n("n2", Symbol::Decision), n("n3", Symbol::Process), n("n4", Symbol::Process)],

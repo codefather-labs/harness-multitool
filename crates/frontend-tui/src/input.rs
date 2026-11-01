@@ -116,6 +116,24 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
     }
 }
 
+/// Unfolds the journal entries of a map part beside its map, or folds them when that part is
+/// already open (journal#262).
+fn toggle_map_part(w: &mut Workspace, item: usize, sub: Option<usize>, element: crate::model::MapElement) {
+    use crate::model::Item;
+    let Some(it) = w.view_mut().transcript.get_mut(item) else { return };
+    let target = match (it, sub) {
+        (Item::Turn { attached, .. }, Some(i)) => attached.get_mut(i),
+        (it, None) => Some(it),
+        _ => None,
+    };
+    let open = match target {
+        Some(Item::MindMap(e)) => &mut e.open,
+        Some(Item::Flowchart(e)) => &mut e.open,
+        _ => return,
+    };
+    *open = if *open == Some(element) { None } else { Some(element) };
+}
+
 /// Shows tab `i`; its unread mark is cleared because its messages are now in view.
 fn switch_tab(w: &mut Workspace, i: usize) {
     if i < w.tabs.len() {
@@ -161,6 +179,10 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
             Outcome::Action(i)
         }
         (Mode::Session(w), t) if w.overlay.is_some() => crate::overlay::click(w, t),
+        (Mode::Session(w), Target::MapPart { item, sub, element }) => {
+            toggle_map_part(w, item, sub, element);
+            Outcome::Stay
+        }
         (Mode::Session(w), Target::Settings) => {
             w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings()));
             Outcome::Stay
@@ -223,6 +245,59 @@ mod tests {
             key(&mut s, Key::Char(c));
         }
         assert_eq!(key(&mut s, Key::Enter), Outcome::Quit, "/exit quits");
+    }
+
+    #[test]
+    fn a_click_on_a_drawn_ref_chip_reaches_its_map() {
+        use crate::model::{Item, MapElement};
+        use ratatui::{Terminal, backend::TestBackend};
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut s = fixtures::maps();
+        let mut term = Terminal::new(TestBackend::new(170, 120)).unwrap();
+        let mut drawn = Drawn::default();
+        term.draw(|f| drawn = crate::draw(f, &s, &t)).unwrap();
+        let chip = drawn
+            .hits
+            .iter()
+            .find(|h| matches!(h.target, Target::MapPart { element: MapElement::Entry(137), sub: Some(2), .. }))
+            .expect("the #137 chip of the mind map is clickable");
+        click(&mut s, &drawn, chip.rect.x, chip.rect.y);
+        let open = match &s.mode {
+            Mode::Session(w) => match &w.view().transcript[0] {
+                Item::Turn { attached, .. } => match &attached[2] {
+                    Item::MindMap(e) => e.open,
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert_eq!(open, None, "the fixture had #137 open; the click folded it");
+    }
+
+    #[test]
+    fn clicking_a_journal_ref_unfolds_and_folds_its_ticket() {
+        use crate::model::{Item, MapElement};
+        let mut s = fixtures::maps();
+        let at = |s: &AppState| match &s.mode {
+            Mode::Session(w) => match &w.view().transcript[0] {
+                Item::Turn { attached, .. } => match &attached[2] {
+                    Item::MindMap(e) => e.open,
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert_eq!(at(&s), Some(MapElement::Entry(137)), "the fixture shows #137 unfolded");
+        if let Mode::Session(w) = &mut s.mode {
+            toggle_map_part(w, 0, Some(2), MapElement::Entry(137));
+        }
+        assert_eq!(at(&s), None, "a second click folds it");
+        if let Mode::Session(w) = &mut s.mode {
+            toggle_map_part(w, 0, Some(2), MapElement::Node(5));
+        }
+        assert_eq!(at(&s), Some(MapElement::Node(5)));
         key(&mut s, Key::PageUp);
         if let Mode::Session(w) = &s.mode {
             assert_eq!(w.view().scroll, 10);

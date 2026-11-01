@@ -74,7 +74,7 @@ pub fn welcome() -> AppState {
         header: header(VERSION),
         eyes: Eyes::Open,
         pictures: false,
-        mode: Mode::Session(Workspace::one(SessionView {
+        mode: Mode::Session(ws(SessionView {
             transcript: vec![
                 Item::Welcome {
                     title: "Welcome to harness-multitool".into(),
@@ -148,7 +148,7 @@ pub fn main_session() -> AppState {
         header: header("session/4f7e3c2a"),
         eyes: Eyes::Open,
         pictures: false,
-        mode: Mode::Session(Workspace::one(SessionView {
+        mode: Mode::Session(ws(SessionView {
             transcript: vec![
                 turn(Role::User, "14:32", &["Add a provider router with explicit model fallback."]),
                 turn(Role::Assistant, "14:32", &["I will inspect the adapter registry, then add routing and tests."]),
@@ -317,7 +317,7 @@ pub fn inbound_messages() -> AppState {
         generating: true,
         ..Default::default()
     };
-    let mut w = Workspace::one(view, "4f7e3c2a");
+    let mut w = ws(view, "4f7e3c2a");
     w.toast = Some(Toast { kind: InboundKind::Telegram, from: "operator".into(), text: "Added a few notes about the metrics.".into() });
     AppState { header: header("session/4f7e3c2a"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }
@@ -350,7 +350,7 @@ pub fn tool_calls() -> AppState {
         composer: composer("Type a message, / for commands, @ to mention...", session_hints()),
         ..Default::default()
     };
-    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+    AppState { header: header("session/router"), mode: Mode::Session(ws(view, "router")), eyes: Eyes::Open, pictures: false }
 }
 
 /// journal-mindmap-events-*: a JOURNAL event, an empty map's creation, a drawn map.
@@ -380,6 +380,7 @@ pub fn journal_mindmap_events() -> AppState {
                     change: "+node n4, +arrow n2->n4 (ref #137)".into(),
                     date: "2026-10-28 14:28".into(),
                     chart: sample_flowchart(),
+                    open: None,
                 })],
             ),
             turn(Role::User, "14:28", &["Looks good. Let's continue with the implementation."]),
@@ -388,7 +389,7 @@ pub fn journal_mindmap_events() -> AppState {
         composer: composer("Type a message, / for commands, @ to mention...", session_hints()),
         ..Default::default()
     };
-    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+    AppState { header: header("session/router"), mode: Mode::Session(ws(view, "router")), eyes: Eyes::Open, pictures: false }
 }
 
 /// session-tabs-*: four sessions in one window, the a2a message between two of them.
@@ -439,6 +440,7 @@ pub fn session_tabs() -> AppState {
         active: 0,
         toast: None,
         overlay: None,
+        journal: crate::debug::known_entries(),
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
 }
@@ -456,18 +458,23 @@ pub fn maps() -> AppState {
                     change: "every symbol and logic gate".into(),
                     date: "2026-11-01 01:20".into(),
                     chart: crate::debug::sample_flow_gallery(),
+                    // The "no #131" arrow's entry unfolded beside the chart.
+                    open: Some(crate::model::MapElement::Arrow(3)),
                 }),
                 Item::Flowchart(FlowchartEvent {
                     id: 3,
                     change: "the same flow top to bottom".into(),
                     date: "2026-11-01 01:20".into(),
                     chart: crate::debug::sample_flowchart_down(),
+                    open: None,
                 }),
                 Item::MindMap(MindMapEvent {
                     id: 5,
                     change: "every node kind and status; flowcharts linked from n6 and a branch".into(),
                     date: "2026-11-01 01:20".into(),
                     map: crate::debug::sample_mind_gallery(),
+                    // Ctrl+click on #137 unfolded its entry.
+                    open: Some(crate::model::MapElement::Entry(137)),
                 }),
             ],
         )],
@@ -475,7 +482,7 @@ pub fn maps() -> AppState {
         composer: composer("Type a message, / for commands, @ to mention...", session_hints()),
         ..Default::default()
     };
-    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+    AppState { header: header("session/router"), mode: Mode::Session(ws(view, "router")), eyes: Eyes::Open, pictures: false }
 }
 
 /// Every hook outcome: session start and compaction with the two example scripts, a veto, a
@@ -488,7 +495,7 @@ pub fn hooks() -> AppState {
         }
     }
     let view = SessionView { transcript, status: router_status(), composer: composer("Type a message, / for commands, @ to mention...", session_hints()), ..Default::default() };
-    AppState { header: header("session/router"), mode: Mode::Session(Workspace::one(view, "router")), eyes: Eyes::Open, pictures: false }
+    AppState { header: header("session/router"), mode: Mode::Session(ws(view, "router")), eyes: Eyes::Open, pictures: false }
 }
 
 fn with_overlay(o: crate::model::Overlay) -> AppState {
@@ -507,4 +514,9 @@ pub fn permission() -> AppState {
 /// settings-overlay-*: the settings window on its provider page.
 pub fn settings_overlay() -> AppState {
     with_overlay(crate::model::Overlay::Settings(crate::overlay::sample_settings()))
+}
+
+/// A session workspace with the journal entries the samples point at already fetched.
+fn ws(view: SessionView, title: &str) -> Workspace {
+    Workspace { journal: crate::debug::known_entries(), ..Workspace::one(view, title) }
 }
