@@ -118,6 +118,9 @@ impl JournalAware {
                 system.push_str(&format!("\n- #{id}: {title}"));
             }
         }
+        if let Some(name) = &state.agent_name {
+            system.push_str(&format!("\n\nYou go by the name {name} in this session."));
+        }
         if state.plan_mode {
             system.push_str(PLAN_RULES);
         }

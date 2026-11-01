@@ -78,6 +78,8 @@ pub enum Outgoing {
     Init { tab: u64 },
     /// `/stepdebug`: step-debug mode on or off.
     StepDebug { tab: u64, on: bool },
+    /// `/nick`: name the agent.
+    Nick { tab: u64, name: String },
     /// `/plan`: plan mode on or off.
     Plan { tab: u64, on: bool },
     /// `/task trust`: approve the project's checks as last shown.
@@ -430,6 +432,8 @@ pub struct SessionView {
     pub clock: u32,
     /// The agent is producing a reply (`generating…` on the last assistant turn).
     pub generating: bool,
+    /// The name above the agent's messages; ASSISTANT until it has one.
+    pub agent_name: Option<String>,
     /// What the run is doing now; `None` between runs.
     pub activity: Option<Activity>,
     /// `/task` armed the next message as a task, with these commands.

@@ -21,6 +21,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/reminder [text]", "journal reminder"),
     ("/reload", "rebuild, swap the binary, keep the sessions"),
     ("/init", "create docs/ and .harness/, overwriting nothing"),
+    ("/nick name", "the name the agent goes by, above its messages"),
     ("/stepdebug [off]", "step-debug mode, for large pipelines: each finished cycle is saved"),
     ("/plan [off]", "plan mode: the agent reads and plans, nothing can change"),
     ("/task [command|off|trust]", "the next message is a task: done only when its checks pass"),
@@ -470,6 +471,14 @@ fn command(w: &mut Workspace, cmd: &str) {
                 w.outbox.push(Outgoing::Init { tab });
             } else {
                 w.view_mut().transcript.push(Item::Tips { label: "INIT".into(), lines: vec!["Only a live session can initialize a project.".into()] });
+            }
+        }
+        "nick" => {
+            if w.live {
+                let tab = w.tabs[w.active].id;
+                w.outbox.push(Outgoing::Nick { tab, name: arg.to_string() });
+            } else {
+                w.view_mut().agent_name = Some(arg.trim().to_string()).filter(|n| !n.is_empty());
             }
         }
         "stepdebug" => {

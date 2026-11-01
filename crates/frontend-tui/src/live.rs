@@ -168,6 +168,7 @@ impl Feed {
                 let label = if *pass { "VERIFICATION PASSED" } else { "VERIFICATION FAILED" };
                 v.transcript.push(Item::Tips { label: label.into(), lines: evidence.lines().map(str::to_string).collect() });
             }
+            Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
             Event::StepDebug { on, by } => {
                 set_status(v, "DEBUG", if *on { "step" } else { "off" });
                 let line = if *on {

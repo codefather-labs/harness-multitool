@@ -21,6 +21,8 @@ use crate::registry::Parts;
 /// Asks the loop to stop at its next step. Safe to set from another thread.
 /// The tool the engine answers itself: the mode is its own state.
 const DEBUG_MODE_TOOL: &str = "debug_mode";
+const NICK_TOOL: &str = "set_nick";
+const MAX_NICK: usize = 32;
 
 /// How many binding entries the check for unchecked specifications looks at.
 const UNCHECKED_SCAN: usize = 500;
@@ -225,11 +227,37 @@ impl Engine {
             schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
         });
         specs.push(ToolSpec {
+            name: NICK_TOOL.into(),
+            description: "Change the name you go by in this session; it replaces ASSISTANT above your messages. Use it when the user names you or asks you to pick a name.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"nick": {"type": "string", "description": "1 to 32 characters, one line."}}, "required": ["nick"]}),
+        });
+        specs.push(ToolSpec {
             name: DEBUG_MODE_TOOL.into(),
             description: "Switch step-debug mode: event-driven debugging of a large pipeline, above all a distributed one. Only when the user asks, or when the task is debugging such a pipeline; not for a small program.".into(),
             schema: serde_json::json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
         });
         specs
+    }
+
+    /// Names the agent. A bad name changes nothing and says why.
+    pub async fn set_agent_name(&self, name: &str, by: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_NICK || name.chars().any(char::is_control) {
+            return Err(format!("a nick is 1 to {MAX_NICK} characters on one line"));
+        }
+        if self.state.borrow().agent_name.as_deref() != Some(name) {
+            self.emit(Event::AgentName { name: name.to_string(), by: by.to_string() });
+            let _ = self.flush().await;
+        }
+        Ok(())
+    }
+
+    /// The user named the agent: a bad name shows as an error, and nothing changes.
+    pub async fn set_agent_name_by_user(&self, name: &str) {
+        if let Err(message) = self.set_agent_name(name, "user").await {
+            self.emit(Event::Error { source: "nick".into(), message });
+            let _ = self.flush().await;
+        }
     }
 
     /// Switches step-debug mode (ADR 0013). `by` is who did it, for the log.
@@ -407,6 +435,16 @@ impl Engine {
     async fn tool_call(&self, call: &ToolCall) {
         if call.name == plan::ENTER_TOOL || call.name == plan::EXIT_TOOL {
             return self.plan_tool(call).await;
+        }
+        if call.name == NICK_TOOL {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            let answer = match call.input["nick"].as_str() {
+                Some(nick) => self.set_agent_name(nick, "agent").await.map(|()| format!("You go by {} now.", nick.trim())),
+                None => Err("nick is required".to_string()),
+            };
+            let (output, is_error) = answer.map_or_else(|e| (e, true), |ok| (ok, false));
+            self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
+            return;
         }
         if call.name == DEBUG_MODE_TOOL {
             self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });

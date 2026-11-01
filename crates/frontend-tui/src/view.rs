@@ -127,7 +127,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     .areas(body);
     let tr = inset(transcript);
     let want = (v.scroll as u16).min(5000);
-    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, tr.height.saturating_add(want));
+    let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, v.agent_name.as_deref().unwrap_or(crate::transcript::ASSISTANT), tr.height.saturating_add(want));
     let total = crate::transcript::total_height(&drawn);
     // Scrolling stops at the first item; while older items exist beyond the stack, the stack
     // already covers the rows asked for.

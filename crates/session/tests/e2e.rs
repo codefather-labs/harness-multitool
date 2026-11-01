@@ -888,3 +888,36 @@ fn search_takes_a_file_a_folder_and_says_when_neither() {
     assert!(result("s2").0.contains("sub/a.txt:2:"), "{:?}", result("s2"));
     assert!(result("s3").1 && result("s3").0.contains("no such"), "{:?}", result("s3"));
 }
+
+/// The agent names itself or is named; the log keeps it, and the model knows.
+#[test]
+fn the_agents_name_is_set_by_the_tool_or_the_user_and_replayed() {
+    let root = temp_dir("nick");
+    let data = temp_dir("nick-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("n1", "set_nick", json!({"nick": "Vega"}))), "Naming."),
+        anthropic_turn(Some(("n2", "set_nick", json!({"nick": "x\ny"}))), "Bad."),
+        anthropic_turn(Some(("n3", "set_nick", json!({"nick": "a".repeat(33)}))), "Too long."),
+        anthropic_turn(None, "Done."),
+        anthropic_turn(None, "Fine."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, _, asked) = drive(&mut sessions, &["pick a name"], Answer::Deny);
+    assert_eq!(asked, 0, "no prompt for a name");
+    let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
+    assert!(!result("n1").1 && result("n1").0.contains("Vega"));
+    assert!(result("n2").1 && result("n3").1);
+    assert_eq!(entries.iter().filter(|e| matches!(e.event, Event::AgentName { .. })).count(), 1, "bad names change nothing");
+
+    sessions.nick(1, "Orion".to_string());
+    sessions.nick(1, "  ".to_string());
+    let (entries, _, _) = drive(&mut sessions, &["and now"], Answer::Deny);
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::AgentName { name, by } if name == "Orion" && by == "user")), "{entries:?}");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::Error { source, .. } if source == "nick")), "{entries:?}");
+    let last = seen.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains("You go by the name Orion"), "the model knows");
+
+    let listed = recent(&data, &root);
+    let stored = read_log(&data, &root, &listed[0].id);
+    assert_eq!(SessionState::fold(stored.iter().map(|e| &e.event)).agent_name.as_deref(), Some("Orion"), "a replay says so");
+}

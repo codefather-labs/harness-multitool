@@ -296,6 +296,7 @@ enum Input {
     Task { text: String, protocol: Protocol },
     Plan(bool),
     StepDebug(bool),
+    Nick(String),
     Inbound { label: String, text: String },
 }
 
@@ -534,6 +535,16 @@ impl Sessions {
         Ok(())
     }
 
+    /// The user names the agent.
+    pub fn nick(&mut self, tab: u64, name: String) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Nick(name));
+        }
+    }
+
     /// The user switches step-debug mode.
     pub fn step_debug(&mut self, tab: u64, on: bool) {
         if !self.handles.contains_key(&tab) {
@@ -619,12 +630,16 @@ impl Sessions {
                     pollster::block_on(engine.set_plan_mode(on, "user"));
                     continue;
                 }
+                if let Input::Nick(name) = &input {
+                    pollster::block_on(engine.set_agent_name_by_user(name));
+                    continue;
+                }
                 if let Input::StepDebug(on) = input {
                     pollster::block_on(engine.set_step_debug(on, "user"));
                     continue;
                 }
                 let end = match input {
-                    Input::Plan(_) | Input::StepDebug(_) => unreachable!("handled above"),
+                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) => unreachable!("handled above"),
                     Input::Prompt(text) => pollster::block_on(engine.run(&text, None)),
                     Input::Task { text, protocol } => pollster::block_on(engine.run(&text, Some(&protocol))),
                     Input::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),

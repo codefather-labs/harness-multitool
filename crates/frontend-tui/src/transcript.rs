@@ -23,6 +23,9 @@ use crate::theme::Theme;
 /// between cards (a cell holds two colours; a half-cell stripe could not end with them).
 const STRIPE: &str = "█";
 
+/// Above the agent's messages until it has a name.
+pub const ASSISTANT: &str = "ASSISTANT";
+
 /// How many lines of live reasoning its window shows.
 const THINKING_LINES: usize = 5;
 
@@ -232,6 +235,11 @@ fn plain(c: Color) -> Style {
 
 /// Draws one item `width` columns wide.
 pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent]) -> Drawn {
+    named_item(it, width, t, known, ASSISTANT)
+}
+
+/// The same, with the name above the agent's messages.
+fn named_item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent], agent: &str) -> Drawn {
     match it {
         Item::Welcome { title, tagline } => card(width, t, t.accent_line, vec![Span::styled("WELCOME", bold(t.accent))], vec![
             vec![Span::styled(title.clone(), bold(t.text))],
@@ -244,7 +252,7 @@ pub fn item(it: &Item, width: u16, t: &Theme, known: &[JournalEvent]) -> Drawn {
             vec![Span::styled(label.clone(), bold(t.accent))],
             lines.iter().map(|l| vec![Span::styled(" • ", plain(t.text_muted)), Span::styled(l.clone(), plain(t.text))]).collect(),
         ),
-        Item::Turn { role, time, lines, attached } => turn(width, t, known, *role, time, lines, attached),
+        Item::Turn { role, time, lines, attached } => turn(width, t, known, *role, time, lines, attached, agent),
         Item::Tool(c) => {
             let mut cv = Canvas::new(width, t, known);
             let h = tool(&mut cv, 0, 0, width, c, t.surface);
@@ -382,15 +390,15 @@ fn card(width: u16, t: &Theme, stripe: Color, label: Vec<Span<'static>>, body: V
 }
 
 #[allow(clippy::too_many_arguments)]
-fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item]) -> Drawn {
+fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item], agent: &str) -> Drawn {
     let mut cv = Canvas::new(width, t, known);
     let tw = width.saturating_sub(CX + 2);
     let name = match role {
         Role::User => "USER",
-        Role::Assistant => "ASSISTANT",
+        Role::Assistant => agent,
     };
     let bg = t.surface;
-    cv.line(CX, 0, tw, vec![Span::styled(name, bold(t.accent)), Span::styled(format!("  {time}"), plain(t.text_muted))], bg);
+    cv.line(CX, 0, tw, vec![Span::styled(name.to_string(), bold(t.accent)), Span::styled(format!("  {time}"), plain(t.text_muted))], bg);
     let mut y = 1;
     // The reasoning comes before the answer it led to, wherever it arrived.
     for (i, a) in attached.iter().enumerate().filter(|(_, a)| matches!(a, Item::Thinking(_))) {
@@ -1159,7 +1167,7 @@ fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Dr
 /// last. The second value says
 /// whether the first item was reached, i.e. the whole transcript is in the stack. Older items
 /// are not drawn at all, so a frame costs what is on screen, not the length of the session.
-pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], rows: u16) -> (Vec<Drawn>, bool) {
+pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], agent: &str, rows: u16) -> (Vec<Drawn>, bool) {
     let mut drawn: Vec<Drawn> = Vec::new();
     let mut acc = 0u16;
     let mut whole = true;
@@ -1168,7 +1176,7 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ro
             whole = false;
             break;
         }
-        let mut d = item(it, width, t, known);
+        let mut d = named_item(it, width, t, known, agent);
         d.item = Some(i);
         acc = acc.saturating_add(d.buf.area.height + 1);
         drawn.push(d);
@@ -1189,7 +1197,7 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ro
 
 /// Every item drawn at `width` (tests and tools; the view draws only what is visible).
 pub fn all(items: &[Item], width: u16, t: &Theme) -> Vec<Drawn> {
-    visible(items, width, t, &[], u16::MAX).0
+    visible(items, width, t, &[], ASSISTANT, u16::MAX).0
 }
 
 /// The transcript's total height in rows: items plus the gaps between them.
@@ -1349,6 +1357,17 @@ mod thinking_tests {
         let open = rows(&item(&turn_with(ThinkingView { lines, live: false, secs: 3, expanded: true }), 60, &t, &[]));
         let text = open.join("\n");
         assert!(text.contains("thought 0") && text.contains("thought 19") && open.iter().any(|r| r.contains('╭')), "{text}");
+    }
+
+    #[test]
+    fn the_agents_name_replaces_the_word_and_a_persons_card_keeps_its_own() {
+        let t = Theme::builtin("dark").unwrap();
+        let text = |it: &Item| rows(&named_item(it, 60, &t, &[], "Vega")).join("\n");
+        let answer = turn_with(ThinkingView::default());
+        assert!(text(&answer).contains("Vega") && !text(&answer).contains("ASSISTANT"));
+        let person = Item::Turn { role: Role::User, time: "1".into(), lines: vec!["hi".into()], attached: vec![] };
+        assert!(text(&person).contains("USER") && !text(&person).contains("Vega"));
+        assert!(rows(&item(&answer, 60, &t, &[])).join("\n").contains("ASSISTANT"), "until it has a name");
     }
 
     #[test]

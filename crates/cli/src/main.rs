@@ -1134,6 +1134,7 @@ impl Live {
                 }
                 Outgoing::Plan { tab, on } => self.sessions.plan(tab, on),
                 Outgoing::StepDebug { tab, on } => self.sessions.step_debug(tab, on),
+                Outgoing::Nick { tab, name } => self.sessions.nick(tab, name),
                 Outgoing::Init { tab } => {
                     let lines = match init_project(&self.root) {
                         Ok(created) if created.is_empty() => vec!["Nothing to do: the docs tree and .harness/ are already here.".to_string()],
