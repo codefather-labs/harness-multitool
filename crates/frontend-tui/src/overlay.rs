@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
 
 const CHOICES: [&str; 3] = ["Allow once", "Always allow", "Deny"];
-const MODELS: [&str; 3] = ["claude-sonnet-4.5", "claude-opus-4.1", "claude-haiku-4.5"];
+const MODELS: [&str; 3] = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 const TIMEOUTS: [u32; 4] = [30, 60, 120, 300];
 
 pub fn sample_permission() -> PermissionView {
@@ -31,6 +31,29 @@ pub fn sample_permission() -> PermissionView {
         choice: 0,
         tab: None,
     }
+}
+
+/// The settings window, opening on what the active session's status line says.
+pub fn settings_for(w: &Workspace) -> SettingsView {
+    let mut s = sample_settings();
+    for (key, value) in &w.view().status.fields {
+        match key.as_str() {
+            "MODEL" => s.model = value.clone(),
+            "ADAPTER" => {
+                let name = match value.as_str() {
+                    "anthropic" | "anthropic-api" => "Anthropic API",
+                    "openai" | "openai-compatible" => "OpenAI-compatible",
+                    "local" => "Local",
+                    other => other,
+                };
+                if let Some(i) = s.providers.iter().position(|p| p.name == name) {
+                    s.provider = i;
+                }
+            }
+            _ => {}
+        }
+    }
+    s
 }
 
 pub fn sample_settings() -> SettingsView {
@@ -382,6 +405,12 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 // Save: the session's status line shows the chosen adapter and model.
                 let adapter = s.providers[s.provider].name.to_lowercase().replace(' ', "-");
                 let model = s.model.clone();
+                if w.live {
+                    let provider = s.providers[s.provider].name.clone();
+                    w.overlay = None;
+                    w.outbox.push(Outgoing::SaveSettings { provider, model });
+                    return Some(Outcome::Stay);
+                }
                 w.overlay = None;
                 for (k, v) in &mut w.view_mut().status.fields {
                     match k.as_str() {

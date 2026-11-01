@@ -64,6 +64,8 @@ pub enum Outgoing {
     /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.
     Answer { tab: u64, choice: usize },
     Stop { tab: u64 },
+    /// Settings saved: the provider's option name and the model, for new sessions.
+    SaveSettings { provider: String, model: String },
 }
 
 /// A press on a map, until the release: where it started, what it started on.

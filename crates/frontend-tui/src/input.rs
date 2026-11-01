@@ -277,7 +277,7 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
             Outcome::Stay
         }
         (Mode::Session(w), Target::Settings) => {
-            w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::sample_settings()));
+            w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::settings_for(w)));
             Outcome::Stay
         }
         (Mode::Session(w), Target::Tab(i)) => {

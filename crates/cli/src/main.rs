@@ -170,6 +170,17 @@ fn local_time(at_ms: u64) -> String {
     chrono::Local.timestamp_millis_opt(at_ms as i64).single().map_or_else(String::new, |t| t.format("%H:%M").to_string())
 }
 
+/// How long ago, as the startup page says it.
+fn age(ms: u64) -> String {
+    match ms / 60_000 {
+        0 => "just now".to_string(),
+        m @ 1..=59 => format!("{m} min ago"),
+        m @ 60..=1439 => format!("{} h ago", m / 60),
+        1440..=2879 => "1 day ago".to_string(),
+        m => format!("{} days ago", m / 1440),
+    }
+}
+
 /// The working directory as the header shows it.
 fn shown_cwd() -> String {
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -222,6 +233,10 @@ struct Live {
     asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
     context_window: u64,
     root: String,
+    /// On real plugins, not a debug script: only then are settings and stored sessions real.
+    real: bool,
+    /// This folder's stored sessions, as the startup page lists them.
+    recent: Vec<harness_session::SessionInfo>,
     provider: String,
     model: String,
     budget: String,
@@ -244,11 +259,74 @@ impl Live {
                 (harness_session::real_factory(settings, root.clone(), config::data_dir()?), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, provider, model, budget })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()), feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
         live_session(&self.provider, &self.model, &self.budget)
+    }
+
+    /// Saves the choice and makes it the base of new sessions. A running session keeps its model.
+    fn save_settings(&mut self, provider: &str, model: &str) -> Result<()> {
+        let mut c = config::load()?;
+        c.session.provider = provider.to_string();
+        c.session.model = model.to_string();
+        config::save(&c)?;
+        if self.real {
+            self.context_window = c.session.context_window();
+            self.sessions.set_factory(harness_session::real_factory(c.session, self.root.clone(), config::data_dir()?));
+            self.provider = provider.to_string();
+            self.model = model.to_string();
+        }
+        Ok(())
+    }
+
+    /// The startup page, listing this folder's real sessions.
+    fn startup(&mut self) -> frontend_tui::AppState {
+        let mut state = fixtures::startup();
+        state.header.cwd = shown_cwd();
+        state.header.branch = git_branch();
+        self.recent = config::data_dir().map(|d| harness_session::recent(&d.to_string_lossy(), &self.root)).unwrap_or_default();
+        if !self.real {
+            self.recent.clear();
+        }
+        if let frontend_tui::model::Mode::Startup(v) = &mut state.mode {
+            let now = chrono::Utc::now().timestamp_millis() as u64;
+            v.sessions = self
+                .recent
+                .iter()
+                .map(|s| frontend_tui::model::RecentSession {
+                    title: s.title.clone(),
+                    path: shown_cwd(),
+                    branch: git_branch().unwrap_or_default(),
+                    age: age(now.saturating_sub(s.last_ms)),
+                    model: s.model.clone(),
+                })
+                .collect();
+            v.selected_session = 0;
+        }
+        state
+    }
+
+    /// Opens stored session `i`: its log is drawn, and the next message continues it.
+    fn open_recent(&mut self, i: usize) -> Option<frontend_tui::AppState> {
+        let info = self.recent.get(i)?.clone();
+        let data = config::data_dir().ok()?;
+        let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &info.id);
+        let mut state = self.fresh_session();
+        if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+            let tab = w.tabs[w.active].id;
+            let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
+            let view = w.view_mut();
+            view.transcript.clear();
+            for entry in &log {
+                feed.apply(view, entry);
+            }
+            feed.run_ended(view);
+            self.feeds.insert(tab, feed);
+            self.sessions.resume(tab, &info.id);
+        }
+        Some(state)
     }
 
     /// What the user did goes to the sessions; returns whether anything changed on screen.
@@ -275,6 +353,19 @@ impl Live {
                     }
                 }
                 Outgoing::Stop { tab } => self.sessions.stop(tab),
+                Outgoing::SaveSettings { provider, model } => {
+                    let provider = match provider.as_str() {
+                        "Anthropic API" => "anthropic".to_string(),
+                        "OpenAI-compatible" => "openai".to_string(),
+                        "Local" => "local".to_string(),
+                        other => other.to_string(),
+                    };
+                    let note = match self.save_settings(&provider, &model) {
+                        Ok(()) => format!("New sessions use {provider} / {model}."),
+                        Err(e) => format!("Could not save the settings: {e}"),
+                    };
+                    w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "SETTINGS".into(), lines: vec![note] });
+                }
             }
         }
     }
@@ -375,7 +466,11 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
     let fixture = fixtures::by_name(name).ok_or_else(|| anyhow!("unknown screen {name:?} (see `screen --list`)"))?;
     let mut live = Live::new(script)?;
     // The welcome state is a new session: it is real. The other states are design fixtures.
-    let mut state = if fixture.name == "welcome" { live.fresh_session() } else { (fixture.build)() };
+    let mut state = match fixture.name {
+        "welcome" => live.fresh_session(),
+        "startup" => live.startup(),
+        _ => (fixture.build)(),
+    };
     let mut theme_idx = BUILTIN.iter().position(|(id, _)| *id == theme).ok_or_else(|| anyhow!("unknown theme {theme:?}"))?;
     let mut current = Theme::builtin(BUILTIN[theme_idx].0)?;
 
@@ -513,9 +608,12 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
             };
             match outcome {
                 Outcome::Quit => return Ok(()),
-                Outcome::LeaveSplash => state = fixtures::startup(),
-                // The startup page's recent sessions are design fixtures for now.
-                Outcome::OpenSession(_) => state = fixtures::main_session(),
+                Outcome::LeaveSplash => state = live.startup(),
+                Outcome::OpenSession(i) => {
+                    if let Some(opened) = live.open_recent(i) {
+                        state = opened;
+                    }
+                }
                 Outcome::Action(i) => {
                     let kind = match &state.mode {
                         Mode::Startup(v) => v.actions.get(i).map(|a| a.kind),
@@ -523,11 +621,12 @@ fn preview(name: &str, theme: &str, script: Option<&str>) -> Result<()> {
                     };
                     match kind {
                         Some(ActionKind::NewSession) => state = live.fresh_session(),
-                        Some(ActionKind::Resume) => state = fixtures::main_session(),
+                        // Resume: the newest session of this folder, or a new one if none.
+                        Some(ActionKind::Resume) => state = live.open_recent(0).unwrap_or_else(|| live.fresh_session()),
                         Some(ActionKind::Settings) => {
-                            state = fixtures::welcome();
+                            state = live.fresh_session();
                             if let Mode::Session(w) = &mut state.mode {
-                                w.overlay = Some(frontend_tui::model::Overlay::Settings(frontend_tui::overlay::sample_settings()));
+                                w.overlay = Some(frontend_tui::model::Overlay::Settings(frontend_tui::overlay::settings_for(w)));
                             }
                         }
                         // Settings, tour and help screens come in later stages.

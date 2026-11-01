@@ -155,7 +155,8 @@ fn a_coding_turn_runs_end_to_end_on_the_real_plugins() {
     assert_eq!(last["messages"][2]["content"][0]["tool_use_id"], "t1");
 
     // INV-5, INV-6: the log on disk is complete, replays, and holds no key.
-    let dir = format!("{data}/sessions");
+    let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let dir = format!("{data}/sessions/{}", slug.trim_matches('-'));
     let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
     let text = std::fs::read_to_string(file).unwrap();
     assert!(!text.contains(canary), "INV-6: the key is not in the log");
@@ -254,4 +255,69 @@ fn no_tool_acts_outside_what_was_granted() {
     let needs = read.capabilities(&json!({"path": "a.txt"})).unwrap();
     let granted = cx(needs);
     assert_eq!(block(read.execute(&json!({"path": "a.txt"}), &granted)).text, "secret\n");
+}
+
+/// INV-5: a session continues from its log, across a restart of everything.
+#[test]
+fn a_session_resumes_from_its_log() {
+    let root = temp_dir("resume");
+    let data = temp_dir("resume-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "First answer."), anthropic_turn(None, "Second answer.")]);
+    let factory = real_factory(settings(&url, "k"), root.clone(), data.clone().into());
+
+    let mut first = Sessions::new(factory.clone(), root.clone());
+    let (before, _, _) = drive(&mut first, &["first question\nwith a second line"], Answer::Deny);
+    drop(first);
+
+    let listed = recent(&data, &root);
+    assert_eq!(listed.len(), 1);
+    assert_eq!((listed[0].title.as_str(), listed[0].model.as_str()), ("first question", "claude-opus-5-5"));
+    assert_eq!(read_log(&data, &root, &listed[0].id), before);
+
+    let mut second = Sessions::new(factory, root.clone());
+    second.resume(1, &listed[0].id);
+    let (after, ends, _) = drive(&mut second, &["second question"], Answer::Deny);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+    assert_eq!(after[0].seq, before.last().unwrap().seq + 1, "the numbering goes on");
+
+    let body: serde_json::Value = serde_json::from_str(seen.lock().unwrap()[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "the old history went along");
+    assert_eq!(messages[0]["content"][0]["text"], "first question\nwith a second line");
+
+    let all = read_log(&data, &root, &listed[0].id);
+    assert_eq!(all.len(), before.len() + after.len());
+    assert!(all.iter().enumerate().all(|(i, e)| e.seq == i as u64), "no gap in the log");
+    assert_eq!(recent(&data, &root).len(), 1, "still one session");
+}
+
+/// A log cut off mid-tool still gives a history the API accepts, and a torn last line is dropped.
+#[test]
+fn a_log_cut_off_mid_tool_resumes_with_an_interrupted_result() {
+    let root = temp_dir("cut");
+    let data = temp_dir("cut-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Picking up.")]);
+    let factory = real_factory(settings(&url, "k"), root.clone(), data.clone().into());
+    let call = ToolCall { id: "t9".into(), name: "shell".into(), input: json!({"command": "sleep 100"}) };
+    let log = [
+        LogEntry { seq: 0, at_ms: 1, event: Event::UserMessage { text: "go".into() } },
+        LogEntry { seq: 1, at_ms: 2, event: Event::TaskState { to: TaskState::Running, reason: None } },
+        LogEntry { seq: 2, at_ms: 3, event: Event::ModelToolCall { call: call.clone() } },
+        LogEntry { seq: 3, at_ms: 4, event: Event::ToolRequested { call, capabilities: vec![] } },
+    ];
+    let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let dir = format!("{data}/sessions/{}", slug.trim_matches('-'));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut text: String = log.iter().map(|e| harness_api::event::to_line(e) + "\n").collect();
+    text.push_str("{\"seq\":4,\"at_ms");
+    std::fs::write(format!("{dir}/old.jsonl"), text).unwrap();
+    assert_eq!(read_log(&data, &root, "old").len(), 4);
+
+    let mut sessions = Sessions::new(factory, root);
+    sessions.resume(1, "old");
+    let (entries, ends, _) = drive(&mut sessions, &["go on"], Answer::Deny);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+    assert!(matches!(&entries[0].event, Event::ToolResult { id, is_error: true, .. } if id == "t9"));
+    let body: serde_json::Value = serde_json::from_str(seen.lock().unwrap()[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "t9");
 }

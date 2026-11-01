@@ -109,6 +109,7 @@ impl Feed {
                             card.outcome = "applied".into();
                             card.diffstat = Some((added, removed));
                             card.body = ToolBody::Diff(diff);
+                            card.expanded = true;
                         }
                     }
                 }

@@ -64,3 +64,21 @@ def cpu():
 c0=cpu(); pump(3.0); print("idle cpu seconds over 3s:", round(cpu()-c0,3))
 typ("/exit\r"); pump(0.5)
 print("exit:", os.waitpid(pid,os.WNOHANG))
+
+# Part two: a new process, same folder: the startup page lists the session, opening it continues.
+turns[:] = [turn("Continuing the old session.")]
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(root)
+    os.environ.update(XDG_CONFIG_HOME=cfg, XDG_DATA_HOME=cfg + "/data", ANTHROPIC_API_KEY="test-key-local-fake", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", COLORTERM="truecolor")
+    os.execv(bin_, [bin_, "preview", "startup"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+screen.reset()
+pump(1.0); show("restart: the startup page lists the session")
+assert "change it" in text()
+os.write(fd, b"r"); pump(1.0); show("resumed: the old transcript is back")
+assert "The file says hello harness" in text()
+typ("go on\r"); pump(1.0); show("continued")
+assert "Continuing the old session" in text()
+typ("/exit\r"); pump(0.5)
+print("second exit:", os.waitpid(pid, os.WNOHANG))

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use harness_api::event::{DecidedBy, HookOutcome};
 use harness_api::{
-    Answer, Capability, Decision, Event, Frontend, HookPoint, LogEntry, ModelEvent, ModelRequest, Protocol, Route, SessionState, Spent, StopReason, TaskState, ToolCall,
+    Answer, Capability, Content, Decision, Event, Frontend, HookPoint, LogEntry, ModelEvent, ModelRequest, Protocol, Route, SessionState, Spent, StopReason, TaskState, ToolCall,
     ToolContext, ToolOutput, ToolSpec,
 };
 
@@ -79,14 +79,39 @@ impl Engine {
         }
     }
 
+    /// The log of a session in the store, to resume from.
+    pub async fn load_log(&self) -> Result<Vec<LogEntry>, String> {
+        self.parts.store.load(&self.session).await.map_err(|e| format!("session store: {e}"))
+    }
+
     /// Continues a session from its log: the state is the fold of the entries (INV-5).
     pub fn resume(&self, entries: &[LogEntry]) {
         let mut state = self.state.borrow_mut();
         for entry in entries {
             state.apply(&entry.event);
         }
+        drop(state);
         self.seq.set(entries.last().map_or(0, |e| e.seq + 1));
         self.started.set(!entries.is_empty());
+        // A log cut off mid-tool has calls without results; the model must get one for each.
+        for id in self.unanswered_calls() {
+            self.emit(Event::ToolResult { id, output: "interrupted: the session ended before this call finished".into(), is_error: true });
+        }
+    }
+
+    fn unanswered_calls(&self) -> Vec<String> {
+        let state = self.state.borrow();
+        let mut open = Vec::new();
+        for message in &state.messages {
+            for content in &message.content {
+                match content {
+                    Content::ToolUse { id, .. } => open.push(id.clone()),
+                    Content::ToolResult { id, .. } => open.retain(|o| o != id),
+                    _ => {}
+                }
+            }
+        }
+        open
     }
 
     pub fn stop_flag(&self) -> StopFlag {

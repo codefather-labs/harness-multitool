@@ -74,7 +74,7 @@ fn env(name: &str) -> Option<String> {
 pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
-    let sessions_dir = format!("{}/sessions", data_dir.trim_end_matches('/'));
+    let sessions_dir = sessions_dir(data_dir, root);
     r.auth("api-key", |cx| Ok(Rc::new(harness_auth_apikey::ApiKeyAuth::new(env, cx.settings))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
@@ -110,6 +110,52 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
         json!({"provider": settings.provider, "model": settings.model, "max_tokens": settings.max_tokens, "max_turns": settings.max_turns, "max_cost_usd": settings.max_cost_usd}),
     );
     r
+}
+
+/// Sessions are kept per project folder.
+fn sessions_dir(data_dir: &str, root: &str) -> String {
+    let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    format!("{}/sessions/{}", data_dir.trim_end_matches('/'), slug.trim_matches('-'))
+}
+
+/// What the startup page shows of a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub id: String,
+    /// The first thing the user said.
+    pub title: String,
+    pub model: String,
+    pub last_ms: u64,
+}
+
+/// A stored session's entries, cut off at a damaged last line (a crash can leave one).
+pub fn read_log(data_dir: &str, root: &str, id: &str) -> Vec<LogEntry> {
+    let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines().map_while(|l| harness_api::event::from_line(l).ok()).collect()
+}
+
+/// This folder's sessions, newest first.
+pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
+    let Ok(files) = std::fs::read_dir(sessions_dir(data_dir, root)) else { return Vec::new() };
+    let mut out: Vec<SessionInfo> = files
+        .flatten()
+        .filter_map(|f| f.file_name().to_str()?.strip_suffix(".jsonl").map(str::to_string))
+        .filter_map(|id| {
+            let log = read_log(data_dir, root, &id);
+            let title = log.iter().find_map(|e| match &e.event {
+                Event::UserMessage { text } => text.lines().next().map(str::to_string),
+                _ => None,
+            })?;
+            let model = log.iter().rev().find_map(|e| match &e.event {
+                Event::TurnStarted { model, .. } => Some(model.clone()),
+                _ => None,
+            });
+            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms) })
+        })
+        .collect();
+    out.sort_by_key(|s| std::cmp::Reverse(s.last_ms));
+    out
 }
 
 /// Builds a session's parts, on the session's own thread: they are not `Send`.
@@ -177,9 +223,19 @@ impl Sessions {
         Sessions { factory, root, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
     }
 
+    /// New sessions start from this; running ones keep what they have.
+    pub fn set_factory(&mut self, factory: Factory) {
+        self.factory = factory;
+    }
+
+    /// Binds a tab to a stored session: its next message continues that log.
+    pub fn resume(&mut self, tab: u64, session: &str) {
+        self.start(tab, Some(session.to_string()));
+    }
+
     pub fn prompt(&mut self, tab: u64, text: String) {
         if !self.handles.contains_key(&tab) {
-            self.start(tab);
+            self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
             let _ = handle.prompts.send(text);
@@ -208,12 +264,13 @@ impl Sessions {
         self.from_sessions.recv_timeout(timeout).ok()
     }
 
-    fn start(&mut self, tab: u64) {
+    fn start(&mut self, tab: u64, resume: Option<String>) {
         let (prompts, prompt_rx) = channel::<String>();
         let (answers, answer_rx) = channel();
         let stop = StopFlag::default();
         let (factory, to_frontend, flag, root) = (self.factory.clone(), self.to_frontend.clone(), stop.clone(), self.root.clone());
-        let session = format!("{}-{tab}", self.started_ms);
+        let resuming = resume.is_some();
+        let session = resume.unwrap_or_else(|| format!("{}-{tab}", self.started_ms));
         std::thread::spawn(move || {
             let parts = match factory() {
                 Ok(parts) => parts,
@@ -226,6 +283,14 @@ impl Sessions {
             };
             let frontend = Rc::new(ChannelFrontend { tab, to_frontend: to_frontend.clone(), answers: answer_rx });
             let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag);
+            if resuming {
+                match pollster::block_on(engine.load_log()) {
+                    Ok(entries) => engine.resume(&entries),
+                    Err(message) => {
+                        let _ = to_frontend.send(FromSession::Unavailable { tab, message });
+                    }
+                }
+            }
             while let Ok(text) = prompt_rx.recv() {
                 let end = pollster::block_on(engine.run(&text, None));
                 let _ = to_frontend.send(FromSession::Ended { tab, end });

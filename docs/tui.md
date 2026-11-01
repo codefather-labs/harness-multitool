@@ -1,6 +1,6 @@
 # Terminal UI
 
-The terminal frontend (IF-11) is built design-first against [design/concept](design/concept/README.md). A new session is real: a plain message goes to the agent loop, and what the loop logs is what the transcript draws (`frontend-tui/src/live.rs`). The other named states are design fixtures. In any session the composer's `/` commands publish every kind of transcript item, so each component can be looked at live. The startup page's recent sessions are still fixtures.
+The terminal frontend (IF-11) is built design-first against [design/concept](design/concept/README.md). A new session is real: a plain message goes to the agent loop, and what the loop logs is what the transcript draws (`frontend-tui/src/live.rs`). The other named states are design fixtures. In any session the composer's `/` commands publish every kind of transcript item, so each component can be looked at live. The startup page lists this folder's real sessions; opening one draws its log and the next message continues it.
 
 ## Run
 
@@ -33,7 +33,7 @@ base_url = "http://localhost:8080/v1"
 none = true                     # no key needed
 ```
 
-Keys come from the environment: `ANTHROPIC_API_KEY`, or `<PROVIDER>_API_KEY` for a provider of that name (`[session.auth.<name>]` can name another variable with `env`, or hold the key as `key`). Each tab is its own session, with its own log in the OS's data directory. Reads inside the project run; writes, commands and network use ask (`1` once, `2` always for this session, `3` deny). Esc stops a generating agent at its next chunk, and the next message continues the conversation.
+Keys come from the environment: `ANTHROPIC_API_KEY`, or `<PROVIDER>_API_KEY` for a provider of that name (`[session.auth.<name>]` can name another variable with `env`, or hold the key as `key`). Ctrl+S in the settings window saves the provider and the model for new sessions; a running session keeps its model. Each tab is its own session, with its own log in the OS's data directory. Reads inside the project run; writes, commands and network use ask (`1` once, `2` always for this session, `3` deny). Esc stops a generating agent at its next chunk, and the next message continues the conversation.
 
 ## Flow
 
