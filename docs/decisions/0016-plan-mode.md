@@ -20,8 +20,8 @@ The harness gets a **plan mode**: the classic plan mode of agent harnesses, wher
 - **A framework, not instructions.** Where plan mode elsewhere is a prompt, here it is a framework: documented tools, attention to keeping the documentation current, spec-first (P-4, P-10).
 
 - **Switching (answers Q-25).** Both ways, as in other harnesses: the user switches the mode on, or asks the agent to plan something and the agent enters plan mode itself. Leaving it takes the user's approval of the plan.
-- **A plan file is optional (answers Q-26).** The plan lives in the journal, mind maps and flowcharts, which the agent always has at hand and keeps current. Saving the plan to a file is an optional last step, only when the human wants it, once everything is planned and recorded: files tend to remain as stale leftovers, yet they matter to people. This part is not fully thought through yet and may change.
+- **The plan is mirrored into the documentation (answers Q-26; replaces the earlier "plan file is optional").** Writing documentation to files is mandatory: the plan's decisions, specifications and questions go into their files and its work items into the roadmap, consistent with the journal and maps ([ADR 0017](0017-docs-mirror-memory.md), CON-43).
 
 ## Open
 
-The optional plan file: its form and where it goes (the owner: not fully thought through yet).
+(none)
