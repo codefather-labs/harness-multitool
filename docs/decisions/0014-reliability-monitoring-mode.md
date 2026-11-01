@@ -1,7 +1,7 @@
 # 0014 — Reliability-monitoring mode (idea)
 
 - **Status:** proposed — an idea of the project owner, not yet a design; nothing here binds until the owner accepts it · **Raised by:** the project owner, 2026-11-01
-- **Specs:** IF-0.5, IF-6, IF-13, IF-15; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers); a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode)
+- **Specs:** IF-0.5, IF-6, IF-13, IF-15, INV-14; builds on [ADR 0009](0009-callback-triggers.md) (callback triggers); a sibling of [ADR 0013](0013-step-debug-mode.md) (step-debug mode)
 
 ## The idea
 
@@ -15,7 +15,9 @@ The harness gets a **reliability-monitoring mode**, run by the canons of SRE. Pr
 
 **Fresh context is the point.** A project event such as a broken pipeline iteration reaches the agent while that iteration's context is still fresh: the agent goes to see what went wrong, writes a journal entry, reacts by its policy, and if needed calls a human, for example with a Telegram message.
 
-**Proposed by the agent, to be confirmed:** a condition that stays `true` must not resend on every evaluation. The agent proposes that the harness sends on the rising edge only (`false` → `true`), plus an optional cool-down per condition, so a long outage is one message, and a new one comes after it has recovered (Q-21).
+**One message per event — decided by the owner (answers Q-21).** A condition is **idempotent**: the same event never sends a second message, however many times the condition evaluates `true` for it. Every repeated `true` is still recorded, in the harness's **trigger log**, not sent. The hook that delivers the condition's message carries the matching instruction to the agent: *you get one message, not a stream; look in the harness's trigger log for the nearby triggers of this and similar conditions — there may be many.* The agent reads that log to see the scale of what happened before it acts (INV-14).
+
+What counts as "the same event", and when a condition re-arms, is open (Q-22). The agent proposes: by default, one event lasts while the condition stays `true` (it re-arms after it turns `false`), and a condition may name its event more precisely — for example by a pipeline iteration's id — so two failed iterations are two events.
 
 ## Policies are per project — decided by the owner (answers Q-19, Q-20; reframes Q-18)
 
@@ -57,4 +59,4 @@ What the agent may do is the project's policy. Two existing harness rules still 
 
 ## Open
 
-The edge-and-cool-down rule for conditions (Q-21); the interface for writing a project's policies (Q-18).
+What identifies one event and when a condition re-arms (Q-22); the interface for writing a project's policies (Q-18).
