@@ -114,6 +114,9 @@ pub struct PermissionView {
     pub choice: usize,
     /// The tab of the running session that asks; `None` for the debug sample.
     pub tab: Option<u64>,
+    /// Just opened: only Deny answers yet. A prompt can open at any moment, started by a callback
+    /// or a channel, and keys meant for the composer must not approve it.
+    pub locked: bool,
 }
 
 /// The settings window (settings-overlay-*): sections on the left, the section's page on the

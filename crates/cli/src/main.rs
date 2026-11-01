@@ -145,6 +145,9 @@ fn main() -> Result<()> {
             let daemon = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers())
                 .or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()))
                 .map_err(|e| anyhow!(e))?;
+            if let Some(telegram) = config::telegram() {
+                daemon.start_telegram(telegram);
+            }
             println!("daemon on 127.0.0.1:{}", daemon.port());
             daemon.wait_for_shutdown();
             Ok(())
@@ -155,7 +158,9 @@ fn main() -> Result<()> {
                 c.terminal.graphics = g;
             }
             let p = config::save(&c)?;
-            println!("{}\n{}", p.display(), toml::to_string_pretty(&c)?);
+            let mut shown = c.clone();
+            shown.telegram.token = shown.telegram.token.map(|_| "<hidden>".to_string());
+            println!("{}\n{}", p.display(), toml::to_string_pretty(&shown)?);
             Ok(())
         }
         Command::Logo { theme, width, png } => {
@@ -307,6 +312,8 @@ type TabEvent = (u64, harness_daemon::WindowEvent);
 struct Live {
     /// The project's checks as last shown for approval.
     checks_shown: Option<String>,
+    /// When the locked prompt on screen first showed.
+    prompt_opened: Option<std::time::Instant>,
     sessions: harness_session::Sessions,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
     /// Permission prompts waiting for the one on screen to be answered.
@@ -432,6 +439,25 @@ impl Live {
     }
 
     /// Moves a hot reload along: the build's result, then the swap at a safe point.
+    /// A prompt takes its answer only after this long on screen: see `PermissionView::locked`.
+    fn tick_prompt(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        const GRACE: std::time::Duration = std::time::Duration::from_millis(800);
+        let Some(frontend_tui::model::Overlay::Permission(p)) = &mut w.overlay else {
+            self.prompt_opened = None;
+            return false;
+        };
+        if !p.locked {
+            self.prompt_opened = None;
+            return false;
+        }
+        if self.prompt_opened.get_or_insert_with(std::time::Instant::now).elapsed() < GRACE {
+            return false;
+        }
+        p.locked = false;
+        self.prompt_opened = None;
+        true
+    }
+
     fn tick_reload(&mut self, state: &mut frontend_tui::AppState, theme: &str) -> Result<bool> {
         use frontend_tui::model::{Item, Mode, Overlay};
         let Mode::Session(w) = &mut state.mode else { return Ok(false) };
@@ -496,6 +522,9 @@ impl Live {
             let Some(index) = w.tabs.iter().position(|t| t.id == tab) else { continue };
             match event {
                 WindowEvent::Notification { label, text, .. } => {
+                    if label == harness_api::TELEGRAM_LABEL {
+                        w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::Telegram, from: "operator".into(), text: text.clone() });
+                    }
                     w.tabs[index].view.generating = true;
                     self.sessions.inbound(tab, label, text);
                 }
@@ -535,7 +564,7 @@ impl Live {
                 (harness_session::with_host(settings, root.clone(), config::data_dir()?, host), provider, model, window)
             }
         };
-        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: harness_session::Sessions::new(factory, root.clone()).with_data_dir(&config::data_dir()?.to_string_lossy()), checks_shown: None, prompt_opened: None, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -931,6 +960,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
+                dirty |= live.tick_prompt(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.

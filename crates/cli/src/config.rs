@@ -26,10 +26,26 @@ pub struct Terminal {
     pub graphics: Graphics,
 }
 
+/// The Telegram channel: off with no token. The token is the harness's own bot's, better kept in
+/// MULTITOOL_TELEGRAM_TOKEN than here. `allowed_users` is who may reach an agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Telegram {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub terminal: Terminal,
+    #[serde(default)]
+    pub telegram: Telegram,
     /// The model and plugins a session runs on: provider, model, budgets, keys (never required
     /// here: keys normally come from the environment).
     #[serde(default)]
@@ -63,7 +79,26 @@ pub fn save(c: &Config) -> Result<PathBuf> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     std::fs::write(&p, toml::to_string_pretty(c)?).with_context(|| format!("writing {}", p.display()))?;
+    // It can hold a bot token.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("securing {}", p.display()))?;
+    }
     Ok(p)
+}
+
+/// The Telegram channel's settings, if it has a token: the environment wins over the file.
+pub fn telegram() -> Option<harness_daemon::telegram::Config> {
+    let file = load().map(|c| c.telegram).unwrap_or_default();
+    let token = std::env::var("MULTITOOL_TELEGRAM_TOKEN").ok().filter(|t| !t.is_empty()).or(file.token)?;
+    Some(harness_daemon::telegram::Config {
+        base_url: file.base_url.unwrap_or_else(|| "https://api.telegram.org".to_string()),
+        token: harness_api::Secret::new(token),
+        allowed_users: file.allowed_users,
+        chat: file.chat,
+        poll_timeout_s: 25,
+    })
 }
 
 /// The graphics mode in effect: MULTITOOL_GRAPHICS (sixel|kitty|iterm2|auto|off, also 1=auto

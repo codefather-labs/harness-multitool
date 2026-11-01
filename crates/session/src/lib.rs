@@ -254,6 +254,13 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         let (plugins, reload) = (host.plugins.clone(), host.reload.clone());
         registry.tool("plugins_list", move |_| Ok(Rc::new(host_tools::PluginsList(plugins.clone()))));
         registry.tool("plugins_reload", move |_| Ok(Rc::new(host_tools::PluginsReload(reload.clone()))));
+        // Offered only when the daemon's channel is on: a tool that cannot work is noise.
+        let telegram = harness_daemon::client::Client::find(&data_dir).and_then(|c| c.stats().ok()).is_some_and(|s| s["telegram"]["on"] == true);
+        if telegram {
+            selection.tools.push("telegram_send".to_string());
+            let data_dir = data_dir.clone();
+            registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone() })));
+        }
         registry.resolve(&selection, platform).map_err(|e| e.to_string())
     })
 }

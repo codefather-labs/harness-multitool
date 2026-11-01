@@ -129,6 +129,21 @@ impl Client {
         response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))
     }
 
+    /// Sends through the Telegram channel; the number of messages it took.
+    pub fn telegram_send(&self, text: &str) -> Result<u64, String> {
+        let mut response = self
+            .agent
+            .post(format!("{}/telegram/send", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .send(json!({"text": text}).to_string())
+            .map_err(|e| format!("reaching the daemon: {e}"))?;
+        let body: Value = response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))?;
+        match body["error"].as_str() {
+            Some(error) => Err(error.to_string()),
+            None => Ok(body["parts"].as_u64().unwrap_or(0)),
+        }
+    }
+
     /// What the daemon counts, for a look from outside.
     pub fn stats(&self) -> Result<Value, String> {
         let mut response = self

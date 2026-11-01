@@ -30,6 +30,7 @@ pub fn sample_permission() -> PermissionView {
         policy: "approval required · shell:execute".into(),
         choice: 0,
         tab: None,
+        locked: false,
     }
 }
 
@@ -365,7 +366,7 @@ fn permission(f: &mut Frame, area: Rect, p: &PermissionView, t: &Theme, out: &mu
         out.hits.push(Hit { rect: br, target: Target::Choice(i) });
     }
     y += 3;
-    text(f, x, y, iw, vec![Span::styled("Always allow creates a persistent rule for this command pattern.", Style::default().fg(t.text_muted).add_modifier(Modifier::ITALIC))], bg);
+    text(f, x, y, iw, vec![Span::styled(if p.locked { "One moment: keys that were meant for the composer cannot answer this." } else { "Always allow creates a persistent rule for this command pattern." }, Style::default().fg(t.text_muted).add_modifier(Modifier::ITALIC))], bg);
     hints(
         f,
         Rect::new(inner.x, y + 2, inner.width, 1),
@@ -620,6 +621,10 @@ fn activate(s: &mut SettingsView) {
 /// The user answered the permission prompt: the call shows in the transcript with the answer.
 pub fn answer(w: &mut Workspace, choice: usize) {
     let Some(Overlay::Permission(p)) = w.overlay.take() else { return };
+    if p.locked && choice != 2 {
+        w.overlay = Some(Overlay::Permission(p));
+        return;
+    }
     // A running session draws the call itself, from its log.
     if let Some(tab) = p.tab {
         w.outbox.push(Outgoing::Answer { tab, choice });
@@ -677,6 +682,29 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_locked_prompt_answers_only_deny() {
+        let mut w = match crate::fixtures::welcome().mode {
+            Mode::Session(w) => w,
+            _ => unreachable!(),
+        };
+        let open = |w: &mut Workspace| w.overlay = Some(Overlay::Permission(PermissionView { locked: true, tab: Some(1), ..sample_permission() }));
+        open(&mut w);
+        answer(&mut w, 0);
+        answer(&mut w, 1);
+        assert!(matches!(w.overlay, Some(Overlay::Permission(_))) && w.outbox.is_empty(), "{:?}", w.outbox);
+        answer(&mut w, 2);
+        assert!(w.overlay.is_none());
+        assert!(matches!(w.outbox.last(), Some(Outgoing::Answer { choice: 2, .. })), "{:?}", w.outbox);
+
+        open(&mut w);
+        if let Some(Overlay::Permission(p)) = &mut w.overlay {
+            p.locked = false;
+        }
+        answer(&mut w, 0);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::Answer { choice: 0, .. })), "{:?}", w.outbox);
+    }
     use crate::model::Mode;
 
     fn workspace() -> Workspace {

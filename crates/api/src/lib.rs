@@ -15,7 +15,7 @@ pub mod platform;
 pub mod sse;
 pub mod state;
 
-pub use event::{Event, LogEntry};
+pub use event::{Event, LogEntry, TELEGRAM_LABEL};
 pub use interfaces::*;
 pub use model::*;
 pub use state::{SessionState, TaskState};

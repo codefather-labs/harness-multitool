@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use harness_api::{Callback, CallbackHandler, HandlerEffect, JournalEntry, JournalRecord, MapData, Memory};
+use harness_api::{TELEGRAM_LABEL, Callback, CallbackHandler, HandlerEffect, JournalEntry, JournalRecord, MapData, Memory};
 use harness_memory_journal::plugin::JournalMemory;
 use harness_memory_journal::project::key_for;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,10 @@ use serde_json::{Value, json};
 pub mod client;
 pub mod conditions;
 pub mod memory;
+pub mod telegram;
+
+/// A window that polled within this long is still there.
+const LISTENING: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How long `GET /events` holds a request open when there is nothing to say.
 const POLL: Duration = Duration::from_secs(20);
@@ -54,6 +58,8 @@ struct Window {
 }
 
 struct State {
+    /// When each window last asked for events: a window that stopped asking has gone away.
+    polled: HashMap<String, std::time::Instant>,
     windows: HashMap<String, Window>,
     seen: HashSet<String>,
     next_seq: u64,
@@ -73,6 +79,8 @@ pub struct Daemon {
     port: u16,
     /// Memory calls served, for `multitool daemon --status`.
     memory_ops: std::sync::atomic::AtomicU64,
+    telegram: Mutex<Option<telegram::Channel>>,
+    channels_stopped: std::sync::atomic::AtomicBool,
 }
 
 /// Where a running daemon says how to reach it.
@@ -135,13 +143,15 @@ impl Daemon {
         let daemon = Arc::new(Daemon {
             handlers,
             // Numbered from the clock: a window listening across a restart still sees new events.
-            state: Mutex::new(State { windows: restore_windows(&dir), seen, next_seq: now_ms(), shutting_down: false }),
+            state: Mutex::new(State { polled: HashMap::new(), windows: restore_windows(&dir), seen, next_seq: now_ms(), shutting_down: false }),
             wake: Condvar::new(),
             admin,
             data_dir: data_dir.to_path_buf(),
             log: Mutex::new(log),
             port,
             memory_ops: std::sync::atomic::AtomicU64::new(0),
+            telegram: Mutex::new(None),
+            channels_stopped: std::sync::atomic::AtomicBool::new(false),
         });
         // Long polls hold a thread each, so serve from several.
         for _ in 0..8 {
@@ -153,6 +163,45 @@ impl Daemon {
             });
         }
         Ok(daemon)
+    }
+
+    /// Starts the Telegram channel. With no call to this it stays off and nothing polls.
+    pub fn start_telegram(self: &Arc<Self>, config: telegram::Config) {
+        *self.telegram.lock().expect("telegram") = Some(telegram::Channel::new(config));
+        let daemon = self.clone();
+        std::thread::spawn(move || telegram::run(daemon));
+    }
+
+    /// Channels stop taking messages; a restart picks up where they stopped.
+    pub fn stop_channels(&self) {
+        self.channels_stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn with_channel(&self, change: impl FnOnce(&mut telegram::Channel)) {
+        if let Some(channel) = self.telegram.lock().expect("telegram").as_mut() {
+            change(channel);
+        }
+    }
+
+    /// The window that polled last, if one did within `LISTENING`.
+    fn listening_window(&self) -> Option<String> {
+        let state = self.state.lock().expect("daemon state");
+        state.polled.iter().filter(|(id, at)| at.elapsed() < LISTENING && state.windows.contains_key(*id)).max_by_key(|(_, at)| **at).map(|(id, _)| id.clone())
+    }
+
+    fn stats(&self) -> Value {
+        let telegram = self.telegram.lock().expect("telegram").as_ref().map_or(json!({"on": false}), telegram::Channel::status);
+        json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram})
+    }
+
+    fn telegram_send(&self, body: &str) -> (u16, Value) {
+        let Some(text) = serde_json::from_str::<Value>(body).ok().and_then(|v| v["text"].as_str().map(str::to_string)) else {
+            return (400, json!({"error": "text is required"}));
+        };
+        match telegram::send(self, &text) {
+            Ok(parts) => (200, json!({"parts": parts})),
+            Err(error) => (500, json!({"error": error})),
+        }
     }
 
     pub fn port(&self) -> u16 {
@@ -187,8 +236,9 @@ impl Daemon {
             ("GET", "/events") if admin => self.events(query),
             ("POST", "/reload") if admin => self.reload(),
             ("POST", "/memory") if admin => self.memory_op(&body),
-            ("GET", "/stats") if admin => (200, json!({"memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port})),
-            ("POST", "/memory") | ("GET", "/stats") => (401, json!({"error": "bad token"})),
+            ("GET", "/stats") if admin => (200, self.stats()),
+            ("POST", "/telegram/send") if admin => self.telegram_send(&body),
+            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 self.state.lock().expect("daemon state").shutting_down = true;
                 self.wake.notify_all();
@@ -249,7 +299,11 @@ impl Daemon {
         let mut state = self.state.lock().expect("daemon state");
         let deadline = std::time::Instant::now() + POLL;
         loop {
-            let Some(w) = state.windows.get(&window) else { return (404, json!({"error": "no such window"})) };
+            if !state.windows.contains_key(&window) {
+                return (404, json!({"error": "no such window"}));
+            }
+            state.polled.insert(window.clone(), std::time::Instant::now());
+            let w = &state.windows[&window];
             let fresh: Vec<&Numbered> = w.events.iter().filter(|e| e.seq > after).collect();
             if !fresh.is_empty() {
                 return (200, json!({"events": fresh}));
@@ -396,7 +450,8 @@ impl Daemon {
 
     /// INV-12: only the text and label travel; nothing in the payload selects anything.
     fn notification(&self, window: &str, uuid: &str, input: &Value) -> Result<Value, String> {
-        let label = input["label"].as_str().unwrap_or("callback").to_string();
+        // The channel's label is reserved: a callback is not the operator (INV-12).
+        let label = input["label"].as_str().filter(|l| *l != TELEGRAM_LABEL).unwrap_or("callback").to_string();
         let text = match input["text"].as_str() {
             Some(text) => text.to_string(),
             None => {

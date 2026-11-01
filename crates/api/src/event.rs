@@ -7,6 +7,9 @@ use serde_json::Value;
 use crate::model::{Capability, StopReason, ToolCall, Usage};
 use crate::state::TaskState;
 
+/// The label of a message from the Telegram channel. Reserved: a callback cannot claim it.
+pub const TELEGRAM_LABEL: &str = "telegram";
+
 /// Who decided a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

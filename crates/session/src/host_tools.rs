@@ -53,3 +53,35 @@ impl Tool for PluginsReload {
         Box::pin(std::future::ready(output))
     }
 }
+
+/// The agent's reply through the Telegram channel, which the daemon holds. It leaves this
+/// machine, so it asks permission like any outward action.
+pub struct TelegramSend {
+    pub data_dir: std::path::PathBuf,
+}
+
+impl Tool for TelegramSend {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "telegram_send".into(),
+            description: "Send a message to the operator on Telegram: to the chat they last wrote from. Use it to answer a message that came from Telegram.".into(),
+            schema: json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![Capability::Command("send a Telegram message".into())])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match (input["text"].as_str(), harness_daemon::client::Client::find(&self.data_dir)) {
+            (None, _) => ToolOutput::error("text is required".to_string()),
+            (_, None) => ToolOutput::error("the daemon is not running".to_string()),
+            (Some(text), Some(client)) => match client.telegram_send(text) {
+                Ok(parts) => ToolOutput::ok(format!("sent, in {parts} message(s)")),
+                Err(error) => ToolOutput::error(error),
+            },
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}

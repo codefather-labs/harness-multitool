@@ -53,8 +53,10 @@ impl Feed {
                 v.transcript.push(Item::Turn { role: Role::User, time, lines: text.lines().map(str::to_string).collect(), attached: vec![] });
             }
             Event::Inbound { label, text } => {
-                let kind = InboundKind::Callback { transport: "HTTP".into(), status: "200".into() };
-                v.transcript.push(Item::Inbound(Inbound { kind, from: label.clone(), time, text: text.clone() }));
+                let telegram = label == harness_api::TELEGRAM_LABEL;
+                let kind = if telegram { InboundKind::Telegram } else { InboundKind::Callback { transport: "HTTP".into(), status: "200".into() } };
+                let from = if telegram { "operator".to_string() } else { label.clone() };
+                v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: text.clone() }));
             }
             Event::TaskState { .. } | Event::OpaqueBlock { .. } | Event::ModelToolCall { .. } => {}
             Event::TurnStarted { provider, model, .. } => {
@@ -418,6 +420,7 @@ pub fn permission(tab: u64, call: &LogCall, capabilities: &[Capability], workdir
         policy: "approval required".into(),
         choice: 0,
         tab: Some(tab),
+        locked: true,
     }
 }
 
