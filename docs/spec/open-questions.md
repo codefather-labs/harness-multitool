@@ -24,3 +24,4 @@
 | ~~**Q-21**~~ | ~~Does a condition that stays `true` resend?~~ Settled by the owner: a condition is idempotent — one message per event; repeats go to the harness's trigger log, and the message tells the agent to check that log for nearby triggers (INV-14). | — |
 | ~~**Q-22**~~ | ~~What identifies "the same event".~~ Settled by the owner: the incoming event uuid, a required part of the communication contract; a record whose uuid is already recorded is the same event (INV-14). | — |
 | ~~**Q-23**~~ | ~~A burst of different events on one condition.~~ Settled by the owner: one message per batch; firing rules live in the callback plugin, written by the user so as not to spam the agent (INV-14). | — |
+| **Q-24** | Custom callback handlers (IF-16): does a newly written handler need a rebuild of the local binary (ADR 0002), or can the TUI's settings load it without one? | design |
