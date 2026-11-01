@@ -131,7 +131,7 @@ impl Tool for Shell {
                 return e;
             }
             let Some(process) = &cx.platform.process else { return ToolOutput::error("this platform has no processes") };
-            match process.run(command, Some(&cx.root)).await {
+            match process.run(command, Some(&cx.root), &[]).await {
                 Ok(out) => {
                     let mut text = out.stdout;
                     text.push_str(&out.stderr);

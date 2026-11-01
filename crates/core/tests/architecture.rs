@@ -57,6 +57,7 @@ fn plugins_depend_only_on_the_interfaces() {
         "session-files",
         "verifier-protocol",
         "router-default",
+        "hooks-shell",
     ] {
         let manifest = fs::read_to_string(crates.join(name).join("Cargo.toml")).unwrap();
         let local: Vec<_> = manifest.lines().filter(|l| l.contains("path = ")).collect();

@@ -911,6 +911,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-hooks-shell"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-api",
+ "serde_json",
+]
+
+[[package]]
 name = "harness-platform-native"
 version = "0.1.0-dev"
 dependencies = [
@@ -970,6 +978,7 @@ dependencies = [
  "harness-auth-apikey",
  "harness-context-default",
  "harness-core",
+ "harness-hooks-shell",
  "harness-platform-native",
  "harness-policy-default",
  "harness-provider-anthropic",

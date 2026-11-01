@@ -61,7 +61,7 @@ fn ensure_parent(path: &str) -> std::io::Result<()> {
 pub struct NativeProcess;
 
 impl Process for NativeProcess {
-    fn run(&self, command: &str, cwd: Option<&str>) -> BoxFuture<'_, PluginResult<ProcessOutput>> {
+    fn run(&self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> BoxFuture<'_, PluginResult<ProcessOutput>> {
         let mut c = if cfg!(windows) {
             let mut c = std::process::Command::new("cmd");
             c.args(["/C", command]);
@@ -74,6 +74,7 @@ impl Process for NativeProcess {
         if let Some(cwd) = cwd {
             c.current_dir(cwd);
         }
+        c.envs(env.iter().map(|(k, v)| (k, v)));
         c.stdin(std::process::Stdio::null());
         ready(c.output().map_err(|e| PluginError::new(format!("running a command: {e}"))).map(|o| ProcessOutput {
             code: o.status.code(),

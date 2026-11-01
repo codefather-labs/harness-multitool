@@ -12,6 +12,15 @@ use harness_core::{Engine, Parts, Registry, RunEnd, Selection, StopFlag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookSetting {
+    pub event: Option<String>,
+    pub command: String,
+    /// What its card shows; the command by default.
+    pub name: Option<String>,
+}
+
 /// The `[session]` part of the user's configuration. Everything has a default; a provider's
 /// settings and keys live under `[providers.<name>]` and `[auth.<name>]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +32,8 @@ pub struct Settings {
     pub max_turns: Option<u32>,
     pub max_cost_usd: Option<f64>,
     pub tools: Vec<String>,
+    /// Shell hooks, in the order they run.
+    pub hooks: Vec<HookSetting>,
     /// `{"anthropic": {"base_url": ..., "effort": ...}, "local": {"kind": "openai", "base_url": ...}}`.
     pub providers: BTreeMap<String, Value>,
     /// `{"anthropic": {"env": "..."}, "local": {"none": true}}`.
@@ -38,6 +49,7 @@ impl Default for Settings {
             max_turns: None,
             max_cost_usd: None,
             tools: ["read", "edit", "shell", "search", "fetch"].map(String::from).to_vec(),
+            hooks: Vec::new(),
             providers: BTreeMap::new(),
             auth: BTreeMap::new(),
         }
@@ -57,7 +69,7 @@ impl Settings {
             router: "one-model".into(),
             tools: self.tools.clone(),
             policy: "default".into(),
-            hooks: vec![],
+            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).collect(),
             memory: "none".into(),
             context: "whole-conversation".into(),
             store: "files".into(),
@@ -87,6 +99,17 @@ pub fn registry(settings: &Settings, root: &str, data_dir: &str) -> Registry {
         .context("whole-conversation", move |_| Ok(Rc::new(harness_context_default::WholeConversation { root: root_b.clone() })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
+    for (i, hook) in settings.hooks.iter().enumerate() {
+        let (hook, root) = (hook.clone(), root.to_string());
+        r.hook(&format!("shell-{i}"), move |cx| {
+            let event = match &hook.event {
+                Some(name) => Some(harness_hooks_shell::point_kind(name).ok_or_else(|| format!("no loop event named {name}"))?),
+                None => None,
+            };
+            let name = hook.name.clone().unwrap_or_else(|| hook.command.clone());
+            Ok(Rc::new(harness_hooks_shell::ShellHook::new(&name, event, &hook.command, &root, cx.platform.process.clone())))
+        });
+    }
     for name in std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str)) {
         let kind = settings.providers.get(name).and_then(|p| p["kind"].as_str()).map(str::to_string).unwrap_or_else(|| if name == "anthropic" { "anthropic".to_string() } else { "openai".to_string() });
         let provider_name = name.to_string();

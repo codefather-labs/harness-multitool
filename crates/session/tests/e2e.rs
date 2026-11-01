@@ -6,6 +6,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use harness_api::event as event_kinds;
 use harness_api::*;
 use harness_session::*;
 use serde_json::json;
@@ -320,4 +321,49 @@ fn a_log_cut_off_mid_tool_resumes_with_an_interrupted_result() {
     assert!(matches!(&entries[0].event, Event::ToolResult { id, is_error: true, .. } if id == "t9"));
     let body: serde_json::Value = serde_json::from_str(seen.lock().unwrap()[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "t9");
+}
+
+/// IF-6: shell hooks add context, veto and fail, each as specified.
+#[test]
+fn shell_hooks_add_context_veto_and_fail() {
+    let hook = |event: &str, command: &str| HookSetting { event: Some(event.into()), command: command.into(), name: Some(format!("{event}.sh")) };
+    let root = temp_dir("hooks");
+    let data = temp_dir("hooks-data");
+    std::fs::write(format!("{root}/a.txt"), "x\n").unwrap();
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "read", json!({"path": "a.txt"}))), "Reading."),
+        anthropic_turn(Some(("t2", "shell", json!({"command": "echo ran > ran.txt"}))), "Running."),
+        anthropic_turn(None, "Done."),
+    ]);
+    let mut s = settings(&url, "k");
+    s.hooks = vec![
+        hook("SessionStart", "echo Journal your decisions."),
+        // Vetoes the shell tool only: the hook sees the call.
+        hook("PreToolUse", r#"case "$HOOK_CALL" in *'"name":"shell"'*) echo no shell today >&2; exit 2;; esac"#),
+        hook("PostToolUse", "exit 7"),
+    ];
+    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.into()), root.clone());
+    let (entries, ends, asked) = drive(&mut sessions, &["go"], Answer::AllowOnce);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+    assert_eq!(asked, 0, "the veto came before the permission prompt");
+    assert!(!std::path::Path::new(&format!("{root}/ran.txt")).exists(), "the vetoed command did not run");
+
+    let requests = seen.lock().unwrap();
+    let first: serde_json::Value = serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert!(first["system"].as_str().unwrap().contains("Journal your decisions."));
+    let third: serde_json::Value = serde_json::from_str(requests[2].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let results = third["messages"].to_string();
+    assert!(results.contains("no shell today"), "the model hears why");
+
+    let outcomes: Vec<&event_kinds::HookOutcome> = entries.iter().filter_map(|e| match &e.event {
+        Event::HookRan { outcome, .. } => Some(outcome),
+        _ => None,
+    }).collect();
+    assert!(outcomes.iter().any(|o| matches!(o, event_kinds::HookOutcome::Failed { message } if message.contains("exit 7"))), "{outcomes:?}");
+    assert!(outcomes.iter().any(|o| matches!(o, event_kinds::HookOutcome::Blocked { .. })));
+    // A hook that does not apply leaves no trace.
+    let stop_cards = entries.iter().filter(|e| matches!(&e.event, Event::HookRan { point: event_kinds::HookPointKind::Stop, .. })).count();
+    assert_eq!(stop_cards, 0);
+    // The failing PostToolUse hook blocked nothing: the read's result still reached the model.
+    assert!(third["messages"].to_string().contains("\"x\\n\""));
 }

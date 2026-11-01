@@ -33,7 +33,7 @@ impl Verifier for ProtocolRunner {
             };
             let mut evidence = Vec::new();
             for step in &protocol.steps {
-                let out = process.run(step, Some(&self.root)).await?;
+                let out = process.run(step, Some(&self.root), &[]).await?;
                 let pass = out.code == Some(0);
                 evidence.push(format!("$ {step}\nexit {}\n{}{}", out.code.map_or("none".to_string(), |c| c.to_string()), tail(&out.stdout), tail(&out.stderr)));
                 if !pass {

@@ -182,7 +182,7 @@ impl Engine {
     /// Runs every hook on `point`. Returns the first veto.
     async fn hooks(&self, point: HookPoint<'_>) -> Option<(String, String)> {
         let mut veto = None;
-        for hook in &self.parts.hooks {
+        for hook in self.parts.hooks.iter().filter(|h| h.applies(&point)) {
             let outcome = hook.run(&point).await;
             if let (HookOutcome::Blocked { reason }, None) = (&outcome, &veto) {
                 veto = Some((hook.name().to_string(), reason.clone()));

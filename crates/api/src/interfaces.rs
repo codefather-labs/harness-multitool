@@ -141,6 +141,10 @@ impl HookPoint<'_> {
 /// IF-6. Through events only (INV-7).
 pub trait Hook {
     fn name(&self) -> &str;
+    /// Whether it runs on this point at all; one that does not leaves no trace in the log.
+    fn applies(&self, _point: &HookPoint<'_>) -> bool {
+        true
+    }
     fn run<'a>(&'a self, point: &'a HookPoint<'a>) -> BoxFuture<'a, HookOutcome>;
 }
 

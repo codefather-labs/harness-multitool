@@ -409,7 +409,7 @@ impl Storage for MemFs {
 pub struct NoProcess;
 
 impl Process for NoProcess {
-    fn run(&self, _command: &str, _cwd: Option<&str>) -> BoxFuture<'_, PluginResult<ProcessOutput>> {
+    fn run(&self, _command: &str, _cwd: Option<&str>, _env: &[(String, String)]) -> BoxFuture<'_, PluginResult<ProcessOutput>> {
         ready(Err(PluginError::new("no processes in the test platform")))
     }
 }

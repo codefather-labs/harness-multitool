@@ -1,0 +1,11 @@
+[package]
+name = "harness-hooks-shell"
+description = "Hooks as shell commands the user configures (IF-6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+serde_json = "1"

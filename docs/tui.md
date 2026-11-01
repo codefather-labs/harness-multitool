@@ -35,6 +35,17 @@ none = true                     # no key needed
 
 Keys come from the environment: `ANTHROPIC_API_KEY`, or `<PROVIDER>_API_KEY` for a provider of that name (`[session.auth.<name>]` can name another variable with `env`, or hold the key as `key`). Ctrl+S in the settings window saves the provider and the model for new sessions; a running session keeps its model. Each tab is its own session, with its own log in the OS's data directory. Reads inside the project run; writes, commands and network use ask (`1` once, `2` always for this session, `3` deny). Esc stops a generating agent at its next chunk, and the next message continues the conversation.
 
+Hooks are shell commands, run on the loop's events; each run is a HOOK card:
+
+```toml
+[[session.hooks]]
+event = "PreToolUse"            # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, PostCompact; none means all
+command = "./check.sh"
+name = "check.sh"               # what the card shows
+```
+
+The command sees `HOOK_EVENT`, `HOOK_CALL` (a tool event's call as JSON) and `HOOK_PROMPT`. Exit 0: its output lines join the agent's context. Exit 2: a veto, with stderr as the reason. Any other exit: failed, and it blocks nothing.
+
 ## Flow
 
 splash (the key points of the harness as bullets, ideas and concepts tagged; OK / Enter) → startup page (recent sessions, quick actions) → session. On a terminal too short for the splash, the logo is dropped and the list stays whole.

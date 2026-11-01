@@ -24,7 +24,7 @@ pub struct ProcessOutput {
 
 /// IF-21. Absent in the browser, where tools that need it are not offered.
 pub trait Process {
-    fn run(&self, command: &str, cwd: Option<&str>) -> BoxFuture<'_, PluginResult<ProcessOutput>>;
+    fn run(&self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> BoxFuture<'_, PluginResult<ProcessOutput>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
