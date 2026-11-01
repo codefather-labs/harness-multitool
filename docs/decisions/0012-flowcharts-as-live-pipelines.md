@@ -32,3 +32,5 @@ The owner wants charts to serve beyond documentation: as the live view and the f
 ## Open
 
 How a run is identified across events, how arbitrary payloads map to node ids, the event schema, retention and size of the run history, and how a watching window is chosen (Q-11, Q-12, Q-13). The owner left the mechanism open on purpose.
+
+Used by [ADR 0013](0013-step-debug-mode.md): step-debug mode builds on live charts — the active node is the one the latest flow callback came from, and a run that reaches a terminal block is saved to the project's `.harness/debug/` SQLite and the chart reset.

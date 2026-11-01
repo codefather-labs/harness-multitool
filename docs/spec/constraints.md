@@ -28,6 +28,8 @@ Rules, limits and constants. Unlike a principle, a constraint is not weighed aga
 | **CON-21** | Journal flags include work items (todo, question, problem, bugreport, reminder, unverified, disputed) and marks (specification, constraint, important, idea, concept, comment, verified, deprecated); an entry carries any number of them. |
 | **CON-22** | One journal per project; a project is identified by its repository remote, or its directory when it has none. |
 | **CON-23** | Callback triggers (IF-13) are configuration of the project, versioned with it; the shipped kinds are `message`, `skill`, `journal` and `flow`; a flowchart's binding to a process and to its watching sessions is configuration too. A callback that matches no trigger is delivered as a `message`. Neither a `journal` nor a `flow` trigger starts a model turn. |
+| **CON-24** | Step-debug runs are stored in the target project, in an SQLite database under `.harness/debug/`: one run per cycle, saved when the run reaches a terminal block of its flowchart. |
+| **CON-25** | Step-debug code in a target project (debug router, step waits, the mode's callbacks) is active strictly behind the environment gate `MULTITOOL_STEP_DEBUG=1`; without it the code is inert and the pipeline runs as uninstrumented ([ADR 0013](../decisions/0013-step-debug-mode.md)). |
 
 ## Browser build
 
