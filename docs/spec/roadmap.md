@@ -18,7 +18,7 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Ideas, not yet on a milestone:**
 
-- generated documentation like rustdoc — `multitool doc` builds a linked HTML site and a PDF from the docs, maps and charts ([ADR 0018](../decisions/0018-generated-documentation-site.md));
+- generated documentation like rustdoc — `multitool doc`, on demand, builds a linked HTML site and a PDF from the docs files only ([ADR 0018](../decisions/0018-generated-documentation-site.md));
 - plan mode — the classic plan mode with the accent on the journal, mind maps and flowcharts, and a hook with their instructions ([ADR 0016](../decisions/0016-plan-mode.md)).
 
 **Concepts, not yet on a milestone:** reliability-monitoring mode — signals accumulate, conditions wake the agent with one message per batch, per-project response policies in `.harness/policies/` (IF-15, INV-14, CON-26; [ADR 0014](../decisions/0014-reliability-monitoring-mode.md)).
