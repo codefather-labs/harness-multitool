@@ -48,6 +48,8 @@ impl Anthropic {
             "messages": request.messages.iter().map(message).collect::<Vec<_>>(),
             "cache_control": {"type": "ephemeral"},
             "output_config": {"effort": self.effort},
+            // Show a summary of the reasoning: without it the default leaves the thinking empty.
+            "thinking": {"type": "adaptive", "display": "summarized"},
         });
         if let Some(system) = &request.system {
             body["system"] = json!(system);
@@ -147,6 +149,9 @@ impl TurnReader {
                     (Some(Open::Other { block }), kind) => {
                         if let Some(field) = kind.strip_suffix("_delta") {
                             let piece = delta[field].as_str().unwrap_or_default();
+                            if field == "thinking" && !piece.is_empty() && !sink(ModelEvent::Thinking(piece.to_string())) {
+                                return false;
+                            }
                             let grown = format!("{}{piece}", block[field].as_str().unwrap_or_default());
                             block[field] = json!(grown);
                         }
@@ -305,6 +310,7 @@ mod tests {
             r#"{"type":"message_stop"}"#,
         ]);
         assert_eq!(out, vec![
+            ModelEvent::Thinking("hm".into()),
             ModelEvent::Opaque(json!({"type":"thinking","thinking":"hm","signature":"sig"})),
             ModelEvent::Text("Hello".into()),
             ModelEvent::ToolCall(ToolCall { id: "t1".into(), name: "shell".into(), input: json!({"command":"ls"}) }),

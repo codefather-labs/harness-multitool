@@ -113,6 +113,7 @@ Tool calls, journal and mind-map events attach to the newest assistant turn when
 - `multitool screen --scenario <name> --png out.png` draws the transcript that scenario leaves.
 - `multitool preview welcome --script <name>` runs a scenario on test doubles in the live UI.
 - `multitool run "<message>" [--yes]` sends one message through a real session with no UI and prints its log; `--yes` answers permission prompts with yes.
+- `MULTITOOL_WIRE_LOG=<file>` writes every request body and response chunk exchanged with a model to that file, never the headers, so the keys stay out of it. A model's reasoning, where the provider streams it, is a THINKING card in the transcript and a `thinking` line in `multitool run`.
 - `tools/pty_session.py <absolute path to multitool>` drives the real UI in a pty against a fake provider endpoint: real HTTP, tools and permission prompts. It prints the screen at each step and the idle CPU. It needs the Python package `pyte`.
 
 ## Screens as images

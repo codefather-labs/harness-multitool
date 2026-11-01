@@ -304,6 +304,7 @@ impl Engine {
         let mut sink = |event: ModelEvent| {
             match event {
                 ModelEvent::Text(text) => self.emit(Event::TextDelta { text }),
+                ModelEvent::Thinking(text) => self.emit(Event::ThinkingDelta { text }),
                 ModelEvent::Opaque(block) => self.emit(Event::OpaqueBlock { block }),
                 ModelEvent::ToolCall(call) => {
                     self.emit(Event::ModelToolCall { call: call.clone() });

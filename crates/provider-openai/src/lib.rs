@@ -103,6 +103,12 @@ impl TurnReader {
             self.finish = Some(reason.to_string());
         }
         let delta = &choice["delta"];
+        // Ollama and others stream the reasoning apart from the answer, under one of these names.
+        if let Some(thinking) = delta["reasoning"].as_str().or(delta["reasoning_content"].as_str()).filter(|t| !t.is_empty())
+            && !sink(ModelEvent::Thinking(thinking.to_string()))
+        {
+            return false;
+        }
         if let Some(text) = delta["content"].as_str().filter(|t| !t.is_empty())
             && !sink(ModelEvent::Text(text.to_string()))
         {
@@ -208,6 +214,7 @@ mod tests {
         };
         let mut r = TurnReader::default();
         for e in [
+            r#"{"choices":[{"delta":{"content":"","reasoning":"Hm"}}]}"#,
             r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":"{\"com"}}]}}]}"#,
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mand\":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}"#,
@@ -219,6 +226,7 @@ mod tests {
         let end = r.finish(&mut sink).unwrap();
         assert_eq!((end.stop, end.usage.input, end.usage.output), (StopReason::ToolUse, 7, 3));
         assert_eq!(out, vec![
+            ModelEvent::Thinking("Hm".into()),
             ModelEvent::Text("Hi".into()),
             ModelEvent::ToolCall(ToolCall { id: "c1".into(), name: "shell".into(), input: json!({"command":"ls"}) }),
         ]);

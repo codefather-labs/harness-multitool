@@ -59,6 +59,7 @@ impl Feed {
                 set_status(v, "MODEL", model);
             }
             Event::TextDelta { text } => append_text(v, time, text),
+            Event::ThinkingDelta { text } => append_thinking(v, text),
             Event::TurnFinished { stop, usage, cost_micro_usd, .. } => {
                 self.cost_micro_usd += cost_micro_usd.unwrap_or(0);
                 // How full the context is: the last turn's whole prompt and its answer.
@@ -335,6 +336,20 @@ pub fn permission(tab: u64, call: &LogCall, capabilities: &[Capability], workdir
     }
 }
 
+/// The reasoning of the running turn grows one muted THINKING card.
+fn append_thinking(v: &mut SessionView, text: &str) {
+    const LABEL: &str = "THINKING";
+    if !matches!(v.transcript.last(), Some(Item::Tips { label, .. }) if label == LABEL) {
+        v.transcript.push(Item::Tips { label: LABEL.into(), lines: vec![String::new()] });
+    }
+    let Some(Item::Tips { lines, .. }) = v.transcript.last_mut() else { return };
+    let mut parts = text.split('\n');
+    if let (Some(first), Some(last)) = (parts.next(), lines.last_mut()) {
+        last.push_str(first);
+    }
+    lines.extend(parts.map(str::to_string));
+}
+
 fn append_text(v: &mut SessionView, time: String, text: &str) {
     // Text after a tool call starts a new message under it, in reading order.
     let open = matches!(v.transcript.last(), Some(Item::Turn { role: Role::Assistant, attached, .. }) if attached.is_empty());
@@ -557,6 +572,19 @@ mod tests {
         assert_eq!(m.map.branches.len(), 1);
         assert_eq!(f.take_known().len(), 1);
         assert!(f.take_known().is_empty());
+    }
+
+    #[test]
+    fn reasoning_grows_one_card_and_stays_out_of_the_answer() {
+        let (mut f, mut v) = (feed(), SessionView::default());
+        for (i, t) in ["The ", "user\nasks"].iter().enumerate() {
+            f.apply(&mut v, &entry(i as u64, Event::ThinkingDelta { text: t.to_string() }));
+        }
+        f.apply(&mut v, &entry(3, Event::TextDelta { text: "Four.".into() }));
+        assert_eq!(v.transcript.len(), 2);
+        let Item::Tips { label, lines } = &v.transcript[0] else { panic!() };
+        assert_eq!((label.as_str(), lines.as_slice()), ("THINKING", &["The user".to_string(), "asks".to_string()][..]));
+        assert!(matches!(&v.transcript[1], Item::Turn { lines, .. } if lines == &["Four."]));
     }
 
     #[test]

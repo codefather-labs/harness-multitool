@@ -73,7 +73,7 @@ impl SessionState {
                 name: call.name.clone(),
                 input: call.input.clone(),
             }),
-            Event::ToolRequested { .. } | Event::ToolDecision { .. } => {}
+            Event::ToolRequested { .. } | Event::ToolDecision { .. } | Event::ThinkingDelta { .. } => {}
             Event::ToolResult { id, output, is_error } => {
                 let result = Content::ToolResult { id: id.clone(), output: output.clone(), is_error: *is_error };
                 // The results of one turn travel together in one user message.

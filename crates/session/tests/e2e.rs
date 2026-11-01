@@ -422,3 +422,23 @@ fn memory_tools_write_a_real_journal_shared_by_every_checkout() {
     assert_eq!(results[1]["nodes"].as_array().unwrap().len(), 2);
     assert_eq!(std::fs::read_dir(format!("{data}/journals")).unwrap().filter(|f| f.as_ref().unwrap().path().extension().is_some_and(|e| e == "db")).count(), 1, "one journal file");
 }
+
+/// INV-6 for the debug wire log: bodies and answers are there, keys are not. A subprocess-free
+/// check of the wrapper on the real network path.
+#[test]
+fn the_wire_log_shows_bodies_and_never_keys() {
+    let root = temp_dir("wire");
+    let data = temp_dir("wire-data");
+    let log = format!("{data}/wire.log");
+    // SAFETY: this test binary reads this variable nowhere else, and no other test sets it.
+    unsafe { std::env::set_var("MULTITOOL_WIRE_LOG", &log) };
+    let (url, _) = fake_endpoint(vec![anthropic_turn(None, "Visible answer.")]);
+    let canary = "sk-wire-canary-987";
+    let mut sessions = Sessions::new(real_factory(settings(&url, canary), root.clone(), data.into()), root);
+    drive(&mut sessions, &["visible question"], Answer::Deny);
+    unsafe { std::env::remove_var("MULTITOOL_WIRE_LOG") };
+    let text = std::fs::read_to_string(log).unwrap();
+    assert!(text.contains(">>> POST") && text.contains("visible question"), "{text}");
+    assert!(text.contains("<<< 200") && text.contains("Visible answer."), "{text}");
+    assert!(!text.contains(canary), "INV-6: the key is not in the wire log");
+}

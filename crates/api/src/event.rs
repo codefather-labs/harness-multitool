@@ -48,6 +48,9 @@ pub enum Event {
     TaskState { to: TaskState, reason: Option<String> },
     TurnStarted { turn: u32, provider: String, model: String },
     TextDelta { text: String },
+    /// The model's reasoning, where a provider shows it. For the people watching: it never goes
+    /// back to the model as text.
+    ThinkingDelta { text: String },
     /// A provider block kept for replay; frontends do not show it.
     OpaqueBlock { block: Value },
     /// The model called a tool, in its place among the turn's blocks.

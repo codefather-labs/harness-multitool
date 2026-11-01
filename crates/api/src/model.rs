@@ -62,6 +62,8 @@ pub struct ModelRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelEvent {
     Text(String),
+    /// Reasoning the provider shows; for display and the log.
+    Thinking(String),
     ToolCall(ToolCall),
     /// A block to replay unchanged on later requests.
     Opaque(Value),

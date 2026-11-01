@@ -228,6 +228,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::TaskState { to, reason } => format!("task        -> {to:?}{}", reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default()),
         Event::TurnStarted { turn, provider, model } => format!("turn {turn}      start {provider}/{model}"),
         Event::TextDelta { text } => format!("text        {text:?}"),
+        Event::ThinkingDelta { text } => format!("thinking    {text:?}"),
         Event::OpaqueBlock { block } => format!("block       {block}"),
         Event::ModelToolCall { call } => format!("call        {} {} {}", call.id, call.name, call.input),
         Event::TurnFinished { turn, stop, usage, cost_micro_usd } => {

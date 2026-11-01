@@ -12,6 +12,8 @@ use harness_core::{Engine, Parts, Registry, RunEnd, Selection, StopFlag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+mod wire;
+
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookSetting {
@@ -76,6 +78,11 @@ impl Settings {
             verifier: "protocol".into(),
         }
     }
+}
+
+/// `MULTITOOL_WIRE_LOG=<file>`: see everything that goes to and comes from a model.
+fn wire_log_path() -> Option<PathBuf> {
+    std::env::var_os("MULTITOOL_WIRE_LOG").filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
 /// The folder's `origin` URL, if it is a repository with one.
@@ -211,7 +218,10 @@ pub fn real_factory(settings: Settings, root: String, data_dir: PathBuf) -> Fact
 pub fn with_notes(settings: Settings, root: String, data_dir: PathBuf, note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync>) -> Factory {
     Arc::new(move |tab| {
         let data = data_dir.to_string_lossy().into_owned();
-        let platform = harness_platform_native::platform(data_dir.clone());
+        let mut platform = harness_platform_native::platform(data_dir.clone());
+        if let Some(path) = wire_log_path() {
+            platform.net = Rc::new(wire::WireLog::new(platform.net.clone(), path));
+        }
         registry(&settings, &root, &data, note(tab)).resolve(&settings.selection(), platform).map_err(|e| e.to_string())
     })
 }
