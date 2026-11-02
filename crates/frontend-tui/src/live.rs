@@ -197,6 +197,9 @@ impl Feed {
                     })
                     .collect();
             }
+            // Claude Code reports a command it ran in the foreground the same way; only a task on
+            // the list was in the background.
+            Event::BackgroundDone { id, .. } if !v.background.iter().any(|task| task.id == *id) => {}
             Event::BackgroundDone { summary, .. } => {
                 let (kind, from) = inbound_kind(harness_api::HARNESS_LABEL);
                 v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: summary.clone() }));
@@ -743,8 +746,26 @@ fn output_body(output: &str) -> ToolBody {
     if all.is_empty() {
         return ToolBody::None;
     }
-    let shown = all.iter().take(OUTPUT_LINES).map(|l| l.to_string()).collect();
+    let shown = all.iter().take(OUTPUT_LINES).map(|l| expand_tabs(l)).collect();
     ToolBody::Output { label: None, lines: shown, numbered: false, more: all.len().saturating_sub(OUTPUT_LINES) }
+}
+
+/// A terminal's tabs as the spaces they stand for: a drawn tab takes no cell.
+fn expand_tabs(line: &str) -> String {
+    const STOP: usize = 8;
+    let mut out = String::with_capacity(line.len());
+    let mut column = 0;
+    for c in line.chars() {
+        if c == '\t' {
+            let spaces = STOP - column % STOP;
+            out.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            out.push(c);
+            column += crate::markdown::cell_width(c);
+        }
+    }
+    out
 }
 
 fn hook_outcome(outcome: &LogOutcome) -> HookOutcome {
@@ -1216,7 +1237,10 @@ mod inbound_tests {
         assert_eq!((v.background[0].started_ms, v.background[1].started_ms), (100, 500));
         assert!(tick_activity(&mut v, 1000), "the panel moves on with nothing else going");
         assert!(!tick_activity(&mut v, 1001), "not within a frame");
-        feed.apply(&mut v, &entry(600, Event::BackgroundDone { status: "completed".into(), summary: "job a completed".into() }));
+        let cards = v.transcript.len();
+        feed.apply(&mut v, &entry(550, Event::BackgroundDone { id: "foreground".into(), status: "completed".into(), summary: "Find a tool".into() }));
+        assert_eq!(v.transcript.len(), cards, "a command in the foreground is no background task");
+        feed.apply(&mut v, &entry(600, Event::BackgroundDone { id: "a".into(), status: "completed".into(), summary: "job a completed".into() }));
         assert!(matches!(v.transcript.last(), Some(Item::Inbound(m)) if m.text == "job a completed"));
         feed.apply(&mut v, &entry(700, Event::BackgroundTasks { tasks: vec![] }));
         assert!(v.background.is_empty());
@@ -1224,5 +1248,15 @@ mod inbound_tests {
         feed.apply(&mut v, &entry(800, Event::BackgroundTasks { tasks: vec![task("c")] }));
         feed.replayed(&mut v);
         assert!(v.background.is_empty());
+    }
+
+    #[test]
+    fn a_tab_in_output_keeps_its_columns() {
+        assert_eq!(expand_tabs("bde8331\tqueued"), "bde8331 queued");
+        assert_eq!(expand_tabs("a\tb\tc"), "a       b       c");
+        assert_eq!(expand_tabs("12345678\tx"), "12345678        x");
+        assert_eq!(expand_tabs("plain"), "plain");
+        let ToolBody::Output { lines, .. } = output_body("a\tb") else { panic!() };
+        assert_eq!(lines[0], "a       b");
     }
 }

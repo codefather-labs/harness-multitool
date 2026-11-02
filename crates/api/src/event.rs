@@ -99,7 +99,12 @@ pub enum Event {
     /// What an agent backend has running in the background now, all of it.
     BackgroundTasks { tasks: Vec<BackgroundTask> },
     /// A background task of an agent backend has ended.
-    BackgroundDone { status: String, summary: String },
+    BackgroundDone {
+        #[serde(default)]
+        id: String,
+        status: String,
+        summary: String,
+    },
     /// The context window of the model an agent backend ran, as it reports it.
     ContextWindow { tokens: u64 },
     /// This session goes on with a conversation brought in from `source`: what precedes it in the

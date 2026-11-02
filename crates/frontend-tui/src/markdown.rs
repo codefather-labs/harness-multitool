@@ -195,7 +195,7 @@ pub fn inline(text: &str) -> Vec<(char, Inline)> {
             && chars.get(i + 2).is_some_and(|n| !n.is_whitespace())
             && let Some(end) = closing(i + 2, &['*', '*']).filter(|e| *e > i + 2)
         {
-            wrapped(&mut out, i + 2, end, Inline::Bold);
+            bold(&mut out, &chars[i + 2..end]);
             i = end + 2;
         } else if c == '_'
             && next == Some('_')
@@ -203,7 +203,7 @@ pub fn inline(text: &str) -> Vec<(char, Inline)> {
             && chars.get(i + 2).is_some_and(|n| !n.is_whitespace())
             && let Some(end) = closing(i + 2, &['_', '_']).filter(|e| *e > i + 2 && chars.get(*e + 2).is_none_or(|n| !n.is_alphanumeric()))
         {
-            wrapped(&mut out, i + 2, end, Inline::Bold);
+            bold(&mut out, &chars[i + 2..end]);
             i = end + 2;
         } else if c == '*' && next == Some('*') {
             // Two stars that open nothing, as in 2**3: both stay.
@@ -237,6 +237,23 @@ pub fn inline(text: &str) -> Vec<(char, Inline)> {
         }
     }
     out
+}
+
+/// Bold text, with any code inside it still code, its ticks gone.
+fn bold(out: &mut Vec<(char, Inline)>, chars: &[char]) {
+    let mut i = 0;
+    while i < chars.len() {
+        match (chars[i] == '`').then(|| chars[i + 1..].iter().position(|c| *c == '`')).flatten() {
+            Some(length) if length > 0 => {
+                out.extend(chars[i + 1..i + 1 + length].iter().map(|c| (*c, Inline::Code)));
+                i += length + 2;
+            }
+            _ => {
+                out.push((chars[i], Inline::Bold));
+                i += 1;
+            }
+        }
+    }
 }
 
 /// How many cells a character takes: an emoji two, a Cyrillic letter one.
@@ -353,6 +370,10 @@ mod tests {
     fn code_inside_keeps_its_stars() {
         assert_eq!(styled("`**not bold**` here", Inline::Code), "**not bold**");
         assert_eq!(styled("`**not bold**` here", Inline::Bold), "");
+        assert_eq!(shown("**`#281`: chain**").0, "#281: chain", "no ticks inside bold");
+        assert_eq!(styled("**`#281`: chain**", Inline::Code), "#281");
+        assert_eq!(styled("**`#281`: chain**", Inline::Bold), ": chain");
+        assert_eq!(shown("**a ` lone**").0, "a ` lone", "a lone tick in bold stays");
     }
 
     #[test]

@@ -46,7 +46,7 @@ fn news(e: &Value) -> Option<Event> {
         "background_tasks_changed" => Some(Event::BackgroundTasks {
             tasks: e["tasks"].as_array()?.iter().map(|t| harness_api::event::BackgroundTask { id: text(&t["task_id"]), description: text(&t["description"]), kind: text(&t["task_type"]) }).collect(),
         }),
-        "task_notification" => Some(Event::BackgroundDone { status: text(&e["status"]), summary: text(&e["summary"]) }),
+        "task_notification" => Some(Event::BackgroundDone { id: text(&e["task_id"]), status: text(&e["status"]), summary: text(&e["summary"]) }),
         _ => None,
     }
 }
