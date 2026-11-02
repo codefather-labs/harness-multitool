@@ -50,6 +50,7 @@ fn to_wire(message: &FromSession) -> Value {
         FromSession::Ask { tab, call, capabilities } => json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}),
         FromSession::Ended { tab, end } => json!({"kind": "ended", "tab": tab, "end": end_to_json(end)}),
         FromSession::Unavailable { tab, message } => json!({"kind": "unavailable", "tab": tab, "message": message}),
+        FromSession::Synced { tab, error } => json!({"kind": "synced", "tab": tab, "error": error}),
     }
 }
 
@@ -60,13 +61,14 @@ fn from_wire(value: &Value) -> Option<FromSession> {
         "ask" => Some(FromSession::Ask { tab, call: serde_json::from_value(value["call"].clone()).ok()?, capabilities: serde_json::from_value(value["capabilities"].clone()).ok()? }),
         "ended" => Some(FromSession::Ended { tab, end: end_from_json(&value["end"]) }),
         "unavailable" => Some(FromSession::Unavailable { tab, message: value["message"].as_str()?.to_string() }),
+        "synced" => Some(FromSession::Synced { tab, error: value["error"].as_str().map(str::to_string) }),
         _ => None,
     }
 }
 
 fn tab_of(message: &FromSession) -> u64 {
     match message {
-        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } => *tab,
+        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } => *tab,
     }
 }
 
@@ -231,7 +233,7 @@ impl DaemonHost {
                     FromSession::Ended { tab, .. } => {
                         window.said.remove(tab);
                     }
-                    FromSession::Unavailable { .. } => {}
+                    FromSession::Unavailable { .. } | FromSession::Synced { .. } => {}
                 }
             }
             if window.closed {
@@ -275,6 +277,7 @@ impl DaemonHost {
             FromSession::Ask { call, capabilities, .. } => FromSession::Ask { tab, call, capabilities },
             FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
             FromSession::Unavailable { message, .. } => FromSession::Unavailable { tab, message },
+            FromSession::Synced { error, .. } => FromSession::Synced { tab, error },
         };
         let mut said = false;
         if let (FromSession::Entry { .. }, Some(source)) = (&retabbed, windows.get_mut(from)) {

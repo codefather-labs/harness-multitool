@@ -423,6 +423,8 @@ pub enum FromSession {
     Ended { tab: u64, end: RunEnd },
     /// The session could not start.
     Unavailable { tab: u64, message: String },
+    /// A session being opened has caught up with its forms, or could not (CON-81).
+    Synced { tab: u64, error: Option<String> },
 }
 
 /// What a session's next run starts from.
@@ -844,6 +846,9 @@ impl Sessions {
             let parts = match factory(tab) {
                 Ok(parts) => parts,
                 Err(message) => {
+                    if resuming {
+                        let _ = to_frontend.send(FromSession::Synced { tab, error: Some(message.clone()) });
+                    }
                     while prompt_rx.recv().is_ok() {
                         let _ = to_frontend.send(FromSession::Unavailable { tab, message: message.clone() });
                     }
@@ -857,11 +862,14 @@ impl Sessions {
                     Ok(entries) => {
                         engine.resume(&entries);
                         // INV-20: what its form gained meanwhile comes in before anything reads it.
-                        if pollster::block_on(engine.catch_up(connecting)) {
+                        let caught_up = pollster::block_on(engine.catch_up(connecting));
+                        if caught_up == Ok(true) {
                             let _ = to_frontend.send(FromSession::Ended { tab, end: RunEnd::AwaitingInput });
                         }
+                        let _ = to_frontend.send(FromSession::Synced { tab, error: caught_up.err() });
                     }
                     Err(message) => {
+                        let _ = to_frontend.send(FromSession::Synced { tab, error: Some(message.clone()) });
                         let _ = to_frontend.send(FromSession::Unavailable { tab, message });
                     }
                 }

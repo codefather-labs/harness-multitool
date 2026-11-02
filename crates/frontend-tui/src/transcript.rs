@@ -160,6 +160,10 @@ impl<'a> Canvas<'a> {
     fn stripe(&mut self, y: u16, h: u16, color: Color, bg: Color) {
         self.grow(y + h);
         for row in y..y + h {
+            // An item taller than the canvas ends with it (MAX_H).
+            if row >= self.buf.area.height {
+                break;
+            }
             self.buf[(0, row)].set_symbol(STRIPE).set_fg(color).set_bg(bg);
         }
     }
@@ -424,7 +428,7 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
     cv.stripe(0, y, t.accent_line, bg);
     // Everything not drawn on yet takes the card's surface.
     cv.grow(y);
-    for row in 0..y {
+    for row in 0..y.min(cv.buf.area.height) {
         for col in 0..width {
             if cv.buf[(col, row)].bg == Color::Reset {
                 cv.buf[(col, row)].set_bg(bg);

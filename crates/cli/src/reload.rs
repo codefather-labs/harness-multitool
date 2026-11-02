@@ -124,6 +124,7 @@ mod tests {
     fn a_handoff_round_trips_once() {
         let dir = std::env::temp_dir().join(format!("mt-handoff-{}", std::process::id()));
         let h = Handoff {
+            tell: None,
             active: 1,
             theme: "dark".into(),
             tabs: vec![TabHandoff { title: "a".into(), session: Some("s".into()), window: Some("w".into()), url: Some("u".into()), scroll: 3, draft: "half a thought".into() }],

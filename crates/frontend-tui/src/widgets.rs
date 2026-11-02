@@ -141,13 +141,17 @@ pub fn run_time(ms: u64) -> String {
     if s < 60 { format!("{s}s") } else { format!("{}m {:02}s", s / 60, s % 60) }
 }
 
+/// The phase of the moon the harness's spinner is at.
+pub fn moon(now_ms: u64) -> &'static str {
+    const SPINNER: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+    SPINNER[(now_ms / crate::live::SPIN_MS) as usize % SPINNER.len()]
+}
+
 /// What the agent is doing, for how long, and how to stop it: at the right of the status line.
 pub fn activity(f: &mut Frame, status: Rect, t: &Theme, a: &crate::model::Activity) {
-    const SPINNER: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
-    let frame = (a.now_ms / crate::live::SPIN_MS) as usize % SPINNER.len();
     let time = run_time(a.now_ms.saturating_sub(a.started_ms));
     let spans = vec![
-        Span::styled(format!(" {} ", SPINNER[frame]), Style::default().fg(t.accent)),
+        Span::styled(format!(" {} ", moon(a.now_ms)), Style::default().fg(t.accent)),
         Span::styled(a.state.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {time}"), Style::default().fg(t.accent)),
         Span::styled("  ·  Esc stops ", Style::default().fg(t.text_muted)),

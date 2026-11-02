@@ -338,7 +338,22 @@ pub fn draw(f: &mut Frame, area: Rect, o: &Overlay, t: &Theme, out: &mut Drawn) 
     match o {
         Overlay::Permission(p) => permission(f, area, p, t, out),
         Overlay::Settings(s) => settings(f, area, s, t, out),
+        Overlay::Syncing(s) => syncing(f, area, s, t),
     }
+}
+
+/// The moon, what is being done and for how long. It answers nothing: it ends when the daemon says.
+fn syncing(f: &mut Frame, area: Rect, s: &crate::model::SyncingView, t: &Theme) {
+    let width = (s.what.chars().count() as u16 + 16).min(area.width);
+    let r = Rect::new(area.x + area.width.saturating_sub(width) / 2, area.y + area.height.saturating_sub(5) / 2, width, 5.min(area.height));
+    let inner = modal(f, r, t.accent_line, t.surface);
+    let time = crate::widgets::run_time(s.now_ms.saturating_sub(s.started_ms));
+    let spans = vec![
+        Span::styled(format!(" {} ", crate::widgets::moon(s.now_ms)), Style::default().fg(t.accent)),
+        Span::styled(s.what.clone(), Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {time}"), Style::default().fg(t.accent)),
+    ];
+    text(f, inner.x, inner.y + inner.height / 2, inner.width, spans, t.surface);
 }
 
 /// A framed button 3 rows tall; the focused one is filled (half-block edges keep the fill
@@ -893,6 +908,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
     }
     let overlay = w.overlay.as_mut()?;
     match overlay {
+        Overlay::Syncing(_) => {}
         Overlay::Permission(p) => {
             let chosen = match k {
                 Key::Left | Key::Up => {

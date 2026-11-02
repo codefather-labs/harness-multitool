@@ -368,6 +368,11 @@ fn main() -> Result<()> {
 }
 
 /// A log time as a card's stamp.
+fn syncing_overlay(what: &str) -> frontend_tui::model::Overlay {
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    frontend_tui::model::Overlay::Syncing(frontend_tui::model::SyncingView { what: what.to_string(), started_ms: now_ms, now_ms })
+}
+
 fn local_time(at_ms: u64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(at_ms as i64).single().map_or_else(String::new, |t| t.format("%H:%M").to_string())
@@ -511,6 +516,12 @@ struct Live {
     registered: std::collections::HashMap<u64, harness_daemon::client::Registered>,
     /// The agent's `plugins_reload` tool raises this.
     reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Tabs whose conversation the daemon is bringing in line: the window waits (CON-81).
+    syncing: std::collections::HashSet<u64>,
+    /// What to go back to if the change of adapter under way fails.
+    previous_adapter: Option<(String, String)>,
+    /// A conversation of Claude Code's being linked, off the window's thread.
+    linking: Option<std::sync::mpsc::Receiver<Result<harness_session::SessionInfo, String>>>,
     /// The reload in hand was the user's own.
     reload_by_user: bool,
     /// The tab to tell how the reload in hand went.
@@ -833,7 +844,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -934,9 +945,15 @@ impl Live {
             frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
             frontend_tui::live::set_status(&mut t.view, "MODEL", model);
             frontend_tui::live::show_context_window(&mut t.view, self.context_window);
+            let has_session = self.sessions.session_of(t.id).is_some();
             if t.view.generating || !self.sessions.rebind(t.id) {
                 self.rebind_after.insert(t.id);
+            } else if has_session {
+                self.syncing.insert(t.id);
             }
+        }
+        if !self.syncing.is_empty() && w.overlay.is_none() {
+            w.overlay = Some(syncing_overlay("Bringing the conversation in line"));
         }
     }
 
@@ -1214,22 +1231,59 @@ impl Live {
 
     /// Opens stored session `i`: its log is drawn, and the next message continues it.
     fn open_recent(&mut self, i: usize) -> Option<frontend_tui::AppState> {
-        let mut info = self.recent.get(i)?.clone();
-        let data = config::data_dir().ok()?;
-        // A conversation of Claude Code's: linked now, one conversation from here on (INV-21).
+        let info = self.recent.get(i)?.clone();
+        // A conversation of Claude Code's: linked, one conversation from here on (INV-21). It can
+        // be gigabytes, so off this thread, and the window waits (CON-81).
         if info.foreign {
-            let conversations = harness_session::conversation_source("claude-code").ok()?;
-            let imported = conversations.read(&self.root, &info.id).ok()?;
-            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-            info.id = harness_session::store_imported(&data.to_string_lossy(), &self.root, &imported, now_ms).ok()?;
-            // Linked needs the adapter known, whichever one is chosen now.
-            if let Ok(mut c) = config::load()
-                && !c.session.providers.contains_key("claude-code")
-            {
-                c.session.providers.insert("claude-code".to_string(), serde_json::json!({"kind": "claude-code", "environment": "user"}));
-                let _ = config::save(&c);
+            let (data, root) = (config::data_dir().ok()?, self.root.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let linked = (|| -> Result<harness_session::SessionInfo, String> {
+                    let imported = harness_session::conversation_source("claude-code")?.read(&root, &info.id).map_err(|e| e.to_string())?;
+                    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    let id = harness_session::store_imported(&data.to_string_lossy(), &root, &imported, now_ms)?;
+                    // Linked needs the adapter known, whichever one is chosen now.
+                    if let Ok(mut c) = config::load()
+                        && !c.session.providers.contains_key("claude-code")
+                    {
+                        c.session.providers.insert("claude-code".to_string(), serde_json::json!({"kind": "claude-code", "environment": "user"}));
+                        let _ = config::save(&c);
+                    }
+                    Ok(harness_session::SessionInfo { id, foreign: false, ..info })
+                })();
+                let _ = tx.send(linked);
+            });
+            self.linking = Some(rx);
+            let mut state = self.fresh_session();
+            if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                w.overlay = Some(syncing_overlay("Bringing in the conversation"));
+            }
+            return Some(state);
+        }
+        self.open_stored(info)
+    }
+
+    /// A conversation that was being linked is ready: it opens. Otherwise the window goes on.
+    fn tick_linking(&mut self, state: &mut frontend_tui::AppState) {
+        let Some(done) = self.linking.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.linking = None;
+        match done {
+            Ok(info) => {
+                if let Some(opened) = self.open_stored(info) {
+                    *state = opened;
+                }
+            }
+            Err(message) => {
+                if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                    w.overlay = None;
+                    w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "COULD NOT BRING IT IN".into(), lines: message.lines().map(str::to_string).collect() });
+                }
             }
         }
+    }
+
+    fn open_stored(&mut self, info: harness_session::SessionInfo) -> Option<frontend_tui::AppState> {
+        let data = config::data_dir().ok()?;
         let mut state = self.fresh_session();
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             let tab = w.tabs[w.active].id;
@@ -1262,6 +1316,10 @@ impl Live {
             frontend_tui::live::set_status(view, "ADAPTER", &self.provider);
             frontend_tui::live::set_status(view, "MODEL", &self.model);
             self.feeds.insert(tab, feed);
+            if opened == harness_session::remote::Opened::Ready {
+                self.syncing.insert(tab);
+                w.overlay = Some(syncing_overlay("Catching up with the conversation"));
+            }
         }
         Some(state)
     }
@@ -1392,8 +1450,10 @@ impl Live {
                     let provider = provider_id(&provider);
                     let auth = w.auth.clone().unwrap_or_default();
                     let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
+                    let previous = Some((self.provider.clone(), self.model.clone())).filter(|(p, m)| (p, m) != (&provider, &model));
                     let note = match self.save_settings_with(&provider, &model, context, chosen, Some(delegate)) {
                         Ok(()) => {
+                            self.previous_adapter = previous;
                             self.apply_to_tabs(w, &provider, &model);
                             // The settings open next time as they were saved.
                             w.auth = Some(self.auth_page(w.auth.take()));
@@ -1476,7 +1536,30 @@ impl Live {
                         feed.run_ended(&mut t.view);
                     }
                 }
+                FromSession::Synced { tab, error } => {
+                    self.syncing.remove(&tab);
+                    if self.syncing.is_empty() && matches!(w.overlay, Some(Overlay::Syncing(_))) {
+                        w.overlay = None;
+                    }
+                    if let Some(message) = error {
+                        if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                            t.view.transcript.push(Item::Tips { label: "COULD NOT SYNC THE CONVERSATION".into(), lines: message.lines().map(str::to_string).collect() });
+                        }
+                        // CON-81: it stays on the adapter it had.
+                        if let Some((provider, model)) = self.previous_adapter.take()
+                            && self.save_settings(&provider, &model, None, None).is_ok()
+                        {
+                            self.apply_to_tabs(w, &provider, &model);
+                        }
+                    } else if self.syncing.is_empty() {
+                        self.previous_adapter = None;
+                    }
+                }
                 FromSession::Unavailable { tab, message } => {
+                    self.syncing.remove(&tab);
+                    if self.syncing.is_empty() && matches!(w.overlay, Some(Overlay::Syncing(_))) {
+                        w.overlay = None;
+                    }
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         t.view.generating = false;
                         t.view.transcript.push(Item::Tips { label: "CANNOT START THE SESSION".into(), lines: message.lines().map(str::to_string).collect() });
@@ -1674,6 +1757,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
                 println!("ended: {end:?}");
                 return Ok(());
             }
+            FromSession::Synced { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
         }
     }
@@ -1812,6 +1896,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
         loop {
             state.pictures = picker.is_some();
             live.connect_windows(&mut state);
+            live.tick_linking(&mut state);
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
@@ -1828,8 +1913,14 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     }
                     dirty = true;
                 }
+                // The moon goes round; everything else waits for the daemon (CON-81).
+                if let Some(frontend_tui::model::Overlay::Syncing(s)) = &mut w.overlay {
+                    s.now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    dirty = true;
+                }
                 // Messages go to the tab in front, once there is one; a run on takes them after it.
-                for (label, body) in std::mem::take(&mut live.held_inbound) {
+                let waiting_for_daemon = matches!(w.overlay, Some(frontend_tui::model::Overlay::Syncing(_)));
+                for (label, body) in if waiting_for_daemon { Vec::new() } else { std::mem::take(&mut live.held_inbound) } {
                     let (kind, from) = frontend_tui::live::inbound_kind(&label);
                     w.toast = Some(frontend_tui::model::Toast { kind, from, text: body.clone() });
                     let tab = w.tabs[w.active].id;

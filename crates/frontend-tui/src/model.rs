@@ -118,6 +118,16 @@ pub struct Drag {
 pub enum Overlay {
     Permission(PermissionView),
     Settings(SettingsView),
+    /// The daemon is bringing a conversation in line: the window waits and takes no input (CON-81).
+    Syncing(SyncingView),
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncingView {
+    /// What is being done, in a few words.
+    pub what: String,
+    pub started_ms: u64,
+    pub now_ms: u64,
 }
 
 /// A tool call waiting for the user's approval (permission-*; IF-5 Policy asked).

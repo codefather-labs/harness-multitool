@@ -105,6 +105,14 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 
 A delegate gets the harness's own tools over MCP, whichever way its row runs: `multitool mcp` serves the journal, maps and flowcharts of the daemon, the Telegram channel and the reload (`mcp__harness__*`). So an agent needs nothing outside the harness to keep its records.
 
+### An agent changing the harness
+
+An agent can change the harness it runs in. `plugins_reload` builds from the source at once, while its turn goes on. A failed build comes back to it as its next message, with the error, and nothing is swapped. A good one swaps at the safe point, when the turn has ended: the process and the daemon are replaced, the conversations reopen from their forms, and the tab that asked gets a message from the harness, which starts its next turn. A reload the user asked for sends no message.
+
+### Bringing a journal in
+
+`multitool journal import [--aside] <file|->` brings in a journal and its maps from a stream of JSON documents, `{"entries": [...]}` and `{"map": {...}}`, under the ids they have, so that what cites them still means them. Run again, it updates what changed; other text under an id refuses the whole import. `--aside` moves what is there out of the way first, renamed and not deleted. `multitool journal export` prints the same stream.
+
 ### Running inside a launcher
 
 `./run.sh --under "<launcher>"` runs the harness inside a program that starts `claude` from the PATH and gives it an identity and messages. The harness takes the place of `claude` there, and a delegate still finds the real one. What the launcher sets reaches sessions as a window's environment, and what it types reaches the composer as a paste:
