@@ -101,6 +101,14 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 - **To Claude Code, with a form:** that same conversation goes on: what other providers said was appended to it, and it resumes by its own id.
 - **To Claude Code, with no form yet:** the log is written as a new transcript, and that one is the session's form from then on.
 
+### Changing the adapter in the settings
+
+Choosing another adapter or model in the harness's settings moves every open conversation of the window onto it, at once:
+
+- The daemon reconnects each conversation: its form is brought in line (INV-20), and its next message goes through the new adapter. The status line says so straight away. Nothing has to be reopened.
+- **While a run is on, the adapter cannot be changed.** While any conversation of the window has a run on or a prompt waiting, the adapter and model controls are shown disabled, wherever they are, and choosing one changes nothing and says why. They come back when the last run ends.
+- The daemon holds to the same rule: a change that reaches it during a run is refused, so no frontend can move a conversation in the middle of a run (CON-79).
+
 ## Moving between the harness and a provider's program
 
 - **Onto the harness:** open it. A provider's conversation listed for this directory or brought in with `multitool import` is linked, not copied: opening it pulls what it gained. Importing it again gives the same session.
@@ -118,6 +126,8 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 | The form was rewound in the provider's program | The log only grows: it gains the new branch and says that a rewind happened. |
 | A form cannot be written | An error on screen. The count of what it holds has not moved, so the next step tries again from there. |
 | A conversation open in the provider's program | Sending is refused, naming it (CON-78). |
+| The adapter is changed while a run is on | Not possible: the controls are disabled, and the daemon refuses (CON-79). |
+| A conversation cannot be reconnected to the chosen adapter | An error on that conversation's tab. It stays on the adapter it had, and the status line shows that one. |
 | The daemon stops | Its windows say so. The log keeps everything up to its last flush, and the conversation opens again. |
 | A daemon of another build | Replaced when idle. If it is running conversations, the window works on its own. |
 | Claude Code will not load a transcript | An error on screen, not a silent loss of context. Its format is undocumented and can change with its version. |
