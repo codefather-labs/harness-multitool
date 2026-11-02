@@ -47,11 +47,6 @@ impl StopFlag {
         self.0.load(Ordering::SeqCst) > 0
     }
 
-    /// Asked more than once since it was last taken: the user means this too, not only what ran.
-    fn asked_twice(&self) -> bool {
-        self.0.load(Ordering::SeqCst) > 1
-    }
-
     fn take(&self) -> bool {
         self.0.swap(0, Ordering::SeqCst) > 0
     }
@@ -548,7 +543,9 @@ impl Engine {
             let prompt = if woken { String::new() } else if let Some(next) = next_prompt.take() { next } else { state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")) };
             let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
             let system = context.ok().and_then(|c| c.system);
-            let stopped = || self.stop.is_set();
+            let stopped = || self.stop.take();
+            // Calls it made and gave no result for, should it be cut off.
+            let open_calls = std::cell::RefCell::new(Vec::new());
             // A message that came during the run goes to it, and into the log as it goes.
             let next_message = || -> Option<String> {
                 loop {
@@ -572,10 +569,19 @@ impl Engine {
             };
             let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, next_message: &next_message, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped, woken };
             let mut sink = |event: Event| {
+                match &event {
+                    Event::ToolRequested { call, .. } => open_calls.borrow_mut().push(call.id.clone()),
+                    Event::ToolResult { id, .. } => open_calls.borrow_mut().retain(|open| open != id),
+                    _ => {}
+                }
                 self.emit(event);
-                !self.stop.is_set()
+                true
             };
             let end = backend.run(request, &mut sink).await;
+            // A card and the history both need the end of what will now never end.
+            for id in open_calls.take() {
+                self.emit(Event::ToolResult { id, output: harness_api::TOOL_STOPPED.to_string(), is_error: true });
+            }
             woken = false;
             self.record_tip();
             if let Err(message) = self.flush().await {
@@ -588,13 +594,8 @@ impl Engine {
                     return self.stopped(protocol);
                 }
                 // What the user sent meanwhile is what they stopped it for (CON-83).
-                // Stopped twice, the answer to them is cancelled too; they stay in the log (CON-86).
                 Ok(harness_api::BackendEnd::StoppedBeforeMessages(messages)) => {
-                    let cancelled = self.stop.asked_twice();
                     self.stop.take();
-                    if cancelled {
-                        return self.stopped(protocol);
-                    }
                     next_prompt = Some(messages.join("\n\n"));
                     continue;
                 }

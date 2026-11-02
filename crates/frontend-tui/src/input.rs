@@ -55,6 +55,10 @@ pub fn interrupt(s: &mut AppState, idle_press: &mut Option<std::time::Instant>, 
     if w.view().generating {
         let tab = w.tabs[w.active].id;
         w.outbox.push(crate::model::Outgoing::Stop { tab });
+        // Said at once, whatever it takes to take effect.
+        if let Some(activity) = &mut w.view_mut().activity {
+            activity.state = "Stopping".to_string();
+        }
         return Outcome::Stay;
     }
     if idle_press.is_some_and(|at| now.duration_since(at) < QUIT_AGAIN) {

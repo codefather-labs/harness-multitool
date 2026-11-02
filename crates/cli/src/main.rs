@@ -1608,13 +1608,16 @@ impl Live {
                         self.asks.push_back(view);
                     }
                 }
-                FromSession::Ended { tab, .. } => {
+                FromSession::Ended { tab, end } => {
                     if self.rebind_after.contains(&tab) && self.sessions.rebind(tab) {
                         self.rebind_after.remove(&tab);
                     }
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.run_ended(&mut t.view);
+                        if end == harness_core::RunEnd::Abandoned {
+                            t.view.transcript.push(frontend_tui::model::Item::Tips { label: "STOPPED".into(), lines: vec!["Stopped. Say what to do instead.".to_string()] });
+                        }
                     }
                 }
                 FromSession::Synced { tab, error } => {

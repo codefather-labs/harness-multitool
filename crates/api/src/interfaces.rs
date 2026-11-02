@@ -59,6 +59,7 @@ pub struct BackendRequest<'a> {
     /// What it said its session has cost so far.
     pub cost_total_micro_usd: u64,
     pub turn: u32,
+    /// The user has asked it to stop since this was last asked.
     pub stopped: &'a dyn Fn() -> bool,
     /// What the user has sent since, one at a time: it goes to the backend during the run.
     pub next_message: &'a dyn Fn() -> Option<String>,
@@ -250,6 +251,9 @@ pub enum MemoryOp {
     MapRef { map: u64, node: u64, entries: Vec<u64> },
     MapClose { map: u64 },
 }
+
+/// A tool call's result when the user stopped it: a card knows it by this.
+pub const TOOL_STOPPED: &str = "Stopped by the user.";
 
 /// A stored journal entry.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

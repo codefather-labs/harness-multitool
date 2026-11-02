@@ -37,6 +37,8 @@ pub struct Mapper {
     cost_total: Option<u64>,
     /// The usage of this turn's latest API call.
     last_call: Option<Value>,
+    /// It has been told to stop: a tool it refuses now was stopped, not failed.
+    interrupted: bool,
 }
 
 /// What a system line of its stream says about its background tasks.
@@ -57,7 +59,7 @@ fn only_news(line: &str) -> bool {
     match e["type"].as_str().unwrap_or_default() {
         "system" => e["subtype"] != "init",
         "user" => e["isReplay"] == true,
-        "rate_limit_event" => true,
+        "rate_limit_event" | "control_response" => true,
         _ => false,
     }
 }
@@ -120,7 +122,7 @@ impl Mapper {
                 for block in e["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
                     out.push(Mapped::Event(Event::ToolResult {
                         id: block["tool_use_id"].as_str().unwrap_or_default().to_string(),
-                        output: result_text(&block["content"]),
+                        output: if self.interrupted { harness_api::TOOL_STOPPED.to_string() } else { result_text(&block["content"]) },
                         is_error: block["is_error"] == true,
                     }));
                 }
@@ -354,8 +356,25 @@ impl ClaudeCode {
         // done; and a result that may turn out not to be the last.
         let mut unechoed: std::collections::VecDeque<String> = Default::default();
         let mut end_held = None::<(Instant, Result<(), String>)>;
+        // Asked to stop what it is doing, and when it should have said it heard.
+        let mut interrupted = false;
+        let mut heard_by: Option<Instant> = None;
         loop {
             if (request.stopped)() {
+                // Asked again with messages still waiting: the answer to them is cancelled too.
+                if interrupted && !unechoed.is_empty() {
+                    *slot = None;
+                    return Ok(BackendEnd::Stopped);
+                }
+                if heard_by.is_none() {
+                    let _ = live.interrupt();
+                    interrupted = true;
+                    mapper.interrupted = true;
+                    heard_by = Some(Instant::now() + INTERRUPT_WAIT);
+                }
+            }
+            // It does not answer to that: it is ended instead.
+            if heard_by.is_some_and(|by| Instant::now() >= by) {
                 *slot = None;
                 return Ok(stopped(&unechoed));
             }
@@ -363,6 +382,13 @@ impl ClaudeCode {
             if let Some((until, end)) = &end_held
                 && (unechoed.is_empty() || Instant::now() >= *until)
             {
+                if interrupted {
+                    // Messages it never came to go with a new one; otherwise it simply stands.
+                    if !unechoed.is_empty() {
+                        *slot = None;
+                    }
+                    return Ok(stopped(&unechoed));
+                }
                 let end = end.clone();
                 return end.map(|()| BackendEnd::Done).map_err(PluginError::new);
             }
@@ -384,10 +410,18 @@ impl ClaudeCode {
                             live.echoes = true;
                             if live.prompt_seen {
                                 unechoed.pop_front();
-                                // Taken after that result: the run goes on to the result of this one.
-                                end_held = None;
+                                // Taken after that result: the run goes on to the result of this one,
+                                // a new piece of work that the stop was not about.
+                                if end_held.take().is_some() {
+                                    interrupted = false;
+                                    mapper.interrupted = false;
+                                }
                             }
                             live.prompt_seen = true;
+                            continue;
+                        }
+                        if e["type"] == "control_response" {
+                            heard_by = None;
                             continue;
                         }
                         if e["type"] == "system" && e["subtype"] == "init" && let Some(id) = e["session_id"].as_str() {
@@ -404,6 +438,8 @@ impl ClaudeCode {
                             }
                             // Before its prompt came back: the end of a turn before this run.
                             Mapped::End(_) if live.echoes && !live.prompt_seen => {}
+                            // Stopped, it says it failed: that is what was asked of it, and no error.
+                            Mapped::End(_) if interrupted => end_held = Some((Instant::now() + QUEUE_AFTER_STOP, Ok(()))),
                             Mapped::End(end) => {
                                 end_held = Some((Instant::now() + LATE_ECHO, end));
                             }
@@ -445,6 +481,11 @@ fn stopped(unechoed: &std::collections::VecDeque<String>) -> BackendEnd {
     if unechoed.is_empty() { BackendEnd::Stopped } else { BackendEnd::StoppedBeforeMessages(unechoed.iter().cloned().collect()) }
 }
 
+/// How long it has to say it heard a stop, before it is ended instead.
+const INTERRUPT_WAIT: Duration = Duration::from_secs(1);
+/// How long after a stop it has to take what is queued: measured at 2 s on real Claude Code.
+const QUEUE_AFTER_STOP: Duration = Duration::from_secs(10);
+
 /// How long a result waits for a message sent just before it to come back.
 const LATE_ECHO: Duration = Duration::from_secs(3);
 
@@ -470,6 +511,14 @@ struct Live {
 }
 
 impl Live {
+    /// Asks it to stop what it is doing: its own way, which keeps the process and what it runs in
+    /// the background, and it goes on to whatever it was given next.
+    fn interrupt(&mut self) -> std::io::Result<()> {
+        let line = json!({"type": "control_request", "request_id": format!("stop-{}", self.child.id()), "request": {"subtype": "interrupt"}});
+        writeln!(self.stdin, "{line}")?;
+        self.stdin.flush()
+    }
+
     fn send(&mut self, text: &str) -> std::io::Result<()> {
         let line = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
         writeln!(self.stdin, "{line}")?;

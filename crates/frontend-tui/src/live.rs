@@ -158,9 +158,10 @@ impl Feed {
                         card.duration = duration(entry.at_ms.saturating_sub(started));
                     }
                     if !denied {
-                        card.outcome = if *is_error { "failed".into() } else { "completed".into() };
+                        let cut_off = *is_error && output == harness_api::TOOL_STOPPED;
+                        card.outcome = if cut_off { "stopped".into() } else if *is_error { "failed".into() } else { "completed".into() };
                         card.outcome_tone = if *is_error { Tone::Error } else { Tone::Success };
-                        card.body = words.unwrap_or_else(|| output_body(output));
+                        card.body = if cut_off { ToolBody::None } else { words.unwrap_or_else(|| output_body(output)) };
                         if let Some((diff, added, removed)) = diff {
                             card.outcome = "applied".into();
                             card.diffstat = Some((added, removed));
