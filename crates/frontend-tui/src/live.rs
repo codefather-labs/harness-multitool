@@ -581,6 +581,14 @@ fn attach(v: &mut SessionView, time: String, item: Item) -> (usize, usize) {
     (index, attached.len() - 1)
 }
 
+/// The status line counts against this window from now on.
+pub fn show_context_window(v: &mut SessionView, window: u64) {
+    let used = v.status.fields.iter().find(|(k, _)| k == "TOKENS").map(|(_, value)| value.split(" / ").next().unwrap_or("0").to_string());
+    if let Some(used) = used {
+        set_status(v, "TOKENS", &format!("{used} / {}", short(window)));
+    }
+}
+
 pub fn set_status(v: &mut SessionView, key: &str, value: &str) {
     match v.status.fields.iter_mut().find(|(k, _)| k == key) {
         Some((_, old)) => *old = value.to_string(),

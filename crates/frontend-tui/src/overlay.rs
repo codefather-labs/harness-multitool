@@ -72,7 +72,33 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
         }
     }
     s.saved = (s.provider, s.model.clone());
+    s.context = chosen_context(&s);
+    s.saved_context = s.context;
     s
+}
+
+/// What the context window can be set to; none is the model's own.
+const CONTEXT_WINDOWS: [Option<u64>; 10] = [None, Some(32_000), Some(64_000), Some(128_000), Some(200_000), Some(272_000), Some(400_000), Some(500_000), Some(1_000_000), Some(2_000_000)];
+
+fn context_label(window: Option<u64>) -> String {
+    match window {
+        None => "Auto".to_string(),
+        Some(tokens) if tokens >= 1_000_000 => format!("{}M", tokens / 1_000_000),
+        Some(tokens) => format!("{}k", tokens / 1000),
+    }
+}
+
+/// What was saved for the provider row chosen.
+fn chosen_context(s: &SettingsView) -> Option<u64> {
+    let id = match s.providers[s.provider].name.as_str() {
+        "Anthropic API" => "anthropic",
+        "OpenAI-compatible" => "openai",
+        "Local" => "local",
+        PLAN_PROVIDER => "chatgpt",
+        DELEGATE_PROVIDER => "claude-code",
+        other => other,
+    };
+    s.auth.contexts.iter().find(|(row, _)| row == id).map(|(_, tokens)| *tokens)
 }
 
 pub fn sample_settings() -> SettingsView {
@@ -99,6 +125,9 @@ pub fn sample_settings() -> SettingsView {
         model_menu: None,
         saved: (0, MODELS[0].into()),
         run_on: false,
+        context: None,
+        context_menu: None,
+        saved_context: None,
     }
 }
 
@@ -636,6 +665,7 @@ fn choose_provider(w: &mut Workspace, i: usize) {
     }
     s.provider = i;
     fit_model(s);
+    s.context = chosen_context(s);
 }
 
 fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
@@ -717,8 +747,9 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
     };
     for (spans, row_bg) in [
         field("Default model", model_value(s, t), 0),
-        field("Timeout", bracket(format!("{}s", s.timeout_s), false), 1),
-        field("Fallback on error", check, 2),
+        field("Context window", bracket(context_label(s.context), true), 1),
+        field("Timeout", bracket(format!("{}s", s.timeout_s), false), 2),
+        field("Fallback on error", check, 3),
     ] {
         if y >= r.y + r.height {
             break;
@@ -727,9 +758,39 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
         y += 1;
     }
     out.hits.push(Hit { rect: Rect::new(r.x, model_y, r.width, 1), target: Target::ModelRow });
+    out.hits.push(Hit { rect: Rect::new(r.x, model_y + 1, r.width, 1), target: Target::ContextRow });
     sign_in_message(f, r, y + 1, s, t, bg);
+    if let Some(at) = s.context_menu {
+        context_dropdown(f, r, model_y + 1, at, s, t, out);
+    }
     if let Some(at) = s.model_menu {
         model_dropdown(f, r, model_y, at, s, t, out);
+    }
+    if let Some(at) = s.context_menu {
+        context_dropdown(f, r, model_y + 1, at, s, t, out);
+    }
+}
+
+/// The open list of context windows, under its row.
+fn context_dropdown(f: &mut Frame, r: Rect, row_y: u16, at: usize, s: &SettingsView, t: &Theme, out: &mut Drawn) {
+    let shown = (CONTEXT_WINDOWS.len() as u16).min(r.height.saturating_sub(2).max(1));
+    let top = (row_y + 1).min((r.y + r.height).saturating_sub(shown + 2));
+    let inner = modal(f, Rect::new(r.x, top, r.width, shown + 2), t.accent_line, t.surface);
+    let first = at.saturating_sub(shown as usize - 1);
+    for (row, (i, window)) in CONTEXT_WINDOWS.iter().enumerate().skip(first).take(shown as usize).enumerate() {
+        let y = inner.y + row as u16;
+        let under = i == at;
+        let row_bg = if under { t.surface_raised } else { t.surface };
+        let current = if *window == s.context { "● " } else { "  " };
+        let detail = if window.is_none() { "what the server or the model says" } else { "" };
+        let spans = vec![
+            Span::styled(format!(" {current}"), Style::default().fg(t.success)),
+            Span::styled(format!("{:<8}", context_label(*window)), Style::default().fg(t.text).add_modifier(if under { Modifier::BOLD } else { Modifier::empty() })),
+            Span::styled(detail, Style::default().fg(t.text_muted)),
+        ];
+        let rect = Rect::new(inner.x, y, inner.width, 1);
+        text(f, rect.x, rect.y, rect.width, spans, row_bg);
+        out.hits.push(Hit { rect, target: Target::ContextChoice(i) });
     }
 }
 
@@ -788,6 +849,19 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             }
             return Some(Outcome::Stay);
         }
+        if let Some(at) = s.context_menu {
+            match k {
+                Key::Up => s.context_menu = Some(at.saturating_sub(1)),
+                Key::Down => s.context_menu = Some((at + 1).min(CONTEXT_WINDOWS.len() - 1)),
+                Key::Enter | Key::Char(' ') => {
+                    s.context = CONTEXT_WINDOWS[at];
+                    s.context_menu = None;
+                }
+                Key::Esc => s.context_menu = None,
+                _ => {}
+            }
+            return Some(Outcome::Stay);
+        }
         if key_entry(w, k) {
             return Some(Outcome::Stay);
         }
@@ -839,7 +913,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         Overlay::Settings(s) => match k {
             Key::Esc => {
                 // Closing is not saving, and the choice should not go quietly.
-                let lost = (s.provider, s.model.clone()) != s.saved;
+                let lost = (s.provider, s.model.clone()) != s.saved || s.context != s.saved_context;
                 w.overlay = None;
                 if lost {
                     w.toast = Some(system_toast("Not saved: Ctrl+S saves the provider and model."));
@@ -857,8 +931,9 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 }
                 if w.live {
                     let provider = s.providers[s.provider].name.clone();
+                    let context = s.context;
                     w.overlay = None;
-                    w.outbox.push(Outgoing::SaveSettings { provider, model });
+                    w.outbox.push(Outgoing::SaveSettings { provider, model, context });
                     return Some(Outcome::Stay);
                 }
                 w.overlay = None;
@@ -906,11 +981,12 @@ fn activate(w: &mut Workspace) {
                 s.model_menu = Some(list.iter().position(|m| m.id == s.model).unwrap_or(0));
             }
         }
-        i if i == n + 2 => {
+        i if i == n + 2 => s.context_menu = Some(CONTEXT_WINDOWS.iter().position(|w| *w == s.context).unwrap_or(0)),
+        i if i == n + 3 => {
             let at = TIMEOUTS.iter().position(|v| *v == s.timeout_s).unwrap_or(0);
             s.timeout_s = TIMEOUTS[(at + 1) % TIMEOUTS.len()];
         }
-        i if i == n + 3 => s.fallback = !s.fallback,
+        i if i == n + 4 => s.fallback = !s.fallback,
         _ => {}
     }
 }
@@ -970,7 +1046,16 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.focus = SettingsPane::Page;
             choose_provider(w, i);
         }
-        (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+        (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton | Target::ContextRow | Target::ContextChoice(_)) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+        (Some(Overlay::Settings(s)), Target::ContextRow) => {
+            s.cursor = s.providers.len() + 2;
+            s.focus = SettingsPane::Page;
+            activate(w);
+        }
+        (Some(Overlay::Settings(s)), Target::ContextChoice(i)) => {
+            s.context = CONTEXT_WINDOWS[i];
+            s.context_menu = None;
+        }
         (Some(Overlay::Settings(s)), Target::ModelRow) => {
             s.cursor = s.providers.len() + 1;
             s.focus = SettingsPane::Page;
@@ -1380,5 +1465,27 @@ mod tests {
         key(&mut w, Key::Ctrl('s'));
         assert!(w.overlay.is_none(), "Ctrl+S saves and closes");
         assert!(w.view().status.fields.iter().any(|(k, v)| k == "ADAPTER" && v == "openai-compatible"));
+    }
+
+    /// CON-80: chosen from a dropdown, saved as chosen; locked during a run (CON-79).
+    #[test]
+    fn the_context_window_is_a_dropdown_and_is_locked_during_a_run() {
+        let mut w = on_provider_page();
+        w.live = true;
+        click(&mut w, Target::ContextRow);
+        assert_eq!(page(&w).context_menu, Some(0), "it opens on Auto");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!((page(&w).context, page(&w).context_menu), (Some(32_000), None));
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.run_on = true;
+        }
+        click(&mut w, Target::ContextRow);
+        assert_eq!(page(&w).context_menu, None, "not during a run");
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.run_on = false;
+        }
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveSettings { context: Some(32_000), .. })));
     }
 }

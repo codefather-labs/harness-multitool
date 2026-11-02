@@ -86,5 +86,12 @@ assert saved()["provider"] == "local", "back: " + text(); typed("and on\r"); unt
 until("the form has those turns too", lambda: "and on" in open(form).read() and "Fake answer" in open(form).read())
 assert len(forms()) == 1
 assert "Delegate answer" in bodies[-1], "the provider has the delegate's turn"
-print("back and on: one form, each side has the other's turns"); print("ok")
+print("back and on: one form, each side has the other's turns")
+pump(1.0); typed("/settings\r"); click("Context window"); click("200k"); os.write(fd, b"\x13"); pump(1.0)
+row = saved()["providers"]["local"]; assert row["context_window"] == 200000 and row["context_chosen"] is True, row
+assert "/ 200k" in text(), "the status line counts against it: " + text()
+typed("/settings\r"); assert "[ 200k" in text(), "it opens as saved: " + text()
+click("Context window"); click("Auto"); os.write(fd, b"\x13"); pump(1.0)
+assert "context_chosen" not in saved()["providers"]["local"], saved()["providers"]["local"]
+print("the context window is chosen in the settings, saved by the harness, and Auto gives it back"); print("ok")
 os.kill(pid, signal.SIGTERM); pump(0.3)

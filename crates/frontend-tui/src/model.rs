@@ -96,7 +96,7 @@ pub enum Outgoing {
     /// Make the daemon read the project's callback files again.
     ReloadCallbacks,
     /// Settings saved: the provider's option name and the model, for new sessions.
-    SaveSettings { provider: String, model: String },
+    SaveSettings { provider: String, model: String, context: Option<u64> },
 }
 
 /// A press on a map, until the release: where it started, what it started on.
@@ -164,6 +164,12 @@ pub struct SettingsView {
     pub saved: (usize, String),
     /// A run is on: the adapter and model cannot be changed until it ends (CON-79).
     pub run_on: bool,
+    /// The context window chosen for this provider; none is the model's own.
+    pub context: Option<u64>,
+    /// The context window dropdown is open, on this row.
+    pub context_menu: Option<usize>,
+    /// The choice as last saved.
+    pub saved_context: Option<u64>,
 }
 
 /// The provider row of a ChatGPT plan.
@@ -201,6 +207,8 @@ pub struct AuthPage {
     pub provider_models: Vec<(String, Vec<ModelChoice>)>,
     /// A key being typed.
     pub entry: Option<String>,
+    /// The context windows chosen so far: (provider id, tokens).
+    pub contexts: Vec<(String, u64)>,
 }
 
 /// Prints no key.

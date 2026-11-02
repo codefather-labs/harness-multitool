@@ -437,6 +437,8 @@ struct Live {
     sessions: harness_session::remote::SessionLink,
     /// Tabs opened on a run still on: entries up to this number came from the log.
     shown_up_to: std::collections::HashMap<u64, u64>,
+    /// The user chose the context window: what a model reports does not change it (CON-80).
+    context_chosen: bool,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
     /// Permission prompts waiting for the one on screen to be answered.
     asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
@@ -730,6 +732,7 @@ impl Live {
     fn new(script: Option<&str>) -> Result<Live> {
         let root = std::env::current_dir()?.to_string_lossy().into_owned();
         let settings = config::load()?.session;
+        let context_chosen = settings.providers.get(&settings.provider).is_some_and(|row| row["context_chosen"] == true);
         let budget = settings.max_cost_usd.map_or("none".to_string(), |d| format!("${d:.2}"));
         let urls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> = Default::default();
         let reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
@@ -756,7 +759,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -818,6 +821,7 @@ impl Live {
         let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
         page.keys = ["Anthropic API", "OpenAI-compatible", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
         page.delegate = cfg!(feature = "claude-code");
+        page.contexts = session.providers.iter().filter(|(_, row)| row["context_chosen"] == true).filter_map(|(id, row)| Some((id.clone(), row["context_window"].as_u64()?))).collect();
         if let Ok(dir) = config::data_dir() {
             (page.signed_in, page.plan_status) = harness_auth_chatgpt::status(&harness_session_store(&dir));
         }
@@ -850,6 +854,7 @@ impl Live {
         for t in &mut w.tabs {
             frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
             frontend_tui::live::set_status(&mut t.view, "MODEL", model);
+            frontend_tui::live::show_context_window(&mut t.view, self.context_window);
             if t.view.generating || !self.sessions.rebind(t.id) {
                 self.rebind_after.insert(t.id);
             }
@@ -954,7 +959,7 @@ impl Live {
         let plan_context = event.as_ref().ok().and_then(|(_, models)| models.first().and_then(|m| m.context));
         let (mut applied, email) = (false, event.as_ref().ok().and_then(|(email, _)| email.clone()));
         if let Some(model) = &use_plan
-            && self.save_settings("chatgpt", model, plan_context).is_ok()
+            && self.save_settings("chatgpt", model, plan_context, config::load().ok().and_then(|c| c.session.providers.get("chatgpt").filter(|row| row["context_chosen"] == true).and_then(|row| row["context_window"].as_u64()))).is_ok()
         {
             self.apply_to_tabs(w, "chatgpt", model);
             applied = true;
@@ -1008,7 +1013,7 @@ impl Live {
         Ok(())
     }
 
-    fn save_settings(&mut self, provider: &str, model: &str, context: Option<u64>) -> Result<()> {
+    fn save_settings(&mut self, provider: &str, model: &str, context: Option<u64>, chosen: Option<u64>) -> Result<()> {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
@@ -1024,8 +1029,23 @@ impl Live {
             c.session.auth.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"oauth": "chatgpt"}));
         }
         // What the server said this model holds: TOKENS and compaction go by it.
-        if let Some(window) = context {
-            c.session.providers.entry(provider.to_string()).or_insert_with(|| serde_json::json!({}))["context_window"] = serde_json::json!(window);
+        // Or what the user chose, which outranks it (CON-80).
+        let row = c.session.providers.entry(provider.to_string()).or_insert_with(|| serde_json::json!({}));
+        if let Some(object) = row.as_object_mut() {
+            match (chosen, context) {
+                (Some(window), _) => {
+                    object.insert("context_window".to_string(), serde_json::json!(window));
+                    object.insert("context_chosen".to_string(), serde_json::json!(true));
+                }
+                (None, known) => {
+                    if object.remove("context_chosen").is_some() && known.is_none() {
+                        object.remove("context_window");
+                    }
+                    if let Some(window) = known {
+                        object.insert("context_window".to_string(), serde_json::json!(window));
+                    }
+                }
+            }
         }
         if self.real {
             let context_window = c.session.context_window();
@@ -1040,6 +1060,7 @@ impl Live {
             let session = c.session.clone();
             self.sessions.configure(&root, &for_link, || harness_session::with_host(session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
             self.context_window = context_window;
+            self.context_chosen = chosen.is_some();
             self.provider = provider.to_string();
             self.model = model.to_string();
         }
@@ -1100,6 +1121,9 @@ impl Live {
             for entry in &log {
                 if let harness_api::Event::StepDebug { on, .. } = entry.event {
                     self.note_step_debug(tab, on);
+                }
+                if self.context_chosen && matches!(entry.event, harness_api::Event::ContextWindow { .. }) {
+                    continue;
                 }
                 feed.apply(view, entry);
             }
@@ -1238,13 +1262,15 @@ impl Live {
                     let note = self.reload_daemon();
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
-                Outgoing::SaveSettings { provider, model } => {
+                Outgoing::SaveSettings { provider, model, context: chosen } => {
                     let provider = provider_id(&provider);
                     let auth = w.auth.clone().unwrap_or_default();
                     let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
-                    let note = match self.save_settings(&provider, &model, context) {
+                    let note = match self.save_settings(&provider, &model, context, chosen) {
                         Ok(()) => {
                             self.apply_to_tabs(w, &provider, &model);
+                            // The settings open next time as they were saved.
+                            w.auth = Some(self.auth_page(w.auth.take()));
                             format!("This session and new ones use {provider} / {model}.")
                         }
                         Err(e) => format!("Could not save the settings: {e}"),
@@ -1269,6 +1295,9 @@ impl Live {
             match message {
                 FromSession::Entry { tab, entry } => {
                     if self.shown_up_to.get(&tab).is_some_and(|seq| entry.seq <= *seq) {
+                        continue;
+                    }
+                    if self.context_chosen && matches!(entry.event, harness_api::Event::ContextWindow { .. }) {
                         continue;
                     }
                     if let harness_api::Event::StepDebug { on, .. } = entry.event {
