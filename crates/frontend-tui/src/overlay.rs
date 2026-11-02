@@ -222,7 +222,7 @@ fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
     let chosen = p.chosen();
     let model = match (&p.engine, chosen) {
         (None, _) => "none, with no engine".to_string(),
-        (_, Some(m)) => format!("{}, {} ▾", m.name, m.size),
+        (_, Some(m)) => format!("{}, {}, {} ▾", m.name, m.size, if m.there { "installed" } else { "not installed" }),
         _ => "▾".to_string(),
     };
     let download = match (&p.downloading, chosen) {
@@ -280,12 +280,13 @@ fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
         let choices = voice_choices(p);
         let height = choices.len() as u16 + 2;
         let inner = modal(f, Rect::new(r.x + 17, r.y + 2 + p.cursor as u16, r.width.saturating_sub(18), height), t.accent_line, t.surface);
-        for (row, (label, detail, current)) in choices.iter().enumerate() {
+        for (row, (label, detail, installed, current)) in choices.iter().enumerate() {
             let under = row == at;
             let spans = vec![
                 Span::styled(if *current { " ● " } else { "   " }, Style::default().fg(t.success)),
                 Span::styled(format!("{label:<14}"), Style::default().fg(t.text).add_modifier(if under { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled(detail.clone(), muted),
+                Span::styled(format!("{detail:<8}"), muted),
+                Span::styled(installed.clone(), if installed.starts_with('✓') { Style::default().fg(t.success) } else { muted }),
             ];
             text(f, inner.x, inner.y + row as u16, inner.width, spans, if under { t.surface_raised } else { t.surface });
             out.hits.push(Hit { rect: Rect::new(inner.x, inner.y + row as u16, inner.width, 1), target: Target::VoiceChoice(row) });
@@ -293,12 +294,25 @@ fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
     }
 }
 
-/// What the open dropdown lists: a label, a detail, whether it is the current one.
-fn voice_choices(p: &crate::model::VoicePage) -> Vec<(String, String, bool)> {
+/// What the open dropdown lists: a label, a detail, what of it is installed, whether it is the
+/// current one.
+fn voice_choices(p: &crate::model::VoicePage) -> Vec<(String, String, String, bool)> {
     if p.cursor == 0 {
-        return VOICE_ENGINES.iter().map(|(id, label)| (label.to_string(), String::new(), *id == p.engine.as_deref())).collect();
+        return VOICE_ENGINES
+            .iter()
+            .map(|(id, label)| {
+                let installed = p.models.iter().filter(|m| m.there && Some(m.engine.as_str()) == *id).count();
+                let says = match (id, installed) {
+                    (None, _) => String::new(),
+                    (_, 0) => "not installed".to_string(),
+                    (_, 1) => "✓ 1 model installed".to_string(),
+                    (_, n) => format!("✓ {n} models installed"),
+                };
+                (label.to_string(), String::new(), says, *id == p.engine.as_deref())
+            })
+            .collect();
     }
-    p.models_of_engine().iter().map(|m| (m.name.clone(), if m.there { format!("{}, downloaded", m.size) } else { m.size.clone() }, m.name == p.model)).collect()
+    p.models_of_engine().iter().map(|m| (m.name.clone(), m.size.clone(), if m.there { "✓ installed".to_string() } else { "not installed".to_string() }, m.name == p.model)).collect()
 }
 
 /// A key on the Speech to text page.
@@ -330,7 +344,7 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
             if choices.is_empty() {
                 p.status = "Choose an engine first.".to_string();
             } else {
-                p.menu = Some(choices.iter().position(|c| c.2).unwrap_or(0));
+                p.menu = Some(choices.iter().position(|c| c.3).unwrap_or(0));
             }
         }
         Key::Enter if p.cursor == 2 && p.downloading.is_none() => match p.chosen() {
@@ -1882,6 +1896,33 @@ mod tests {
         key(&mut w, Key::Ctrl('s'));
         assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveVoice { engine: Some(engine), model }) if engine == "whisper" && model == "base"));
         assert!(voice_of(&w).status.contains("still has to be downloaded"), "{}", voice_of(&w).status);
+    }
+
+    #[test]
+    fn the_dropdowns_say_what_is_installed() {
+        let mut w = voice_settings();
+        let drawn = |w: &Workspace, cursor: usize| {
+            let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+            let mut s = s.clone();
+            s.voice.cursor = cursor;
+            s.voice.menu = Some(0);
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
+            let theme = Theme::builtin("dark").unwrap();
+            terminal.draw(|f| voice_page(f, f.area(), &s, &theme, Color::Reset, &mut Drawn::default())).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..24).map(|y| (0..90).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+        };
+        let line = |lines: &[String], word: &str| lines.iter().find(|l| l.contains(&format!(" {word} "))).cloned().unwrap_or_default();
+        let engines = drawn(&w, 0);
+        assert!(line(&engines, "Whisper").contains("✓ 1 model installed"), "{engines:?}");
+        assert!(line(&engines, "Parakeet").contains("not installed"), "{engines:?}");
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.voice.choose_engine(Some("whisper".into()));
+        }
+        let models = drawn(&w, 1);
+        assert!(line(&models, "tiny").contains("✓ installed"), "{models:?}");
+        assert!(line(&models, "base").contains("not installed"), "{models:?}");
+        assert!(models.iter().any(|l| l.contains("tiny, 1 MB, installed")), "the closed row too: {models:?}");
     }
 
     #[test]
