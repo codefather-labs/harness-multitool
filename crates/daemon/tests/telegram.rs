@@ -31,7 +31,9 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
             let path = request.url().to_string();
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).unwrap();
-            let body: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            // As the real one does: with no JSON content type the body is not read at all.
+            let json_body = request.headers().iter().any(|h| h.field.equiv("content-type") && h.value.as_str().starts_with("application/json"));
+            let body: Value = if json_body { serde_json::from_str(&body).unwrap_or(Value::Null) } else { json!({"offset": 0}) };
             assert!(path.starts_with(&format!("/bot{TOKEN}/")), "{path}");
             let mut s = state.lock().unwrap();
             let reply = if path.ends_with("/setMyCommands") {

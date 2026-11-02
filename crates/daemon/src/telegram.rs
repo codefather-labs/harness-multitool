@@ -71,7 +71,10 @@ pub(crate) struct Channel {
     reply_to: Option<Key>,
     delivered: u64,
     ignored: u64,
+    /// What polling last met; gone with the next poll that works.
     last_error: Option<String>,
+    /// What the channel's own last word met; gone with the next that goes through.
+    say_error: Option<String>,
 }
 
 pub enum Answer {
@@ -84,11 +87,11 @@ impl Channel {
     pub(crate) fn new(config: Config) -> Channel {
         let timeout = Duration::from_secs(config.poll_timeout_s + 10);
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).build().into();
-        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None }
+        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None }
     }
 
     pub(crate) fn status(&self) -> Value {
-        json!({"on": true, "delivered": self.delivered, "ignored": self.ignored, "can_reply": self.reply_target().is_some(), "bound": self.kept.bindings.len(), "held": self.kept.held.len(), "last_error": self.last_error})
+        json!({"on": true, "delivered": self.delivered, "ignored": self.ignored, "can_reply": self.reply_target().is_some(), "bound": self.kept.bindings.len(), "held": self.kept.held.len(), "last_error": self.last_error.as_ref().or(self.say_error.as_ref())})
     }
 
     fn reply_target(&self) -> Option<Key> {
@@ -145,7 +148,8 @@ impl Requester {
 
     fn call(&self, method: &str, body: &Value) -> Answer {
         let url = format!("{}/bot{}/{method}", self.base_url, self.token.expose());
-        let mut response = match self.agent.post(&url).send(body.to_string()) {
+        // Without this the real Bot API does not read the body at all.
+        let mut response = match self.agent.post(&url).header("content-type", "application/json").send(body.to_string()) {
             Ok(response) => response,
             Err(e) => return Answer::Failed(self.clean(&format!("reaching Telegram: {e}"))),
         };
@@ -271,7 +275,7 @@ fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed
     if let (Some(text), Some(user), Some(chat)) = (message["text"].as_str(), message["from"]["id"].as_i64(), message["chat"]["id"].as_i64())
         && text.split_whitespace().next().and_then(|word| word.split('@').next()) == Some("/id")
     {
-        say(requester, (chat, message["message_thread_id"].as_i64()), &format!("Your user id: {user}"), None);
+        say(daemon, requester, (chat, message["message_thread_id"].as_i64()), &format!("Your user id: {user}"), None);
         return true;
     }
     let from_allowed = message["from"]["id"].as_i64().is_some_and(|user| allowed.contains(&user));
@@ -296,7 +300,7 @@ fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed
     if let Some(only) = &only {
         daemon.with_channel(|c| c.bind(key, &only.id));
         save_kept(daemon);
-        say(requester, key, &format!("This chat now goes to {}.", only.title), None);
+        say(daemon, requester, key, &format!("This chat now goes to {}.", only.title), None);
     }
     let target = only.map(|o| o.id).or(bound.clone());
     if let (Some(host), Some(session)) = (&host, &target)
@@ -329,7 +333,7 @@ fn hold(daemon: &Daemon, requester: &Requester, key: Key, text: &str, open: &[Op
     let why = if was_bound { "The session of this chat is not open." } else { "This chat goes to no session yet." };
     let keep = if dropped { format!(" At most {MAX_HELD} messages wait: the oldest was dropped.") } else { String::new() };
     let what = if open.is_empty() { format!("{why} Your message waits until one is chosen, and none is open now.{keep}") } else { format!("{why} Choose one and your message goes to it.{keep}") };
-    say(requester, key, &what, keyboard(open));
+    say(daemon, requester, key, &what, keyboard(open));
 }
 
 /// A bot command: never for a session. False if this is not one.
@@ -348,13 +352,13 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
         format!("Open sessions:\n{}", lines.join("\n"))
     };
     match name {
-        "/start" | "/agents" => say(requester, key, &list(), keyboard(&open)),
+        "/start" | "/agents" => say(daemon, requester, key, &list(), keyboard(&open)),
         "/whoami" => {
             let what = match bound.as_deref().map(|id| open.iter().find(|s| s.id == id).map_or(format!("{id}, not open now"), |s| s.title.clone())) {
                 Some(title) => format!("This chat goes to {title}."),
                 None => "This chat goes to no session.".to_string(),
             };
-            say(requester, key, &what, None);
+            say(daemon, requester, key, &what, None);
         }
         "/nick" => {
             let what = match (bound.as_deref(), rest.is_empty()) {
@@ -363,12 +367,12 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
                 (Some(id), false) if daemon.conversations().is_some_and(|host| host.rename(id, &rest)) => format!("This session goes by {rest} now."),
                 (Some(_), false) => "The session of this chat is not open.".to_string(),
             };
-            say(requester, key, &what, None);
+            say(daemon, requester, key, &what, None);
         }
-        "/switch" if rest.is_empty() => say(requester, key, &list(), keyboard(&open)),
+        "/switch" if rest.is_empty() => say(daemon, requester, key, &list(), keyboard(&open)),
         "/switch" => match choose(&open, &rest) {
             Ok(session) => switch(daemon, requester, key, &session),
-            Err(why) => say(requester, key, &why, keyboard(&open)),
+            Err(why) => say(daemon, requester, key, &why, keyboard(&open)),
         },
         // Anything else is for the agent, as written.
         _ => return false,
@@ -402,7 +406,7 @@ fn switch(daemon: &Daemon, requester: &Requester, key: Key, session: &OpenSessio
     });
     save_kept(daemon);
     let waited = if held.is_empty() { String::new() } else { format!(" {} waiting message(s) went to it.", held.len()) };
-    say(requester, key, &format!("This chat now goes to {}.{waited}", session.title), None);
+    say(daemon, requester, key, &format!("This chat now goes to {}.{waited}", session.title), None);
     if let Some(host) = daemon.conversations() {
         for text in held {
             if host.deliver_to(&session.id, TELEGRAM_LABEL, &text) {
@@ -425,7 +429,7 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
     let open = daemon.conversations().map_or_else(Vec::new, |h| h.open_sessions());
     match open.iter().find(|s| s.id == id) {
         Some(session) => switch(daemon, requester, key, session),
-        None => say(requester, key, "That session is not open any more.", keyboard(&open)),
+        None => say(daemon, requester, key, "That session is not open any more.", keyboard(&open)),
     }
 }
 
@@ -435,8 +439,8 @@ fn keyboard(open: &[OpenSession]) -> Option<Value> {
     (!rows.is_empty()).then(|| json!({"inline_keyboard": rows}))
 }
 
-/// The channel's own word to a chat. It is news, not a duty: a failure here loses nothing.
-fn say(requester: &Requester, key: Key, text: &str, keyboard: Option<Value>) {
+/// The channel's own word to a chat. A failure loses no message of the user's; it shows in the status.
+fn say(daemon: &Daemon, requester: &Requester, key: Key, text: &str, keyboard: Option<Value>) {
     let mut body = json!({"chat_id": key.0, "text": text});
     if let Some(topic) = key.1 {
         body["message_thread_id"] = json!(topic);
@@ -444,7 +448,8 @@ fn say(requester: &Requester, key: Key, text: &str, keyboard: Option<Value>) {
     if let Some(keyboard) = keyboard {
         body["reply_markup"] = keyboard;
     }
-    let _ = requester.call("sendMessage", &body);
+    let answer = requester.call("sendMessage", &body);
+    daemon.with_channel(|c| c.say_error = if let Answer::Failed(message) = answer { Some(message) } else { None });
 }
 
 /// The agent's reply: to the chat its session is bound to, else that of the last allowed message,
