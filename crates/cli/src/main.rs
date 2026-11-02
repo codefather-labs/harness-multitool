@@ -44,6 +44,21 @@ enum DocsAction {
 }
 
 #[derive(Subcommand)]
+enum JournalAction {
+    /// Bring in a journal and maps from a stream of JSON documents, keeping their ids. Run again it
+    /// updates what changed.
+    Import {
+        /// A file, or - for standard input.
+        file: String,
+        /// Move what is here out of the way first; it is renamed, not deleted.
+        #[arg(long)]
+        aside: bool,
+    },
+    /// Print the journal and maps as that stream.
+    Export,
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Open the terminal UI on a named state (default: welcome). F2 cycles themes; /exit or Ctrl+C quits (docs/tui.md).
     Preview {
@@ -76,6 +91,11 @@ enum Command {
         /// `claude-code`
         source: String,
         id: Option<String>,
+    },
+    /// This project's journal and maps, whole.
+    Journal {
+        #[command(subcommand)]
+        action: JournalAction,
     },
     /// Create what is missing of docs/ and .harness/, overwriting nothing.
     Init,
@@ -202,6 +222,22 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Import { source, id } => import_conversation(&source, id.as_deref()),
+        Command::Journal { action } => {
+            let root = std::env::current_dir()?.to_string_lossy().into_owned();
+            let data = config::data_dir()?.to_string_lossy().into_owned();
+            match action {
+                JournalAction::Import { file, aside } => {
+                    let text = if file == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))? };
+                    let report = harness_session::journal_import(&data, &root, &text, aside).map_err(|e| anyhow!(e))?;
+                    println!("entries: {} new, {} updated; maps: {}", report.new, report.updated, report.maps);
+                    if let Some(aside) = report.aside {
+                        println!("what was here is now {aside}");
+                    }
+                }
+                JournalAction::Export => print!("{}", harness_session::journal_export(&data, &root).map_err(|e| anyhow!(e))?),
+            }
+            Ok(())
+        }
         Command::Init => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let created = init_project(&root).map_err(|e| anyhow!(e))?;

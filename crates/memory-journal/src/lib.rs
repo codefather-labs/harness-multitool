@@ -8,6 +8,7 @@ pub mod mindmap_flow;
 pub mod mindmap_svg;
 pub mod plugin;
 pub mod project;
+pub mod transfer;
 
 use std::sync::Once;
 

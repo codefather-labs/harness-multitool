@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Salience → retention. `high` is kept forever.
@@ -1879,6 +1879,111 @@ pub fn fork_to(src: &Connection, dir: &Path, key: &Path) -> Result<PathBuf> {
         params![now_secs().to_string()],
     )?;
     Ok(target)
+}
+
+/// An entry as another journal holds it: everything but what is derived here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportedEntry {
+    pub id: i64,
+    pub created_at: i64,
+    pub category: String,
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default = "default_salience")]
+    pub salience: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub feature: Option<String>,
+    #[serde(default)]
+    pub source_artifact: Option<String>,
+    #[serde(default)]
+    pub flags: Vec<ImportedFlag>,
+    #[serde(default)]
+    pub links: Vec<ImportedLink>,
+    #[serde(default)]
+    pub proofs: Vec<String>,
+}
+
+fn default_salience() -> String {
+    "medium".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportedFlag {
+    pub flag: String,
+    pub set_at: i64,
+    #[serde(default)]
+    pub closed_at: Option<i64>,
+    #[serde(default)]
+    pub closed_by: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportedLink {
+    pub id: i64,
+    pub kind: String,
+    /// `out` is this entry's own link; the other direction comes with the other entry.
+    #[serde(default)]
+    pub dir: Option<String>,
+}
+
+/// Puts these entries in under the ids they have, so that what cites them still means them. An id
+/// already holding the same text gets its flags, tags, links and proofs brought up to date; one
+/// holding other text refuses the whole import, with nothing written. Returns (new, updated).
+pub fn import_exact(conn: &mut Connection, entries: &[ImportedEntry]) -> Result<(usize, usize)> {
+    let t = conn.transaction()?;
+    let (mut new, mut updated) = (0, 0);
+    for e in entries {
+        let sha = hex(&Sha256::digest(e.body.trim().as_bytes()));
+        let held: Option<String> = t.query_row("SELECT sha256 FROM entries WHERE id = ?1", params![e.id], |r| r.get(0)).optional()?;
+        match held {
+            Some(other) if other != sha => bail!("entry {} here says something else; move this journal aside first (--aside)", e.id),
+            Some(_) => {
+                t.execute("DELETE FROM entry_flags WHERE entry_id = ?1", params![e.id])?;
+                t.execute("DELETE FROM entry_tags WHERE entry_id = ?1", params![e.id])?;
+                t.execute("DELETE FROM entry_proofs WHERE entry_id = ?1", params![e.id])?;
+                updated += 1;
+            }
+            None => {
+                t.execute(
+                    "INSERT INTO entries(id, created_at, category, body, sha256, salience, agent, agent_id, session_id, feature, source_artifact) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![e.id, e.created_at, e.category, e.body.trim(), sha, e.salience, e.agent, e.agent_id, e.session_id, e.feature, e.source_artifact],
+                )?;
+                new += 1;
+            }
+        }
+        for tag in &e.tags {
+            t.execute("INSERT OR IGNORE INTO entry_tags(entry_id, tag) VALUES (?1, ?2)", params![e.id, tag])?;
+        }
+        for f in &e.flags {
+            t.execute(
+                "INSERT OR REPLACE INTO entry_flags(entry_id, flag, set_at, closed_at, closed_by, resolution) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![e.id, f.flag, f.set_at, f.closed_at, f.closed_by, f.resolution],
+            )?;
+        }
+        for proof in &e.proofs {
+            t.execute("INSERT OR IGNORE INTO entry_proofs(entry_id, proof) VALUES (?1, ?2)", params![e.id, proof])?;
+        }
+    }
+    // Links once every entry is in: they point both ways through the list.
+    for e in entries {
+        for link in e.links.iter().filter(|l| l.dir.as_deref() != Some("in")) {
+            let known: Option<i64> = t.query_row("SELECT 1 FROM entries WHERE id = ?1", params![link.id], |r| r.get(0)).optional()?;
+            if known.is_some() {
+                t.execute("INSERT OR IGNORE INTO entry_links(from_id, to_id, kind) VALUES (?1, ?2, ?3)", params![e.id, link.id, link.kind])?;
+            }
+        }
+    }
+    t.commit()?;
+    Ok((new, updated))
 }
 
 /// Move the journal of `key` out of the way — renamed, not deleted, and out of

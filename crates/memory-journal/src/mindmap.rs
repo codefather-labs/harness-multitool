@@ -968,6 +968,43 @@ pub fn import(conn: &mut Connection, map: &Map, owner_host: Option<&str>, now: i
     Ok(Some(id))
 }
 
+/// Puts a map in under the ids it and its nodes have, in place of one with that id: what cites them
+/// still means them. References to entries this journal lacks are left out.
+pub fn import_exact(conn: &mut Connection, map: &Map, now: i64) -> Result<()> {
+    let s = &map.summary;
+    let layout = normalize_layout(&s.layout)?;
+    let t = tx(conn)?;
+    t.execute("DELETE FROM mindmaps WHERE id = ?1", params![s.id])?;
+    t.execute(
+        "INSERT INTO mindmaps(id, title, owner_nick, owner_host, state, view_token, created_at, updated_at, shared, layout, direction) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![s.id, s.title, s.owner_nick, s.owner_host, if s.state == "closed" { "closed" } else { "open" }, view_token(), s.created_at, s.updated_at.min(now), s.shared, layout, s.direction],
+    )?;
+    let exists = |e: &i64| -> bool { t.query_row("SELECT 1 FROM entries WHERE id = ?1", params![e], |_| Ok(())).optional().ok().flatten().is_some() };
+    for (ord, n) in map.nodes.iter().enumerate() {
+        t.execute(
+            "INSERT INTO mindmap_nodes(id, map_id, parent_id, kind, text, state, ord, created_at, author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![n.id, s.id, n.parent, n.kind, n.text, n.state, ord as i64, s.created_at, n.author],
+        )?;
+        for e in n.refs.iter().filter(|e| exists(e)) {
+            t.execute("INSERT OR IGNORE INTO mindmap_node_refs(node_id, entry_id) VALUES (?1, ?2)", params![n.id, e])?;
+        }
+    }
+    for e in &map.edges {
+        t.execute("INSERT INTO mindmap_edges(id, map_id, from_node, to_node, label) VALUES (?1, ?2, ?3, ?4, ?5)", params![e.id, s.id, e.from, e.to, e.label])?;
+        for r in e.refs.iter().filter(|r| exists(r)) {
+            t.execute("INSERT OR IGNORE INTO mindmap_edge_refs(edge_id, entry_id) VALUES (?1, ?2)", params![e.id, r])?;
+        }
+    }
+    for c in map.chains.iter().filter(|c| c.entries.iter().all(&exists)) {
+        t.execute("INSERT INTO mindmap_chains(id, map_id, name, signature, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![c.id, s.id, c.name, signature(&c.entries), s.created_at])?;
+        for (pos, e) in c.entries.iter().enumerate() {
+            t.execute("INSERT INTO mindmap_chain_steps(chain_id, pos, entry_id) VALUES (?1, ?2, ?3)", params![c.id, pos as i64, e])?;
+        }
+    }
+    t.commit()?;
+    Ok(())
+}
+
 /// Every map of the journal, whole — what a conversation archive carries.
 pub fn export_all(conn: &Connection) -> Result<Vec<Map>> {
     let ids: Vec<i64> = {

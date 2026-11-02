@@ -490,6 +490,19 @@ impl Auth for ProviderAuth {
     }
 }
 
+/// Brings a whole journal, as a stream of JSON documents, into this project's. With `aside`, what
+/// was here is moved out of the way first, not deleted.
+pub fn journal_import(data_dir: &str, root: &str, text: &str, aside: bool) -> Result<harness_memory_journal::transfer::Report, String> {
+    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
+    harness_memory_journal::transfer::import(&std::path::Path::new(data_dir).join("journals"), &key, text, aside).map_err(|e| format!("{e:#}"))
+}
+
+/// This project's whole journal as such a stream.
+pub fn journal_export(data_dir: &str, root: &str) -> Result<String, String> {
+    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
+    harness_memory_journal::transfer::export(&std::path::Path::new(data_dir).join("journals"), &key).map_err(|e| format!("{e:#}"))
+}
+
 /// The journal of a project, opened directly: for a look from the command line.
 pub fn project_memory(data_dir: &str, root: &str) -> Result<harness_memory_journal::plugin::JournalMemory, String> {
     let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
