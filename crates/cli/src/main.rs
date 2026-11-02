@@ -1027,9 +1027,8 @@ impl Live {
         if let Some(window) = context {
             c.session.providers.entry(provider.to_string()).or_insert_with(|| serde_json::json!({}))["context_window"] = serde_json::json!(window);
         }
-        config::save(&c)?;
         if self.real {
-            self.context_window = c.session.context_window();
+            let context_window = c.session.context_window();
             let note = {
                 let urls = self.urls.clone();
                 std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
@@ -1037,10 +1036,14 @@ impl Live {
             let host = host_for(note, self.reload_asked.clone(), selection_summary(&c.session));
             let (root, data) = (self.root.clone(), config::data_dir()?);
             let for_link = c.session.clone();
-            self.sessions.configure(&root, &for_link, || harness_session::with_host(c.session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
+            // The daemon first: it refuses during a run, and then nothing is saved either.
+            let session = c.session.clone();
+            self.sessions.configure(&root, &for_link, || harness_session::with_host(session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
+            self.context_window = context_window;
             self.provider = provider.to_string();
             self.model = model.to_string();
         }
+        config::save(&c)?;
         Ok(())
     }
 
@@ -1054,6 +1057,15 @@ impl Live {
             self.recent.clear();
         }
         if let frontend_tui::model::Mode::Startup(v) = &mut state.mode {
+            if self.real {
+                for (name, value) in &mut v.status.fields {
+                    match name.as_str() {
+                        "ADAPTER" => value.clone_from(&self.provider),
+                        "MODEL" => value.clone_from(&self.model),
+                        _ => {}
+                    }
+                }
+            }
             let now = chrono::Utc::now().timestamp_millis() as u64;
             v.sessions = self
                 .recent
@@ -1577,7 +1589,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     use frontend_tui::theme::BUILTIN;
     use frontend_tui::view::Drawn;
     use ratatui::crossterm::event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
         MouseEventKind,
     };
     use ratatui::crossterm::execute;
@@ -1599,7 +1611,11 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     let mut current = Theme::builtin(BUILTIN[theme_idx].0)?;
 
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    // Text that came as a paste and has no composer to go to yet (the start page, a prompt on
+    // screen), with whether its Enter came too. An Enter right after a paste belongs to the paste:
+    // it must not open a session or answer a prompt.
+    let (mut held_paste, mut held_enter, mut pasted_at) = (String::new(), false, None::<std::time::Instant>);
     // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
     // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
     // text fallback the view already drew.
@@ -1641,6 +1657,29 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
+            if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                // CON-79: the adapter and model stay as they are while anything is running.
+                let run_on = w.tabs.iter().any(|t| t.view.generating) || matches!(w.overlay, Some(frontend_tui::model::Overlay::Permission(_))) || !live.asks.is_empty();
+                if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay
+                    && s.run_on != run_on
+                {
+                    s.run_on = run_on;
+                    if run_on {
+                        s.model_menu = None;
+                        s.editing_model = false;
+                    }
+                    dirty = true;
+                }
+                // What a paste left waiting has its composer now.
+                if !held_paste.is_empty() && w.overlay.is_none() {
+                    w.view_mut().composer.text.push_str(&std::mem::take(&mut held_paste));
+                    dirty = true;
+                    if std::mem::take(&mut held_enter) {
+                        input::key(&mut state, Key::Enter);
+                        live.send(&mut state);
+                    }
+                }
+            }
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 dirty |= w.tabs.iter_mut().fold(false, |any, t| frontend_tui::live::tick_pulses(&mut t.view, now) | any);
@@ -1693,6 +1732,25 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             }
             dirty = true;
             let outcome = match event::read()? {
+                Event::Paste(text) => {
+                    pasted_at = Some(std::time::Instant::now());
+                    match &mut state.mode {
+                        frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.text.push_str(&text),
+                        // A field being typed in takes it, line breaks aside.
+                        frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.auth.entry.is_some()) => {
+                            pasted_at = None;
+                            for c in text.chars().filter(|c| !c.is_control()) {
+                                input::key(&mut state, Key::Char(c));
+                            }
+                        }
+                        _ => held_paste.push_str(&text),
+                    }
+                    continue;
+                }
+                Event::Key(k) if k.kind == KeyEventKind::Press && k.code == KeyCode::Enter && !held_paste.is_empty() && pasted_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1)) => {
+                    held_enter = true;
+                    continue;
+                }
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
                         return Ok(());
@@ -1774,7 +1832,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             live.send(&mut state);
         }
     })();
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
 }

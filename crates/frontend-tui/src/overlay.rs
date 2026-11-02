@@ -98,6 +98,7 @@ pub fn sample_settings() -> SettingsView {
         editing_model: false,
         model_menu: None,
         saved: (0, MODELS[0].into()),
+        run_on: false,
     }
 }
 
@@ -619,9 +620,16 @@ pub fn fit_model(s: &mut SettingsView) {
     }
 }
 
+/// Why the adapter and model cannot be changed right now (CON-79).
+const RUN_ON: &str = "A run is on: the adapter and model can be changed when it ends.";
+
 /// A provider row chosen. A disabled one answers with a toast and changes nothing.
 fn choose_provider(w: &mut Workspace, i: usize) {
     let Some(Overlay::Settings(s)) = &mut w.overlay else { return };
+    if s.run_on {
+        w.toast = Some(system_toast(RUN_ON));
+        return;
+    }
     if s.providers[i].disabled.is_some() {
         w.toast = Some(system_toast(harness_api::CLAUDE_SUBSCRIPTION_REFUSED));
         return;
@@ -667,6 +675,14 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             // Dim, always with its reason, and no radio to fill.
             let dim = Style::default().fg(t.text_muted);
             spans = vec![Span::styled(" (   )  ", dim), Span::styled(p.name.clone(), dim), Span::styled(format!("   {reason}"), dim)];
+        } else if s.run_on {
+            // Dim, keeping which one it is on, and why only under the cursor.
+            let dim = Style::default().fg(t.text_muted);
+            let radio = if s.provider == i { " ( ● )  " } else { " (   )  " };
+            spans = vec![Span::styled(radio, dim), Span::styled(p.name.clone(), dim)];
+            if under {
+                spans.push(Span::styled(format!("   {RUN_ON}"), dim));
+            }
         }
         text(f, row.x, row.y, row.width, spans, row_bg);
         if p.local_build {
@@ -829,6 +845,8 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                     w.toast = Some(system_toast("Not saved: Ctrl+S saves the provider and model."));
                 }
             }
+            Key::Ctrl('s') if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+            Key::Enter | Key::Char(_) | Key::Backspace if s.run_on && s.focus == SettingsPane::Page => w.toast = Some(system_toast(RUN_ON)),
             Key::Ctrl('s') => {
                 // Save: the session's status line shows the chosen adapter and model.
                 let adapter = s.providers[s.provider].name.to_lowercase().replace(' ', "-");
@@ -952,6 +970,7 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.focus = SettingsPane::Page;
             choose_provider(w, i);
         }
+        (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
         (Some(Overlay::Settings(s)), Target::ModelRow) => {
             s.cursor = s.providers.len() + 1;
             s.focus = SettingsPane::Page;

@@ -86,6 +86,8 @@ pub enum Event {
     /// What an agent backend says its session has cost in all: it counts across resumes, so a
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },
+    /// The context window of the model an agent backend ran, as it reports it.
+    ContextWindow { tokens: u64 },
     /// This session goes on with a conversation brought in from `source`: what precedes it in the
     /// log is that conversation, drawn. On its own, with no `FormSynced` after it, its next message
     /// forks it: how a session brought in before ADR 0025 goes on.

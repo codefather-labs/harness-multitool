@@ -101,6 +101,15 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 - **To Claude Code, with a form:** that same conversation goes on: what other providers said was appended to it, and it resumes by its own id.
 - **To Claude Code, with no form yet:** the log is written as a new transcript, and that one is the session's form from then on.
 
+### Running inside a launcher
+
+`./run.sh --under "<launcher>"` runs the harness inside a program that starts `claude` from the PATH and gives it an identity and messages. The harness takes the place of `claude` there, and a delegate still finds the real one. What the launcher sets reaches sessions as a window's environment, and what it types reaches the composer as a paste:
+
+- A message goes in as if typed and sent. With a prompt on screen or no session open it waits: the Enter that came with it never answers a prompt or opens a session.
+- A paste from the user waits in the composer, line breaks and all.
+
+A delegate is `claude -p`, and Claude Code offers some tools only in its interactive mode: asking with options, its plan mode, and artifacts. Under the harness those are the harness's own, or absent.
+
 ### Changing the adapter in the settings
 
 Choosing another adapter or model in the harness's settings moves every open conversation of the window onto it, at once:

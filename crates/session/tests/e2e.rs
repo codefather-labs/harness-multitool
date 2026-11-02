@@ -1403,6 +1403,9 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
     wait_for(first, &mut after_first, "ask");
     let session = op(first, json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
 
+    // CON-79: its adapter does not change during a run.
+    let change = client.conversation_op(&json!({"window": first, "op": "open", "root": root, "settings": s}));
+    assert!(change.is_err_and(|e| e.contains("a run is on")));
     // Still there: refused, and nothing moves.
     assert_eq!(op(second, json!({"op": "resume", "tab": 7, "text": session}))["elsewhere"], true);
     // It stops polling, as a killed window does. The second one keeps polling.

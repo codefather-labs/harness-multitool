@@ -113,8 +113,21 @@ impl Engine {
     }
 
     /// A session just opened: the log catches up with its form, and is saved. True if it gained.
-    pub async fn catch_up(&self) -> bool {
+    /// With `connecting`, it has just been moved to this adapter: the adapter's form is brought in
+    /// line now, and made if there is none (CON-79). Not while its provider's program holds it.
+    pub async fn catch_up(&self, connecting: bool) -> bool {
         let gained = self.pull_form().await;
+        let held = self.form().is_some_and(|(format, link)| format.held_by(&link.id).is_some());
+        if connecting && !held {
+            if self.parts.backend.is_some() {
+                if let Err(message) = self.hand_over().await {
+                    let source = self.parts.backend.as_ref().map_or("backend".to_string(), |b| b.name().to_string());
+                    self.emit(Event::Error { source, message });
+                }
+            } else {
+                self.push_form_or_say();
+            }
+        }
         let _ = self.flush().await;
         gained
     }

@@ -6,6 +6,8 @@
 #   ./run.sh --graphics sixel         # force a picture protocol: auto|sixel|kitty|iterm2|off
 #   ./run.sh --claude-code            # with Claude Code as a delegate agent (ADR 0020)
 #   ./run.sh preview main-session     # any multitool arguments after the options
+#   ./run.sh --under "<launcher> ..."  # inside a launcher that starts `claude` from the PATH and
+#                                     # gives it an identity and messages: the harness takes its place
 #   MULTITOOL_GRAPHICS=off ./run.sh   # variables already set win over the defaults below
 set -euo pipefail
 
@@ -16,6 +18,7 @@ while [[ $# -gt 0 ]]; do
     --graphics) MULTITOOL_GRAPHICS="$2"; shift 2 ;;
     --debug)    PROFILE=debug; shift ;;
     --claude-code) FEATURES="--features multitool/claude-code"; shift ;;
+    --under)    UNDER="$2"; shift 2 ;;
     *) break ;;
   esac
 done
@@ -37,5 +40,16 @@ fi
 
 if [[ $# -eq 0 ]]; then
   set -- preview splash
+fi
+if [[ -n "${UNDER:-}" ]]; then
+  # The launcher starts `claude` from the PATH: here that is this harness, with the PATH as it was,
+  # so that a delegate finds the real one. Whatever the launcher gives it travels on to its sessions.
+  shim="$(mktemp -d)"
+  trap 'rm -rf "$shim"' EXIT
+  args="$(printf '%q ' "$@")"
+  printf '#!/usr/bin/env bash\nexport PATH=%q\nexec %q %s\n' "$PATH" "$bin" "$args" > "$shim/claude"
+  chmod +x "$shim/claude"
+  PATH="$shim:$PATH" $UNDER
+  exit $?
 fi
 exec "$bin" "$@"

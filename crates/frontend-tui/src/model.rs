@@ -162,6 +162,8 @@ pub struct SettingsView {
     pub model_menu: Option<usize>,
     /// The provider row and model as last saved, to tell if closing would lose a choice.
     pub saved: (usize, String),
+    /// A run is on: the adapter and model cannot be changed until it ends (CON-79).
+    pub run_on: bool,
 }
 
 /// The provider row of a ChatGPT plan.

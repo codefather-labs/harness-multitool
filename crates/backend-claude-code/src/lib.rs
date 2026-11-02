@@ -104,6 +104,10 @@ impl Mapper {
                 };
                 let total = e["total_cost_usd"].as_f64().map(|c| (c * 1e6).round() as u64);
                 let cost_micro_usd = total.and_then(|total| Some(total.saturating_sub(self.cost_total?)));
+                // What the model really holds, which only this says; before the turn is counted.
+                if let Some(window) = e["modelUsage"].as_object().and_then(|m| m.values().filter_map(|v| v["contextWindow"].as_u64()).max()) {
+                    out.push(Mapped::Event(Event::ContextWindow { tokens: window }));
+                }
                 out.push(Mapped::Event(Event::TurnFinished { turn: self.turn, stop, usage, cost_micro_usd }));
                 if let Some(total) = total {
                     self.cost_total = Some(total);
@@ -158,6 +162,7 @@ pub struct ClaudeCode {
     skip_permissions: bool,
     /// What it runs with instead of this process's environment (a window's, in the daemon).
     environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
+    chrome: bool,
 }
 
 impl ClaudeCode {
@@ -172,6 +177,7 @@ impl ClaudeCode {
             own_environment: settings["environment"] == "user",
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
+            chrome: settings["chrome"] != false,
         }
     }
 
@@ -186,6 +192,10 @@ impl ClaudeCode {
         let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
         if !self.own_environment {
             args.extend(["--setting-sources", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#].iter().map(|a| a.to_string()));
+        }
+        // Its own environment has the user's browser tools, as their own session does.
+        if self.own_environment && self.chrome {
+            args.push("--chrome".to_string());
         }
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());

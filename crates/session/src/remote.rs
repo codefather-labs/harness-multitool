@@ -379,6 +379,10 @@ impl DaemonHost {
     }
 
     fn open(&self, windows: &mut HashMap<String, Window>, id: &str, op: &Value) -> Result<Value, String> {
+        // CON-79: a conversation does not change adapter in the middle of a run.
+        if windows.get(id).is_some_and(|w| w.sessions.busy()) {
+            return Err("a run is on: the adapter can be changed when it ends".to_string());
+        }
         let root = op["root"].as_str().ok_or("root is required")?.to_string();
         let settings: Settings = serde_json::from_value(op["settings"].clone()).map_err(|e| format!("settings: {e}"))?;
         let (reload, notes) = match windows.get(id) {
@@ -561,6 +565,9 @@ impl SessionLink {
     pub fn configure(&mut self, root: &str, settings: &Settings, local: impl FnOnce() -> Factory) -> Result<(), String> {
         match self {
             SessionLink::Local(s) => {
+                if s.busy() {
+                    return Err("a run is on: the adapter can be changed when it ends".to_string());
+                }
                 s.set_factory(local());
                 Ok(())
             }

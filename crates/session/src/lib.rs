@@ -227,6 +227,10 @@ pub struct SessionInfo {
     pub title: String,
     pub model: String,
     pub last_ms: u64,
+    /// The provider's conversation it was brought in from.
+    pub imported: Option<String>,
+    /// It is linked to that conversation (ADR 0025), not a copy of it.
+    pub linked: bool,
 }
 
 /// Stores a conversation brought in from elsewhere as a session of this project, so it opens like
@@ -281,10 +285,18 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
                 Event::TurnStarted { model, .. } => Some(model.clone()),
                 _ => None,
             });
-            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms) })
+            let imported = log.iter().find_map(|e| match &e.event {
+                Event::ConversationImported { id, .. } => Some(id.clone()),
+                _ => None,
+            });
+            let linked = imported.is_some() && log.iter().rev().any(|e| matches!(&e.event, Event::FormSynced { .. }));
+            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms), imported, linked })
         })
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.last_ms));
+    // A conversation brought in before ADR 0025 and then linked: the link is the conversation.
+    let linked: Vec<String> = out.iter().filter(|s| s.linked).filter_map(|s| s.imported.clone()).collect();
+    out.retain(|s| s.linked || s.imported.as_ref().is_none_or(|id| !linked.contains(id)));
     out
 }
 
@@ -665,7 +677,7 @@ impl Sessions {
             !inbox.is_empty()
         };
         let Some(handle) = self.handles.remove(&tab) else { return true };
-        self.start(tab, Some(handle.session));
+        self.start_as(tab, Some(handle.session), true);
         // What waited on the old thread's channel goes on the new one.
         if queued && let Some(handle) = self.handles.get(&tab) {
             let _ = handle.prompts.send(Input::Next);
@@ -773,6 +785,10 @@ impl Sessions {
     }
 
     fn start(&mut self, tab: u64, resume: Option<String>) {
+        self.start_as(tab, resume, false);
+    }
+
+    fn start_as(&mut self, tab: u64, resume: Option<String>, connecting: bool) {
         let (prompts, prompt_rx) = channel::<Input>();
         let (answers, answer_rx) = channel();
         let stop = StopFlag::default();
@@ -801,7 +817,7 @@ impl Sessions {
                     Ok(entries) => {
                         engine.resume(&entries);
                         // INV-20: what its form gained meanwhile comes in before anything reads it.
-                        if pollster::block_on(engine.catch_up()) {
+                        if pollster::block_on(engine.catch_up(connecting)) {
                             let _ = to_frontend.send(FromSession::Ended { tab, end: RunEnd::AwaitingInput });
                         }
                     }

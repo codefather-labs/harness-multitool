@@ -151,6 +151,7 @@ impl SessionState {
                     self.messages.push(Message { role: Role::Assistant, content: vec![Content::Text { text: "[the conversation goes on here]".into() }] });
                 }
             }
+            Event::ContextWindow { .. } => {}
             Event::FormSynced { source, id, cursor, holds } => {
                 self.backend_session = Some(id.clone());
                 self.backend_fork = false;

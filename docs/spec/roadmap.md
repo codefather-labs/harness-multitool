@@ -16,7 +16,7 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; the consistency check is a built-in, id-linked, advisory hook plus `multitool docs check` in CI (CON-45); the `project-init` skill creates the tree with an example entry in every file.
 
-**Conversations ([conversations.md](conversations.md)), in progress.** In: sessions in the daemon, the log as the format, transformation between providers, a window's environment, a window taking over a run, and one conversation kept consistent with Claude Code's form in both directions. Left: `multitool run` through the daemon; the start page listing a connected provider's conversations directly; Codex CLI's form; `multitool chat dump` and `chat load` with `--format`; the settings reconnecting a conversation at once, with the adapter controls disabled during a run.
+**Conversations ([conversations.md](conversations.md)), in progress.** In: sessions in the daemon, the log as the format, transformation between providers, a window's environment, a window taking over a run, and one conversation kept consistent with Claude Code's form in both directions. Left: `multitool run` through the daemon; the start page listing a connected provider's conversations directly; Codex CLI's form; `multitool chat dump` and `chat load` with `--format`.
 
 **Ideas, not yet on a milestone:**
 

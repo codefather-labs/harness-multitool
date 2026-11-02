@@ -252,6 +252,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::BackendCost { total_micro_usd } => format!("cost        {total_micro_usd} in all"),
         Event::ConversationImported { source, id, .. } => format!("imported    {source} {id}"),
         Event::FormSynced { source, id, .. } => format!("form        {source} {id}"),
+        Event::ContextWindow { tokens } => format!("window      {tokens}"),
     };
     format!("{:>4} {:>6}ms  {body}", entry.seq, entry.at_ms)
 }
