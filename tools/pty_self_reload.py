@@ -59,7 +59,7 @@ assert "--handoff" not in open(f"/proc/{pid}/cmdline").read(), "nothing swapped"
 print("a failed build came back to the agent, nothing swapped")
 os.kill(pid, signal.SIGTERM); pump(0.5); os.waitpid(pid, 0); time.sleep(0.5)
 os.remove(log)
-screen.reset(); pid, fd = start("true", "startup"); pump(1.5); os.write(fd, b"r"); pump(2)
+screen.reset(); pid, fd = start("true", "startup"); pump(1.5); os.write(fd, b"r"); pump(10)
 typed("do reload again\r")
 until("the process is replaced", lambda: "--handoff" in open(f"/proc/{pid}/cmdline").read())
 until("the agent is told by itself", lambda: any("rebuilt and restarted" in p.get("prompt", "") for p in prompts()))

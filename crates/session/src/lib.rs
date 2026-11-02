@@ -447,6 +447,8 @@ struct Handle {
     running: Arc<AtomicBool>,
     /// This thread has been replaced by a rebind: it takes no more messages.
     retired: Arc<AtomicBool>,
+    /// Ends once the channels above are gone and no run is on; a delegate's process ends with it.
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// The sessions behind the tabs: one thread each, started by the tab's first message.
@@ -687,6 +689,12 @@ impl Sessions {
         out
     }
 
+    /// Lets go of every session, and gives back their threads to wait for: whatever process a
+    /// session holds goes when its thread does.
+    pub fn close(&mut self) -> Vec<std::thread::JoinHandle<()>> {
+        self.handles.drain().map(|(_, handle)| handle.thread).collect()
+    }
+
     /// Lets go of a tab's session: its thread ends once it has no run.
     pub fn forget(&mut self, tab: u64) {
         self.handles.remove(&tab);
@@ -842,7 +850,7 @@ impl Sessions {
         let inbox_for_thread = inbox.clone();
         let (running, retired) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (running_here, retired_here) = (running.clone(), retired.clone());
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             let parts = match factory(tab) {
                 Ok(parts) => parts,
                 Err(message) => {
@@ -919,6 +927,6 @@ impl Sessions {
                 let _ = to_frontend.send(FromSession::Ended { tab, end });
             }
         });
-        self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop, running, retired });
+        self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop, running, retired, thread });
     }
 }

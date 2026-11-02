@@ -297,6 +297,7 @@ impl ClaudeCode {
             *slot = Some(self.start(request)?);
         }
         let live = slot.as_mut().expect("just set");
+        live.prompt_seen = false;
         // On stdin, so it is on no command line for another program's pkill -f to match.
         // If it has died, what it said is read below.
         let _ = live.send(request.prompt);
@@ -340,6 +341,8 @@ impl ClaudeCode {
                         if e["isReplay"] == true && e["message"]["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "text")) {
                             if live.prompt_seen {
                                 unechoed.pop_front();
+                                // Taken after that result: the run goes on to the result of this one.
+                                end_held = None;
                             }
                             live.prompt_seen = true;
                             continue;
@@ -357,7 +360,6 @@ impl ClaudeCode {
                                 }
                             }
                             Mapped::End(end) => {
-                                live.prompt_seen = false;
                                 end_held = Some((Instant::now() + LATE_ECHO, end));
                             }
                         }

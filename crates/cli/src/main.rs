@@ -530,6 +530,8 @@ struct Live {
     reloading: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Built; the swap waits for a safe point.
     ready_to_swap: bool,
+    /// When the daemon was last asked to step aside for the swap.
+    swap_tried: Option<std::time::Instant>,
     window_events: (std::sync::mpsc::Sender<TabEvent>, std::sync::mpsc::Receiver<TabEvent>),
 }
 
@@ -749,7 +751,13 @@ impl Live {
         if !self.ready_to_swap || busy {
             return Ok(changed);
         }
-        let tell = self.reload_for.take().and_then(|tab| w.tabs.iter().position(|t| t.id == tab));
+        if self.swap_tried.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(200)) {
+            return Ok(changed);
+        }
+        self.swap_tried = Some(std::time::Instant::now());
+        let dir = config::data_dir()?;
+        let tell = self.reload_for.and_then(|tab| w.tabs.iter().position(|t| t.id == tab));
+        // Before the daemon goes: it knows the tabs' sessions.
         let handoff = reload::Handoff {
             tell,
             active: w.active,
@@ -767,12 +775,14 @@ impl Live {
                 })
                 .collect(),
         };
-        let dir = config::data_dir()?;
-        let path = reload::write_handoff(&dir, &handoff)?;
         // The daemon holds the custom handlers, so it is replaced too; the new process starts it.
-        if let Some(client) = harness_daemon::client::Client::find(&dir) {
-            let _ = client.shutdown();
+        // What this window shows can be behind it: a message may be starting there. It decides.
+        if let Some(client) = harness_daemon::client::Client::find(&dir)
+            && client.shutdown_if_idle() == Ok(false)
+        {
+            return Ok(changed);
         }
+        let path = reload::write_handoff(&dir, &handoff)?;
         reload::swap(&path, theme)?;
         Ok(true)
     }
@@ -844,7 +854,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {

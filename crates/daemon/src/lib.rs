@@ -92,6 +92,9 @@ pub trait ConversationHost: Send + Sync {
     /// What happened in this window after `after`, waiting up to `wait` for something.
     fn events(&self, window: &str, after: u64, wait: std::time::Duration) -> Vec<Value>;
     fn stats(&self) -> Value;
+    /// Ends every conversation and whatever process it holds, unless `only_if_idle` and a run is
+    /// on, which answers false and changes nothing.
+    fn close(&self, only_if_idle: bool) -> bool;
 }
 
 /// What identifies this binary: a client of another build must not be served by this one.
@@ -316,9 +319,15 @@ impl Daemon {
             ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
             ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
-                self.state.lock().expect("daemon state").shutting_down = true;
-                self.wake.notify_all();
-                (200, json!({"ok": true}))
+                let only_if_idle = serde_json::from_str::<Value>(&body).is_ok_and(|b| b["if_idle"] == true);
+                let host = self.conversations.lock().expect("conversations").clone();
+                if host.is_none_or(|host| host.close(only_if_idle)) {
+                    self.state.lock().expect("daemon state").shutting_down = true;
+                    self.wake.notify_all();
+                    (200, json!({"ok": true}))
+                } else {
+                    (409, json!({"busy": true}))
+                }
             }
             ("GET", "/handlers") if admin => (200, json!({"handlers": self.handlers.iter().map(|h| json!({"name": h.name(), "types": h.types()})).collect::<Vec<_>>()})),
             ("GET", "/handlers") => (401, json!({"error": "bad token"})),

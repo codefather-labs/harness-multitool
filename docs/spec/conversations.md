@@ -107,7 +107,7 @@ A delegate gets the harness's own tools over MCP, whichever way its row runs: `m
 
 ### An agent changing the harness
 
-An agent can change the harness it runs in. `plugins_reload` builds from the source at once, while its turn goes on. A failed build comes back to it as its next message, with the error, and nothing is swapped. A good one swaps at the safe point, when the turn has ended: the process and the daemon are replaced, the conversations reopen from their forms, and the tab that asked gets a message from the harness, which starts its next turn. A reload the user asked for sends no message.
+An agent can change the harness it runs in. `plugins_reload` builds from the source at once, while its turn goes on. A failed build comes back to it as its next message, with the error, and nothing is swapped. A good one swaps at the safe point, when the daemon has no run on in any window, a message the user sent meanwhile included, and it decides that itself, closing in the same step: the process and the daemon are replaced, the daemon's delegates ending with it, the conversations reopen from their forms, and the tab that asked gets a message from the harness, which starts its next turn. A reload the user asked for sends no message.
 
 ### Bringing a journal in
 

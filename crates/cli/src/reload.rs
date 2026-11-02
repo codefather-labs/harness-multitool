@@ -101,6 +101,10 @@ fn build() -> Result<(), String> {
 /// Replaces this process with the new binary, in the same terminal. On Windows, where a process
 /// cannot replace itself, it runs the new one in the same console and passes its exit code on.
 pub fn swap(handoff: &Path, theme: &str) -> Result<()> {
+    // The new process takes the terminal as it finds it for the state to go back to at the end,
+    // so it has to find it as the shell left it, or quitting leaves the shell raw.
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableMouseCapture, ratatui::crossterm::event::DisableBracketedPaste);
+    ratatui::restore();
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command.args(["preview", "welcome", "--theme", theme, "--handoff"]).arg(handoff);

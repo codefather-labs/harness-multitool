@@ -126,6 +126,22 @@ impl Client {
         Err("the daemon did not stop".to_string())
     }
 
+    /// Stops the daemon unless a run is on in it, which answers false: the daemon looks and closes
+    /// in one step, so nothing starts between the two.
+    pub fn shutdown_if_idle(&self) -> Result<bool, String> {
+        let reply = self.agent.post(format!("{}/shutdown", self.base)).header("authorization", &format!("Bearer {}", self.admin)).config().http_status_as_error(false).build().send(r#"{"if_idle":true}"#).map_err(|e| format!("reaching the daemon: {e}"))?;
+        if reply.status().as_u16() == 409 {
+            return Ok(false);
+        }
+        for _ in 0..50 {
+            if !self.healthy() {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err("the daemon did not stop".to_string())
+    }
+
     /// The custom handlers the daemon's build has: (name, types).
     pub fn handlers(&self) -> Result<Vec<(String, Vec<String>)>, String> {
         let mut response = self

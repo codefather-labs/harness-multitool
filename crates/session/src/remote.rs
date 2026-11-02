@@ -20,6 +20,8 @@ use crate::{Factory, FromSession, Host, Sessions, Settings, TaskRefused};
 /// A window that has not polled for this long is gone; its runs finish with nobody watching.
 const WINDOW_GONE: Duration = Duration::from_secs(30);
 const PUMP: Duration = Duration::from_millis(10);
+/// How long a closing daemon waits for its sessions' threads. Idle ones end at once.
+const CLOSING: Duration = Duration::from_secs(5);
 /// A window polls every couple of seconds. One silent for this long is not there, as far as
 /// opening its conversation elsewhere goes.
 const WINDOW_SILENT: Duration = Duration::from_secs(5);
@@ -427,6 +429,23 @@ impl DaemonHost {
 }
 
 impl ConversationHost for DaemonHost {
+    fn close(&self, only_if_idle: bool) -> bool {
+        let threads: Vec<_> = {
+            // Under the lock every operation takes: no message starts a run between the look and the close.
+            let mut windows = self.windows.lock().expect("windows");
+            if only_if_idle && windows.values().any(|w| w.sessions.busy()) {
+                return false;
+            }
+            windows.drain().flat_map(|(_, mut window)| window.sessions.close()).collect()
+        };
+        self.wake.notify_all();
+        let end = Instant::now() + CLOSING;
+        while Instant::now() < end && !threads.iter().all(|t| t.is_finished()) {
+            std::thread::sleep(PUMP);
+        }
+        true
+    }
+
     fn op(&self, id: &str, op: &Value) -> Result<Value, String> {
         let mut windows = self.windows.lock().expect("windows");
         let name = op["op"].as_str().ok_or("op is required")?;
