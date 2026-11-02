@@ -195,7 +195,7 @@ impl Tool for AgentSend {
 }
 
 /// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
-pub const MODE_TOOLS: [&str; 5] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_close"];
+pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close"];
 
 pub struct ModeTool {
     pub name: &'static str,
@@ -218,6 +218,10 @@ impl Tool for ModeTool {
             "mode__agent_spawn" => (
                 "HARNESS MODE, orchestration only. Start an agent in a new tab of your group, on this authorized adapter and model, in this same project and git, with no history. It sends you word when it is ready; give it work then with agent_send. At most 8. Answers that its tab is opening.",
                 json!({"type": "object", "properties": {"nick": {"type": "string", "description": "What it goes by; unique among the open."}, "adapter": {"type": "string"}, "model": {"type": "string"}}, "required": ["nick", "adapter", "model"]}),
+            ),
+            "mode__agent_answer" => (
+                "HARNESS MODE, orchestration only. Answer one of your agents' permission requests: once, always (for this tool and target in that session) or deny. The user has left these to you, so it runs on the user's machine on your word: read what it asks, and allow only what its work needs. Answers that it was answered.",
+                json!({"type": "object", "properties": {"nick": {"type": "string"}, "answer": {"type": "string", "enum": ["once", "always", "deny"]}}, "required": ["nick", "answer"]}),
             ),
             "mode__agent_read" => (
                 "HARNESS MODE, orchestration only. Read what one of your agents has done: each message it got, each call it made in order with its arguments, and its last words. Use it to check its work against the agent workflow specification.",

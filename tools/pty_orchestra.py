@@ -19,6 +19,10 @@ class H(http.server.BaseHTTPRequestHandler):
             emit({"type": "response.output_text.delta", "delta": "Done with that."})
         elif "you are ready to take work" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "agent_send", "arguments": json.dumps({"to": "boss", "text": "ready for work"}), "call_id": "r1"}})
+        elif "run the first command" in json.dumps(last, ensure_ascii=False):
+            emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "shell", "arguments": json.dumps({"command": "touch allowed-marker"}), "call_id": "s1"}})
+        elif "run the second command" in json.dumps(last, ensure_ascii=False):
+            emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "shell", "arguments": json.dumps({"command": "touch denied-marker"}), "call_id": "s2"}})
         elif "ask me something" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "ask_user", "arguments": json.dumps({"question": "Which colour?", "options": [{"label": "red"}, {"label": "blue"}]}), "call_id": "q1"}})
         elif "talk to the other" in json.dumps(last, ensure_ascii=False):
@@ -122,6 +126,19 @@ sent = call("harness", "agent_send", {"to": "first-agent", "text": "blue, thanks
 until("the answer arrived as its next message", lambda: "blue, thanks" in json.dumps(bodies[-1]["input"], ensure_ascii=False))
 assert "your orchestrator" in json.dumps(bodies[-1]["input"], ensure_ascii=False), "it was told who it asked"
 print("a slave's question reached its master, and the answer came back as its next message"); pump(0.5)
+# Its permission requests go to its master too, with no card in its tab.
+stale = call("mode", "agent_answer", {"nick": "first-agent", "answer": "once"}); assert stale["error"] and "not waiting" in stale["text"], stale
+sent = call("harness", "agent_send", {"to": "first-agent", "text": "run the first command"}); assert not sent["error"], sent
+until("its request reached the master", lambda: "asks your permission: shell" in told() and "touch allowed-marker" in told())
+assert not os.path.exists(root + "/allowed-marker"), "not before the answer"
+ok = call("mode", "agent_answer", {"nick": "first-agent", "answer": "once"}); assert not ok["error"], ok
+until("once let it run", lambda: os.path.exists(root + "/allowed-marker"))
+pump(0.8); sent = call("harness", "agent_send", {"to": "first-agent", "text": "run the second command"}); assert not sent["error"], sent
+until("the second request", lambda: "touch denied-marker" in told())
+no = call("mode", "agent_answer", {"nick": "first-agent", "answer": "deny"}); assert not no["error"], no
+until("deny reached it, history valid", lambda: any(i.get("type") == "function_call_output" and i.get("call_id") == "s2" for i in bodies[-1]["input"]))
+assert not os.path.exists(root + "/denied-marker"), "denied"
+print("permission requests went to the master: once ran it, deny refused it, nothing stale"); pump(0.5)
 # Reload: the group, adapters and roles hold.
 before = len(bodies); n = len(prompts())
 typed('call harness plugins_reload {}\r')

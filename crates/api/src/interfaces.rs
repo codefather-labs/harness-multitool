@@ -225,6 +225,9 @@ pub struct JournalEntry {
     /// An entry that has to be closed before this one can be (CON-91).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<u64>,
+    /// Where the evidence this entry carries is: a file, log, screenshot or URL.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proofs: Vec<String>,
 }
 
 /// Which entries `Memory::journal_list` returns.

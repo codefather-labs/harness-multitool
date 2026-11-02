@@ -97,6 +97,7 @@ impl Memory for JournalMemory {
                 feature: entry.feature,
                 flags: journal::normalize_flags(&entry.flags)?,
                 blocked_by: entry.blocked_by.iter().map(|id| *id as i64).collect(),
+                proofs: entry.proofs.clone(),
                 ..Default::default()
             };
             let mut conn = self.conn.borrow_mut();
@@ -254,7 +255,7 @@ mod tests {
     fn the_store_answers_through_the_interface() {
         let dir = tempfile::tempdir().unwrap();
         let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
-                let entry = JournalEntry { blocked_by: None, body: "chose sqlite because readers block".into(), category: "decision".into(), tags: vec!["sqlite".into()], flags: vec!["question".into()], salience: None, feature: None };
+                let entry = JournalEntry { blocked_by: None, proofs: Vec::new(), body: "chose sqlite because readers block".into(), category: "decision".into(), tags: vec!["sqlite".into()], flags: vec!["question".into()], salience: None, feature: None };
         let added = pollster_free(m.journal_add(entry)).unwrap();
         assert_eq!(added.id, 1);
         assert_eq!(added.flags, vec!["question"]);
@@ -285,7 +286,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
         let more = |op| pollster_free(m.more(op));
-        let entry = |body: &str, flags: &[&str]| JournalEntry { blocked_by: None, body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
+        let entry = |body: &str, flags: &[&str]| JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
         let todo = pollster_free(m.journal_add(entry("do the thing", &["todo"]))).unwrap().id;
         let other = pollster_free(m.journal_add(entry("a remark", &[]))).unwrap().id;
 

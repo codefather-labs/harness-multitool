@@ -12,7 +12,7 @@ An agent has two sorts of thing to call:
 | Mode | Tools | What changes | Ends when |
 |---|---|---|---|
 | Plan | `mode__plan_enter`, `mode__plan_exit` | The agent studies and plans; nothing is built. It can read, search, fetch, run single read-only commands, write under `docs/`, and use the journal and maps. Anything else is refused. | The user approves `mode__plan_exit`. |
-| Orchestration | `mode__orchestrate`, then `mode__agent_models`, `mode__agent_spawn`, `mode__agent_read`, `mode__agent_close` | The agent is the master of agents it starts on authorized adapters, each a tab of its group in the same project and git. It gives them work with `agent_send`, which arrives as the user's message, and checks them with `mode__agent_read`. A slave's only contact is its master. | `mode__orchestrate` off; its agents stay until closed. |
+| Orchestration | `mode__orchestrate`, then `mode__agent_models`, `mode__agent_spawn`, `mode__agent_read`, `mode__agent_answer`, `mode__agent_close` | The agent is the master of agents it starts on authorized adapters, each a tab of its group in the same project and git. It gives them work with `agent_send`, which arrives as the user's message, and checks them with `mode__agent_read`. A slave's only contact is its master, which also gets its questions, plan and permission requests (`mode__agent_answer`). | `mode__orchestrate` off; its agents stay until closed. |
 | Debug | `mode__debug` | A fix is reproduced before anything changes and verified after. A pipeline is walked step by step, and the window follows the run. | The agent turns it off, with the evidence in the journal. |
 
 Before building anything that is not trivial, an agent enters plan mode, even if nobody said plan. After an approved plan, a fix goes on in debug mode; a feature is built, run, then debugged the same way ([ADR 0021](decisions/0021-agent-behaviour.md)).
@@ -45,7 +45,7 @@ Decisions, findings and work items of the project, kept across sessions.
 
 | Tool | For | Answers |
 |---|---|---|
-| `journal_add` | One decision, finding or update, with the why. `blocked_by` says it cannot close until another entry has. | The stored entry. |
+| `journal_add` | One decision, finding or update, with the why. `blocked_by` says it cannot close until another entry has; `proof` says where a verification's evidence is kept. | The stored entry. |
 | `journal_search` | Earlier decisions and findings by words, before deciding or redoing something. | The closest entries whole. |
 | `journal_get` | One entry in full, before relying on it. | The entry, with its flags and what blocks it. |
 | `journal_list` | Entries newest first, by category, tags, flags, feature, open or closed. | A page and the total. |

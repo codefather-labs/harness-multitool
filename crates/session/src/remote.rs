@@ -109,6 +109,8 @@ struct Window {
     choices: crate::Choices,
     /// What a conversation with no choice of its own starts on.
     default: crate::Choice,
+    /// Tabs of slaves waiting on their master for a permission.
+    slave_asks: std::collections::HashSet<u64>,
     /// What it opened with: the rows an orchestra can choose from.
     settings: Settings,
     polled: Instant,
@@ -350,6 +352,14 @@ impl DaemonHost {
                     let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
                     Ok(json!({"log": read_agent(&self.data_dir.to_string_lossy(), &window.root, &slave)}))
                 }
+                "mode__agent_answer" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
+                    if !matches!(op["answer"].as_str(), Some("once" | "always" | "deny")) {
+                        return Err("answer is once, always or deny".to_string());
+                    }
+                    Ok(json!({"answer_slave": slave, "answer": op["answer"]}))
+                }
                 "mode__agent_close" => {
                     let master = self.master_of_tab(window, tab)?;
                     let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
@@ -374,6 +384,19 @@ impl DaemonHost {
                 let window = windows.get_mut(id)?;
                 window.say(json!({"kind": "spawn", "tab": tab, "nick": spawn["nick"], "provider": spawn["provider"], "model": spawn["model"]}));
                 Ok(json!({"text": format!("Its tab is opening. It will send you word when it is ready: {}", spawn["nick"])}))
+            }
+            Ok(reply) if reply.get("answer_slave").is_some() => {
+                let slave = reply["answer_slave"].as_str().unwrap_or_default();
+                for window in windows.values_mut().filter(|w| !w.closed) {
+                    if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == slave) {
+                        if !window.slave_asks.remove(&their_tab) {
+                            return Some(Err("it is not waiting on a permission".to_string()));
+                        }
+                        window.sessions.answer(their_tab, answer_from_json(&reply["answer"]));
+                        return Some(Ok(json!({"text": "Answered."})));
+                    }
+                }
+                Err("it is not open".to_string())
             }
             Ok(reply) if reply.get("close").is_some() => {
                 let slave = reply["close"].as_str().unwrap_or_default().to_string();
@@ -612,10 +635,13 @@ impl DaemonHost {
             for message in &own {
                 match message {
                     FromSession::Ask { tab, call, .. } => {
-                        window.asking.insert(*tab, to_wire(message));
-                        if let Some(session) = window.sessions.session_of(*tab) {
-                            let slave = session.to_string();
-                            waiting_word.push((slave, format!("waits on the user for permission: {} {}", call.name, call.input)));
+                        let slave = window.sessions.session_of(*tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session));
+                        // A slave's permission is its master's to give (CON-100): no card here.
+                        if let Some(slave) = slave {
+                            window.slave_asks.insert(*tab);
+                            waiting_word.push((slave, format!("asks your permission: {} {}\nAnswer with mode__agent_answer: once, always or deny.", call.name, call.input)));
+                        } else {
+                            window.asking.insert(*tab, to_wire(message));
                         }
                     }
                     FromSession::Entry { tab, entry } => {
@@ -649,6 +675,9 @@ impl DaemonHost {
                 continue;
             }
             for message in own {
+                if matches!(&message, FromSession::Ask { tab, .. } if window.slave_asks.contains(tab)) {
+                    continue;
+                }
                 window.say(to_wire(&message));
                 any = true;
             }
@@ -826,7 +855,7 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
@@ -934,6 +963,10 @@ impl ConversationHost for DaemonHost {
         let tab = op["tab"].as_u64().unwrap_or(0);
         // An agent asks for the harness to be rebuilt: the window does it, and tells that tab.
         if name == "reload" {
+            // It would restart everyone: a slave asks its master.
+            if window.sessions.session_of(tab).is_some_and(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)) {
+                return Err("rebuilding restarts every agent: ask your orchestrator to do it".to_string());
+            }
             window.say(json!({"kind": "reload", "tab": tab}));
             self.wake.notify_all();
             return Ok(json!({"ok": true}));

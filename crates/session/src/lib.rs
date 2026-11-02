@@ -1145,7 +1145,7 @@ mod every_tool {
         let modes: Vec<&ToolSpec> = specs.iter().filter(|s| s.name.starts_with("mode__")).collect();
         let mut names: Vec<&str> = modes.iter().map(|s| s.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__plan_enter", "mode__plan_exit"]);
+        assert_eq!(names, ["mode__agent_answer", "mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__plan_enter", "mode__plan_exit"]);
         assert!(modes.iter().all(|s| s.description.starts_with("HARNESS MODE")), "an agent sees it is no utility");
         for old in ["plan_enter", "plan_exit", "debug_mode"] {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");

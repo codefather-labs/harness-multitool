@@ -141,6 +141,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         "salience": {"type": "string", "enum": ["high", "medium", "low"]},
                         "feature": {"type": "string"},
                         "blocked_by": {"type": "integer", "description": BLOCKED_BY_RULE},
+                        "proof": {"type": "array", "items": {"type": "string"}, "description": "Where the evidence is, for an entry flagged verified: a file with a command's output, a log, a screenshot, or a URL. A todo closes only on an entry that has one."},
                     }),
                     &["body", "category", "tags"],
                 )
@@ -155,6 +156,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         salience: input["salience"].as_str().map(str::to_string),
                         feature: input["feature"].as_str().map(str::to_string),
                         blocked_by: input["blocked_by"].as_u64(),
+                        proofs: strings(&input["proof"]),
                     };
                     let record = memory.journal_add(entry).await?;
                     Ok(serde_json::to_value(record).expect("an entry serialises"))

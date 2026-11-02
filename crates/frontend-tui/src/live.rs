@@ -221,9 +221,13 @@ impl Feed {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
             }
             Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
-            Event::OrchestraRole { role, .. } => v.orchestra.clone_from(role),
+            Event::OrchestraRole { role, .. } => {
+                v.orchestra.clone_from(role);
+                show_mode(v);
+            }
             Event::StepDebug { on, by } => {
-                set_status(v, "DEBUG", if *on { "step" } else { "off" });
+                v.debug_on = *on;
+                show_mode(v);
                 let line = if *on {
                     format!("Step-debug mode is on ({by}): the agent walks the pipeline step by step. Each finished cycle is saved to .harness/debug/runs.sqlite.")
                 } else {
@@ -232,7 +236,8 @@ impl Feed {
                 v.transcript.push(Item::Tips { label: "STEP DEBUG".into(), lines: vec![line] });
             }
             Event::PlanMode { on, by } => {
-                set_status(v, "MODE", if *on { "plan" } else { "work" });
+                v.plan_on = *on;
+                show_mode(v);
                 let line = if *on {
                     format!("Plan mode is on ({by}): the agent reads and plans. Nothing in the project can change. /plan off, or approving its plan, ends it.")
                 } else {
@@ -755,6 +760,25 @@ pub fn show_context_window(v: &mut SessionView, window: u64) {
     if let Some(used) = used {
         set_status(v, "TOKENS", &format!("{used} / {}", short(window)));
     }
+}
+
+/// What mode this conversation runs in, first on the status line.
+pub fn show_mode(v: &mut SessionView) {
+    let mut modes: Vec<&str> = Vec::new();
+    match v.orchestra.as_deref() {
+        Some("master") => modes.push("orchestrate"),
+        Some("slave") => modes.push("slave"),
+        _ => {}
+    }
+    if v.plan_on {
+        modes.push("plan");
+    }
+    if v.debug_on {
+        modes.push("debug");
+    }
+    let mode = if modes.is_empty() { "normal".to_string() } else { modes.join(" + ") };
+    v.status.fields.retain(|(key, _)| key != "MODE");
+    v.status.fields.insert(0, ("MODE".to_string(), mode));
 }
 
 pub fn set_status(v: &mut SessionView, key: &str, value: &str) {

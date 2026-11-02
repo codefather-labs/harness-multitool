@@ -18,7 +18,7 @@ fn now<T>(mut future: BoxFuture<'_, T>) -> T {
 }
 
 fn entry(body: &str, flags: &[&str]) -> JournalEntry {
-    JournalEntry { blocked_by: None, body: body.into(), category: "decision".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
+    JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "decision".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
 }
 
 /// The same calls, whatever is behind the interface: what comes back, without its timestamps.

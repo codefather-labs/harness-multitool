@@ -12,6 +12,7 @@ use crate::model::{
 
 /// The commands and what they publish, as `/help` shows them.
 pub const COMMANDS: &[(&str, &str)] = &[
+    ("/version", "show the harness version"),
     ("/agent [text]", "assistant reply"),
     ("/busy", "toggle generating…"),
     ("/tg [text]", "Telegram message (+ toast)"),
@@ -466,6 +467,10 @@ fn command(w: &mut Workspace, cmd: &str) {
     let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
     let v = w.view_mut();
     match name {
+        "version" => v.transcript.push(Item::Tips {
+            label: "VERSION".into(),
+            lines: vec![format!("harness-multitool {}", env!("CARGO_PKG_VERSION"))],
+        }),
         "help" | "?" => {
             v.transcript.push(Item::Tips {
                 label: "DEBUG COMMANDS".into(),
@@ -621,11 +626,17 @@ pub fn open_tab(w: &mut Workspace, title: &str) {
     view.composer.text.clear();
     view.scroll = 0;
     view.generating = false;
+    // A new session has no name and no mode of the one it was opened from.
+    view.agent_name = None;
+    view.orchestra = None;
+    view.plan_on = false;
+    view.debug_on = false;
     // A new session has spent nothing yet.
     for (key, value) in &mut view.status.fields {
         match key.as_str() {
             "TOKENS" => *value = "0".into(),
             "COST" => *value = "$0.00".into(),
+            "MODE" => *value = "normal".into(),
             _ => {}
         }
     }
@@ -649,6 +660,34 @@ mod tests {
     fn send(w: &mut Workspace, text: &str) {
         w.view_mut().composer.text = text.into();
         assert_eq!(submit(w), Sent::Done);
+    }
+
+    #[test]
+    fn version_is_local_in_preview_and_live_sessions() {
+        for live in [false, true] {
+            let mut w = workspace();
+            w.live = live;
+            // Pending work must survive a local command unchanged.
+            w.outbox.push(Outgoing::Reload);
+            send(&mut w, "/version");
+            assert!(matches!(w.view().transcript.last(), Some(Item::Tips { label, lines })
+                if label == "VERSION" && lines == &[format!("harness-multitool {}", env!("CARGO_PKG_VERSION"))]));
+            assert!(matches!(&w.outbox[..], [Outgoing::Reload]));
+            assert!(w.view().composer.text.is_empty());
+
+            send(&mut w, "/help");
+            assert!(matches!(w.view().transcript.last(), Some(Item::Tips { lines, .. })
+                if lines.iter().any(|line| line.starts_with("/version "))));
+            w.outbox.clear();
+            send(&mut w, "ordinary message");
+            if live {
+                assert!(matches!(&w.outbox[..], [Outgoing::Prompt { text, .. }] if text == "ordinary message"));
+            } else {
+                assert!(matches!(w.view().transcript.last(), Some(Item::Turn { role: Role::User, lines, .. })
+                    if lines == &["ordinary message"]));
+                assert!(w.outbox.is_empty());
+            }
+        }
     }
 
     #[test]

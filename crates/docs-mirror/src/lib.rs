@@ -360,7 +360,7 @@ mod tests {
     }
 
     fn add(m: &JournalMemory, body: &str, flags: &[&str]) -> JournalRecord {
-        let entry = JournalEntry { blocked_by: None, body: body.into(), category: "decision".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
+        let entry = JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "decision".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
         pollster::block_on(m.journal_add(entry)).unwrap()
     }
 

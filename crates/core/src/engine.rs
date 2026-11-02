@@ -374,7 +374,7 @@ impl Engine {
     fn tool_specs(&self) -> Vec<ToolSpec> {
         let is_master = self.state.borrow().orchestra_role.as_deref() == Some("master");
         let is_slave = self.state.borrow().orchestra_role.as_deref() == Some("slave");
-        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && s.name == ORCHESTRATE_TOOL)).collect();
+        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && (s.name == ORCHESTRATE_TOOL || s.name == "plugins_reload"))).collect();
         // A small model believes a tool's description over the system prompt.
         if self.state.borrow().plan_mode {
             for spec in &mut specs {
@@ -698,6 +698,10 @@ impl Engine {
             self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: Some(format!("the user said: {said}")) });
             self.set_plan_mode(false, "user").await;
             return result(APPROVED.into(), false);
+        }
+        // A slave's plan is its orchestrator's to approve, in words (CON-100).
+        if self.state.borrow().orchestra_role.as_deref() == Some("slave") {
+            return result("Your orchestrator approves your plan, not a person. Send it the plan with agent_send and wait. When it says to go, call this again with its words in user_said.".into(), true);
         }
         let answer = self.frontend.ask(call, &[Capability::Command("leave plan mode and start the work".into())]).await;
         if answer == Answer::Deny {
@@ -1063,7 +1067,7 @@ impl Engine {
         self.emit(Event::Verification { pass: result.pass, evidence: result.evidence.clone() });
         // IF-10: the evidence goes into memory. A store that cannot take it does not change the verdict.
         let entry = JournalEntry {
-            blocked_by: None,
+            blocked_by: None, proofs: Vec::new(),
             body: format!("Verification {} for the task: {task}\n{}", if result.pass { "passed" } else { "failed" }, result.evidence),
             category: "verification".into(),
             tags: vec!["verification".into()],

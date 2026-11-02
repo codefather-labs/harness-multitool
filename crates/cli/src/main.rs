@@ -499,7 +499,7 @@ fn live_session(provider: &str, model: &str, budget: &str) -> frontend_tui::AppS
     state.header.branch = git_branch();
     if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
         w.live = true;
-        w.view_mut().status.fields = [("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
+        w.view_mut().status.fields = [("MODE", "normal"), ("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .to_vec();
     }
@@ -1766,6 +1766,7 @@ impl Live {
                     let id = opened.id;
                     opened.view.agent_name = Some(nick.clone());
                     opened.view.orchestra = Some("slave".to_string());
+                    frontend_tui::live::show_mode(&mut opened.view);
                     opened.view.background.clear();
                     frontend_tui::live::set_status(&mut opened.view, "ADAPTER", &provider);
                     frontend_tui::live::set_status(&mut opened.view, "MODEL", &model);

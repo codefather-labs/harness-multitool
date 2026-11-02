@@ -38,6 +38,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-21 | Before changing a feature. | Read its specification: `journal_list` by `specification` and `feature`. | `journal_list` before the first write. |
 | W-22 | A spec has to change. | A new entry saying "Replaces journal#N" and why; `journal_mark` the old one `deprecated`. | Both. |
 | W-23 | Code and spec disagree. | A finding; settle it before going on. | An entry. |
+| W-24 | A project with `docs/` holds a binding entry: `specification` or `constraint`. | Give the rule an id in its docs, such as a new `CON-` row in `docs/spec/constraints.md`, and name that id in the entry. Read the docs for the next free id; never name one they do not define. | The id in the entry, defined in `docs/`. |
 
 ## 4. In plan mode
 
@@ -57,7 +58,8 @@ Each entry stands alone: a later session reads it without this conversation. An 
 |---|---|---|---|
 | W-40 | Implemented. | `journal_add`, `update`, flag `unverified`: "Implements journal#T", with the verification protocol. | That entry. |
 | W-41 | After a planned fix or a built feature. | `mode__debug` on. A fix: reproduce before changing, a failing test for a small bug. Verify after, then off. | `mode__debug` on, the failing run, the change, the passing run, off. |
-| W-42 | Checked. | `journal_add`, `verification`, flag `verified`: "Verifies journal#I", what was run and what it showed. Never without having run it. | That entry after the runs. |
+| W-42 | Checked. | `journal_add`, `verification`, flag `verified`: "Verifies journal#I", what was run and what it showed, with `proof` naming where the evidence is kept: a file with the command's output, a log, a screenshot, a URL. Never without having run it. A close refuses a verification with no proof. | That entry, with a proof, after the runs. |
+| W-49 | Saying a thing works. | Check it as the user will meet it, in the program they run, not only in a build of your own or a preview; if that is not possible here, say so, and do not say "done". If what you changed is the harness you run under, it needs `plugins_reload` before anyone can see it: ask whoever may, an orchestrator if you have one. | A proof from the running program, or the limit said in words. |
 | W-43 | Then close. | `journal_close` the todo. A close refused means it lacks evidence or waits for something: settle that, do not work round it. | `journal_close` after the evidence. |
 | W-44 | A bug found. | `journal_add`, `bug`, flag `todo`, at once. The fix: "Fixes journal#B" `unverified`, proved the same way. | Entries in that order. |
 | W-45 | Work dropped. | `journal_abandon`, saying why. | That call. |
@@ -73,6 +75,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-51 | A user message in that tab. | Treat it as the user's: it stands for the user there. Everything above holds. | As above. |
 | W-52 | You are done, or need something. | `agent_send` your orchestrator. It is your only contact. | That call at the end of the work. |
 | W-55 | You have a question, in an orchestra. | `ask_user`, as anywhere: it goes to your orchestrator, whose answer is your next message. | `ask_user`, then nothing until the answer. |
+| W-56 | Your plan is ready, in an orchestra. | `agent_send` your orchestrator the plan, and wait. When it says to go, W-3: `mode__plan_exit` with its words in `user_said`. | `agent_send` before `mode__plan_exit`. |
 | W-53 | You are the orchestrator, and an agent says it is ready. | Give it work with `agent_send`; end your turn while it works. | `agent_send`, then no polling. |
 | W-54 | An orchestrator checking an agent's work. | `mode__agent_read`, against the rows of this file. | That call before a verdict. |
 

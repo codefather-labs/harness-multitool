@@ -788,18 +788,12 @@ pub fn evidence_first(conn: &Connection) -> Result<bool> {
     let v: Option<String> = conn
         .query_row("SELECT value FROM journal_meta WHERE key = ?1", params![EVIDENCE_FIRST_KEY], |r| r.get(0))
         .optional()?;
-    Ok(v.as_deref() == Some("1"))
+    // On unless a project turned it off: a claim of having checked is not evidence (W-42).
+    Ok(v.as_deref() != Some("0"))
 }
 
 pub fn set_evidence_first(conn: &Connection, on: bool) -> Result<()> {
-    if on {
-        conn.execute(
-            "INSERT OR REPLACE INTO journal_meta(key, value) VALUES (?1, '1')",
-            params![EVIDENCE_FIRST_KEY],
-        )?;
-    } else {
-        conn.execute("DELETE FROM journal_meta WHERE key = ?1", params![EVIDENCE_FIRST_KEY])?;
-    }
+    conn.execute("INSERT OR REPLACE INTO journal_meta(key, value) VALUES (?1, ?2)", params![EVIDENCE_FIRST_KEY, if on { "1" } else { "0" }])?;
     Ok(())
 }
 
@@ -2242,6 +2236,8 @@ mod tests {
     fn journal() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let conn = open(dir.path(), Path::new("/work/proj"), true).unwrap().unwrap();
+        // These test the rest; evidence-first has a test of its own.
+        set_evidence_first(&conn, false).unwrap();
         (dir, conn)
     }
 

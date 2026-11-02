@@ -578,7 +578,7 @@ fn project_store(data: &str, root: &str) -> harness_memory_journal::plugin::Jour
 }
 
 fn spec(body: &str, flags: &[&str]) -> JournalEntry {
-    JournalEntry { blocked_by: None, body: body.into(), category: "specification".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
+    JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "specification".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
 }
 
 /// M4: done through the command, evidence in the journal, specifications as checks.
@@ -1231,6 +1231,29 @@ fn a_journal_entry_stores_though_the_model_filled_its_optionals_with_nothing() {
     let failed: Vec<&String> = entries.iter().filter_map(|e| if let Event::ToolResult { output, is_error: true, .. } = &e.event { Some(output) } else { None }).collect();
     assert!(failed.is_empty(), "{failed:?}");
     drop(seen);
+}
+
+/// A slave's plan is its orchestrator's to approve: it gets no card for the user (CON-100).
+#[test]
+fn a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it() {
+    let root = temp_dir("slave-plan");
+    let data = temp_dir("slave-plan-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("p1", "mode__plan_enter", json!({}))), "Planning."),
+        anthropic_turn(Some(("p2", "mode__plan_exit", json!({"plan": "the plan"}))), "Asking."),
+        anthropic_turn(None, "I sent it the plan."),
+        anthropic_turn(Some(("p3", "mode__plan_exit", json!({"plan": "the plan", "user_said": "go ahead"}))), "Going."),
+        anthropic_turn(None, "Building."),
+    ]);
+    let mut quiet = settings(&url, "k");
+    quiet.plan_first = Some("off".to_string());
+    let mut sessions = Sessions::new(real_factory(quiet, root.clone(), data.clone().into()), root.clone());
+    sessions.role(1, Some("slave".to_string()), Some("boss".to_string()));
+    let (entries, _, asks) = drive(&mut sessions, &["plan it", "go ahead"], Answer::Deny);
+    assert_eq!(asks, 0, "no card for the user");
+    let results: Vec<(&String, bool)> = entries.iter().filter_map(|e| if let Event::ToolResult { output, is_error, .. } = &e.event { Some((output, *is_error)) } else { None }).collect();
+    assert!(results.iter().any(|(text, error)| *error && text.contains("Your orchestrator approves")), "{results:?}");
+    assert!(results.iter().any(|(text, error)| !*error && text.contains("approved the plan")), "{results:?}");
 }
 
 #[test]
