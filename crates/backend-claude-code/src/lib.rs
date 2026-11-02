@@ -442,7 +442,7 @@ impl ClaudeCode {
 
 /// A run stopped: messages it was given and never took go on to the next, or stopping would lose them.
 fn stopped(unechoed: &std::collections::VecDeque<String>) -> BackendEnd {
-    if unechoed.is_empty() { BackendEnd::Stopped } else { BackendEnd::StoppedBeforeMessages }
+    if unechoed.is_empty() { BackendEnd::Stopped } else { BackendEnd::StoppedBeforeMessages(unechoed.iter().cloned().collect()) }
 }
 
 /// How long a result waits for a message sent just before it to come back.

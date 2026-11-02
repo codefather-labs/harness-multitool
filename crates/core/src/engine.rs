@@ -7,7 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use harness_api::event::{DecidedBy, HookOutcome, HookPointKind};
 use harness_api::{
@@ -33,22 +33,27 @@ const MAX_NICK: usize = 32;
 const UNCHECKED_SCAN: usize = 500;
 
 #[derive(Debug, Clone, Default)]
-pub struct StopFlag(Arc<AtomicBool>);
+pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>);
 
 /// What the user sent and the agent has not seen yet, shared with the thread that takes input.
 pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
 
 impl StopFlag {
     pub fn stop(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 
     fn is_set(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.load(Ordering::SeqCst) > 0
+    }
+
+    /// Asked more than once since it was last taken: the user means this too, not only what ran.
+    fn asked_twice(&self) -> bool {
+        self.0.load(Ordering::SeqCst) > 1
     }
 
     fn take(&self) -> bool {
-        self.0.swap(false, Ordering::SeqCst)
+        self.0.swap(0, Ordering::SeqCst) > 0
     }
 }
 
@@ -524,6 +529,7 @@ impl Engine {
     async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>, woken: bool) -> RunEnd {
         let source = backend.name().to_string();
         let mut woken = woken;
+        let mut next_prompt = None;
         loop {
             // A turn it began itself is in its form already, and its process is the one to read.
             if !woken {
@@ -539,7 +545,7 @@ impl Engine {
                 return self.fail("store", message, protocol);
             }
             let state = self.state.borrow().clone();
-            let prompt = if woken { String::new() } else { state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")) };
+            let prompt = if woken { String::new() } else if let Some(next) = next_prompt.take() { next } else { state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")) };
             let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
             let system = context.ok().and_then(|c| c.system);
             let stopped = || self.stop.is_set();
@@ -582,8 +588,14 @@ impl Engine {
                     return self.stopped(protocol);
                 }
                 // What the user sent meanwhile is what they stopped it for (CON-83).
-                Ok(harness_api::BackendEnd::StoppedBeforeMessages) => {
+                // Stopped twice, the answer to them is cancelled too; they stay in the log (CON-86).
+                Ok(harness_api::BackendEnd::StoppedBeforeMessages(messages)) => {
+                    let cancelled = self.stop.asked_twice();
                     self.stop.take();
+                    if cancelled {
+                        return self.stopped(protocol);
+                    }
+                    next_prompt = Some(messages.join("\n\n"));
                     continue;
                 }
                 Ok(harness_api::BackendEnd::Done) => {}

@@ -66,13 +66,13 @@ pub struct BackendRequest<'a> {
     pub woken: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendEnd {
     Done,
     Stopped,
-    /// Stopped with messages sent during the run that it never took: they are in the log, and the
-    /// next run takes them.
-    StoppedBeforeMessages,
+    /// Stopped with these messages, sent during the run, never taken: they are in the log, and the
+    /// next run takes them, and not what was stopped.
+    StoppedBeforeMessages(Vec<String>),
 }
 
 /// IF-17. Runs a session's turns on its own instead of the engine with a `Provider`, and reports

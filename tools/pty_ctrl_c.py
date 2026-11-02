@@ -9,13 +9,17 @@ import fcntl, json, pty, select, struct, tempfile, termios, time
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-cc-root")); home = tempfile.mkdtemp(prefix="mt-cc-home"); os.makedirs(home + "/cfg/harness-multitool")
 log = home + "/log"; fake = home + "/fake-claude"
 open(fake, "w").write(f'''#!/usr/bin/env python3
-import json, sys, time
+import json, signal, sys, time
+def asked(*_):
+    time.sleep(1)  # as long as a real one takes to end
+    sys.exit(0)
+signal.signal(signal.SIGTERM, asked)
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": "sess-9", "model": "fake-model"}}), flush=True)
 for line in sys.stdin:
     prompt = json.loads(line)["message"]["content"][0]["text"]
     open({log!r}, "a").write(prompt + "\\n")
     print(json.dumps({{"type": "user", "isReplay": True, "message": {{"role": "user", "content": [{{"type": "text", "text": prompt}}]}}}}), flush=True)
-    if "slow" in prompt: time.sleep(60)
+    if prompt.split("\\n")[-1].startswith("slow"): time.sleep(60)  # by what it was just asked
     print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "Heard"}}}}}}), flush=True)
     print(json.dumps({{"type": "result", "is_error": False, "stop_reason": "end_turn", "total_cost_usd": 0.0, "usage": {{}}}}), flush=True)
 ''')
@@ -57,6 +61,32 @@ os.write(fd, b"\x03")
 until("the queued message goes to the agent", lambda: "queued two" in prompts())
 assert alive(), "Ctrl+C during a run closed the window"
 print("Ctrl+C stopped the run, the window stayed, the queued message went on")
+pump(1.5)
+typed("slow three\r")
+until("the next run is on", lambda: "slow three" in prompts())
+pump(0.3)
+typed("queued four\r"); pump(0.5)
+os.write(fd, b"\x03"); pump(0.2); os.write(fd, b"\x03")
+pump(3)
+assert alive(), "two presses during a run closed the window"
+assert "queued four" not in prompts(), "the second press did not cancel the answer: " + json.dumps(prompts())
+print("two quick presses cancelled the answer too")
+typed("five\r")
+until("the next message goes", lambda: "five" in prompts())
+pump(1)
+typed("slow six\r")
+until("a slow one", lambda: "slow six" in prompts())
+pump(0.3)
+typed("slow seven\r"); pump(0.5)
+os.write(fd, b"\x03")
+until("its queue goes on", lambda: "slow seven" in prompts())
+pump(0.5)
+os.write(fd, b"\x03")
+pump(2.5)
+assert alive(), "a press during the queued answer closed the window"
+typed("eight\r")
+until("the answer was cancelled and the next message goes", lambda: "eight" in prompts(), 10)
+print("a press during the queued answer stopped it")
 pump(1.5)
 os.write(fd, b"\x03"); pump(0.5)
 assert alive(), "one idle Ctrl+C closed the window"
