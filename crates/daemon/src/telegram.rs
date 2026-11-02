@@ -215,6 +215,7 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "agents", "description": "The open sessions"},
             {"command": "switch", "description": "Send this chat to another session"},
             {"command": "whoami", "description": "The session this chat goes to"},
+            {"command": "nick", "description": "Name the session of this chat"},
         ]}),
     );
     while current() && !daemon.channels_stopped.load(Ordering::Relaxed) {
@@ -346,6 +347,15 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
             };
             say(requester, key, &what, None);
         }
+        "/nick" => {
+            let what = match (bound.as_deref(), rest.is_empty()) {
+                (None, _) => "This chat goes to no session: /switch to one first.".to_string(),
+                (Some(_), true) => "Say the name: /nick name".to_string(),
+                (Some(id), false) if daemon.conversations().is_some_and(|host| host.rename(id, &rest)) => format!("This session goes by {rest} now."),
+                (Some(_), false) => "The session of this chat is not open.".to_string(),
+            };
+            say(requester, key, &what, None);
+        }
         "/switch" if rest.is_empty() => say(requester, key, &list(), keyboard(&open)),
         "/switch" => match choose(&open, &rest) {
             Ok(session) => switch(daemon, requester, key, &session),
@@ -363,6 +373,10 @@ fn choose(open: &[OpenSession], asked: &str) -> Result<OpenSession, String> {
         return Ok(found.clone());
     }
     let wanted = asked.to_lowercase();
+    let named: Vec<&OpenSession> = open.iter().filter(|s| s.nick.as_deref().is_some_and(|nick| nick.to_lowercase() == wanted)).collect();
+    if let [one] = named.as_slice() {
+        return Ok((*one).clone());
+    }
     let found: Vec<&OpenSession> = open.iter().filter(|s| s.title.to_lowercase().contains(&wanted) || s.id.to_lowercase().contains(&wanted)).collect();
     match found.as_slice() {
         [one] => Ok((*one).clone()),

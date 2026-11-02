@@ -47,6 +47,38 @@ impl Tool for Reload {
     }
 }
 
+/// The agent names itself: the name it goes by above its messages and in the Telegram channel.
+struct SetNick {
+    client: Client,
+    window: String,
+    tab: u64,
+}
+
+impl Tool for SetNick {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "set_nick".into(),
+            description: "Choose the name you go by: above your messages, and the one /switch in Telegram finds you by.".into(),
+            schema: json!({"type": "object", "properties": {"nick": {"type": "string"}}, "required": ["nick"]}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match input["nick"].as_str().map(str::trim).filter(|nick| !nick.is_empty()) {
+            None => ToolOutput::error("nick is required"),
+            Some(nick) => match self.client.conversation_op(&json!({"window": self.window, "op": "nick", "tab": self.tab, "text": nick})) {
+                Ok(_) => ToolOutput::ok(format!("You go by {nick} now.")),
+                Err(error) => ToolOutput::error(error),
+            },
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
 fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     let client = Client::find(&serving.data_dir);
     let memory: Rc<dyn Memory> = match &client {
@@ -61,6 +93,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     }
     out.push(Rc::new(crate::host_tools::TelegramSend { data_dir: serving.data_dir.clone(), from: serving.window.clone() }));
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
+        out.push(Rc::new(SetNick { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(Reload { client, window: window.clone(), tab: *tab }));
     }
     Ok(out)

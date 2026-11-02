@@ -107,6 +107,10 @@ pub trait ConversationHost: Send + Sync {
     fn session_of(&self, _window: &str, _tab: u64) -> Option<String> {
         None
     }
+    /// Names a session. False if it is not open.
+    fn rename(&self, _session: &str, _nick: &str) -> bool {
+        false
+    }
 }
 
 /// The Telegram channel's settings, as they stand when asked.
@@ -118,6 +122,8 @@ pub struct OpenSession {
     pub id: String,
     /// What a person knows it by.
     pub title: String,
+    /// The name it goes by, if it has one.
+    pub nick: Option<String>,
 }
 
 /// The path to run this program by. A rebuild puts a new file at that path, after which the OS

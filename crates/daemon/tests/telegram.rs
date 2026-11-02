@@ -257,10 +257,16 @@ impl ConversationHost for FakeHost {
     fn session_of(&self, _: &str, tab: u64) -> Option<String> {
         Some(format!("s{tab}"))
     }
+    fn rename(&self, session: &str, nick: &str) -> bool {
+        let mut open = self.open.lock().unwrap();
+        let Some(found) = open.iter_mut().find(|s| s.id == session) else { return false };
+        found.nick = Some(nick.to_string());
+        true
+    }
 }
 
 fn session(id: &str, title: &str) -> OpenSession {
-    OpenSession { id: id.into(), title: title.into() }
+    OpenSession { id: id.into(), title: title.into(), nick: None }
 }
 
 fn message(id: i64, chat: i64, topic: Option<i64>, text: &str) -> Value {
@@ -380,4 +386,20 @@ fn another_poller_is_named() {
     let _ = w.client.poll(&w.window, 0);
     until("the error", || status(&w)["last_error"].as_str().is_some_and(|e| e.contains("another program")));
     assert!(!status(&w).to_string().contains(TOKEN));
+}
+
+#[test]
+fn a_nick_finds_a_session_and_is_set_from_its_chat() {
+    let named = |id: &str, nick: &str| OpenSession { id: id.into(), title: nick.into(), nick: Some(nick.into()) };
+    let w = bound_world(
+        vec![named("a", "orchid"), named("b", "orchid-two")],
+        vec![message(1, 7, Some(10), "/nick nobody"), message(2, 7, Some(10), "/switch ORCHID"), message(3, 7, Some(10), "for orchid"), message(4, 7, Some(10), "/nick lily"), message(5, 7, Some(10), "/nick")],
+    );
+    until("said no session", || said(&w.fake).iter().any(|t| t.contains("/switch to one first")));
+    until("delivered to the exact one", || w.host.got.lock().unwrap().as_slice() == [("a".to_string(), "for orchid".to_string())]);
+    until("renamed", || w.host.open.lock().unwrap()[0].nick.as_deref() == Some("lily"));
+    until("asked for a name", || said(&w.fake).iter().any(|t| t.contains("Say the name")));
+    assert!(said(&w.fake).iter().any(|t| t.contains("goes by lily")), "{:?}", said(&w.fake));
+    w.fake.lock().unwrap().updates.push(message(6, 7, Some(10), "after the rename"));
+    until("a rename keeps the binding", || w.host.got.lock().unwrap().len() == 2 && w.host.got.lock().unwrap()[1].0 == "a");
 }

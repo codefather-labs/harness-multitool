@@ -182,14 +182,37 @@ pub struct DaemonHost {
     /// Messages a window sent and went away from, by session: for whoever opens it next. Only in
     /// memory: a message that never reached the log is not the conversation yet.
     left: Mutex<HashMap<String, Vec<String>>>,
+    /// The names sessions go by, by session: a log can be far too large to read them from.
+    nicks: Mutex<HashMap<String, String>>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
 }
 
+fn nicks_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("daemon").join("nicks.json")
+}
+
+fn read_nicks(data_dir: &Path) -> HashMap<String, String> {
+    std::fs::read_to_string(nicks_path(data_dir)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
 impl DaemonHost {
+    fn remember_nick(&self, session: &str, nick: &str) {
+        let mut nicks = self.nicks.lock().expect("nicks");
+        if nicks.get(session).map(String::as_str) == Some(nick) {
+            return;
+        }
+        nicks.insert(session.to_string(), nick.to_string());
+        let path = nicks_path(&self.data_dir);
+        let partial = path.with_extension("partial");
+        if serde_json::to_string(&*nicks).is_ok_and(|text| std::fs::write(&partial, text).is_ok()) {
+            let _ = std::fs::rename(&partial, &path);
+        }
+    }
+
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -231,7 +254,14 @@ impl DaemonHost {
                     FromSession::Ask { tab, .. } => {
                         window.asking.insert(*tab, to_wire(message));
                     }
-                    FromSession::Entry { tab, .. } => window.said.entry(*tab).or_default().push(to_wire(message)),
+                    FromSession::Entry { tab, entry } => {
+                        if let harness_api::Event::AgentName { name, .. } = &entry.event
+                            && let Some(session) = window.sessions.session_of(*tab)
+                        {
+                            self.remember_nick(session, name);
+                        }
+                        window.said.entry(*tab).or_default().push(to_wire(message));
+                    }
                     FromSession::Ended { tab, .. } => {
                         window.said.remove(tab);
                     }
@@ -436,7 +466,9 @@ impl ConversationHost for DaemonHost {
         for window in windows.values().filter(|w| !w.closed) {
             for (_, session) in window.sessions.open() {
                 if !out.iter().any(|s: &harness_daemon::OpenSession| s.id == session) {
-                    out.push(harness_daemon::OpenSession { title: crate::title_of(&data, &window.root, &session), id: session });
+                    let nick = self.nicks.lock().expect("nicks").get(&session).cloned();
+                    let title = nick.clone().unwrap_or_else(|| crate::title_of(&data, &window.root, &session));
+                    out.push(harness_daemon::OpenSession { title, nick, id: session });
                 }
             }
         }
@@ -458,6 +490,17 @@ impl ConversationHost for DaemonHost {
 
     fn session_of(&self, window: &str, tab: u64) -> Option<String> {
         self.windows.lock().expect("windows").get(window)?.sessions.session_of(tab).map(str::to_string)
+    }
+
+    fn rename(&self, session: &str, nick: &str) -> bool {
+        let mut windows = self.windows.lock().expect("windows");
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
+                window.sessions.nick(tab, nick.to_string());
+                return true;
+            }
+        }
+        false
     }
 
     fn close(&self, only_if_idle: bool) -> bool {
