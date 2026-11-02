@@ -403,3 +403,21 @@ fn a_nick_finds_a_session_and_is_set_from_its_chat() {
     w.fake.lock().unwrap().updates.push(message(6, 7, Some(10), "after the rename"));
     until("a rename keeps the binding", || w.host.got.lock().unwrap().len() == 2 && w.host.got.lock().unwrap()[1].0 == "a");
 }
+
+#[test]
+fn anyone_can_learn_their_own_id_and_nothing_else() {
+    let (url, fake) = fake_api();
+    let stranger = |id: i64, text: &str| json!({"update_id": id, "message": {"message_id": id, "from": {"id": 666}, "chat": {"id": 5}, "message_thread_id": 9, "text": text}});
+    fake.lock().unwrap().updates = vec![stranger(1, "/id"), stranger(2, "/id@my_bot"), stranger(3, "/agents"), stranger(4, "/idea of mine"), stranger(5, "SECRET-WORDS")];
+    let w = world(config(&url, &[]));
+    let _ = w.client.poll(&w.window, 0);
+    until("all taken", || fake.lock().unwrap().offsets.last() == Some(&6));
+    let sent = fake.lock().unwrap().sent.clone();
+    assert_eq!(sent.len(), 2, "only /id gets an answer: {sent:?}");
+    assert!(sent.iter().all(|b| b["text"] == "Your user id: 666" && b["chat_id"] == 5 && b["message_thread_id"] == 9), "{sent:?}");
+    let events = w.client.poll(&w.window, 0).unwrap();
+    assert!(notifications(&events).is_empty(), "nothing reaches a session: {events:?}");
+    let log = std::fs::read_to_string(w.data.path().join("daemon/triggers.jsonl")).unwrap_or_default();
+    let kept = std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).unwrap_or_default();
+    assert!(!log.contains("SECRET-WORDS") && !kept.contains("SECRET-WORDS") && !kept.contains("666"), "{log} {kept}");
+}

@@ -216,6 +216,7 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "switch", "description": "Send this chat to another session"},
             {"command": "whoami", "description": "The session this chat goes to"},
             {"command": "nick", "description": "Name the session of this chat"},
+            {"command": "id", "description": "Your Telegram user id"},
         ]}),
     );
     while current() && !daemon.channels_stopped.load(Ordering::Relaxed) {
@@ -265,6 +266,14 @@ fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed
         return true;
     }
     let message = &update["message"];
+    // Anyone may ask who they are, to be put on the list: it tells them only their own id, keeps
+    // nothing, and reaches no session (CON-87).
+    if let (Some(text), Some(user), Some(chat)) = (message["text"].as_str(), message["from"]["id"].as_i64(), message["chat"]["id"].as_i64())
+        && text.split_whitespace().next().and_then(|word| word.split('@').next()) == Some("/id")
+    {
+        say(requester, (chat, message["message_thread_id"].as_i64()), &format!("Your user id: {user}"), None);
+        return true;
+    }
     let from_allowed = message["from"]["id"].as_i64().is_some_and(|user| allowed.contains(&user));
     let (Some(text), true) = (message["text"].as_str(), from_allowed) else {
         // A stranger's text is not kept anywhere, not even in the log.

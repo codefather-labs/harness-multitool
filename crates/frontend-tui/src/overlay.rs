@@ -226,6 +226,7 @@ fn telegram_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color)
         "One bot, every session: /switch moves a chat.",
         "The token comes from @BotFather.",
         "User ids with commas; only they reach an agent.",
+        "Write /id to the bot to learn yours.",
         "Ctrl+S saves, and the channel restarts at once.",
     ];
     for (i, note) in notes.iter().enumerate() {
