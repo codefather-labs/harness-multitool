@@ -37,6 +37,8 @@ type Key = (i64, Option<i64>);
 #[derive(Default, Serialize, Deserialize)]
 struct Kept {
     #[serde(default)]
+    bot: Option<String>,
+    #[serde(default)]
     offset: i64,
     #[serde(default)]
     bindings: Vec<Binding>,
@@ -190,9 +192,16 @@ fn save_kept(daemon: &Daemon) {
     }
 }
 
-pub(crate) fn run(daemon: Arc<Daemon>) {
+pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
+    let current = || daemon.telegram_generation.load(Ordering::SeqCst) == generation;
     let Some(requester) = daemon.telegram.lock().expect("telegram").as_ref().map(Channel::request) else { return };
-    let kept = load_kept(&daemon.data_dir);
+    let mut kept = load_kept(&daemon.data_dir);
+    // Update numbers are a bot's own: another bot starts from its beginning. The id is public.
+    let bot = requester.token.expose().split(':').next().unwrap_or_default().to_string();
+    if kept.bot.as_deref().is_some_and(|known| known != bot) {
+        kept.offset = 0;
+    }
+    kept.bot = Some(bot);
     let mut offset = kept.offset;
     let (timeout, allowed) = {
         let mut channel = daemon.telegram.lock().expect("telegram");
@@ -208,13 +217,17 @@ pub(crate) fn run(daemon: Arc<Daemon>) {
             {"command": "whoami", "description": "The session this chat goes to"},
         ]}),
     );
-    while !daemon.channels_stopped.load(Ordering::Relaxed) {
+    while current() && !daemon.channels_stopped.load(Ordering::Relaxed) {
         // With nothing to deliver to, nothing is taken, so nothing is confirmed and lost.
         if daemon.listening_window().is_none() && daemon.conversations().is_none_or(|host| host.open_sessions().is_empty()) {
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
         let answer = requester.call("getUpdates", &json!({"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query"]}));
+        // Replaced while it waited: what came is the new one's to take.
+        if !current() {
+            return;
+        }
         let updates = match answer {
             Answer::Result(updates) => updates,
             Answer::Wait(seconds) => {

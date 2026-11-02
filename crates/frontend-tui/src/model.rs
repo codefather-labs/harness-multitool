@@ -58,6 +58,7 @@ pub struct Workspace {
     pub outbox: Vec<Outgoing>,
     /// What the settings' Callbacks tab shows when opened, as the app knows it.
     pub callbacks: Option<CallbacksPage>,
+    pub telegram: Option<TelegramPage>,
     /// The sign-in state as the running harness knows it.
     pub auth: Option<AuthPage>,
 }
@@ -68,6 +69,8 @@ pub enum Outgoing {
     Prompt { tab: u64, text: String },
     /// A message that is a task: done only when its checks pass (INV-4).
     Task { tab: u64, text: String, steps: Vec<String> },
+    /// The Telegram page saved: a new token if one was typed, and who may speak.
+    SaveTelegram { token: Option<String>, users: Vec<i64> },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -165,6 +168,7 @@ pub struct SettingsView {
     pub timeout_s: u32,
     pub fallback: bool,
     pub callbacks: CallbacksPage,
+    pub telegram: TelegramPage,
     pub auth: AuthPage,
     /// The model name is being typed.
     pub editing_model: bool,
@@ -299,7 +303,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None }
+        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -899,6 +903,26 @@ pub enum DiffLine {
 pub struct StatusLine {
     /// Label/value pairs, e.g. ("ADAPTER", "anthropic-api").
     pub fields: Vec<(String, String)>,
+}
+
+/// The settings' Telegram page. A saved token is never here, only whether there is one.
+#[derive(Clone, Default)]
+pub struct TelegramPage {
+    pub token_saved: bool,
+    /// What has been typed for a new token, drawn only as dots.
+    pub token: String,
+    pub users: String,
+    /// 0 the token, 1 the users.
+    pub cursor: usize,
+    pub editing: bool,
+    /// How the channel stands, in words.
+    pub status: String,
+}
+
+impl std::fmt::Debug for TelegramPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramPage").field("token_saved", &self.token_saved).field("token", &"<hidden>").field("users", &self.users).finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -315,9 +315,7 @@ fn main() -> Result<()> {
             let daemon = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers())
                 .or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()))
                 .map_err(|e| anyhow!(e))?;
-            if let Some(telegram) = config::telegram() {
-                daemon.start_telegram(telegram);
-            }
+            daemon.telegram_from(std::sync::Arc::new(config::telegram));
             // The conversations run here, whichever window asks (ADR 0024).
             let make_host: harness_session::remote::MakeHost = std::sync::Arc::new(|settings, note, reload| host_for(note, reload, selection_summary(settings)));
             daemon.host_conversations(harness_session::remote::DaemonHost::new(&dir, make_host));
@@ -385,6 +383,19 @@ fn main() -> Result<()> {
             println!("{} {}x{} px, {cols}x{rows} cells of {}x{} px", out.display(), img.width(), img.height(), raster.cell_w, raster.cell_h);
             Ok(())
         }
+    }
+}
+
+/// How the Telegram channel stands, in words, as the daemon says. Holds no token.
+fn telegram_status() -> String {
+    let stats = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).and_then(|c| c.stats().ok());
+    let Some(telegram) = stats.map(|s| s["telegram"].clone()) else { return "The daemon is not running.".to_string() };
+    if telegram["on"] != true {
+        return "Off: no token.".to_string();
+    }
+    match telegram["last_error"].as_str() {
+        Some(error) => format!("On, with a problem: {error}"),
+        None => format!("On. Chats bound: {}. Messages waiting: {}.", telegram["bound"], telegram["held"]),
     }
 }
 
@@ -587,6 +598,7 @@ impl Live {
         // The daemon may have just started: the settings should say so.
         if self.windows.len() != before {
             w.callbacks = Some(self.callbacks_page());
+            w.telegram = Some(self.telegram_page());
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
         }
@@ -676,6 +688,7 @@ impl Live {
         }
         w.active = handoff.active.min(w.tabs.len().saturating_sub(1));
         w.callbacks = Some(self.callbacks_page());
+            w.telegram = Some(self.telegram_page());
         state
     }
 
@@ -891,6 +904,7 @@ impl Live {
         let mut state = live_session(&self.provider, &self.model, &self.budget);
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             w.callbacks = Some(self.callbacks_page());
+            w.telegram = Some(self.telegram_page());
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
             }
@@ -930,6 +944,11 @@ impl Live {
             .collect();
         let daemon = client.map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
         CallbacksPage { standard, custom, conditions, daemon, cursor: 0, open: None }
+    }
+
+    fn telegram_page(&self) -> frontend_tui::model::TelegramPage {
+        let file = config::load().map(|c| c.telegram).unwrap_or_default();
+        frontend_tui::model::TelegramPage { token_saved: file.token.is_some(), users: file.allowed_users.iter().map(i64::to_string).collect::<Vec<_>>().join(", "), status: telegram_status(), ..Default::default() }
     }
 
     fn reload_daemon(&self) -> String {
@@ -1469,6 +1488,27 @@ impl Live {
                     }
                 }
                 Outgoing::Stop { tab } => self.sessions.stop(tab),
+                Outgoing::SaveTelegram { token, users } => {
+                    let saved = config::load().and_then(|mut c| {
+                        if let Some(token) = token {
+                            c.telegram.token = Some(token);
+                        }
+                        c.telegram.allowed_users = users;
+                        config::save(&c)
+                    });
+                    let reloaded = saved.map_err(|e| e.to_string()).and_then(|_| {
+                        let client = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).ok_or("the daemon is not running")?;
+                        client.telegram_reload()
+                    });
+                    let status = match reloaded {
+                        Ok(_) => telegram_status(),
+                        Err(error) => format!("Could not save: {error}"),
+                    };
+                    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.telegram.status = status;
+                    }
+                    w.telegram = Some(self.telegram_page());
+                }
                 Outgoing::SaveCallbacks { handlers, disabled } => {
                     let settings = harness_daemon::conditions::ProjectCallbacks { handlers: handlers.into_iter().collect(), disabled };
                     let note = match harness_daemon::conditions::write_project(&self.root, &settings) {
@@ -1476,6 +1516,7 @@ impl Live {
                         Err(e) => format!("Could not save: {e}"),
                     };
                     w.callbacks = Some(self.callbacks_page());
+            w.telegram = Some(self.telegram_page());
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::Reload => {
@@ -2048,7 +2089,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     match &mut state.mode {
                         frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.text.push_str(&text),
                         // A field being typed in takes it, line breaks aside.
-                        frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.auth.entry.is_some()) => {
+                        frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.telegram.editing || s.auth.entry.is_some()) => {
                             pasted_at = None;
                             for c in text.chars().filter(|c| !c.is_control()) {
                                 input::key(&mut state, Key::Char(c));

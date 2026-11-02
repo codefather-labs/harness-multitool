@@ -109,6 +109,9 @@ pub trait ConversationHost: Send + Sync {
     }
 }
 
+/// The Telegram channel's settings, as they stand when asked.
+pub type TelegramSource = Arc<dyn Fn() -> Option<telegram::Config> + Send + Sync>;
+
 /// A session open in a window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenSession {
@@ -167,6 +170,8 @@ pub struct Daemon {
     /// Memory calls served, for `multitool daemon --status`.
     memory_ops: std::sync::atomic::AtomicU64,
     telegram: Mutex<Option<telegram::Channel>>,
+    telegram_generation: std::sync::atomic::AtomicU64,
+    telegram_source: Mutex<Option<TelegramSource>>,
     channels_stopped: std::sync::atomic::AtomicBool,
 }
 
@@ -239,6 +244,8 @@ impl Daemon {
             port,
             memory_ops: std::sync::atomic::AtomicU64::new(0),
             telegram: Mutex::new(None),
+            telegram_generation: Default::default(),
+            telegram_source: Mutex::new(None),
             channels_stopped: std::sync::atomic::AtomicBool::new(false),
         });
         // Long polls hold a thread each, so serve from several.
@@ -278,9 +285,29 @@ impl Daemon {
 
     /// Starts the Telegram channel. With no call to this it stays off and nothing polls.
     pub fn start_telegram(self: &Arc<Self>, config: telegram::Config) {
+        let generation = self.telegram_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         *self.telegram.lock().expect("telegram") = Some(telegram::Channel::new(config));
         let daemon = self.clone();
-        std::thread::spawn(move || telegram::run(daemon));
+        std::thread::spawn(move || telegram::run(daemon, generation));
+    }
+
+    /// Where the channel's settings come from: read now, and again when the user saves them.
+    pub fn telegram_from(self: &Arc<Self>, source: TelegramSource) {
+        *self.telegram_source.lock().expect("telegram source") = Some(source);
+        self.reload_telegram();
+    }
+
+    /// The channel as its settings now say: the old one stops polling, and with no token none starts.
+    fn reload_telegram(self: &Arc<Self>) -> (u16, Value) {
+        let source = self.telegram_source.lock().expect("telegram source").clone();
+        match source.and_then(|source| source()) {
+            Some(config) => self.start_telegram(config),
+            None => {
+                self.telegram_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                *self.telegram.lock().expect("telegram") = None;
+            }
+        }
+        (200, self.stats()["telegram"].clone())
     }
 
     /// Channels stop taking messages; a restart picks up where they stopped.
@@ -351,7 +378,7 @@ impl Daemon {
         &self.admin
     }
 
-    fn serve(&self, mut request: tiny_http::Request) {
+    fn serve(self: &Arc<Self>, mut request: tiny_http::Request) {
         let url = request.url().to_string();
         let (path, query) = url.split_once('?').unwrap_or((&url, ""));
         let method = request.method().to_string();
@@ -372,9 +399,10 @@ impl Daemon {
             ("POST", "/memory") if admin => self.memory_op(&body),
             ("GET", "/stats") if admin => (200, self.stats()),
             ("POST", "/telegram/send") if admin => self.telegram_send(&body),
+            ("POST", "/telegram/reload") if admin => self.reload_telegram(),
             ("POST", "/window/step-debug") if admin => self.set_step_debug(&body),
             ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
-            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") => (401, json!({"error": "bad token"})),
+            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") | ("POST", "/telegram/reload") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 let only_if_idle = serde_json::from_str::<Value>(&body).is_ok_and(|b| b["if_idle"] == true);
                 let host = self.conversations.lock().expect("conversations").clone();

@@ -194,6 +194,12 @@ impl Client {
         }
     }
 
+    /// The Telegram channel takes up its settings as they now stand.
+    pub fn telegram_reload(&self) -> Result<Value, String> {
+        let mut response = self.agent.post(format!("{}/telegram/reload", self.base)).header("authorization", &format!("Bearer {}", self.admin)).send("{}").map_err(|e| format!("reaching the daemon: {e}"))?;
+        response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))
+    }
+
     /// The window's session entered or left step-debug mode.
     pub fn set_step_debug(&self, window: &str, on: bool) -> Result<(), String> {
         let response = self

@@ -598,6 +598,7 @@ pub fn session_tabs() -> AppState {
         live: false,
         outbox: Vec::new(),
         callbacks: None,
+        telegram: None,
         auth: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }

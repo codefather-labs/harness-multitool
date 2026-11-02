@@ -41,6 +41,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.callbacks {
         s.callbacks = page.clone();
     }
+    if let Some(page) = &w.telegram {
+        s.telegram = page.clone();
+    }
     if let Some(page) = &w.auth {
         s.auth = page.clone();
     }
@@ -106,7 +109,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Theme"].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", "Theme"].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -122,6 +125,7 @@ pub fn sample_settings() -> SettingsView {
         timeout_s: 60,
         fallback: true,
         callbacks: CallbacksPage::default(),
+        telegram: Default::default(),
         auth: AuthPage::default(),
         editing_model: false,
         model_menu: None,
@@ -195,6 +199,40 @@ pub fn sample_callbacks() -> CallbacksPage {
 }
 
 /// The Callbacks tab (settings-callbacks-*): one list under three headings, rows at one cursor.
+/// The bot's token and who may speak to it. The token shows only as dots.
+fn telegram_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.telegram;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let line = |index: usize, label: &str, value: String| {
+        let under = focus && p.cursor == index;
+        let cursor = if under && p.editing { "█" } else { "" };
+        (vec![Span::styled(format!(" {label:<16}"), muted), Span::styled(value, strong), Span::styled(cursor.to_string(), Style::default().fg(t.accent_line))], if under { t.surface_raised } else { bg })
+    };
+    let token = match (p.token.chars().count(), p.token_saved) {
+        (0, true) => "saved, Enter to replace".to_string(),
+        (0, false) => "not set, Enter to type or paste".to_string(),
+        (n, _) => "•".repeat(n),
+    };
+    let users = if p.users.is_empty() && !(p.editing && p.cursor == 1) { "none: nobody can speak to the bot".to_string() } else { p.users.clone() };
+    let rows = [line(0, "Bot token", token), line(1, "Allowed user ids", users)];
+    for (i, (spans, row_bg)) in rows.into_iter().enumerate() {
+        text(f, r.x, r.y + 1 + i as u16, r.width, spans, row_bg);
+    }
+    let notes = [
+        p.status.as_str(),
+        "",
+        "One bot, every session: /switch moves a chat.",
+        "The token comes from @BotFather.",
+        "User ids with commas; only they reach an agent.",
+        "Ctrl+S saves, and the channel restarts at once.",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 4 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+    }
+}
+
 fn callbacks_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
     let p = &s.callbacks;
     let focus = s.focus == SettingsPane::Page;
@@ -517,6 +555,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     text(f, px, body_y, pw, vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))], bg);
     if name == "Callbacks" {
         callbacks_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
+    } else if name == "Telegram" {
+        telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if s.section != 0 {
         text(f, px, body_y + 1, pw, vec![Span::styled(format!("{name} settings come with their stage."), Style::default().fg(t.text_muted))], bg);
     } else {
@@ -862,6 +902,19 @@ fn model_dropdown(f: &mut Frame, r: Rect, row_y: u16, at: usize, s: &SettingsVie
 /// What a key does while an overlay is open. Returns None when no overlay is open.
 pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
     if let Some(Overlay::Settings(s)) = &mut w.overlay {
+        if s.telegram.editing {
+            let p = &mut s.telegram;
+            let field = if p.cursor == 0 { &mut p.token } else { &mut p.users };
+            match k {
+                Key::Char(c) => field.push(c),
+                Key::Backspace => {
+                    field.pop();
+                }
+                Key::Enter | Key::Esc => p.editing = false,
+                _ => {}
+            }
+            return Some(Outcome::Stay);
+        }
         if s.editing_model {
             match k {
                 Key::Char(c) => s.model.push(c),
@@ -926,6 +979,27 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             };
             if let Some(i) = chosen {
                 answer(w, i);
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Telegram") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.telegram;
+            match k {
+                Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
+                Key::Up => p.cursor = 0,
+                Key::Down => p.cursor = 1,
+                Key::Enter | Key::Char('e') => p.editing = true,
+                Key::Ctrl('s') => match parse_users(&p.users) {
+                    Ok(users) => {
+                        let token = Some(p.token.trim().to_string()).filter(|t| !t.is_empty());
+                        p.token_saved |= token.is_some();
+                        p.token.clear();
+                        p.users = users.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+                        p.status = "Saved. The channel is starting over.".to_string();
+                        w.outbox.push(Outgoing::SaveTelegram { token, users });
+                    }
+                    Err(bad) => p.status = format!("\"{bad}\" is not a user id: ids are numbers."),
+                },
+                _ => {}
             }
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Callbacks") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
@@ -1123,6 +1197,11 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         _ => {}
     }
     Outcome::Stay
+}
+
+/// User ids from what was typed: separated by commas or spaces. The first that is no number, if any.
+fn parse_users(typed: &str) -> Result<Vec<i64>, String> {
+    typed.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()).map(|w| w.parse::<i64>().map_err(|_| w.to_string())).collect()
 }
 
 #[cfg(test)]
@@ -1534,5 +1613,31 @@ mod tests {
         }
         key(&mut w, Key::Ctrl('s'));
         assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveSettings { context: Some(32_000), .. })));
+    }
+
+    #[test]
+    fn the_telegram_page_saves_and_never_shows_a_token() {
+        let mut w = Workspace::one(Default::default(), "t");
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == "Telegram").unwrap();
+        s.focus = SettingsPane::Page;
+        w.overlay = Some(Overlay::Settings(s));
+        let page = |w: &Workspace| match &w.overlay { Some(Overlay::Settings(s)) => s.telegram.clone(), _ => panic!() };
+        for key_pressed in [Key::Enter, Key::Char('1'), Key::Char(':'), Key::Char('S'), Key::Enter, Key::Down, Key::Enter, Key::Char('4'), Key::Char('x'), Key::Enter, Key::Ctrl('s')] {
+            key(&mut w, key_pressed);
+        }
+        assert!(page(&w).status.contains("not a user id"), "{:?}", page(&w).status);
+        assert!(w.outbox.is_empty());
+        for key_pressed in [Key::Enter, Key::Backspace, Key::Char('2'), Key::Char(','), Key::Char(' '), Key::Char('7'), Key::Enter] {
+            key(&mut w, key_pressed);
+        }
+        let shown = format!("{:?}", page(&w));
+        assert!(!shown.contains("1:S"), "{shown}");
+        key(&mut w, Key::Ctrl('s'));
+        assert_eq!(page(&w).users, "42, 7");
+        assert!(page(&w).token_saved && page(&w).token.is_empty());
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveTelegram { token: Some(t), users }) if t == "1:S" && users == [42, 7]));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveTelegram { token: None, .. })), "the saved one stays");
     }
 }
