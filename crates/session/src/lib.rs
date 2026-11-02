@@ -231,6 +231,8 @@ pub struct SessionInfo {
     pub imported: Option<String>,
     /// It is linked to that conversation (ADR 0025), not a copy of it.
     pub linked: bool,
+    /// Not a session here yet: `id` is a conversation Claude Code keeps, to link when opened.
+    pub foreign: bool,
 }
 
 /// Stores a conversation brought in from elsewhere as a session of this project, so it opens like
@@ -290,7 +292,7 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
                 _ => None,
             });
             let linked = imported.is_some() && log.iter().rev().any(|e| matches!(&e.event, Event::FormSynced { .. }));
-            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms), imported, linked })
+            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms), imported, linked, foreign: false })
         })
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.last_ms));

@@ -96,7 +96,7 @@ pub enum Outgoing {
     /// Make the daemon read the project's callback files again.
     ReloadCallbacks,
     /// Settings saved: the provider's option name and the model, for new sessions.
-    SaveSettings { provider: String, model: String, context: Option<u64> },
+    SaveSettings { provider: String, model: String, context: Option<u64>, delegate: (bool, bool) },
 }
 
 /// A press on a map, until the release: where it started, what it started on.
@@ -170,6 +170,12 @@ pub struct SettingsView {
     pub context_menu: Option<usize>,
     /// The choice as last saved.
     pub saved_context: Option<u64>,
+    /// Claude Code runs in the user's own environment: their hooks, skills, servers and browser.
+    pub delegate_own: bool,
+    /// Claude Code asks no permissions. Only ever the user's own choice (CON-70).
+    pub delegate_skip: bool,
+    /// Those two as last saved.
+    pub saved_delegate: (bool, bool),
 }
 
 /// The provider row of a ChatGPT plan.
@@ -209,6 +215,8 @@ pub struct AuthPage {
     pub entry: Option<String>,
     /// The context windows chosen so far: (provider id, tokens).
     pub contexts: Vec<(String, u64)>,
+    /// How Claude Code's row is set: (own environment, no permissions).
+    pub delegate_row: (bool, bool),
 }
 
 /// Prints no key.

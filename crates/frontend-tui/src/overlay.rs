@@ -74,6 +74,8 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     s.saved = (s.provider, s.model.clone());
     s.context = chosen_context(&s);
     s.saved_context = s.context;
+    (s.delegate_own, s.delegate_skip) = s.auth.delegate_row;
+    s.saved_delegate = s.auth.delegate_row;
     s
 }
 
@@ -128,6 +130,9 @@ pub fn sample_settings() -> SettingsView {
         context: None,
         context_menu: None,
         saved_context: None,
+        delegate_own: true,
+        delegate_skip: false,
+        saved_delegate: (true, false),
     }
 }
 
@@ -759,6 +764,26 @@ fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
     }
     out.hits.push(Hit { rect: Rect::new(r.x, model_y, r.width, 1), target: Target::ModelRow });
     out.hits.push(Hit { rect: Rect::new(r.x, model_y + 1, r.width, 1), target: Target::ContextRow });
+    if on_delegate(s) {
+        let n = s.providers.len() + 1;
+        let tick = |on: bool, words: &str| -> Vec<Span<'static>> {
+            vec![Span::styled(if on { "[x]" } else { "[ ]" }, Style::default().fg(if on { t.success } else { t.text_muted })), Span::styled(format!("  {words}"), Style::default().fg(if on { t.text } else { t.text_muted }))]
+        };
+        for (i, (label, spans, target)) in [
+            ("Your environment", tick(s.delegate_own, "your hooks, skills, servers and browser"), Target::DelegateOwn),
+            ("No permission prompts", tick(s.delegate_skip, "it may do anything, as you can yourself"), Target::DelegateSkip),
+        ].into_iter().enumerate() {
+            if y >= r.y + r.height {
+                break;
+            }
+            let under = page_focus && s.cursor == n + 4 + i;
+            let mut row = vec![Span::styled(format!("{label:<22}"), Style::default().fg(t.text))];
+            row.extend(spans);
+            text(f, r.x, y, r.width, row, if under { t.surface_raised } else { bg });
+            out.hits.push(Hit { rect: Rect::new(r.x, y, r.width, 1), target });
+            y += 1;
+        }
+    }
     sign_in_message(f, r, y + 1, s, t, bg);
     if let Some(at) = s.context_menu {
         context_dropdown(f, r, model_y + 1, at, s, t, out);
@@ -913,7 +938,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         Overlay::Settings(s) => match k {
             Key::Esc => {
                 // Closing is not saving, and the choice should not go quietly.
-                let lost = (s.provider, s.model.clone()) != s.saved || s.context != s.saved_context;
+                let lost = (s.provider, s.model.clone()) != s.saved || s.context != s.saved_context || (s.delegate_own, s.delegate_skip) != s.saved_delegate;
                 w.overlay = None;
                 if lost {
                     w.toast = Some(system_toast("Not saved: Ctrl+S saves the provider and model."));
@@ -932,8 +957,9 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 if w.live {
                     let provider = s.providers[s.provider].name.clone();
                     let context = s.context;
+                    let delegate = (s.delegate_own, s.delegate_skip);
                     w.overlay = None;
-                    w.outbox.push(Outgoing::SaveSettings { provider, model, context });
+                    w.outbox.push(Outgoing::SaveSettings { provider, model, context, delegate });
                     return Some(Outcome::Stay);
                 }
                 w.overlay = None;
@@ -954,7 +980,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             },
             Key::Down => match s.focus {
                 SettingsPane::Sections => s.section = (s.section + 1).min(s.sections.len() - 1),
-                SettingsPane::Page => s.cursor = (s.cursor + 1).min(s.providers.len() + 3),
+                SettingsPane::Page => s.cursor = (s.cursor + 1).min(s.providers.len() + if on_delegate(s) { 6 } else { 4 }),
             },
             // Enter types a model's name; the list only knows a few.
             Key::Enter if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !on_plan(s) && models_for(s).is_empty() => s.editing_model = true,
@@ -987,6 +1013,8 @@ fn activate(w: &mut Workspace) {
             s.timeout_s = TIMEOUTS[(at + 1) % TIMEOUTS.len()];
         }
         i if i == n + 4 => s.fallback = !s.fallback,
+        i if i == n + 5 && on_delegate(s) => s.delegate_own = !s.delegate_own,
+        i if i == n + 6 && on_delegate(s) => s.delegate_skip = !s.delegate_skip,
         _ => {}
     }
 }
@@ -1046,7 +1074,9 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.focus = SettingsPane::Page;
             choose_provider(w, i);
         }
-        (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton | Target::ContextRow | Target::ContextChoice(_)) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+        (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton | Target::ContextRow | Target::ContextChoice(_) | Target::DelegateOwn | Target::DelegateSkip) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+        (Some(Overlay::Settings(s)), Target::DelegateOwn) => s.delegate_own = !s.delegate_own,
+        (Some(Overlay::Settings(s)), Target::DelegateSkip) => s.delegate_skip = !s.delegate_skip,
         (Some(Overlay::Settings(s)), Target::ContextRow) => {
             s.cursor = s.providers.len() + 2;
             s.focus = SettingsPane::Page;

@@ -804,6 +804,9 @@ impl Live {
         let mut state = live_session(&self.provider, &self.model, &self.budget);
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             w.callbacks = Some(self.callbacks_page());
+            if w.auth.is_none() {
+                w.auth = Some(self.auth_page(None));
+            }
         }
         state
     }
@@ -859,6 +862,8 @@ impl Live {
         let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
         page.keys = ["Anthropic API", "OpenAI-compatible", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
         page.delegate = cfg!(feature = "claude-code");
+        // A row not there yet starts in the user's own environment, asking permissions.
+        page.delegate_row = session.providers.get("claude-code").map_or((true, false), |row| (row["environment"] == "user", row["permissions"] == "skip"));
         page.contexts = session.providers.iter().filter(|(_, row)| row["context_chosen"] == true).filter_map(|(id, row)| Some((id.clone(), row["context_window"].as_u64()?))).collect();
         if let Ok(dir) = config::data_dir() {
             (page.signed_in, page.plan_status) = harness_auth_chatgpt::status(&harness_session_store(&dir));
@@ -1052,6 +1057,10 @@ impl Live {
     }
 
     fn save_settings(&mut self, provider: &str, model: &str, context: Option<u64>, chosen: Option<u64>) -> Result<()> {
+        self.save_settings_with(provider, model, context, chosen, None)
+    }
+
+    fn save_settings_with(&mut self, provider: &str, model: &str, context: Option<u64>, chosen: Option<u64>, delegate: Option<(bool, bool)>) -> Result<()> {
         let mut c = config::load()?;
         c.session.provider = provider.to_string();
         c.session.model = model.to_string();
@@ -1067,6 +1076,19 @@ impl Live {
             c.session.auth.entry("chatgpt".to_string()).or_insert_with(|| serde_json::json!({"oauth": "chatgpt"}));
         }
         // What the server said this model holds: TOKENS and compaction go by it.
+        // How the user has Claude Code run: their word alone (CON-70).
+        if let (Some((own, skip)), Some(object)) = (delegate, c.session.providers.get_mut("claude-code").and_then(|row| row.as_object_mut())) {
+            if own {
+                object.insert("environment".to_string(), serde_json::json!("user"));
+            } else {
+                object.remove("environment");
+            }
+            if skip {
+                object.insert("permissions".to_string(), serde_json::json!("skip"));
+            } else {
+                object.remove("permissions");
+            }
+        }
         // Or what the user chose, which outranks it (CON-80).
         let row = c.session.providers.entry(provider.to_string()).or_insert_with(|| serde_json::json!({}));
         if let Some(object) = row.as_object_mut() {
@@ -1112,6 +1134,18 @@ impl Live {
         state.header.cwd = shown_cwd();
         state.header.branch = git_branch();
         self.recent = config::data_dir().map(|d| harness_session::recent(&d.to_string_lossy(), &self.root)).unwrap_or_default();
+        // Claude Code's conversations of this folder too, those not linked already, or that went on
+        // in Claude Code past a copy from before links.
+        if let Ok(conversations) = harness_session::conversation_source("claude-code") {
+            let linked: Vec<String> = self.recent.iter().filter(|s| s.linked).filter_map(|s| s.imported.clone()).collect();
+            for c in conversations.list(&self.root).unwrap_or_default() {
+                if !linked.contains(&c.id) {
+                    let title = if c.title.is_empty() { c.id.chars().take(8).collect() } else { c.title.clone() };
+                    self.recent.push(harness_session::SessionInfo { id: c.id, title, model: "claude-code".to_string(), last_ms: c.last_ms, imported: None, linked: false, foreign: true });
+                }
+            }
+            self.recent.sort_by_key(|s| std::cmp::Reverse(s.last_ms));
+        }
         if !self.real {
             self.recent.clear();
         }
@@ -1144,8 +1178,22 @@ impl Live {
 
     /// Opens stored session `i`: its log is drawn, and the next message continues it.
     fn open_recent(&mut self, i: usize) -> Option<frontend_tui::AppState> {
-        let info = self.recent.get(i)?.clone();
+        let mut info = self.recent.get(i)?.clone();
         let data = config::data_dir().ok()?;
+        // A conversation of Claude Code's: linked now, one conversation from here on (INV-21).
+        if info.foreign {
+            let conversations = harness_session::conversation_source("claude-code").ok()?;
+            let imported = conversations.read(&self.root, &info.id).ok()?;
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            info.id = harness_session::store_imported(&data.to_string_lossy(), &self.root, &imported, now_ms).ok()?;
+            // Linked needs the adapter known, whichever one is chosen now.
+            if let Ok(mut c) = config::load()
+                && !c.session.providers.contains_key("claude-code")
+            {
+                c.session.providers.insert("claude-code".to_string(), serde_json::json!({"kind": "claude-code", "environment": "user"}));
+                let _ = config::save(&c);
+            }
+        }
         let mut state = self.fresh_session();
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             let tab = w.tabs[w.active].id;
@@ -1303,11 +1351,11 @@ impl Live {
                     let note = self.reload_daemon();
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
-                Outgoing::SaveSettings { provider, model, context: chosen } => {
+                Outgoing::SaveSettings { provider, model, context: chosen, delegate } => {
                     let provider = provider_id(&provider);
                     let auth = w.auth.clone().unwrap_or_default();
                     let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
-                    let note = match self.save_settings(&provider, &model, context, chosen) {
+                    let note = match self.save_settings_with(&provider, &model, context, chosen, Some(delegate)) {
                         Ok(()) => {
                             self.apply_to_tabs(w, &provider, &model);
                             // The settings open next time as they were saved.
@@ -1687,6 +1735,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     // it must not open a session or answer a prompt.
     let (mut held_paste, mut held_enter, mut pasted_at) = (String::new(), false, None::<std::time::Instant>);
     let mut inbound_at = None::<std::time::Instant>;
+    // The settings were opened from the start page: closing them goes back there, the new choice shown.
+    let mut settings_from_start = false;
     // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
     // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
     // text fallback the view already drew.
@@ -1910,6 +1960,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                             if let Mode::Session(w) = &mut state.mode {
                                 w.overlay = Some(frontend_tui::model::Overlay::Settings(frontend_tui::overlay::settings_for(w)));
                             }
+                            settings_from_start = true;
                         }
                         // Settings, tour and help screens come in later stages.
                         _ => {}
@@ -1918,6 +1969,10 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 Outcome::Stay | Outcome::OpenSettings => {}
             }
             live.send(&mut state);
+            if settings_from_start && matches!(&state.mode, Mode::Session(w) if w.overlay.is_none()) {
+                settings_from_start = false;
+                state = live.startup();
+            }
         }
     })();
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);

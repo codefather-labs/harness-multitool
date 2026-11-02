@@ -4,7 +4,7 @@
 #
 #   ./run.sh                          # preview, starting at the splash
 #   ./run.sh --graphics sixel         # force a picture protocol: auto|sixel|kitty|iterm2|off
-#   ./run.sh --claude-code            # with Claude Code as a delegate agent (ADR 0020)
+#   ./run.sh --no-claude-code         # without Claude Code as a delegate agent (ADR 0020)
 #   ./run.sh preview main-session     # any multitool arguments after the options
 #   ./run.sh --under "<launcher> ..."  # inside a launcher that starts `claude` from the PATH and
 #                                     # gives it an identity and messages: the harness takes its place
@@ -17,7 +17,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --graphics) MULTITOOL_GRAPHICS="$2"; shift 2 ;;
     --debug)    PROFILE=debug; shift ;;
-    --claude-code) FEATURES="--features multitool/claude-code"; shift ;;
+    --claude-code) shift ;;
+    --no-claude-code) FEATURES=""; shift ;;
     --under)    UNDER="$2"; shift 2 ;;
     *) break ;;
   esac
@@ -30,6 +31,8 @@ export MULTITOOL_GRAPHICS="${MULTITOOL_GRAPHICS:-auto}"
 export COLORTERM="${COLORTERM:-truecolor}"
 # ---------------------------------------------------------------------------------------------
 
+# A build of your own has Claude Code as an adapter (ADR 0020); what is shipped decides apart.
+FEATURES="${FEATURES---features multitool/claude-code}"
 profile="${PROFILE:-release}"
 bin="$here/target/$profile/multitool"
 if [[ "$profile" == release ]]; then

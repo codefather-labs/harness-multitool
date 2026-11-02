@@ -68,7 +68,7 @@ impl ConversationFormat for ClaudeCodeConversations {
             let path = file.path();
             let (Some(id), Ok(meta)) = (path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".jsonl")), file.metadata()) else { continue };
             let last_ms = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
-            out.push(ConversationInfo { id: id.to_string(), title: title_near_end(&path).unwrap_or_default(), last_ms, bytes: meta.len() });
+            out.push(ConversationInfo { id: id.to_string(), title: title_near_end(&path).or_else(|| first_words(&path)).unwrap_or_default(), last_ms, bytes: meta.len() });
         }
         out.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
         Ok(out)
@@ -305,6 +305,23 @@ fn title_near_end(path: &Path) -> Option<String> {
         }
     }
     custom.or(ai)
+}
+
+/// What the user first said, for a conversation that was never given a title.
+fn first_words(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(std::io::Read::take(file, TITLE_TAIL)).split(b'\n').map_while(Result::ok) {
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else { continue };
+        if value["type"] != "user" || value["isMeta"] == true {
+            continue;
+        }
+        let content = &value["message"]["content"];
+        let text = content.as_str().map(str::to_string).or_else(|| content.as_array()?.iter().find_map(|b| b["text"].as_str().map(str::to_string)));
+        if let Some(words) = text.as_deref().and_then(|t| t.lines().next()).filter(|t| !t.trim().is_empty() && !t.starts_with('<')) {
+            return Some(words.to_string());
+        }
+    }
+    None
 }
 
 /// One line that has a place in the chain; `value` only for what will be shown, made small.

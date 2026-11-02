@@ -51,6 +51,8 @@ pub enum Target {
     /// A row of the open dropdown.
     ModelChoice(usize),
     ContextRow,
+    DelegateOwn,
+    DelegateSkip,
     ContextChoice(usize),
     /// A provider row on the settings window's provider page.
     Provider(usize),
