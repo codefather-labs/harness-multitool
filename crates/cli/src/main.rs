@@ -627,7 +627,7 @@ impl Live {
                     feed.apply(view, &entry);
                     w.journal.extend(feed.take_known());
                 }
-                feed.run_ended(view);
+                feed.replayed(view);
                 self.feeds.insert(id, feed);
             }
             if let (Some(client), Some(window), Some(url)) = (&client, &saved.window, &saved.url) {
@@ -1318,7 +1318,7 @@ impl Live {
             if opened == harness_session::remote::Opened::Attached {
                 view.generating = true;
             } else {
-                feed.run_ended(view);
+                feed.replayed(view);
             }
             self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
             view.composer.text.push_str(&left.join("\n\n"));

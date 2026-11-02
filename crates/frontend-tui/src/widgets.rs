@@ -247,12 +247,46 @@ pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[String]) {
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
 }
 
-/// The rows above the composer: an open question, once the run has ended, or the queue.
+/// The rows above the composer: what runs in the background, then an open question, once the run
+/// has ended, or the queue.
 pub fn panel_height(v: &crate::model::SessionView, width: u16) -> u16 {
-    match &v.question {
-        Some((question, _)) if !v.generating => (question_lines(&question.text, width).len() + question.options.len() + 1) as u16,
-        _ => queue_height(&v.queued),
+    background_height(&v.background)
+        + match &v.question {
+            Some((question, _)) if !v.generating => (question_lines(&question.text, width).len() + question.options.len() + 1) as u16,
+            _ => queue_height(&v.queued),
+        }
+}
+
+/// How many background tasks show, the rest said in a line.
+const BACKGROUND_ROWS: usize = 3;
+
+pub fn background_height(tasks: &[crate::model::BackgroundView]) -> u16 {
+    tasks.len().min(BACKGROUND_ROWS + 1) as u16
+}
+
+/// What runs in the background: a moon, what it is, for how long.
+pub fn background(f: &mut Frame, area: Rect, t: &Theme, tasks: &[crate::model::BackgroundView], now_ms: u64) {
+    if tasks.is_empty() {
+        return;
     }
+    let muted = Style::default().fg(t.text_muted);
+    let shown = if tasks.len() > BACKGROUND_ROWS + 1 { BACKGROUND_ROWS } else { tasks.len() };
+    let mut lines: Vec<Line> = tasks[..shown]
+        .iter()
+        .map(|task| {
+            let flat = task.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            Line::from(vec![
+                Span::styled(format!(" {} ", moon(now_ms)), Style::default().fg(t.accent)),
+                Span::styled("in background  ", muted),
+                Span::styled(flat, Style::default().fg(t.text)),
+                Span::styled(format!("  {}", run_time(now_ms.saturating_sub(task.started_ms))), Style::default().fg(t.accent)),
+            ])
+        })
+        .collect();
+    if tasks.len() > shown {
+        lines.push(Line::from(Span::styled(format!("   … {} more", tasks.len() - shown), muted)));
+    }
+    f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
 }
 
 /// The longest a question grows, whatever a model writes: the card above holds all of it.
@@ -352,5 +386,22 @@ mod composer_tests {
     fn composer_draw(f: &mut Frame, t: &crate::theme::Theme, c: &Composer) {
         let area = f.area();
         super::composer(f, area, t, c);
+    }
+
+    #[test]
+    fn the_background_panel_lists_tasks_and_their_time() {
+        use crate::model::BackgroundView;
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let tasks: Vec<BackgroundView> = (0..5).map(|i| BackgroundView { id: i.to_string(), description: format!("job {i}"), started_ms: 1000 }).collect();
+        assert_eq!(background_height(&[]), 0);
+        assert_eq!(background_height(&tasks[..3]), 3);
+        assert_eq!(background_height(&tasks[..4]), 4);
+        assert_eq!(background_height(&tasks), 4);
+        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
+        term.draw(|f| { let area = f.area(); background(f, area, &t, &tasks, 8000) }).unwrap();
+        let buf = term.backend().buffer().clone();
+        let row = |y: u16| (0..60).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        assert!(row(0).contains("in background") && row(0).contains("job 0") && row(0).contains("7s"), "{}", row(0));
+        assert!(row(3).contains("2 more"), "{}", row(3));
     }
 }

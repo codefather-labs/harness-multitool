@@ -35,6 +35,31 @@ pub struct Mapper {
     streamed: bool,
     /// Its total so far; `None` when that is not known, as for a fork of someone else's session.
     cost_total: Option<u64>,
+    /// The usage of this turn's latest API call.
+    last_call: Option<Value>,
+}
+
+/// What a system line of its stream says about its background tasks.
+fn news(e: &Value) -> Option<Event> {
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    match e["subtype"].as_str()? {
+        "background_tasks_changed" => Some(Event::BackgroundTasks {
+            tasks: e["tasks"].as_array()?.iter().map(|t| harness_api::event::BackgroundTask { id: text(&t["task_id"]), description: text(&t["description"]), kind: text(&t["task_type"]) }).collect(),
+        }),
+        "task_notification" => Some(Event::BackgroundDone { status: text(&e["status"]), summary: text(&e["summary"]) }),
+        _ => None,
+    }
+}
+
+/// A line that begins no turn: news, or its echo of something already seen.
+fn only_news(line: &str) -> bool {
+    let Ok(e) = serde_json::from_str::<Value>(line) else { return true };
+    match e["type"].as_str().unwrap_or_default() {
+        "system" => e["subtype"] != "init",
+        "user" => e["isReplay"] == true,
+        "rate_limit_event" => true,
+        _ => false,
+    }
 }
 
 impl Mapper {
@@ -56,7 +81,8 @@ impl Mapper {
         let mut out = Vec::new();
         let Ok(e) = serde_json::from_str::<Value>(line) else { return out };
         match e["type"].as_str().unwrap_or_default() {
-            "system" if e["subtype"] == "init" => {
+            "system" if e["subtype"] != "init" => out.extend(news(&e).map(Mapped::Event)),
+            "system" => {
                 self.model = e["model"].as_str().unwrap_or_default().to_string();
                 if let Some(id) = e["session_id"].as_str() {
                     out.push(Mapped::Event(Event::BackendSession { id: id.to_string() }));
@@ -74,6 +100,9 @@ impl Mapper {
                 self.stream(&e["event"], &mut out);
             }
             "assistant" => {
+                if e["message"]["usage"].is_object() {
+                    self.last_call = Some(e["message"]["usage"].clone());
+                }
                 for block in e["message"]["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str().unwrap_or_default() {
                         "text" if !self.streamed => out.push(Mapped::Event(Event::TextDelta { text: block["text"].as_str().unwrap_or_default().to_string() })),
@@ -102,7 +131,10 @@ impl Mapper {
             "result" => {
                 let u = &e["usage"];
                 let count = |k: &str| u[k].as_u64().unwrap_or(0);
-                let usage = Usage { input: count("input_tokens"), output: count("output_tokens"), cache_read: count("cache_read_input_tokens"), cache_write: count("cache_creation_input_tokens") };
+                // A result sums the turn's calls; how full the context is, is the last call's prompt.
+                let last = self.last_call.take().unwrap_or_else(|| u.clone());
+                let held = |k: &str| last[k].as_u64().unwrap_or(0);
+                let usage = Usage { input: held("input_tokens"), output: count("output_tokens"), cache_read: held("cache_read_input_tokens"), cache_write: held("cache_creation_input_tokens") };
                 let stop = match e["stop_reason"].as_str() {
                     Some("max_tokens") => StopReason::MaxTokens,
                     Some("end_turn") | None => StopReason::EndTurn,
@@ -285,11 +317,17 @@ impl ClaudeCode {
             let _ = stderr.read_to_string(&mut text);
             text
         });
-        Ok(Live { child, stdin, lines, errors: Some(errors), session: request.session.map(str::to_string), plan_mode: request.plan_mode, prompt_seen: false })
+        Ok(Live { child, stdin, lines, errors: Some(errors), session: request.session.map(str::to_string), plan_mode: request.plan_mode, prompt_seen: false, echoes: false, peeked: Default::default() })
     }
 
     fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
         let mut slot = self.live.borrow_mut();
+        if request.woken {
+            let Some(live) = slot.as_mut() else { return Ok(BackendEnd::Done) };
+            live.prompt_seen = true;
+            let mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, request.cost_total_micro_usd == 0);
+            return self.run_rest(slot, request, sink, mapper, None);
+        }
         let goes_on = slot.as_mut().is_some_and(|live| {
             matches!(live.child.try_wait(), Ok(None)) && live.plan_mode == request.plan_mode && !request.fork && (request.session.is_none() || live.session.as_deref() == request.session)
         });
@@ -332,13 +370,18 @@ impl ClaudeCode {
                 let _ = live.send(&text);
                 unechoed.push_back(text);
             }
-            match live.lines.recv_timeout(Duration::from_millis(100)) {
+            let line = match live.peeked.pop_front() {
+                Some(line) => Ok(line),
+                None => live.lines.recv_timeout(Duration::from_millis(100)),
+            };
+            match line {
                 Ok(line) => {
                     unanswered = None;
                     let parsed: Option<Value> = serde_json::from_str(&line).ok();
                     if let Some(e) = &parsed {
                         // The first one coming back is this run's own prompt.
                         if e["isReplay"] == true && e["message"]["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "text")) {
+                            live.echoes = true;
                             if live.prompt_seen {
                                 unechoed.pop_front();
                                 // Taken after that result: the run goes on to the result of this one.
@@ -359,6 +402,8 @@ impl ClaudeCode {
                                     return Ok(BackendEnd::Stopped);
                                 }
                             }
+                            // Before its prompt came back: the end of a turn before this run.
+                            Mapped::End(_) if live.echoes && !live.prompt_seen => {}
                             Mapped::End(end) => {
                                 end_held = Some((Instant::now() + LATE_ECHO, end));
                             }
@@ -409,6 +454,10 @@ struct Live {
     plan_mode: bool,
     /// This run's prompt has come back.
     prompt_seen: bool,
+    /// It says when it takes a message.
+    echoes: bool,
+    /// Read between runs, for the run that follows.
+    peeked: std::collections::VecDeque<String>,
 }
 
 impl Live {
@@ -453,6 +502,24 @@ impl AgentBackend for ClaudeCode {
 
     fn own_process(&self) -> Option<u32> {
         self.live.borrow().as_ref().map(|live| live.child.id())
+    }
+
+    fn between_runs(&self, sink: &mut dyn FnMut(Event)) -> bool {
+        let Ok(mut slot) = self.live.try_borrow_mut() else { return false };
+        let Some(live) = slot.as_mut() else { return false };
+        while let Ok(line) = live.lines.try_recv() {
+            live.peeked.push_back(line);
+        }
+        while let Some(line) = live.peeked.front() {
+            if !only_news(line) {
+                return true;
+            }
+            if let Some(event) = serde_json::from_str::<Value>(line).ok().as_ref().and_then(news) {
+                sink(event);
+            }
+            live.peeked.pop_front();
+        }
+        false
     }
 }
 
@@ -511,7 +578,7 @@ mod tests {
     }
 
     fn request<'a>(session: Option<&'a str>, system: Option<&'a str>, plan_mode: bool, stopped: &'a dyn Fn() -> bool) -> BackendRequest<'a> {
-        BackendRequest { prompt: "secret prompt", session, system, plan_mode, fork: false, cost_total_micro_usd: 0, turn: 1, stopped, next_message: &|| None }
+        BackendRequest { woken: false, prompt: "secret prompt", session, system, plan_mode, fork: false, cost_total_micro_usd: 0, turn: 1, stopped, next_message: &|| None }
     }
 
     #[test]
@@ -537,7 +604,7 @@ mod tests {
     #[test]
     fn a_conversation_from_elsewhere_is_forked_and_its_row_opens_what_it_needs() {
         let stopped = || false;
-        let request = BackendRequest { prompt: "p", session: Some("s1"), system: None, plan_mode: false, fork: true, cost_total_micro_usd: 0, turn: 1, stopped: &stopped, next_message: &|| None };
+        let request = BackendRequest { woken: false, prompt: "p", session: Some("s1"), system: None, plan_mode: false, fork: true, cost_total_micro_usd: 0, turn: 1, stopped: &stopped, next_message: &|| None };
         let isolated = ClaudeCode::new("m", "/r", &serde_json::json!({})).args(&request);
         assert!(isolated.iter().any(|a| a == "--fork-session") && isolated.iter().any(|a| a == "--strict-mcp-config"));
         assert!(!isolated.iter().any(|a| a == "--dangerously-skip-permissions"), "never by default");

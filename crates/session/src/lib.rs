@@ -428,6 +428,9 @@ pub enum FromSession {
 }
 
 /// What a session's next run starts from.
+/// How often a session looks at what its agent backend has said by itself.
+const BETWEEN_RUNS: std::time::Duration = std::time::Duration::from_millis(200);
+
 enum Input {
     /// Something is in the inbox; if a run took it already, nothing is left to do.
     Next,
@@ -882,7 +885,25 @@ impl Sessions {
                     }
                 }
             }
-            while let Ok(input) = prompt_rx.recv() {
+            loop {
+                let input = match prompt_rx.recv_timeout(BETWEEN_RUNS) {
+                    Ok(input) => input,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if !retired_here.load(Ordering::SeqCst) && pollster::block_on(engine.between_runs()) {
+                            // Under the inbox's lock: a message from now on goes into this run.
+                            drop({
+                                let inbox = inbox.lock().expect("inbox");
+                                running_here.store(true, Ordering::SeqCst);
+                                inbox
+                            });
+                            let end = pollster::block_on(engine.run_woken());
+                            running_here.store(false, Ordering::SeqCst);
+                            let _ = to_frontend.send(FromSession::Ended { tab, end });
+                        }
+                        continue;
+                    }
+                };
                 if let Input::Plan(on) = input {
                     pollster::block_on(engine.set_plan_mode(on, "user"));
                     continue;

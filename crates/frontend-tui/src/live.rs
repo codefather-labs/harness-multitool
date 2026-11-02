@@ -187,6 +187,20 @@ impl Feed {
             }
             Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost | Event::FormSynced { .. } => {}
             Event::ContextWindow { tokens } => self.context_window = *tokens,
+            Event::BackgroundTasks { tasks } => {
+                let known = std::mem::take(&mut v.background);
+                v.background = tasks
+                    .iter()
+                    .map(|task| {
+                        let started_ms = known.iter().find(|k| k.id == task.id).map_or(entry.at_ms, |k| k.started_ms);
+                        crate::model::BackgroundView { id: task.id.clone(), description: task.description.clone(), started_ms }
+                    })
+                    .collect();
+            }
+            Event::BackgroundDone { summary, .. } => {
+                let (kind, from) = inbound_kind(harness_api::HARNESS_LABEL);
+                v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: summary.clone() }));
+            }
             Event::ContextSummary { .. } => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["What is above went into a summary here.".to_string()] }),
             Event::ConversationImported { source, title, .. } => {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
@@ -294,6 +308,12 @@ impl Feed {
         };
         let activity = v.activity.get_or_insert_with(|| Activity { started_ms: entry.at_ms, now_ms: entry.at_ms, ..Default::default() });
         activity.state = state;
+    }
+
+    /// A log read back: the process that held its background tasks is gone.
+    pub fn replayed(&mut self, v: &mut SessionView) {
+        v.background.clear();
+        self.run_ended(v);
     }
 
     pub fn run_ended(&mut self, v: &mut SessionView) {
@@ -500,12 +520,16 @@ pub const PULSE_MS: u64 = 1000;
 /// Keeps the activity line going: it starts with the run, before the log has said anything, moves
 /// on eight times a second, and redraws nothing between runs. True if it changed.
 pub fn tick_activity(v: &mut SessionView, now_ms: u64) -> bool {
+    let background = !v.background.is_empty() && v.background_now_ms / SPIN_MS != now_ms / SPIN_MS;
+    if background {
+        v.background_now_ms = now_ms;
+    }
     if !v.generating {
-        return v.activity.take().is_some();
+        return v.activity.take().is_some() | background;
     }
     let activity = v.activity.get_or_insert_with(|| Activity { state: WAITING.to_string(), started_ms: now_ms, now_ms: 0 });
     if activity.now_ms / SPIN_MS == now_ms / SPIN_MS {
-        return false;
+        return background;
     }
     activity.now_ms = now_ms;
     for item in &mut v.transcript {
@@ -1179,5 +1203,26 @@ mod inbound_tests {
         let Item::Turn { attached, .. } = &v.transcript[0] else { panic!() };
         let Item::Thinking(t) = &attached[0] else { panic!() };
         assert_eq!((t.lines[0].as_str(), t.secs, t.live), ("now words", 3, true));
+    }
+
+    #[test]
+    fn background_tasks_keep_their_start_and_go_with_the_process() {
+        let task = |id: &str| harness_api::event::BackgroundTask { id: id.into(), description: format!("job {id}"), kind: "local_bash".into() };
+        let entry = |at_ms, event| LogEntry { seq: 0, at_ms, event };
+        let mut feed = Feed::new(|_| String::new(), 1000);
+        let mut v = SessionView::default();
+        feed.apply(&mut v, &entry(100, Event::BackgroundTasks { tasks: vec![task("a")] }));
+        feed.apply(&mut v, &entry(500, Event::BackgroundTasks { tasks: vec![task("a"), task("b")] }));
+        assert_eq!((v.background[0].started_ms, v.background[1].started_ms), (100, 500));
+        assert!(tick_activity(&mut v, 1000), "the panel moves on with nothing else going");
+        assert!(!tick_activity(&mut v, 1001), "not within a frame");
+        feed.apply(&mut v, &entry(600, Event::BackgroundDone { status: "completed".into(), summary: "job a completed".into() }));
+        assert!(matches!(v.transcript.last(), Some(Item::Inbound(m)) if m.text == "job a completed"));
+        feed.apply(&mut v, &entry(700, Event::BackgroundTasks { tasks: vec![] }));
+        assert!(v.background.is_empty());
+        assert!(!tick_activity(&mut v, 5000), "an idle session draws nothing");
+        feed.apply(&mut v, &entry(800, Event::BackgroundTasks { tasks: vec![task("c")] }));
+        feed.replayed(&mut v);
+        assert!(v.background.is_empty());
     }
 }

@@ -473,10 +473,22 @@ pub struct SessionView {
     pub question: Option<(harness_api::question::Question, usize)>,
     /// Messages sent during the run that the agent has not seen yet.
     pub queued: Vec<String>,
+    /// What the agent has running in the background.
+    pub background: Vec<BackgroundView>,
+    /// The clock of the last tick while any is on.
+    pub background_now_ms: u64,
     /// What the run is doing now; `None` between runs.
     pub activity: Option<Activity>,
     /// `/task` armed the next message as a task, with these commands.
     pub task: Option<Vec<String>>,
+}
+
+/// A task running in the background, as the panel above the composer lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundView {
+    pub id: String,
+    pub description: String,
+    pub started_ms: u64,
 }
 
 /// One instance of a flowchart among several: one card, updated in place.

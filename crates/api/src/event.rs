@@ -7,6 +7,14 @@ use serde_json::Value;
 use crate::model::{Capability, StopReason, ToolCall, Usage};
 use crate::state::TaskState;
 
+/// A task an agent backend runs in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTask {
+    pub id: String,
+    pub description: String,
+    pub kind: String,
+}
+
 /// What the claude-subscription adapter answers, and the settings show (CON-56).
 pub const CLAUDE_SUBSCRIPTION_REFUSED: &str = "Sorry, claude-subscription is forbidden by Anthropic's terms. Use an API key.";
 
@@ -88,6 +96,10 @@ pub enum Event {
     /// What an agent backend says its session has cost in all: it counts across resumes, so a
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },
+    /// What an agent backend has running in the background now, all of it.
+    BackgroundTasks { tasks: Vec<BackgroundTask> },
+    /// A background task of an agent backend has ended.
+    BackgroundDone { status: String, summary: String },
     /// The context window of the model an agent backend ran, as it reports it.
     ContextWindow { tokens: u64 },
     /// This session goes on with a conversation brought in from `source`: what precedes it in the

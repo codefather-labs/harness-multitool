@@ -41,7 +41,7 @@ fn run(backend: &ClaudeCode, stopped: &dyn Fn() -> bool) -> (Vec<Event>, PluginR
         events.push(e);
         true
     };
-    let request = BackendRequest { prompt: "the prompt", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 3, stopped, next_message: &|| None };
+    let request = BackendRequest { woken: false, prompt: "the prompt", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 3, stopped, next_message: &|| None };
     let end = pollster::block_on(backend.run(request, &mut sink));
     (events, end)
 }
@@ -125,11 +125,11 @@ done"#);
     let waiting = std::cell::RefCell::new(vec!["during the run".to_string()]);
     let next = || waiting.borrow_mut().pop();
     let mut sink = |_: Event| true;
-    let request = BackendRequest { prompt: "first", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 1, stopped: &NEVER, next_message: &next };
+    let request = BackendRequest { woken: false, prompt: "first", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 1, stopped: &NEVER, next_message: &next };
     assert!(matches!(pollster::block_on(backend.run(request, &mut sink)), Ok(BackendEnd::Done)));
     let pid = backend.own_process();
     assert!(pid.is_some(), "it stays");
-    let request = BackendRequest { prompt: "second", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 2, stopped: &NEVER, next_message: &|| None };
+    let request = BackendRequest { woken: false, prompt: "second", session: Some("s9"), system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 2, stopped: &NEVER, next_message: &|| None };
     assert!(matches!(pollster::block_on(backend.run(request, &mut sink)), Ok(BackendEnd::Done)));
     assert_eq!(backend.own_process(), pid, "the same one");
     let read = |name: &str| std::fs::read_to_string(f.dir.path().join(name)).unwrap();
@@ -137,7 +137,7 @@ done"#);
     assert!(lines.contains("first") && lines.contains("during the run") && lines.contains("second"), "{lines}");
     assert_eq!(read("got-pids").lines().count(), 1, "started once");
     // Plan mode is fixed at its start: a new one. And what is out of date goes.
-    let request = BackendRequest { prompt: "third", session: Some("s9"), system: None, plan_mode: true, fork: false, cost_total_micro_usd: 0, turn: 3, stopped: &NEVER, next_message: &|| None };
+    let request = BackendRequest { woken: false, prompt: "third", session: Some("s9"), system: None, plan_mode: true, fork: false, cost_total_micro_usd: 0, turn: 3, stopped: &NEVER, next_message: &|| None };
     assert!(matches!(pollster::block_on(backend.run(request, &mut sink)), Ok(BackendEnd::Done)));
     assert_eq!(read("got-pids").lines().count(), 2);
     backend.reset();

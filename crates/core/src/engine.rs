@@ -521,21 +521,25 @@ impl Engine {
 
     /// The turns of a message on an agent backend (IF-17): it does the work, and the engine keeps
     /// the log, the stop and the verdict.
-    async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>) -> RunEnd {
+    async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>, woken: bool) -> RunEnd {
         let source = backend.name().to_string();
+        let mut woken = woken;
         loop {
-            let before = self.form().map(|(_, link)| link.cursor);
-            if let Err(message) = self.hand_over().await {
-                return self.fail(&source, message, protocol);
-            }
-            if self.form().map(|(_, link)| link.cursor) != before && before.is_some() {
-                backend.reset();
+            // A turn it began itself is in its form already, and its process is the one to read.
+            if !woken {
+                let before = self.form().map(|(_, link)| link.cursor);
+                if let Err(message) = self.hand_over().await {
+                    return self.fail(&source, message, protocol);
+                }
+                if self.form().map(|(_, link)| link.cursor) != before && before.is_some() {
+                    backend.reset();
+                }
             }
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
             }
             let state = self.state.borrow().clone();
-            let prompt = state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n"));
+            let prompt = if woken { String::new() } else { state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")) };
             let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
             let system = context.ok().and_then(|c| c.system);
             let stopped = || self.stop.is_set();
@@ -560,12 +564,13 @@ impl Engine {
                     return Some(text);
                 }
             };
-            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, next_message: &next_message, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
+            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, next_message: &next_message, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped, woken };
             let mut sink = |event: Event| {
                 self.emit(event);
                 !self.stop.is_set()
             };
             let end = backend.run(request, &mut sink).await;
+            woken = false;
             self.record_tip();
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
@@ -622,6 +627,22 @@ impl Engine {
         result("The user approved the plan. Plan mode is off. A fix: call debug_mode with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call debug_mode with on true and debug it.".into(), false);
     }
 
+    /// What an agent backend has said since its last run reaches the log. True when it has begun
+    /// a turn by itself, for `run_woken`.
+    pub async fn between_runs(&self) -> bool {
+        let Some(backend) = self.parts.backend.clone() else { return false };
+        let mut sink = |event: Event| self.emit(event);
+        let woke = backend.between_runs(&mut sink);
+        let _ = self.flush().await;
+        woke
+    }
+
+    /// The turn an agent backend began by itself, as a run: no message starts it.
+    pub async fn run_woken(&self) -> RunEnd {
+        let Some(backend) = self.parts.backend.clone() else { return RunEnd::AwaitingInput };
+        self.run_backend(backend.as_ref(), None, true).await
+    }
+
     /// One user message: runs turns until the model stops, then verifies when there is a
     /// protocol. Later messages continue the same session.
     pub async fn run(&self, text: &str, protocol: Option<&Protocol>) -> RunEnd {
@@ -676,7 +697,7 @@ impl Engine {
         self.emit(event);
         self.set_task(TaskState::Running, None);
         if let Some(backend) = self.parts.backend.clone() {
-            return self.run_backend(backend.as_ref(), protocol).await;
+            return self.run_backend(backend.as_ref(), protocol, false).await;
         }
         // From here on the backend's own session lacks what this provider does; a form hears it.
         if self.state.borrow().backend_session.is_some() && self.form().is_none() {

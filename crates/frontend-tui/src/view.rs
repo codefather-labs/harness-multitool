@@ -160,6 +160,9 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(a) = &v.activity {
         widgets::activity(f, status, t, a);
     }
+    let running = widgets::background_height(&v.background).min(queue.height);
+    widgets::background(f, Rect { height: running, ..queue }, t, &v.background, v.background_now_ms);
+    let queue = Rect { y: queue.y + running, height: queue.height - running, ..queue };
     match &v.question {
         Some((question, cursor)) if !v.generating => widgets::question(f, queue, t, question, *cursor),
         _ => widgets::queue(f, queue, t, &v.queued),

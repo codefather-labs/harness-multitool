@@ -62,6 +62,8 @@ pub struct BackendRequest<'a> {
     pub stopped: &'a dyn Fn() -> bool,
     /// What the user has sent since, one at a time: it goes to the backend during the run.
     pub next_message: &'a dyn Fn() -> Option<String>,
+    /// It began a turn by itself, between runs: there is no prompt to send, only that turn to read.
+    pub woken: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,11 @@ pub trait AgentBackend {
     /// against this session.
     fn own_process(&self) -> Option<u32> {
         None
+    }
+    /// Reads what it has said since its last run, giving what is only news to `sink`. True when it
+    /// has begun a turn by itself, which a run with `woken` then reads.
+    fn between_runs(&self, _sink: &mut dyn FnMut(Event)) -> bool {
+        false
     }
     fn run<'a>(&'a self, request: BackendRequest<'a>, sink: &'a mut dyn FnMut(Event) -> bool) -> BoxFuture<'a, PluginResult<BackendEnd>>;
 }
