@@ -54,7 +54,7 @@ while time.time() < end:
     if l is None:
         if seen and turn["n"] >= 2 and "All done." in text(): break
         continue
-    m = re.search(r"(\S) ((?:Waiting|Thinking|Writing|Running)[^·]*?)\s{2}(\d+)s\s+·\s+Esc stops", l)
+    m = re.search(r"(\S) ((?:Waiting|Thinking|Writing|Calling)[^·]*?)\s{2}(\d+)s\s+·\s+Esc stops", l)
     assert m, l
     spins.add(m.group(1)); seconds.append(int(m.group(3)))
     if not seen or seen[-1] != m.group(2): seen.append(m.group(2)); print("state:", l[-60:])
@@ -74,9 +74,9 @@ assert "⧗" not in text() and "and one more thing" in text(), "delivered, its c
 assert "and one more thing" in bodies[1] and "drop me" not in "".join(bodies), bodies[1][:300]
 assert len(bodies) == 2, "woven in, no extra run"
 print("states:", seen); print("spinner frames:", len(spins), "seconds:", seconds[0], "to", seconds[-1])
-for want in ["Waiting for slow-model", "Thinking", "Writing", "Waiting for your answer", "Running shell"]:
+for want in ["Waiting for slow-model", "Thinking", "Writing", "Waiting for your answer", "Calling shell"]:
     assert want in seen, (want, seen)
-assert seen.index("Thinking") < seen.index("Writing") < seen.index("Waiting for your answer") < seen.index("Running shell"), seen
+assert seen.index("Thinking") < seen.index("Writing") < seen.index("Waiting for your answer") < seen.index("Calling shell"), seen
 assert len(spins) == 8 and all(c in "🌑🌒🌓🌔🌕🌖🌗🌘" for c in spins), spins
 assert seconds == sorted(seconds) and seconds[-1] >= 8, seconds
 pump(0.3); assert line() is None, "gone at the end: " + text()

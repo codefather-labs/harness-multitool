@@ -822,6 +822,8 @@ pub struct ToolCall {
     pub expanded: bool,
     pub body: ToolBody,
     pub icon: ToolIcon,
+    /// Where its spinner is, while it runs: the clock of the last tick.
+    pub spin_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

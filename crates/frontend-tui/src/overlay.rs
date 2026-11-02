@@ -1064,6 +1064,7 @@ pub fn answer(w: &mut Workspace, choice: usize) {
         expanded: false,
         body: ToolBody::None,
         icon: ToolIcon::None,
+        spin_ms: 0,
     };
     let v = w.view_mut();
     match v.transcript.last_mut() {

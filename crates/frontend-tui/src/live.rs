@@ -116,6 +116,7 @@ impl Feed {
                     expanded: false,
                     body: ToolBody::None,
                     icon: if call.name == "shell" { ToolIcon::Shell } else { ToolIcon::None },
+                    spin_ms: entry.at_ms,
                 };
                 let (item, attached) = attach(v, time, Item::Tool(card));
                 self.calls.insert(call.id.clone(), CallPlace { item, attached, started_ms: entry.at_ms, input: call.input.clone(), name: call.name.clone() });
@@ -281,9 +282,9 @@ impl Feed {
             Event::TextDelta { .. } => "Writing".to_string(),
             Event::ToolRequested { call, .. } | Event::ModelToolCall { call } => {
                 self.running = call.name.clone();
-                format!("Running {}", call.name)
+                format!("Calling {}", tool_title(&call.name).0)
             }
-            Event::ToolDecision { allowed: true, .. } => format!("Running {}", self.running),
+            Event::ToolDecision { allowed: true, .. } => format!("Calling {}", tool_title(&self.running).0),
             Event::ToolResult { .. } => WAITING.to_string(),
             Event::Verification { .. } => "Checking the result".to_string(),
             Event::TaskState { to: harness_api::TaskState::Verifying, .. } => "Checking the result".to_string(),
@@ -450,7 +451,19 @@ pub fn tick_activity(v: &mut SessionView, now_ms: u64) -> bool {
         return false;
     }
     activity.now_ms = now_ms;
+    for item in &mut v.transcript {
+        spin_tools(item, now_ms);
+    }
     true
+}
+
+/// The running calls' spinners, wherever in the transcript they are.
+fn spin_tools(item: &mut Item, now_ms: u64) {
+    match item {
+        Item::Tool(call) if call.state == ToolState::Running => call.spin_ms = now_ms,
+        Item::Turn { attached, .. } => attached.iter_mut().for_each(|a| spin_tools(a, now_ms)),
+        _ => {}
+    }
 }
 
 pub fn tick_pulses(v: &mut SessionView, now_ms: u64) -> bool {
@@ -668,20 +681,34 @@ fn edit_diff(input: &Value) -> Option<(Diff, u32, u32)> {
 }
 
 /// A call's arguments on one line: what the call is about, or else compact JSON.
+/// A tool's name as it is drawn: an MCP tool's own name, and the server it is on. The log keeps
+/// the real one.
+pub fn tool_title(name: &str) -> (&str, Option<&str>) {
+    name.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")).map_or((name, None), |(server, tool)| (tool, Some(server)))
+}
+
+/// A tool's arguments in words: the one that says what it does, or each by its name.
 fn summary(input: &Value) -> String {
-    const MAIN_FIELDS: [&str; 5] = ["command", "path", "url", "text", "query"];
+    const MAIN_FIELDS: [&str; 7] = ["command", "file_path", "path", "url", "text", "query", "pattern"];
     let main = MAIN_FIELDS.iter().find_map(|f| input[*f].as_str()).map(str::to_string);
     let text = match (main, input) {
         (Some(main), _) => main,
-        (None, Value::Object(fields)) if fields.len() == 1 => match fields.values().next() {
-            Some(Value::String(s)) => s.clone(),
-            _ => input.to_string(),
-        },
+        (None, Value::Object(fields)) if fields.len() == 1 && fields.values().all(Value::is_string) => fields.values().next().and_then(Value::as_str).unwrap_or_default().to_string(),
+        (None, Value::Object(fields)) => fields.iter().map(|(name, value)| format!("{name}: {}", argument(value))).collect::<Vec<_>>().join(", "),
         (None, Value::Null) => String::new(),
-        _ => input.to_string(),
+        (None, other) => argument(other),
     };
     let line = text.lines().next().unwrap_or_default();
     if line.chars().count() > 100 { format!("{}…", line.chars().take(99).collect::<String>()) } else { line.to_string() }
+}
+
+fn argument(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => format!("{} items", items.len()),
+        Value::Object(_) => "…".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn short(n: u64) -> String {
@@ -725,10 +752,10 @@ mod activity_tests {
         f.apply(&mut v, &at(1400, Event::TextDelta { text: "ok".into() }));
         assert_eq!(state(&v), "Writing");
         f.apply(&mut v, &at(1500, Event::ToolRequested { call: call.clone(), capabilities: vec![] }));
-        assert_eq!(state(&v), "Running shell");
+        assert_eq!(state(&v), "Calling shell");
         v.activity.as_mut().unwrap().state = "Waiting for your answer".into();
         f.apply(&mut v, &at(1600, Event::ToolDecision { id: "c".into(), allowed: true, by: harness_api::event::DecidedBy::User, reason: None }));
-        assert_eq!(state(&v), "Running shell");
+        assert_eq!(state(&v), "Calling shell");
         f.apply(&mut v, &at(1700, Event::ToolResult { id: "c".into(), output: "x".into(), is_error: false }));
         assert_eq!(state(&v), "Waiting for the model");
         assert_eq!(v.activity.as_ref().unwrap().started_ms, 1000, "the count is the run's, not the state's");
@@ -1014,5 +1041,43 @@ mod inbound_tests {
         assert!(matches!(inbound_kind(harness_api::TELEGRAM_LABEL).0, InboundKind::Telegram));
         assert!(matches!(inbound_kind("agent:peer").0, InboundKind::Agent { .. }));
         assert!(matches!(inbound_kind("reminder:7").0, InboundKind::Reminder { id: 7, .. }));
+    }
+
+    #[test]
+    fn a_tool_reads_as_words() {
+        assert_eq!(tool_title("mcp__harness__journal_get"), ("journal_get", Some("harness")));
+        assert_eq!(tool_title("mcp__a__b__c"), ("b__c", Some("a")));
+        assert_eq!(tool_title("Bash"), ("Bash", None));
+        assert_eq!(tool_title("mcp__odd"), ("mcp__odd", None));
+        assert_eq!(summary(&serde_json::json!({"command": "ls -l\nmore", "description": "x"})), "ls -l");
+        assert_eq!(summary(&serde_json::json!({"file_path": "a.rs", "limit": 3})), "a.rs");
+        assert_eq!(summary(&serde_json::json!({"id": 371})), "id: 371");
+        assert_eq!(summary(&serde_json::json!({"body": "words"})), "words");
+        assert_eq!(summary(&serde_json::json!({"a": 1, "b": "two", "c": [1, 2], "d": {"e": 1}, "f": true})), "a: 1, b: two, c: 2 items, d: …, f: true");
+        assert_eq!(summary(&Value::Null), "");
+        let long = summary(&serde_json::json!({"text": "x".repeat(300)}));
+        assert_eq!(long.chars().count(), 100);
+        assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_running_call_spins_with_the_run_and_a_finished_one_does_not() {
+        let call = |state, at| ToolCall { state, spin_ms: at, ..crate::debug::tool("x", "", ToolIcon::None, state, "", "", ToolBody::None) };
+        let mut v = SessionView {
+            generating: true,
+            transcript: vec![Item::Tool(call(ToolState::Running, 0)), Item::Tool(call(ToolState::Done, 7)), Item::Turn { role: Role::Assistant, time: String::new(), lines: vec![], attached: vec![Item::Tool(call(ToolState::Running, 0))] }],
+            ..Default::default()
+        };
+        assert!(tick_activity(&mut v, 1000));
+        let Item::Tool(running) = &v.transcript[0] else { unreachable!() };
+        assert_eq!(running.spin_ms, 1000);
+        let Item::Tool(done) = &v.transcript[1] else { unreachable!() };
+        assert_eq!(done.spin_ms, 7);
+        let Item::Turn { attached, .. } = &v.transcript[2] else { unreachable!() };
+        let Item::Tool(inside) = &attached[0] else { unreachable!() };
+        assert_eq!(inside.spin_ms, 1000);
+        v.generating = false;
+        assert!(tick_activity(&mut v, 2000), "the activity goes");
+        assert!(!tick_activity(&mut v, 3000), "an idle session draws nothing");
     }
 }

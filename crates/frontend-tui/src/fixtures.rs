@@ -256,6 +256,7 @@ fn tool(name: &str, args: &str, outcome: &str, tone: Tone, duration: &str) -> To
         expanded: false,
         body: ToolBody::None,
         icon: ToolIcon::None,
+        spin_ms: 0,
     }
 }
 
@@ -486,7 +487,7 @@ fn router_status() -> StatusLine {
 
 /// tool-calls-*: the framed tool cards.
 pub fn tool_calls() -> AppState {
-    let tools: Vec<Item> = ["cat", "tg", "a2a", "journal", "fail", "run"].iter().filter_map(|k| sample_tool(k)).map(Item::Tool).collect();
+    let tools: Vec<Item> = ["cat", "tg", "a2a", "journal", "fail", "run", "mcp-done", "mcp"].iter().filter_map(|k| sample_tool(k)).map(Item::Tool).collect();
     let view = SessionView {
         transcript: vec![
             turn(

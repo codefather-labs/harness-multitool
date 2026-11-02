@@ -125,6 +125,7 @@ pub fn tool(name: &str, args: &str, icon: ToolIcon, state: ToolState, outcome: &
         diffstat: None,
         duration: duration.into(),
         expanded: !matches!(body, ToolBody::None),
+        spin_ms: 0,
         body,
         icon,
     }
@@ -232,6 +233,8 @@ pub fn sample_tool(kind: &str) -> Option<ToolCall> {
             "12.4 s",
             out(Some("output (live)"), &["running 3 tests", "test fallback::uses_local_on_timeout ... ok", "test fallback::retries_then_falls_back ..."], false, 0),
         ),
+        "mcp" => tool("mcp__harness__journal_get", "id: 371", ToolIcon::None, ToolState::Running, "running", "", ToolBody::None),
+        "mcp-done" => tool("mcp__harness__journal_search", "full move onto the harness", ToolIcon::None, ToolState::Done, "completed", "14 ms", ToolBody::None),
         _ => return None,
     })
 }

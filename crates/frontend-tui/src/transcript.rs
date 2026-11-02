@@ -683,11 +683,26 @@ fn thinking(cv: &mut Canvas, x: u16, y: u16, w: u16, v: &ThinkingView, bg: Color
     1 + h
 }
 
+/// A call's name: what it is doing while it runs, and the server of an MCP tool, muted.
+fn tool_title(c: &ToolCall, color: Color, t: &Theme) -> Vec<Span<'static>> {
+    let (name, server) = crate::live::tool_title(&c.name);
+    let mut spans = Vec::new();
+    if c.state == ToolState::Running {
+        spans.push(Span::styled(format!("{} ", crate::widgets::moon(c.spin_ms)), plain(t.accent)));
+        spans.push(Span::styled("Calling ", plain(t.text)));
+    }
+    spans.push(Span::styled(name.to_string(), bold(color)));
+    if let Some(server) = server {
+        spans.push(Span::styled(format!("  {server}"), plain(t.text_muted)));
+    }
+    spans
+}
+
 fn status_badge(c: &ToolCall, t: &Theme, bg: Color) -> (Vec<Span<'static>>, Color) {
     let (text, color) = match c.state {
         ToolState::Done => (format!("✓ {}", c.outcome), t.success),
         ToolState::Failed => (format!("✗ {}", c.outcome), t.error),
-        ToolState::Running => ("◌ running".to_string(), t.info),
+        ToolState::Running => ("running".to_string(), t.info),
     };
     (pill_spans(&text, color, tint(color, bg, 0.16), bg), color)
 }
@@ -709,17 +724,13 @@ fn tool_row(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color) ->
     let row_bg = if bg == t.surface { t.surface_raised } else { t.surface };
     cv.fill(Rect::new(x, y, w, 1), row_bg);
     let chevron = if c.expanded { "▾" } else { "▸" };
-    let (mark, mark_color) = match c.state {
-        ToolState::Done => ("✔", t.success),
-        ToolState::Running => ("◌", t.info),
-        ToolState::Failed => ("✘", t.error),
-    };
-    let mut left = vec![
-        Span::styled(format!("  {chevron}  "), plain(t.text_muted)),
-        Span::styled(mark, plain(mark_color)),
-        Span::raw("  "),
-        Span::styled(c.name.clone(), bold(t.text)),
-    ];
+    let mut left = vec![Span::styled(format!("  {chevron}  "), plain(t.text_muted))];
+    match c.state {
+        ToolState::Done => left.extend([Span::styled("✔", plain(t.success)), Span::raw("  ")]),
+        ToolState::Failed => left.extend([Span::styled("✘", plain(t.error)), Span::raw("  ")]),
+        ToolState::Running => {}
+    }
+    left.extend(tool_title(c, t.text, t));
     if let Some(s) = &c.args_strong {
         left.push(Span::styled(format!(" {s}"), bold(t.text)));
     }
@@ -820,7 +831,7 @@ fn tool_card(cv: &mut Canvas, x: u16, y: u16, w: u16, c: &ToolCall, bg: Color, t
     if let Some(i) = icon {
         cv.icon(ix, hy, 2, 1, i, Tint::Text);
     }
-    cv.line(ix + 3, hy, iw.saturating_sub(3), vec![Span::styled(c.name.clone(), bold(t.accent)), Span::styled(format!("   {}", c.args), plain(t.text))], bg);
+    cv.line(ix + 3, hy, iw.saturating_sub(3), tool_title(c, t.accent, t).into_iter().chain([Span::styled(format!("   {}", c.args), plain(t.text))]).collect(), bg);
     let (mut right, _) = status_badge(c, t, bg);
     right.push(Span::styled(format!("  {:>6} ", c.duration), plain(t.text)));
     cv.line_right(ix + iw, hy, right, bg);
@@ -1451,5 +1462,31 @@ mod tests {
         let d = item(&turn(Role::User), 40, &t, &[]);
         let all: String = (0..d.buf.area.height).map(|y| row(&d, y, 40)).collect::<Vec<_>>().join("|");
         assert!(all.contains("**") && all.contains("```"), "as typed: {all}");
+    }
+
+    fn row_text(c: &ToolCall) -> String {
+        let t = Theme::builtin("dark").unwrap();
+        let mut cv = Canvas::new(80, &t, &[]);
+        let h = tool(&mut cv, 0, 0, 80, c, t.surface);
+        let buf = cv.buf.clone();
+        (0..h).map(|y| (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_call_says_what_it_is_doing_while_it_runs() {
+        let tool = |state, spin_ms, body| ToolCall { spin_ms, ..crate::debug::tool("mcp__harness__journal_get", "id: 371", ToolIcon::None, state, "completed", "19ms", body) };
+        let first = row_text(&tool(ToolState::Running, 0, ToolBody::None));
+        assert!(first.contains("🌑") && first.contains("Calling journal_get  harness") && first.contains("id: 371"), "{first}");
+        assert!(!first.contains("mcp__"), "{first}");
+        let later = row_text(&tool(ToolState::Running, crate::live::SPIN_MS * 2, ToolBody::None));
+        assert!(later.contains("🌓"), "{later}");
+        let done = row_text(&tool(ToolState::Done, 0, ToolBody::None));
+        assert!(done.contains('✔') && done.contains("journal_get  harness"), "{done}");
+        assert!(!done.contains("Calling") && !done.contains("🌑"), "{done}");
+        let note = ToolBody::Note("words".into());
+        let card = row_text(&tool(ToolState::Running, 0, note.clone()));
+        assert!(card.contains("🌑") && card.contains("Calling journal_get") && card.contains("running"), "{card}");
+        let finished = row_text(&tool(ToolState::Done, 0, note));
+        assert!(!finished.contains("Calling") && finished.contains("completed"), "{finished}");
     }
 }
