@@ -70,6 +70,10 @@ pub struct SessionState {
     pub backend_cost_total: u64,
     /// The name the agent goes by in this session.
     pub agent_name: Option<String>,
+    /// Its place in an orchestra: `master`, `slave`, or none.
+    pub orchestra_role: Option<String>,
+    /// Who a slave answers to.
+    pub orchestra_master: Option<String>,
     /// Step-debug mode (ADR 0013).
     pub step_debug: bool,
     /// Plan mode (ADR 0016).
@@ -171,6 +175,10 @@ impl SessionState {
                 self.forms.insert(source.clone(), FormLink { id: id.clone(), cursor: cursor.clone(), holds: holds.unwrap_or(self.messages.len()) });
             }
             Event::AgentName { name, .. } => self.agent_name = Some(name.clone()),
+            Event::OrchestraRole { role, master } => {
+                self.orchestra_role.clone_from(role);
+                self.orchestra_master.clone_from(master);
+            }
             Event::PlanMode { on, .. } => self.plan_mode = *on,
             Event::StepDebug { on, .. } => self.step_debug = *on,
             Event::Compacted { upto, .. } => self.compacted_upto = *upto,

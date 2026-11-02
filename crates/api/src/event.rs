@@ -105,6 +105,14 @@ pub enum Event {
     /// What an agent backend says its session has cost in all: it counts across resumes, so a
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },
+    /// This conversation's place in an orchestra (CON-100): `master`, `slave`, or none, and for a
+    /// slave who it answers to.
+    OrchestraRole {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        master: Option<String>,
+    },
     /// An agent backend compacted its conversation by itself: what it knew of the session is gone.
     BackendCompacted,
     /// What an agent backend has running in the background now, all of it.

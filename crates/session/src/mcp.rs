@@ -16,6 +16,9 @@ pub struct Serving {
     pub root: String,
     /// The daemon's window and tab of the session, for what is asked of the window.
     pub window: Option<(String, u64)>,
+    /// `mode`: this server offers the harness's modes alone, under their short names, so a program
+    /// sees them apart as `mcp__mode__*` (CON-96). Otherwise the utilities alone.
+    pub namespace: Option<String>,
 }
 
 /// Asks the window to rebuild and swap the harness, through the daemon.
@@ -79,6 +82,11 @@ impl Tool for SetNick {
     }
 }
 
+const MODE_PREFIX: &str = "mode__";
+
+/// What an agent on the modes' server reads before its tools.
+const MODE_INSTRUCTIONS: &str = "Modes of the harness, not utilities: entering one changes how you are run. orchestrate makes you the master of agents you start; the others here work only in that mode, and are refused otherwise.";
+
 /// What an agent on this server reads before its tools (CON-96).
 const INSTRUCTIONS: &str = "The harness you run under: its project journal, maps and flowcharts, Telegram, your name, and rebuilding it. These are utilities: each does one thing and answers. Read the journal's agenda on a fresh context. The harness also has modes, plan and debug, which on its own loop are tools named mode__; a program running as an agent backend has its own plan mode instead, so they are not offered here yet. docs/tools.md in the harness's repository documents every tool and mode.";
 
@@ -96,11 +104,17 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     }
     out.push(Rc::new(crate::host_tools::TelegramSend { data_dir: serving.data_dir.clone(), from: serving.window.clone() }));
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
+        for name in crate::host_tools::MODE_TOOLS {
+            out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
+        }
         out.push(Rc::new(crate::host_tools::AgentList { client: client.clone(), window: window.clone() }));
         out.push(Rc::new(crate::host_tools::AgentSend { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(SetNick { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(Reload { client, window: window.clone(), tab: *tab }));
     }
+    // Of the two servers, each offers its own.
+    let in_mode = serving.namespace.as_deref() == Some("mode");
+    out.retain(|tool| tool.spec().name.starts_with(MODE_PREFIX) == in_mode);
     Ok(out)
 }
 
@@ -113,16 +127,16 @@ fn answer(message: &Value, tools: &[Rc<dyn Tool>], serving: &Serving) -> Option<
             "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "harness", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": INSTRUCTIONS,
+            "instructions": if serving.namespace.as_deref() == Some("mode") { MODE_INSTRUCTIONS } else { INSTRUCTIONS },
         }),
         "ping" => json!({}),
         "tools/list" => {
-            let list: Vec<Value> = tools.iter().map(|t| t.spec()).map(|s| json!({"name": s.name, "description": s.description, "inputSchema": s.schema})).collect();
+            let list: Vec<Value> = tools.iter().map(|t| t.spec()).map(|s| json!({"name": s.name.strip_prefix(MODE_PREFIX).unwrap_or(&s.name), "description": s.description, "inputSchema": s.schema})).collect();
             json!({"tools": list})
         }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or_default();
-            let Some(tool) = tools.iter().find(|t| t.spec().name == name) else {
+            let Some(tool) = tools.iter().find(|t| t.spec().name.strip_prefix(MODE_PREFIX).unwrap_or(&t.spec().name) == name) else {
                 return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("no tool {name}")}}));
             };
             let input = if params["arguments"].is_object() { params["arguments"].clone() } else { json!({}) };
@@ -156,7 +170,9 @@ pub fn config(program: &std::path::Path, root: &str, window: Option<&str>, tab: 
     if let Some(window) = window {
         args.extend([json!("--window"), json!(window), json!("--tab"), json!(tab.to_string())]);
     }
-    json!({"mcpServers": {"harness": {"command": program.to_string_lossy(), "args": args}}}).to_string()
+    let mut modes = args.clone();
+    modes.extend([json!("--namespace"), json!("mode")]);
+    json!({"mcpServers": {"harness": {"command": program.to_string_lossy(), "args": args}, "mode": {"command": program.to_string_lossy(), "args": modes}}}).to_string()
 }
 
 #[cfg(test)]
@@ -168,7 +184,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-mcp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root")).unwrap();
-        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None };
+        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None };
         let messages = [
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}),
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),

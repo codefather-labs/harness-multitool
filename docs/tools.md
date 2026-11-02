@@ -12,11 +12,12 @@ An agent has two sorts of thing to call:
 | Mode | Tools | What changes | Ends when |
 |---|---|---|---|
 | Plan | `mode__plan_enter`, `mode__plan_exit` | The agent studies and plans; nothing is built. It can read, search, fetch, run single read-only commands, write under `docs/`, and use the journal and maps. Anything else is refused. | The user approves `mode__plan_exit`. |
+| Orchestration | `mode__orchestrate`, then `mode__agent_models`, `mode__agent_spawn`, `mode__agent_read`, `mode__agent_close` | The agent is the master of agents it starts on authorized adapters, each a tab of its group in the same project and git. It gives them work with `agent_send`, which arrives as the user's message, and checks them with `mode__agent_read`. A slave's only contact is its master. | `mode__orchestrate` off; its agents stay until closed. |
 | Debug | `mode__debug` | A fix is reproduced before anything changes and verified after. A pipeline is walked step by step, and the window follows the run. | The agent turns it off, with the evidence in the journal. |
 
 Before building anything that is not trivial, an agent enters plan mode, even if nobody said plan. After an approved plan, a fix goes on in debug mode; a feature is built, run, then debugged the same way ([ADR 0021](decisions/0021-agent-behaviour.md)).
 
-Modes are offered on the harness's own loop. A program running as an agent backend, such as Claude Code, has a plan mode of its own, and `-p` cannot ask for a plan's approval, so they are not offered there yet.
+Plan and debug are offered on the harness's own loop. A program running as an agent backend, such as Claude Code, has a plan mode of its own, and `-p` cannot ask for a plan's approval, so they are not offered there yet. Orchestration is offered there over a second MCP server, `mode`, as `mcp__mode__orchestrate` and so on; its list is fixed at the start, so outside the mode those tools are refused rather than absent.
 
 ## Code and commands
 

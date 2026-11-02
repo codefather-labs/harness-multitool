@@ -197,12 +197,22 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
     let mut x = head.x + head.width;
     // Each tab: its pill's spans, its icon picture (offset, icon, tint), its click target.
     type TabItem = (Vec<Span<'static>>, Option<(u16, Icon, Tint)>, Target);
+    let mut groups: Vec<bool> = Vec::new();
     let mut items: Vec<TabItem> = Vec::new();
     let plus_fill = t.surface_raised;
     items.push((crate::transcript::pill_spans(" + ", t.text, plus_fill, bg), None, Target::NewTab));
+    groups.push(false);
     for (i, tab) in w.tabs.iter().enumerate().rev() {
         let active = i == w.active;
-        let fill = if active { crate::transcript::tint(t.accent, bg, 0.2) } else { t.surface_raised };
+        // An orchestra's tabs read as one group (CON-100).
+        let grouped = tab.view.orchestra.is_some();
+        let fill = if active {
+            crate::transcript::tint(t.accent, bg, 0.2)
+        } else if grouped {
+            crate::transcript::tint(t.info, bg, 0.25)
+        } else {
+            t.surface_raised
+        };
         let fg = if active { t.accent } else { t.text };
         let (icon, glyph) = match tab.icon {
             TabIcon::Prompt => (Icon::Terminal, ">_"),
@@ -217,8 +227,19 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
             TabMark::Attention => " !".into(),
         };
         let lead = if pictures { "    ".to_string() } else { format!(" {glyph} ") };
-        let text = format!("{lead}{}{mark} ", tab.title);
+        let place = match tab.view.orchestra.as_deref() {
+            Some("master") => " (M)",
+            Some("slave") => " (S)",
+            _ => "",
+        };
+        let text = format!("{lead}{}{place}{mark} ", tab.title);
         let mut spans = crate::transcript::pill_spans(&text, fg, fill, bg);
+        // In a group the ends are solid, so the tabs read as one bar.
+        if grouped {
+            let last = spans.len() - 1;
+            spans[0].style = spans[0].style.bg(fill);
+            spans[last].style = spans[last].style.bg(fill);
+        }
         if let Some(m) = spans.get_mut(1) {
             m.style = m.style.add_modifier(Modifier::BOLD);
         }
@@ -237,14 +258,19 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
             spans.insert(2, Span::styled(mark.clone(), style.fg(c)));
             spans.insert(3, Span::styled(" ", style));
         }
+        groups.push(grouped);
         items.push((spans, pictures.then_some((2, icon, if active { Tint::Accent } else { Tint::Text })), Target::Tab(i)));
     }
-    for (spans, icon, target) in items {
+    let mut group_on_right = false;
+    for (index, (spans, icon, target)) in items.into_iter().enumerate() {
         let width: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
         if x < head.x + 40 + width {
             break;
         }
-        x -= width + 1;
+        let in_group = groups.get(index).copied().unwrap_or(false);
+        // Inside a group the tabs touch.
+        x -= width + u16::from(!(in_group && group_on_right));
+        group_on_right = in_group;
         let r = Rect { x, width, ..head };
         f.render_widget(Paragraph::new(Line::from(spans)), r);
         if let Some((off, icon, tint)) = icon {

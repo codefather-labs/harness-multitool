@@ -48,6 +48,8 @@ fn end_from_json(value: &Value) -> RunEnd {
 
 fn to_wire(message: &FromSession) -> Value {
     match message {
+        FromSession::Spawn { tab, nick, provider, model } => json!({"kind": "spawn", "tab": tab, "nick": nick, "provider": provider, "model": model}),
+        FromSession::CloseTab { tab } => json!({"kind": "close_tab", "tab": tab}),
         FromSession::Entry { tab, entry } => json!({"kind": "entry", "tab": tab, "line": harness_api::event::to_line(entry)}),
         FromSession::Ask { tab, call, capabilities } => json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}),
         FromSession::Ended { tab, end } => json!({"kind": "ended", "tab": tab, "end": end_to_json(end)}),
@@ -59,6 +61,8 @@ fn to_wire(message: &FromSession) -> Value {
 fn from_wire(value: &Value) -> Option<FromSession> {
     let tab = value["tab"].as_u64()?;
     match value["kind"].as_str()? {
+        "spawn" => Some(FromSession::Spawn { tab, nick: value["nick"].as_str()?.to_string(), provider: value["provider"].as_str()?.to_string(), model: value["model"].as_str()?.to_string() }),
+        "close_tab" => Some(FromSession::CloseTab { tab }),
         "entry" => Some(FromSession::Entry { tab, entry: harness_api::event::from_line(value["line"].as_str()?).ok()? }),
         "ask" => Some(FromSession::Ask { tab, call: serde_json::from_value(value["call"].clone()).ok()?, capabilities: serde_json::from_value(value["capabilities"].clone()).ok()? }),
         "ended" => Some(FromSession::Ended { tab, end: end_from_json(&value["end"]) }),
@@ -70,6 +74,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
 
 fn tab_of(message: &FromSession) -> u64 {
     match message {
+        FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } => *tab,
         FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } => *tab,
     }
 }
@@ -104,6 +109,8 @@ struct Window {
     choices: crate::Choices,
     /// What a conversation with no choice of its own starts on.
     default: crate::Choice,
+    /// What it opened with: the rows an orchestra can choose from.
+    settings: Settings,
     polled: Instant,
     closed: bool,
     /// Tabs whose prompt nobody has answered yet, with the prompt.
@@ -193,6 +200,8 @@ pub struct DaemonHost {
     conversations: Mutex<HashMap<String, crate::Choice>>,
     /// What each conversation has sent other agents lately, by when.
     a2a_sent: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// Who masters whom (CON-100). Kept, since a slave stays one through a reload.
+    orchestra: Mutex<Orchestra>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
@@ -200,6 +209,23 @@ pub struct DaemonHost {
 
 fn nicks_path(data_dir: &Path) -> PathBuf {
     data_dir.join("daemon").join("nicks.json")
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Orchestra {
+    /// Masters whose mode is on.
+    on: std::collections::HashSet<String>,
+    /// Slave to master.
+    slaves: HashMap<String, String>,
+    /// Slaves that told their master themselves in this run: no notice of its end.
+    #[serde(skip)]
+    told: std::collections::HashSet<String>,
+}
+
+const MAX_SLAVES: usize = 8;
+
+fn read_orchestra(data_dir: &Path) -> Orchestra {
+    std::fs::read_to_string(data_dir.join("daemon").join("orchestra.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
 
 fn conversations_path(data_dir: &Path) -> PathBuf {
@@ -252,18 +278,195 @@ impl DaemonHost {
         Ok(json!({"ok": window.sessions.rebind(tab)}))
     }
 
+    fn save_orchestra(&self, orchestra: &Orchestra) {
+        let path = self.data_dir.join("daemon").join("orchestra.json");
+        let partial = path.with_extension("partial");
+        if serde_json::to_string(orchestra).is_ok_and(|text| std::fs::write(&partial, text).is_ok()) {
+            let _ = std::fs::rename(&partial, &path);
+        }
+    }
+
+    /// The master behind this tab, whose mode is on.
+    fn master_of_tab(&self, window: &Window, tab: u64) -> Result<String, String> {
+        let session = window.sessions.session_of(tab).ok_or("this tab has no conversation yet")?.to_string();
+        if self.orchestra.lock().expect("orchestra").on.contains(&session) {
+            Ok(session)
+        } else {
+            Err("this works only in orchestration mode: call mode__orchestrate with on true first".to_string())
+        }
+    }
+
+    /// One of this master's own slaves, by nick or id.
+    fn own_slave(&self, windows: &HashMap<String, Window>, master: &str, name: &str) -> Result<String, String> {
+        let slave = self.resolve_agent(windows, name)?;
+        if self.orchestra.lock().expect("orchestra").slaves.get(&slave).map(String::as_str) != Some(master) {
+            return Err(format!("{name} is not one of your agents"));
+        }
+        Ok(slave)
+    }
+
+    /// Orchestration mode's operations (CON-100). None if it is not one.
+    fn orchestra_op(&self, windows: &mut HashMap<String, Window>, id: &str, tab: u64, name: &str, op: &Value) -> Option<Result<Value, String>> {
+        let run = || -> Result<Value, String> {
+            let window = windows.get(id).ok_or("this window is not open here")?;
+            match name {
+                "mode__orchestrate" => {
+                    let session = window.sessions.session_of(tab).ok_or("this tab has no conversation yet")?.to_string();
+                    let mut orchestra = self.orchestra.lock().expect("orchestra");
+                    if orchestra.slaves.contains_key(&session) {
+                        return Err("an agent of an orchestra cannot start one of its own".to_string());
+                    }
+                    let on = op["on"] != false;
+                    if on {
+                        orchestra.on.insert(session);
+                    } else {
+                        orchestra.on.remove(&session);
+                    }
+                    self.save_orchestra(&orchestra);
+                    Ok(if on { json!({"role_on": true, "text": format!("Orchestration mode is on.{}", harness_context_default::MASTER_RULES)}) } else { json!({"role_off": true, "text": "Orchestration mode is off. Your agents stay until you close them."}) })
+                }
+                "mode__agent_models" => {
+                    self.master_of_tab(window, tab)?;
+                    Ok(json!({"adapters": authorized_adapters(&window.settings, &self.data_dir)}))
+                }
+                "mode__agent_spawn" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let nick = op["nick"].as_str().map(str::trim).filter(|nick| !nick.is_empty()).ok_or("nick is required")?;
+                    let (adapter, model) = (op["adapter"].as_str().ok_or("adapter is required")?, op["model"].as_str().map(str::trim).filter(|m| !m.is_empty()).ok_or("model is required")?);
+                    if self.orchestra.lock().expect("orchestra").slaves.values().filter(|m| **m == master).count() >= MAX_SLAVES {
+                        return Err(format!("{MAX_SLAVES} agents is the most a master has: close one first"));
+                    }
+                    if self.resolve_agent(windows, nick).is_ok() {
+                        return Err(format!("{nick} is taken: choose another nick"));
+                    }
+                    if !authorized_adapters(&window.settings, &self.data_dir).iter().any(|row| row["adapter"] == adapter) {
+                        return Err(format!("{adapter} is not authorized here: mode__agent_models lists what is. The user signs in, in the settings; never through an agent."));
+                    }
+                    Ok(json!({"spawn": {"nick": nick, "provider": adapter, "model": model}}))
+                }
+                "mode__agent_read" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
+                    Ok(json!({"log": read_agent(&self.data_dir.to_string_lossy(), &window.root, &slave)}))
+                }
+                "mode__agent_close" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
+                    Ok(json!({"close": slave}))
+                }
+                _ => Err(String::new()),
+            }
+        };
+        if !name.starts_with("mode__") {
+            return None;
+        }
+        let reply = run();
+        // Into its log too, whoever runs its turns; the tab and a later prompt read it from there.
+        if let (Ok(answer), Some(window)) = (&reply, windows.get_mut(id))
+            && (answer.get("role_on").is_some() || answer.get("role_off").is_some())
+        {
+            window.sessions.role(tab, answer.get("role_on").map(|_| "master".to_string()), None);
+        }
+        Some(match reply {
+            Ok(reply) if reply.get("spawn").is_some() => {
+                let spawn = &reply["spawn"];
+                let window = windows.get_mut(id)?;
+                window.say(json!({"kind": "spawn", "tab": tab, "nick": spawn["nick"], "provider": spawn["provider"], "model": spawn["model"]}));
+                Ok(json!({"text": format!("Its tab is opening. It will send you word when it is ready: {}", spawn["nick"])}))
+            }
+            Ok(reply) if reply.get("close").is_some() => {
+                let slave = reply["close"].as_str().unwrap_or_default().to_string();
+                {
+                    let mut orchestra = self.orchestra.lock().expect("orchestra");
+                    orchestra.slaves.remove(&slave);
+                    self.save_orchestra(&orchestra);
+                }
+                for window in windows.values_mut().filter(|w| !w.closed) {
+                    if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == slave) {
+                        window.sessions.stop(their_tab);
+                        window.sessions.forget(their_tab);
+                        window.say(json!({"kind": "close_tab", "tab": their_tab}));
+                    }
+                }
+                Ok(json!({"text": "Closed. What it wrote to the journal and the project stays."}))
+            }
+            other => other,
+        })
+    }
+
+    /// What a master is to know of its agents reaches it as data. An agent that told it in that run
+    /// needs no notice.
+    fn tell_masters(&self, windows: &mut HashMap<String, Window>, waiting: Vec<(String, String)>, ended: Vec<(String, String)>) -> bool {
+        let data = self.data_dir.to_string_lossy().into_owned();
+        let mut words: Vec<(String, String, String)> = Vec::new();
+        {
+            let mut orchestra = self.orchestra.lock().expect("orchestra");
+            let nicks = self.nicks.lock().expect("nicks");
+            let name = |slave: &str| nicks.get(slave).cloned().unwrap_or_else(|| slave.to_string());
+            for (slave, what) in waiting {
+                if let Some(master) = orchestra.slaves.get(&slave) {
+                    words.push((master.clone(), name(&slave), what));
+                }
+            }
+            for (slave, root) in ended {
+                let Some(master) = orchestra.slaves.get(&slave).cloned() else { continue };
+                if orchestra.told.remove(&slave) {
+                    continue;
+                }
+                words.push((master, name(&slave), format!("its run ended, without a message to you. Its last words: {}", last_words(&data, &root, &slave))));
+            }
+        }
+        let any = !words.is_empty();
+        for (master, slave, what) in words {
+            for window in windows.values_mut().filter(|w| !w.closed) {
+                if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == master) {
+                    window.sessions.inbound(tab, format!("agent:{slave}"), what.clone());
+                }
+            }
+        }
+        any
+    }
+
+    /// A window has opened the tab of a new agent: it starts here, and is told what it is.
+    fn adopt(&self, window: &mut Window, op: &Value) -> Result<Value, String> {
+        let tab = op["tab"].as_u64().ok_or("tab is required")?;
+        let master_tab = op["master_tab"].as_u64().ok_or("master_tab is required")?;
+        let nick = op["nick"].as_str().ok_or("nick is required")?.to_string();
+        let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string() };
+        let master = window.sessions.session_of(master_tab).ok_or("its master is gone")?.to_string();
+        let master_name = self.name_of(window, &master);
+        window.choices.lock().expect("choices").insert(tab, choice);
+        window.sessions.nick(tab, nick.clone());
+        let session = window.sessions.session_of(tab).ok_or("it did not start")?.to_string();
+        self.settle(window, tab, &session);
+        self.remember_nick(&session, &nick);
+        {
+            let mut orchestra = self.orchestra.lock().expect("orchestra");
+            orchestra.slaves.insert(session, master);
+            self.save_orchestra(&orchestra);
+        }
+        window.sessions.role(tab, Some("slave".to_string()), Some(master_name.clone()));
+        window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("You have just been started as an agent working for the orchestrator {master_name}. Read the agent workflow specification, then send {master_name} a short reply with agent_send that you are ready to take work, and wait for it."));
+        Ok(json!({"ok": true}))
+    }
+
     /// What a conversation goes by, for other agents.
     fn name_of(&self, window: &Window, session: &str) -> String {
         self.nicks.lock().expect("nicks").get(session).cloned().unwrap_or_else(|| crate::title_of(&self.data_dir.to_string_lossy(), &window.root, session))
     }
 
     /// Each open conversation on this machine (CON-99).
-    fn agent_list(&self, windows: &HashMap<String, Window>) -> Value {
+    fn agent_list(&self, windows: &HashMap<String, Window>, asking: Option<&str>) -> Value {
+        // A slave has one contact (CON-100).
+        let only = asking.and_then(|session| self.orchestra.lock().expect("orchestra").slaves.get(session).cloned());
         let stored = self.conversations.lock().expect("conversations");
         let nicks = self.nicks.lock().expect("nicks");
         let mut agents = Vec::new();
         for window in windows.values().filter(|w| !w.closed) {
             for (_, session) in window.sessions.open() {
+                if only.as_ref().is_some_and(|only| *only != session) {
+                    continue;
+                }
                 let choice = stored.get(&session);
                 agents.push(json!({
                     "nick": nicks.get(&session),
@@ -294,6 +497,18 @@ impl DaemonHost {
         if target == sender {
             return Err("that is you: an agent does not message itself".to_string());
         }
+        let (sender_is_slave, to_own_slave) = {
+            let mut orchestra = self.orchestra.lock().expect("orchestra");
+            let master = orchestra.slaves.get(&sender).cloned();
+            if let Some(master) = &master {
+                if *master != target {
+                    return Err(format!("you answer to {} alone: an agent of an orchestra messages only its orchestrator", master));
+                }
+                orchestra.told.insert(sender.clone());
+            }
+            (master.is_some(), orchestra.slaves.get(&target) == Some(&sender))
+        };
+        let _ = sender_is_slave;
         {
             let mut sent = self.a2a_sent.lock().expect("a2a");
             let times = sent.entry(sender).or_default();
@@ -308,7 +523,12 @@ impl DaemonHost {
         for window in windows.values_mut().filter(|w| !w.closed) {
             if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == target) {
                 let queued = window.sessions.runs(&target);
-                window.sessions.inbound(their_tab, format!("agent:{from}"), text.to_string());
+                if to_own_slave {
+                    // The orchestrator stands for the user there.
+                    window.sessions.prompt(their_tab, text.to_string());
+                } else {
+                    window.sessions.inbound(their_tab, format!("agent:{from}"), text.to_string());
+                }
                 return Ok(json!({"delivered_to": target, "queued": queued}));
             }
         }
@@ -344,7 +564,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -361,6 +581,9 @@ impl DaemonHost {
         let mut any = false;
         // A handed-over run speaks to the window that took it.
         let mut handed = Vec::new();
+        // What a master is to be told of its agents.
+        let mut waiting_word: Vec<(String, String)> = Vec::new();
+        let mut ended_runs: Vec<(String, String)> = Vec::new();
         for (id, window) in windows.iter_mut() {
             let messages = window.sessions.drain();
             let reload = window.reload.swap(false, Ordering::SeqCst);
@@ -383,8 +606,12 @@ impl DaemonHost {
             }
             for message in &own {
                 match message {
-                    FromSession::Ask { tab, .. } => {
+                    FromSession::Ask { tab, call, .. } => {
                         window.asking.insert(*tab, to_wire(message));
+                        if let Some(session) = window.sessions.session_of(*tab) {
+                            let slave = session.to_string();
+                            waiting_word.push((slave, format!("waits on the user for permission: {} {}", call.name, call.input)));
+                        }
                     }
                     FromSession::Entry { tab, entry } => {
                         if let harness_api::Event::AgentName { name, .. } = &entry.event
@@ -396,8 +623,11 @@ impl DaemonHost {
                     }
                     FromSession::Ended { tab, .. } => {
                         window.said.remove(tab);
+                        if let Some(session) = window.sessions.session_of(*tab) {
+                            ended_runs.push((session.to_string(), window.root.clone()));
+                        }
                     }
-                    FromSession::Unavailable { .. } | FromSession::Synced { .. } => {}
+                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
                 }
             }
             if window.closed {
@@ -427,6 +657,7 @@ impl DaemonHost {
         }
         // A closed window stays until its runs have finished: the log gets their end.
         windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
+        any |= self.tell_masters(&mut windows, waiting_word, ended_runs);
         if any {
             self.wake.notify_all();
         }
@@ -442,6 +673,8 @@ impl DaemonHost {
             FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
             FromSession::Unavailable { message, .. } => FromSession::Unavailable { tab, message },
             FromSession::Synced { error, .. } => FromSession::Synced { tab, error },
+            FromSession::Spawn { nick, provider, model, .. } => FromSession::Spawn { tab, nick, provider, model },
+            FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
         };
         let mut said = false;
         if let (FromSession::Entry { .. }, Some(source)) = (&retabbed, windows.get_mut(from)) {
@@ -562,6 +795,7 @@ impl DaemonHost {
         let root = op["root"].as_str().ok_or("root is required")?.to_string();
         let settings: Settings = serde_json::from_value(op["settings"].clone()).map_err(|e| format!("settings: {e}"))?;
         let default = crate::Choice { provider: settings.provider.clone(), model: settings.model.clone() };
+        let for_window = settings.clone();
         let (reload, notes, choices) = match windows.get(id) {
             Some(w) => (w.reload.clone(), w.notes.clone(), w.choices.clone()),
             None => (Arc::default(), Arc::default(), Arc::default()),
@@ -578,12 +812,13 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
             window.environment = environment;
             window.default = default;
+            window.settings = for_window;
         }
         Ok(json!({"ok": true, "pid": std::process::id()}))
     }
@@ -700,8 +935,19 @@ impl ConversationHost for DaemonHost {
         if name == "choice_of" {
             return Ok(json!({"choice": window.choices.lock().expect("choices").get(&tab)}));
         }
+        if name == "adopt" {
+            let reply = self.adopt(window, op);
+            self.wake.notify_all();
+            return reply;
+        }
+        if name.starts_with("mode__") {
+            let reply = self.orchestra_op(&mut windows, id, tab, name, op).unwrap_or_else(|| Err(format!("no mode tool {name}")));
+            self.wake.notify_all();
+            return reply;
+        }
         if name == "agent_list" {
-            return Ok(self.agent_list(&windows));
+            let asking = window.sessions.session_of(tab).map(str::to_string);
+            return Ok(self.agent_list(&windows, asking.as_deref()));
         }
         if name == "agent_send" {
             let reply = self.agent_send(&mut windows, id, tab, op);
@@ -970,6 +1216,14 @@ impl SessionLink {
         }
     }
 
+    /// A window has opened a new agent's tab.
+    pub fn adopt(&mut self, tab: u64, master_tab: u64, nick: &str, provider: &str, model: &str) -> Result<(), String> {
+        match self {
+            SessionLink::Local(_) => Err("an orchestra needs the daemon".to_string()),
+            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "adopt", "tab": tab, "master_tab": master_tab, "nick": nick, "provider": provider, "model": model})).map(|_| ()),
+        }
+    }
+
     /// What this tab's conversation runs on, if the daemon has settled it.
     pub fn choice_of(&self, tab: u64) -> Option<crate::Choice> {
         match self {
@@ -1083,4 +1337,82 @@ pub fn daemon_for_this_build(data_dir: &Path, program: &Path) -> Result<Client, 
     }
     client.shutdown()?;
     Client::find_or_start(data_dir, program)
+}
+
+/// The adapters of these settings that are authorized here, with the models known for each.
+fn authorized_adapters(settings: &Settings, data_dir: &Path) -> Vec<Value> {
+    let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &json!(settings.auth));
+    let names = std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str));
+    let mut seen = Vec::new();
+    let mut rows = Vec::new();
+    for name in names {
+        if seen.contains(&name) {
+            continue;
+        }
+        seen.push(name);
+        let row = settings.providers.get(name);
+        let is_delegate = row.is_some_and(|r| r["kind"] == "claude-code");
+        let on_plan = name == "chatgpt" || settings.auth.get(name).is_some_and(|a| a["oauth"] == "chatgpt");
+        let authorized = if is_delegate {
+            true
+        } else if on_plan {
+            harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::new(data_dir)).0
+        } else {
+            let source = keys.source(name);
+            !source.starts_with("not set")
+        };
+        if !authorized {
+            continue;
+        }
+        let mut models: Vec<String> = row.and_then(|r| r["models"].as_array()).map_or_else(Vec::new, |list| list.iter().filter_map(|m| m.as_str().map(str::to_string)).collect());
+        if name == settings.provider && !models.contains(&settings.model) {
+            models.push(settings.model.clone());
+        }
+        rows.push(json!({"adapter": name, "models": models, "note": "any model this adapter takes may be named"}));
+    }
+    rows
+}
+
+/// What an agent has done, line by line, for its master to check it by.
+fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
+    const LIMIT: usize = 300;
+    let short = |text: &str| {
+        let text: String = text.chars().take(300).collect();
+        text.replace('\n', " ")
+    };
+    let mut lines = Vec::new();
+    let mut said = String::new();
+    let flush = |said: &mut String, lines: &mut Vec<String>| {
+        if !said.trim().is_empty() {
+            lines.push(format!("said: {}", short(said)));
+        }
+        said.clear();
+    };
+    for entry in crate::read_log(data_dir, root, session) {
+        match &entry.event {
+            harness_api::Event::TextDelta { text } => said.push_str(text),
+            harness_api::Event::UserMessage { text } => {
+                flush(&mut said, &mut lines);
+                lines.push(format!("user: {}", short(text)));
+            }
+            harness_api::Event::Inbound { label, text } => {
+                flush(&mut said, &mut lines);
+                lines.push(format!("inbound {label}: {}", short(text)));
+            }
+            harness_api::Event::ToolRequested { call, .. } => {
+                flush(&mut said, &mut lines);
+                lines.push(format!("call {}: {}", call.name, short(&call.input.to_string())));
+            }
+            harness_api::Event::ToolResult { output, is_error: true, .. } => lines.push(format!("failed: {}", short(output))),
+            _ => {}
+        }
+    }
+    flush(&mut said, &mut lines);
+    let skip = lines.len().saturating_sub(LIMIT);
+    lines.split_off(skip)
+}
+
+/// What an agent said last.
+fn last_words(data_dir: &str, root: &str, session: &str) -> String {
+    read_agent(data_dir, root, session).iter().rev().find_map(|line| line.strip_prefix("said: ").map(str::to_string)).unwrap_or_default()
 }

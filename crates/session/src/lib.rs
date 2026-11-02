@@ -422,6 +422,11 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         // Other agents are reached through a daemon: with none, there is nobody to reach.
         if let (Some(client), Some(window)) = (harness_daemon::client::Client::find(&data_dir), host.window.clone()) {
             selection.tools.extend(["agent_list".to_string(), "agent_send".to_string()]);
+            selection.tools.extend(host_tools::MODE_TOOLS.iter().map(|name| name.to_string()));
+            for name in host_tools::MODE_TOOLS {
+                let (client, window) = (client.clone(), window.clone());
+                registry.tool(name, move |_| Ok(Rc::new(host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab })));
+            }
             let (list_client, list_window) = (client.clone(), window.clone());
             registry.tool("agent_list", move |_| Ok(Rc::new(host_tools::AgentList { client: list_client.clone(), window: list_window.clone() })));
             registry.tool("agent_send", move |_| Ok(Rc::new(host_tools::AgentSend { client: client.clone(), window: window.clone(), tab })));
@@ -495,6 +500,10 @@ fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, 
 /// What a running session tells the frontend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromSession {
+    /// The daemon's word to a window: open a tab for this master's new agent.
+    Spawn { tab: u64, nick: String, provider: String, model: String },
+    /// The daemon's word to a window: this tab's agent has been closed.
+    CloseTab { tab: u64 },
     Entry { tab: u64, entry: LogEntry },
     /// `Policy` asked; the session waits for `Sessions::answer`.
     Ask { tab: u64, call: ToolCall, capabilities: Vec<Capability> },
@@ -520,6 +529,8 @@ enum Input {
     Inbound { label: String, text: String },
     /// For the user to read; no run.
     Notice { label: String, text: String },
+    /// Its place in an orchestra.
+    Role { role: Option<String>, master: Option<String> },
 }
 
 struct Handle {
@@ -916,6 +927,16 @@ impl Sessions {
         }
     }
 
+    /// Its place in an orchestra (CON-100).
+    pub fn role(&mut self, tab: u64, role: Option<String>, master: Option<String>) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Role { role, master });
+        }
+    }
+
     pub fn answer(&self, tab: u64, answer: Answer) {
         if let Some(handle) = self.handles.get(&tab) {
             let _ = handle.answers.send(answer);
@@ -1020,6 +1041,12 @@ impl Sessions {
                     pollster::block_on(engine.set_step_debug(on, "user"));
                     continue;
                 }
+                if let Input::Role { role, master } = &input {
+                    if !retired_here.load(Ordering::SeqCst) {
+                        pollster::block_on(engine.set_orchestra_role(role.clone(), master.clone()));
+                    }
+                    continue;
+                }
                 if let Input::Notice { label, text } = &input {
                     if !retired_here.load(Ordering::SeqCst) {
                         pollster::block_on(engine.notice(label, text));
@@ -1027,7 +1054,7 @@ impl Sessions {
                     continue;
                 }
                 let end = match input {
-                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) | Input::Notice { .. } => unreachable!("handled above"),
+                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) | Input::Notice { .. } | Input::Role { .. } => unreachable!("handled above"),
                     Input::Next => {
                         let next = {
                             let mut inbox = inbox.lock().expect("inbox");
@@ -1089,8 +1116,11 @@ mod every_tool {
             Rc::new(host_tools::DebugRuns { root: String::new() }),
             Rc::new(host_tools::TelegramSend { data_dir: dir.clone(), from: None }),
             Rc::new(host_tools::AgentList { client: client.clone(), window: String::new() }),
-            Rc::new(host_tools::AgentSend { client, window: String::new(), tab: 0 }),
+            Rc::new(host_tools::AgentSend { client: client.clone(), window: String::new(), tab: 0 }),
         ];
+        for name in host_tools::MODE_TOOLS {
+            tools.push(Rc::new(host_tools::ModeTool { name, client: client.clone(), window: String::new(), tab: 0 }));
+        }
         for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
             tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name).unwrap()));
         }
@@ -1113,7 +1143,9 @@ mod every_tool {
     fn modes_stand_apart_from_utilities() {
         let specs = all();
         let modes: Vec<&ToolSpec> = specs.iter().filter(|s| s.name.starts_with("mode__")).collect();
-        assert_eq!(modes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["mode__plan_enter", "mode__plan_exit", "mode__debug"]);
+        let mut names: Vec<&str> = modes.iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__plan_enter", "mode__plan_exit"]);
         assert!(modes.iter().all(|s| s.description.starts_with("HARNESS MODE")), "an agent sees it is no utility");
         for old in ["plan_enter", "plan_exit", "debug_mode"] {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");

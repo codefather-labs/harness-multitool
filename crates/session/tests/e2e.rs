@@ -92,6 +92,7 @@ fn drive(sessions: &mut Sessions, prompts: &[&str], answer: Answer) -> (Vec<LogE
                 }
                 FromSession::Unavailable { message, .. } => panic!("{message}"),
                 FromSession::Synced { .. } => {}
+                FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
             }
         }
     }
@@ -566,6 +567,7 @@ fn drive_task(sessions: &mut Sessions, text: &str, steps: &[&str]) -> (Vec<LogEn
             FromSession::Ended { end, .. } => return (entries, format!("{end:?}")),
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
 }
@@ -1003,6 +1005,7 @@ fn drive_acting(sessions: &mut Sessions, first: &str, answer: Answer, at_prompt:
             Some(FromSession::Unavailable { message, .. }) => panic!("{message}"),
             Some(FromSession::Synced { .. }) => {}
             None => return (entries, ends),
+            Some(FromSession::Spawn { .. } | FromSession::CloseTab { .. }) => {}
         }
     }
 }
@@ -1092,6 +1095,7 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
             }
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
     assert!(!pending, "the rebind went through in the end");
@@ -1119,6 +1123,7 @@ fn two_tabs_have_their_own_queues() {
             FromSession::Ended { .. } => {}
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
     assert_eq!(user_texts(&one), ["in one"]);
@@ -1151,6 +1156,7 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
             FromSession::Ended { .. } => ends += 1,
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
     assert_eq!((asks, ends), (1, 1), "asked only for the second mode__plan_exit; one run");

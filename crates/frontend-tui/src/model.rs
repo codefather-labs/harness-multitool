@@ -485,6 +485,8 @@ pub struct SessionView {
     pub generating: bool,
     /// The name above the agent's messages; ASSISTANT until it has one.
     pub agent_name: Option<String>,
+    /// Its place in an orchestra: `master` or `slave` (CON-100).
+    pub orchestra: Option<String>,
     /// What the agent asked and the user has not answered, with the option under the cursor.
     pub question: Option<(harness_api::question::Question, usize)>,
     /// Messages sent during the run that the agent has not seen yet.

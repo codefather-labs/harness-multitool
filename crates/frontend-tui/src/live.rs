@@ -173,7 +173,7 @@ impl Feed {
             }
             // The harness's own step-by-step reminders are for the model: drawn, they would be a
             // card on every message. They stay in the log.
-            Event::HookRan { hook, outcome: LogOutcome::Reminder { .. } | LogOutcome::Continue { .. }, .. } if hook == "mode-guide" || hook == "repeat-guard" => {}
+            Event::HookRan { hook, outcome: LogOutcome::Reminder { .. } | LogOutcome::Continue { .. }, .. } if hook == "workflow-spec" || hook == "mode-guide" || hook == "repeat-guard" => {}
             Event::HookRan { point, hook, outcome, .. } => {
                 let run = HookRun { script: hook.clone(), outcome: hook_outcome(outcome), duration: String::new() };
                 let name = format!("{point:?}");
@@ -218,6 +218,7 @@ impl Feed {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
             }
             Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
+            Event::OrchestraRole { role, .. } => v.orchestra.clone_from(role),
             Event::StepDebug { on, by } => {
                 set_status(v, "DEBUG", if *on { "step" } else { "off" });
                 let line = if *on {

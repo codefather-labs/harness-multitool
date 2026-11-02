@@ -112,6 +112,9 @@ enum Command {
         window: Option<String>,
         #[arg(long)]
         tab: Option<u64>,
+        /// `mode`: serve the harness's modes alone.
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Create what is missing of docs/ and .harness/, overwriting nothing.
     Init,
@@ -254,8 +257,8 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Mcp { root, window, tab } => {
-            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab) };
+        Command::Mcp { root, window, tab, namespace } => {
+            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace };
             harness_session::mcp::serve(&serving, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| anyhow!(e))
         }
         Command::Init => {
@@ -1755,6 +1758,37 @@ impl Live {
         for message in messages {
             let window = self.context_window;
             match message {
+                FromSession::Spawn { tab: master, nick, provider, model } => {
+                    // A tab of the master's group, beside it; the user stays where they are.
+                    let was = w.tabs[w.active].id;
+                    frontend_tui::debug::open_tab(w, &nick);
+                    let Some(mut opened) = w.tabs.pop() else { continue };
+                    let id = opened.id;
+                    opened.view.agent_name = Some(nick.clone());
+                    opened.view.orchestra = Some("slave".to_string());
+                    opened.view.background.clear();
+                    frontend_tui::live::set_status(&mut opened.view, "ADAPTER", &provider);
+                    frontend_tui::live::set_status(&mut opened.view, "MODEL", &model);
+                    let mut at = w.tabs.iter().position(|t| t.id == master).map_or(w.tabs.len(), |i| i + 1);
+                    while w.tabs.get(at).is_some_and(|t| t.view.orchestra.as_deref() == Some("slave")) {
+                        at += 1;
+                    }
+                    w.tabs.insert(at, opened);
+                    w.active = w.tabs.iter().position(|t| t.id == was).unwrap_or(0);
+                    if let Err(why) = self.sessions.adopt(id, master, &nick, &provider, &model) {
+                        w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "ORCHESTRA".into(), lines: vec![why] });
+                    }
+                }
+                FromSession::CloseTab { tab } => {
+                    if let Some(at) = w.tabs.iter().position(|t| t.id == tab)
+                        && w.tabs.len() > 1
+                    {
+                        let was = w.tabs[w.active].id;
+                        w.tabs.remove(at);
+                        self.feeds.remove(&tab);
+                        w.active = w.tabs.iter().position(|t| t.id == was).unwrap_or(at.min(w.tabs.len() - 1));
+                    }
+                }
                 FromSession::Entry { tab, entry } => {
                     if self.shown_up_to.get(&tab).is_some_and(|seq| entry.seq <= *seq) {
                         continue;
@@ -2039,6 +2073,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             }
             FromSession::Synced { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
 }

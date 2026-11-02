@@ -92,7 +92,7 @@ out = bodies[-1]["input"][-1]["output"]; assert "agenda" in out, out
 tools = [t.get("name") for t in bodies[0]["tools"]]; assert "journal_agenda" in tools and "journal_abandon" in tools, tools
 assert "telegram_send" not in tools or True
 print("the larger set is on, journal_agenda ran:", len(tools), "tools")
-modes = sorted(t for t in tools if t.startswith("mode__")); assert modes == ["mode__debug", "mode__plan_enter", "mode__plan_exit"], modes
+modes = sorted(t for t in tools if t.startswith("mode__")); assert modes == ["mode__debug", "mode__orchestrate", "mode__plan_enter", "mode__plan_exit"], "the master's tools are absent outside its mode: " + str(modes)
 assert not {"plan_enter", "plan_exit", "debug_mode"} & set(tools), tools
 assert "mode__plan_enter" in bodies[0]["instructions"] and "modes of the harness" in bodies[0]["instructions"], "the prompt says what a mode is"
 pump(0.5)

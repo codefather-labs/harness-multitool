@@ -28,6 +28,9 @@ const ASK_TOOL: &str = "ask_user";
 const REPEAT_WARN: u32 = 3;
 const REPEAT_STOP: u32 = 5;
 const MAX_NICK: usize = 32;
+const ORCHESTRATE_TOOL: &str = "mode__orchestrate";
+/// What only a master has: absent from everyone else's tools (CON-100).
+const MASTER_TOOLS: &str = "mode__agent_";
 /// The shortest words of the user that count as saying to go.
 const MIN_QUOTE: usize = 2;
 const APPROVED: &str = "The user approved the plan. Plan mode is off. A fix: call mode__debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call mode__debug with on true and debug it.";
@@ -360,7 +363,9 @@ impl Engine {
     }
 
     fn tool_specs(&self) -> Vec<ToolSpec> {
-        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).collect();
+        let is_master = self.state.borrow().orchestra_role.as_deref() == Some("master");
+        let is_slave = self.state.borrow().orchestra_role.as_deref() == Some("slave");
+        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && s.name == ORCHESTRATE_TOOL)).collect();
         // A small model believes a tool's description over the system prompt.
         if self.state.borrow().plan_mode {
             for spec in &mut specs {
@@ -373,6 +378,14 @@ impl Engine {
         }
         specs.extend(own_tool_specs());
         specs
+    }
+
+    /// This conversation's place in an orchestra.
+    pub async fn set_orchestra_role(&self, role: Option<String>, master: Option<String>) {
+        if self.state.borrow().orchestra_role != role || self.state.borrow().orchestra_master != master {
+            self.emit(Event::OrchestraRole { role, master });
+            let _ = self.flush().await;
+        }
     }
 
     /// Names the agent. A bad name changes nothing and says why.
@@ -984,6 +997,11 @@ impl Engine {
         let cx = ToolContext { platform: self.parts.platform.clone(), granted: capabilities, root: self.root.clone() };
         let output: ToolOutput = tool.execute(&call.input, &cx).await;
         self.emit(Event::ToolResult { id: call.id.clone(), output: output.text.clone(), is_error: output.is_error });
+        // The tools of the mode are there from its next turn on.
+        if call.name == ORCHESTRATE_TOOL && !output.is_error {
+            let role = (call.input["on"] != false).then(|| "master".to_string());
+            self.set_orchestra_role(role, None).await;
+        }
         self.hooks(HookPoint::PostToolUse { call, output: &output }).await;
     }
 

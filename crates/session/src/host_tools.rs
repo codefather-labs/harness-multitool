@@ -193,3 +193,60 @@ impl Tool for AgentSend {
         Box::pin(std::future::ready(answer))
     }
 }
+
+/// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
+pub const MODE_TOOLS: [&str; 5] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_close"];
+
+pub struct ModeTool {
+    pub name: &'static str,
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for ModeTool {
+    fn spec(&self) -> ToolSpec {
+        let (description, schema) = match self.name {
+            "mode__orchestrate" => (
+                "HARNESS MODE, not a utility: on or off. Enter orchestration mode to start other agents and give them work: you become their master, your prompt gains the mode's rules, and the tools to start, read and close agents appear. Answers with those rules. Your agents stay when you leave the mode.",
+                json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
+            ),
+            "mode__agent_models" => (
+                "HARNESS MODE, orchestration only. List the adapters you can start an agent on, those authorized here, with the models known for each. Choose from this for mode__agent_spawn.",
+                json!({"type": "object", "properties": {}}),
+            ),
+            "mode__agent_spawn" => (
+                "HARNESS MODE, orchestration only. Start an agent in a new tab of your group, on this authorized adapter and model, in this same project and git, with no history. It sends you word when it is ready; give it work then with agent_send. At most 8. Answers that its tab is opening.",
+                json!({"type": "object", "properties": {"nick": {"type": "string", "description": "What it goes by; unique among the open."}, "adapter": {"type": "string"}, "model": {"type": "string"}}, "required": ["nick", "adapter", "model"]}),
+            ),
+            "mode__agent_read" => (
+                "HARNESS MODE, orchestration only. Read what one of your agents has done: each message it got, each call it made in order with its arguments, and its last words. Use it to check its work against the agent workflow specification.",
+                json!({"type": "object", "properties": {"nick": {"type": "string"}}, "required": ["nick"]}),
+            ),
+            _ => (
+                "HARNESS MODE, orchestration only. End one of your agents: its process stops and its tab closes. What it wrote to the journal and the project stays. Answers that it was closed.",
+                json!({"type": "object", "properties": {"nick": {"type": "string"}}, "required": ["nick"]}),
+            ),
+        };
+        ToolSpec { name: self.name.into(), description: description.into(), schema }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let mut op = input.clone();
+        if !op.is_object() {
+            op = json!({});
+        }
+        op["window"] = json!(self.window);
+        op["tab"] = json!(self.tab);
+        op["op"] = json!(self.name);
+        let answer = match self.client.conversation_op(&op) {
+            Ok(reply) => ToolOutput::ok(reply["text"].as_str().map_or_else(|| reply.to_string(), str::to_string)),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
