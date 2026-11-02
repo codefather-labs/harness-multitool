@@ -56,7 +56,10 @@ impl Feed {
         self.note_activity(v, entry);
         match &entry.event {
             Event::ToolRequested { call, .. } if call.name == "ask_user" => {
-                v.question = harness_api::question::Question::parse(&call.input).ok().map(|q| (q, 0));
+                // A slave's question is its orchestrator's to answer, not the user's (CON-100).
+                if v.orchestra.as_deref() != Some("slave") {
+                    v.question = harness_api::question::Question::parse(&call.input).ok().map(|q| (q, 0));
+                }
             }
             // Whatever the user said next is the answer.
             Event::UserMessage { .. } => v.question = None,
@@ -1292,5 +1295,21 @@ mod inbound_tests {
         assert_eq!(expand_tabs("plain"), "plain");
         let ToolBody::Output { lines, .. } = output_body("a\tb") else { panic!() };
         assert_eq!(lines[0], "a       b");
+    }
+}
+
+#[cfg(test)]
+mod slave_questions {
+    use super::*;
+
+    #[test]
+    fn a_slaves_question_opens_no_panel_for_the_user() {
+        let ask = LogEntry { seq: 1, at_ms: 0, event: Event::ToolRequested { call: harness_api::ToolCall { id: "q".into(), name: "ask_user".into(), input: serde_json::json!({"question": "Which?"}) }, capabilities: vec![] } };
+        let mut mine = SessionView::default();
+        Feed::new(|_| String::new(), 1000).apply(&mut mine, &ask);
+        assert!(mine.question.is_some(), "the user's own agent asks the user");
+        let mut slave = SessionView { orchestra: Some("slave".into()), ..Default::default() };
+        Feed::new(|_| String::new(), 1000).apply(&mut slave, &ask);
+        assert!(slave.question.is_none(), "its orchestrator's to answer");
     }
 }

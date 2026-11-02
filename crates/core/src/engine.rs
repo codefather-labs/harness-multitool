@@ -940,7 +940,8 @@ impl Engine {
                 Ok(question) => {
                     self.asked.set(true);
                     let options: String = question.options.iter().enumerate().map(|(i, o)| format!("\n{}. {}", i + 1, o.label)).collect();
-                    (format!("Asked the user: {}{options}\nTheir answer comes as their next message.", question.text), false)
+                    let asked = if self.state.borrow().orchestra_role.as_deref() == Some("slave") { "your orchestrator" } else { "the user" };
+                    (format!("Asked {asked}: {}{options}\nThe answer comes as your next message.", question.text), false)
                 }
                 Err(e) => (e, true),
             };

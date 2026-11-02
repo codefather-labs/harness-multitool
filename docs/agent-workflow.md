@@ -72,6 +72,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-50 | You have just been started as an agent of an orchestrator. | Read this file, then `agent_send` it that you are ready, and wait. | That call, first of all but the reading. |
 | W-51 | A user message in that tab. | Treat it as the user's: it stands for the user there. Everything above holds. | As above. |
 | W-52 | You are done, or need something. | `agent_send` your orchestrator. It is your only contact. | That call at the end of the work. |
+| W-55 | You have a question, in an orchestra. | `ask_user`, as anywhere: it goes to your orchestrator, whose answer is your next message. | `ask_user`, then nothing until the answer. |
 | W-53 | You are the orchestrator, and an agent says it is ready. | Give it work with `agent_send`; end your turn while it works. | `agent_send`, then no polling. |
 | W-54 | An orchestrator checking an agent's work. | `mode__agent_read`, against the rows of this file. | That call before a verdict. |
 

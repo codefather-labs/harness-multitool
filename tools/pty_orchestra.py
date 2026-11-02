@@ -19,6 +19,8 @@ class H(http.server.BaseHTTPRequestHandler):
             emit({"type": "response.output_text.delta", "delta": "Done with that."})
         elif "you are ready to take work" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "agent_send", "arguments": json.dumps({"to": "boss", "text": "ready for work"}), "call_id": "r1"}})
+        elif "ask me something" in json.dumps(last, ensure_ascii=False):
+            emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "ask_user", "arguments": json.dumps({"question": "Which colour?", "options": [{"label": "red"}, {"label": "blue"}]}), "call_id": "q1"}})
         elif "talk to the other" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "agent_send", "arguments": json.dumps({"to": "second", "text": "hello peer"}), "call_id": "r2"}})
         else:
@@ -112,6 +114,14 @@ read = json.loads(call("mode", "agent_read", {"nick": "first-agent"})["text"])["
 assert any(l.startswith("call agent_send") and "second" in l for l in read) and any(l.startswith("user: your task") for l in read), read
 print("agent_read shows its calls:", len(read), "lines")
 pump(0.5); typed("do nothing\r"); pump(0.5)
+# A slave's question goes to its master, not the user.
+n = len(told()); sent = call("harness", "agent_send", {"to": "first-agent", "text": "ask me something"}); assert not sent["error"], sent
+until("its question reached the master", lambda: "asks you: Which colour?" in told() and "1. red" in told())
+got = told()[n:]; assert "its run ended" not in got, "the question says it all: " + got
+sent = call("harness", "agent_send", {"to": "first-agent", "text": "blue, thanks"}); assert not sent["error"], sent
+until("the answer arrived as its next message", lambda: "blue, thanks" in json.dumps(bodies[-1]["input"], ensure_ascii=False))
+assert "your orchestrator" in json.dumps(bodies[-1]["input"], ensure_ascii=False), "it was told who it asked"
+print("a slave's question reached its master, and the answer came back as its next message"); pump(0.5)
 # Reload: the group, adapters and roles hold.
 before = len(bodies); n = len(prompts())
 typed('call harness plugins_reload {}\r')

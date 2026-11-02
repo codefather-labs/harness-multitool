@@ -223,6 +223,7 @@ struct Orchestra {
 }
 
 const MAX_SLAVES: usize = 8;
+const ASKS_YOU: &str = "asks you: ";
 
 fn read_orchestra(data_dir: &Path) -> Orchestra {
     std::fs::read_to_string(data_dir.join("daemon").join("orchestra.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
@@ -404,8 +405,12 @@ impl DaemonHost {
             let nicks = self.nicks.lock().expect("nicks");
             let name = |slave: &str| nicks.get(slave).cloned().unwrap_or_else(|| slave.to_string());
             for (slave, what) in waiting {
-                if let Some(master) = orchestra.slaves.get(&slave) {
-                    words.push((master.clone(), name(&slave), what));
+                if let Some(master) = orchestra.slaves.get(&slave).cloned() {
+                    words.push((master, name(&slave), what.clone()));
+                    // It has told its master what it waits for: its run's end adds nothing.
+                    if what.starts_with(ASKS_YOU) {
+                        orchestra.told.insert(slave);
+                    }
                 }
             }
             for (slave, root) in ended {
@@ -618,6 +623,15 @@ impl DaemonHost {
                             && let Some(session) = window.sessions.session_of(*tab)
                         {
                             self.remember_nick(session, name);
+                        }
+                        // A slave's question goes to its master (CON-100).
+                        if let harness_api::Event::ToolRequested { call, .. } = &entry.event
+                            && call.name == "ask_user"
+                            && let Some(session) = window.sessions.session_of(*tab)
+                            && let Ok(question) = harness_api::question::Question::parse(&call.input)
+                        {
+                            let options: String = question.options.iter().enumerate().map(|(i, o)| format!("\n{}. {}", i + 1, o.label)).collect();
+                            waiting_word.push((session.to_string(), format!("{ASKS_YOU}{}{options}\nAnswer it with agent_send.", question.text)));
                         }
                         window.said.entry(*tab).or_default().push(to_wire(message));
                     }
