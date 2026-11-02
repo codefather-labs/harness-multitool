@@ -97,6 +97,36 @@ pub trait ConversationHost: Send + Sync {
     fn close(&self, only_if_idle: bool) -> bool;
 }
 
+/// The path to run this program by. A rebuild puts a new file at that path, after which the OS
+/// names the running one as deleted: the path still holds the program, in its newer build.
+pub fn own_program() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe().map(live_path)
+}
+
+fn live_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.exists() {
+        return path;
+    }
+    match path.to_str().and_then(|p| p.strip_suffix(" (deleted)")).map(std::path::PathBuf::from) {
+        Some(live) if live.exists() => live,
+        _ => path,
+    }
+}
+
+#[cfg(test)]
+mod own_program_tests {
+    #[test]
+    fn a_replaced_program_runs_by_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("multitool");
+        let named = |suffix: &str| std::path::PathBuf::from(format!("{}{suffix}", live.display()));
+        assert_eq!(super::live_path(named(" (deleted)")), named(" (deleted)"), "gone for good: nothing better to say");
+        std::fs::write(&live, "").unwrap();
+        assert_eq!(super::live_path(named(" (deleted)")), live);
+        assert_eq!(super::live_path(live.clone()), live);
+    }
+}
+
 /// What identifies this binary: a client of another build must not be served by this one.
 pub fn build_id() -> String {
     std::env::current_exe().ok().and_then(|p| std::fs::metadata(p).ok()).map_or(String::new(), |m| {

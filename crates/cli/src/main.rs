@@ -549,7 +549,7 @@ impl Live {
                 continue;
             }
             let Ok(dir) = config::data_dir() else { continue };
-            let Ok(program) = std::env::current_exe() else { continue };
+            let Ok(program) = harness_daemon::own_program() else { continue };
             let Ok(client) = harness_daemon::client::Client::find_or_start(&dir, &program) else { continue };
             let Ok(window) = client.register(&self.root) else { continue };
             self.listen(tab, client, window);
@@ -600,7 +600,7 @@ impl Live {
         use frontend_tui::model::{Mode, Tab, TabIcon, TabMark};
         let mut state = self.fresh_session();
         let data = config::data_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-        let client = match (config::data_dir(), std::env::current_exe()) {
+        let client = match (config::data_dir(), harness_daemon::own_program()) {
             (Ok(dir), Ok(program)) => harness_daemon::client::Client::find_or_start(&dir, &program).ok(),
             _ => None,
         };
@@ -852,7 +852,7 @@ impl Live {
         // Everything goes through the daemon; a scripted run, or no daemon to be had, stays here.
         let remote = match script {
             Some(_) => None,
-            None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
+            None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
         Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None })
     }
@@ -1711,7 +1711,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
     let settings = config::load()?.session;
     // Step-debug needs what a window has: a daemon, a callback URL, and the daemon told the mode.
     let window = if step_debug {
-        let client = harness_daemon::client::Client::find_or_start(&data, &std::env::current_exe()?).map_err(|e| anyhow!(e))?;
+        let client = harness_daemon::client::Client::find_or_start(&data, &harness_daemon::own_program()?).map_err(|e| anyhow!(e))?;
         let registered = client.register(&root).map_err(|e| anyhow!(e))?;
         client.set_step_debug(&registered.window, true).map_err(|e| anyhow!(e))?;
         println!("window      {} on the daemon; callbacks go to {}", registered.window, registered.url);

@@ -364,7 +364,7 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
             // The harness's own tools go with it, whichever way the row runs.
-            let mcp = std::env::current_exe().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
+            let mcp = harness_daemon::own_program().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
             parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp)?);
         }
         // A connected provider's form is kept in line whichever provider runs the session (INV-20).

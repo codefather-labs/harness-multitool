@@ -73,7 +73,7 @@ fn build() -> Result<(), String> {
             let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
             let expected = workspace.join("target").join(profile).join(format!("multitool{}", std::env::consts::EXE_SUFFIX));
             let same = |a: &Path, b: &Path| a.canonicalize().ok().is_some_and(|x| b.canonicalize().ok().is_some_and(|y| x == y));
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe = harness_daemon::own_program().map_err(|e| e.to_string())?;
             if !same(&exe, &expected) {
                 return Err(format!("this binary ({}) is not the output of a local build, so there is nothing to rebuild", exe.display()));
             }
@@ -105,13 +105,13 @@ pub fn swap(handoff: &Path, theme: &str) -> Result<()> {
     // so it has to find it as the shell left it, or quitting leaves the shell raw.
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableMouseCapture, ratatui::crossterm::event::DisableBracketedPaste);
     ratatui::restore();
-    let exe = std::env::current_exe()?;
-    let mut command = Command::new(exe);
+    let exe = harness_daemon::own_program()?;
+    let mut command = Command::new(&exe);
     command.args(["preview", "welcome", "--theme", theme, "--handoff"]).arg(handoff);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        Err(command.exec()).context("swapping the binary")
+        Err(command.exec()).with_context(|| format!("swapping to {}", exe.display()))
     }
     #[cfg(not(unix))]
     {
