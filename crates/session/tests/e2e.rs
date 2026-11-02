@@ -1329,7 +1329,7 @@ fn a_session_in_the_daemon_has_its_windows_environment() {
     let root = temp_dir("window-env");
     let data = temp_dir("window-env-data");
     let (url, seen) = fake_endpoint(vec![
-        anthropic_turn(Some(("e1", "shell", json!({"command": "echo \"var=[$MT_WINDOW_VAR] home=[$HOME]\""}))), "Looking."),
+        anthropic_turn(Some(("e1", "shell", json!({"command": if cfg!(windows) { "echo var=[%MT_WINDOW_VAR%]" } else { "echo \"var=[$MT_WINDOW_VAR] home=[$HOME]\"" }}))), "Looking."),
         anthropic_turn(None, "Seen."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
@@ -1358,7 +1358,7 @@ fn a_session_in_the_daemon_has_its_windows_environment() {
     }
     assert!(ended, "the run ended");
     assert!(result.contains("var=[from-the-window]"), "{result}");
-    assert!(result.contains("home=[]"), "not the daemon's: {result}");
+    assert!(cfg!(windows) || result.contains("home=[]"), "not the daemon's: {result}");
     let first = seen.lock().unwrap()[0].to_lowercase();
     assert!(first.contains("key-of-the-window"), "the key is the window's");
     let session = link.session_of(1).unwrap();
