@@ -90,6 +90,15 @@ pub fn own_tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// Some models fill every optional argument, with "" or 0 when they mean nothing: by the tool's own
+/// schema, those count as not given. `false` stays: it says something.
+pub fn without_empty_optionals(schema: &serde_json::Value, input: &serde_json::Value) -> serde_json::Value {
+    let Some(given) = input.as_object() else { return input.clone() };
+    let required = |name: &str| schema["required"].as_array().is_some_and(|list| list.iter().any(|r| r == name));
+    let empty = |value: &serde_json::Value| value.is_null() || value == "" || value.as_i64() == Some(0);
+    serde_json::Value::Object(given.iter().filter(|(name, value)| required(name) || !empty(value)).map(|(name, value)| (name.clone(), value.clone())).collect())
+}
+
 /// How a run of the loop ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -962,6 +971,8 @@ impl Engine {
             return;
         }
         let tool = self.parts.tools.get(&call.name).cloned();
+        let settled = tool.as_ref().map(|t| ToolCall { input: without_empty_optionals(&t.spec().schema, &call.input), ..call.clone() });
+        let call = settled.as_ref().unwrap_or(call);
         let capabilities = match tool.as_ref().map(|t| t.capabilities(&call.input)) {
             Some(Ok(capabilities)) => capabilities,
             Some(Err(reason)) => {
@@ -1071,3 +1082,16 @@ impl Engine {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod empty_optionals {
+    use super::*;
+
+    #[test]
+    fn an_empty_optional_counts_as_not_given() {
+        let schema = serde_json::json!({"properties": {"body": {}, "blocked_by": {}, "path": {}, "on": {}, "limit": {}}, "required": ["body", "count"]});
+        let input = serde_json::json!({"body": "", "count": 0, "blocked_by": 0, "path": "", "on": false, "limit": 5, "note": null});
+        assert_eq!(without_empty_optionals(&schema, &input), serde_json::json!({"body": "", "count": 0, "on": false, "limit": 5}));
+    }
+}
+

@@ -1216,6 +1216,23 @@ fn the_same_failure_is_said_at_the_third_time_and_stopped_at_the_fifth() {
 }
 
 /// ADR 0021: debugging comes after approval; the agent cannot skip to it from plan mode.
+/// A real GPT sends every optional argument, empty when it means nothing (journal#502).
+#[test]
+fn a_journal_entry_stores_though_the_model_filled_its_optionals_with_nothing() {
+    let root = temp_dir("empty-optionals");
+    let data = temp_dir("empty-optionals-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("j1", "journal_add", json!({"body": "A finding with nothing blocking it.", "category": "finding", "tags": ["t"], "blocked_by": 0, "feature": "", "salience": ""}))), "Noting."),
+        anthropic_turn(None, "Done."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let (entries, ends, _) = drive(&mut sessions, &["note it"], Answer::Deny);
+    assert!(ends.iter().all(|e| e == "AwaitingInput"), "{ends:?}");
+    let failed: Vec<&String> = entries.iter().filter_map(|e| if let Event::ToolResult { output, is_error: true, .. } = &e.event { Some(output) } else { None }).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    drop(seen);
+}
+
 #[test]
 fn the_agent_cannot_enter_debug_mode_while_planning() {
     let root = temp_dir("dbg-plan");
