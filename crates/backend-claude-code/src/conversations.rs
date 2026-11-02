@@ -109,6 +109,10 @@ impl ConversationFormat for ClaudeCodeConversations {
 
     fn tip(&self, root: &str, id: &str) -> PluginResult<String> {
         let path = self.file(root, id)?;
+        // Nothing yet: it stands at the start of what will be there.
+        if !path.exists() {
+            return Ok("0:".to_string());
+        }
         let file = File::open(&path).map_err(|e| PluginError::new(format!("{}: {e}", path.display())))?;
         let (nodes, _, _) = read_nodes(file);
         Ok(cursor_at(&path, &nodes))
@@ -116,6 +120,9 @@ impl ConversationFormat for ClaudeCodeConversations {
 
     fn tip_after(&self, root: &str, id: &str, cursor: &str) -> PluginResult<String> {
         let path = self.file(root, id)?;
+        if !path.exists() {
+            return Ok(cursor.to_string());
+        }
         let (bytes, leaf) = parse_cursor(cursor)?;
         let error = |e: std::io::Error| PluginError::new(format!("{}: {e}", path.display()));
         let end = complete_length(&path).map_err(error)?;
@@ -127,6 +134,9 @@ impl ConversationFormat for ClaudeCodeConversations {
 
     fn pull(&self, root: &str, id: &str, cursor: &str) -> PluginResult<PulledForm> {
         let path = self.file(root, id)?;
+        if !path.exists() {
+            return Ok(PulledForm { entries: Vec::new(), cursor: cursor.to_string(), rewound: false });
+        }
         let (bytes, leaf) = parse_cursor(cursor)?;
         let error = |e: std::io::Error| PluginError::new(format!("{}: {e}", path.display()));
         let end = complete_length(&path).map_err(error)?;
@@ -178,7 +188,7 @@ impl ConversationFormat for ClaudeCodeConversations {
         Ok(format!("{}:{}", bytes + lines.len() as u64, tip.unwrap_or_default()))
     }
 
-    fn held_by(&self, id: &str) -> Option<String> {
+    fn held_by(&self, id: &str, except: Option<u32>) -> Option<String> {
         let files = std::fs::read_dir(self.dir.join("sessions")).ok()?;
         for file in files.flatten() {
             let path = file.path();
@@ -186,7 +196,7 @@ impl ConversationFormat for ClaudeCodeConversations {
                 continue;
             }
             let Ok(value) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ())) else { continue };
-            if value["sessionId"] == id && let Some(pid) = value["pid"].as_u64() && process_lives(pid) {
+            if value["sessionId"] == id && let Some(pid) = value["pid"].as_u64() && Some(pid) != except.map(u64::from) && process_lives(pid) {
                 return Some(format!("Claude Code (process {pid})"));
             }
         }
@@ -749,11 +759,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-held-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
         let format = ClaudeCodeConversations::new(&dir);
-        assert_eq!(format.held_by("c1"), None);
+        assert_eq!(format.held_by("c1", None), None);
         std::fs::write(dir.join("sessions/1.json"), json!({"pid": std::process::id(), "sessionId": "c1"}).to_string()).unwrap();
         std::fs::write(dir.join("sessions/2.json"), json!({"pid": 4_000_000_000u64, "sessionId": "c2"}).to_string()).unwrap();
-        assert!(format.held_by("c1").unwrap().contains("Claude Code"));
-        assert_eq!(format.held_by("c2"), None);
-        assert_eq!(format.held_by("c3"), None);
+        assert!(format.held_by("c1", None).unwrap().contains("Claude Code"));
+        assert_eq!(format.held_by("c2", None), None);
+        assert_eq!(format.held_by("c3", None), None);
+        assert_eq!(format.held_by("c1", Some(std::process::id())), None, "its own process does not count");
     }
 }

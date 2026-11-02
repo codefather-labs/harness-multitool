@@ -6,13 +6,13 @@
 pub mod conversations;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::time::Duration;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
 
 use harness_api::event::Event;
 use harness_api::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub const NAME: &str = "claude-code";
 /// What may run with nobody to ask, until the harness answers prompts itself (journal#209).
@@ -66,7 +66,13 @@ impl Mapper {
                     self.turn_started(&mut out);
                 }
             }
-            "stream_event" => self.stream(&e["event"], &mut out),
+            "stream_event" => {
+                if !self.started {
+                    self.started = true;
+                    self.turn_started(&mut out);
+                }
+                self.stream(&e["event"], &mut out);
+            }
             "assistant" => {
                 for block in e["message"]["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str().unwrap_or_default() {
@@ -114,6 +120,9 @@ impl Mapper {
                     out.push(Mapped::Event(Event::BackendCost { total_micro_usd: total }));
                 }
                 let failed = e["is_error"] == true;
+                // What it answers next, to a message it took late, is a turn of its own.
+                self.started = false;
+                self.turn += 1;
                 out.push(Mapped::End(if failed { Err(e["result"].as_str().map_or_else(|| "Claude Code reported an error".to_string(), str::to_string)) } else { Ok(()) }));
             }
             _ => {}
@@ -163,6 +172,7 @@ pub struct ClaudeCode {
     /// What it runs with instead of this process's environment (a window's, in the daemon).
     environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
     chrome: bool,
+    live: std::cell::RefCell<Option<Live>>,
 }
 
 impl ClaudeCode {
@@ -178,6 +188,7 @@ impl ClaudeCode {
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
             chrome: settings["chrome"] != false,
+            live: std::cell::RefCell::new(None),
         }
     }
 
@@ -189,7 +200,7 @@ impl ClaudeCode {
 
     /// The arguments of one run. The user's own hooks and servers stay out of it (CON-61).
     pub fn args(&self, request: &BackendRequest<'_>) -> Vec<String> {
-        let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
+        let mut args: Vec<String> = ["-p", "--input-format", "stream-json", "--replay-user-messages", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
         if !self.own_environment {
             args.extend(["--setting-sources", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#].iter().map(|a| a.to_string()));
         }
@@ -220,7 +231,8 @@ impl ClaudeCode {
         args
     }
 
-    fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
+    /// Its process for this run: the one it has if that can go on, or a new one from its form.
+    fn start(&self, request: &BackendRequest<'_>) -> PluginResult<Live> {
         let mut command = Command::new(&self.binary);
         command.args(self.args(request)).current_dir(&self.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Nothing of the session that started the harness passes to the child; only where its own
@@ -245,11 +257,8 @@ impl ClaudeCode {
             let why = if e.kind() == std::io::ErrorKind::NotFound { "it is not installed or not on the PATH".to_string() } else { e.to_string() };
             PluginError::new(format!("could not start {}: {why}", self.binary))
         })?;
-        // On stdin, so it is on no command line for another program's pkill -f to match.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(request.prompt.as_bytes());
-        }
-        let (tx, rx) = channel();
+        let stdin = child.stdin.take().expect("piped above");
+        let (tx, lines) = channel();
         let stdout = child.stdout.take().expect("piped above");
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -264,42 +273,154 @@ impl ClaudeCode {
             let _ = stderr.read_to_string(&mut text);
             text
         });
+        Ok(Live { child, stdin, lines, errors: Some(errors), session: request.session.map(str::to_string), plan_mode: request.plan_mode, prompt_seen: false })
+    }
+
+    fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
+        let mut slot = self.live.borrow_mut();
+        let goes_on = slot.as_mut().is_some_and(|live| {
+            matches!(live.child.try_wait(), Ok(None)) && live.plan_mode == request.plan_mode && !request.fork && (request.session.is_none() || live.session.as_deref() == request.session)
+        });
+        if !goes_on {
+            *slot = Some(self.start(request)?);
+        }
+        let live = slot.as_mut().expect("just set");
+        // On stdin, so it is on no command line for another program's pkill -f to match.
+        // If it has died, what it said is read below.
+        let _ = live.send(request.prompt);
         // A session going on with no total on record (just linked, or forked): its first total only sets the base.
         let unknown = request.fork || (request.session.is_some() && request.cost_total_micro_usd == 0);
-        let mut mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, unknown);
-        let stop_now = |child: &mut std::process::Child| {
-            let _ = child.kill();
-            let _ = child.wait();
-            Ok(BackendEnd::Stopped)
-        };
+        let mapper = Mapper::new(request.turn).with_cost(request.cost_total_micro_usd, unknown);
+        self.run_rest(slot, request, sink, mapper, Some(request.prompt))
+    }
+
+    /// Reads a run to its end, feeding it what the user sends meanwhile.
+    fn run_rest(&self, mut slot: std::cell::RefMut<'_, Option<Live>>, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool, mut mapper: Mapper, unanswered: Option<&str>) -> PluginResult<BackendEnd> {
+        let live = slot.as_mut().expect("set by the caller");
+        // It may have died just as it was given this; then a new one gets it, once.
+        let mut unanswered = unanswered;
+        // Messages sent during the run and not yet seen coming back, which it answers before it is
+        // done; and a result that may turn out not to be the last.
+        let mut unechoed: std::collections::VecDeque<String> = Default::default();
+        let mut end_held = None::<(Instant, Result<(), String>)>;
         loop {
             if (request.stopped)() {
-                return stop_now(&mut child);
+                *slot = None;
+                return Ok(BackendEnd::Stopped);
             }
-            match rx.recv_timeout(Duration::from_millis(100)) {
+            // Done first: what comes after this result is the next run's, from its start.
+            if let Some((until, end)) = &end_held
+                && (unechoed.is_empty() || Instant::now() >= *until)
+            {
+                let end = end.clone();
+                return end.map(|()| BackendEnd::Done).map_err(PluginError::new);
+            }
+            while let Some(text) = (request.next_message)() {
+                let _ = live.send(&text);
+                unechoed.push_back(text);
+            }
+            match live.lines.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => {
+                    unanswered = None;
+                    let parsed: Option<Value> = serde_json::from_str(&line).ok();
+                    if let Some(e) = &parsed {
+                        // The first one coming back is this run's own prompt.
+                        if e["isReplay"] == true && e["message"]["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "text")) {
+                            if live.prompt_seen {
+                                unechoed.pop_front();
+                            }
+                            live.prompt_seen = true;
+                            continue;
+                        }
+                        if e["type"] == "system" && e["subtype"] == "init" && let Some(id) = e["session_id"].as_str() {
+                            live.session = Some(id.to_string());
+                        }
+                    }
                     for mapped in mapper.line(&line) {
                         match mapped {
                             Mapped::Event(event) => {
                                 if !sink(event) {
-                                    return stop_now(&mut child);
+                                    *slot = None;
+                                    return Ok(BackendEnd::Stopped);
                                 }
                             }
                             Mapped::End(end) => {
-                                let _ = child.wait();
-                                return end.map(|()| BackendEnd::Done).map_err(PluginError::new);
+                                live.prompt_seen = false;
+                                end_held = Some((Instant::now() + LATE_ECHO, end));
                             }
                         }
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    let status = child.wait().ok();
-                    let tail: String = errors.join().unwrap_or_default().chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+                    // It ended with messages it never took: a new one takes them from its form.
+                    if let Some(prompt) = unanswered {
+                        unechoed.push_front(prompt.to_string());
+                    }
+                    if !unechoed.is_empty() {
+                        let session = live.session.clone().or_else(|| request.session.map(str::to_string));
+                        let again = BackendRequest { session: session.as_deref(), fork: false, ..*request };
+                        *slot = Some(self.start(&again)?);
+                        let fresh = slot.as_mut().expect("just set");
+                        let words: Vec<String> = unechoed.drain(..).collect();
+                        let _ = fresh.send(&words.join("\n\n"));
+                        return self.run_rest(slot, request, sink, mapper, None);
+                    }
+                    if let Some((_, end)) = end_held {
+                        *slot = None;
+                        return end.map(|()| BackendEnd::Done).map_err(PluginError::new);
+                    }
+                    let mut live = slot.take().expect("set above");
+                    let status = live.child.wait().ok();
+                    let stderr = live.errors();
+                    let tail: String = stderr.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
                     return Err(PluginError::new(format!("{} ended with no result ({}): {}", self.binary, status.map_or("unknown".to_string(), |s| s.to_string()), tail.trim())));
                 }
             }
         }
+    }
+}
+
+/// How long a result waits for a message sent just before it to come back.
+const LATE_ECHO: Duration = Duration::from_secs(3);
+
+/// A running Claude Code, kept between the messages of a session.
+struct Live {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<String>,
+    errors: Option<std::thread::JoinHandle<String>>,
+    /// The conversation it holds.
+    session: Option<String>,
+    plan_mode: bool,
+    /// This run's prompt has come back.
+    prompt_seen: bool,
+}
+
+impl Live {
+    fn send(&mut self, text: &str) -> std::io::Result<()> {
+        let line = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+        writeln!(self.stdin, "{line}")?;
+        self.stdin.flush()
+    }
+
+    /// What it said on its error stream, once it has ended.
+    fn errors(&mut self) -> String {
+        self.errors.take().and_then(|handle| handle.join().ok()).unwrap_or_default()
+    }
+}
+
+impl Drop for ClaudeCode {
+    /// The session is over: its process goes with it.
+    fn drop(&mut self) {
+        *self.live.borrow_mut() = None;
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -311,12 +432,19 @@ impl AgentBackend for ClaudeCode {
     fn run<'a>(&'a self, request: BackendRequest<'a>, sink: &'a mut dyn FnMut(Event) -> bool) -> BoxFuture<'a, PluginResult<BackendEnd>> {
         Box::pin(async move { self.run_blocking(&request, sink) })
     }
+
+    fn reset(&self) {
+        *self.live.borrow_mut() = None;
+    }
+
+    fn own_process(&self) -> Option<u32> {
+        self.live.borrow().as_ref().map(|live| live.child.id())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn map(lines: &[Value]) -> Vec<Mapped> {
         let mut m = Mapper::new(1);
@@ -369,7 +497,7 @@ mod tests {
     }
 
     fn request<'a>(session: Option<&'a str>, system: Option<&'a str>, plan_mode: bool, stopped: &'a dyn Fn() -> bool) -> BackendRequest<'a> {
-        BackendRequest { prompt: "secret prompt", session, system, plan_mode, fork: false, cost_total_micro_usd: 0, turn: 1, stopped }
+        BackendRequest { prompt: "secret prompt", session, system, plan_mode, fork: false, cost_total_micro_usd: 0, turn: 1, stopped, next_message: &|| None }
     }
 
     #[test]
@@ -395,7 +523,7 @@ mod tests {
     #[test]
     fn a_conversation_from_elsewhere_is_forked_and_its_row_opens_what_it_needs() {
         let stopped = || false;
-        let request = BackendRequest { prompt: "p", session: Some("s1"), system: None, plan_mode: false, fork: true, cost_total_micro_usd: 0, turn: 1, stopped: &stopped };
+        let request = BackendRequest { prompt: "p", session: Some("s1"), system: None, plan_mode: false, fork: true, cost_total_micro_usd: 0, turn: 1, stopped: &stopped, next_message: &|| None };
         let isolated = ClaudeCode::new("m", "/r", &serde_json::json!({})).args(&request);
         assert!(isolated.iter().any(|a| a == "--fork-session") && isolated.iter().any(|a| a == "--strict-mcp-config"));
         assert!(!isolated.iter().any(|a| a == "--dangerously-skip-permissions"), "never by default");

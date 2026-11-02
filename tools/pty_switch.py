@@ -24,8 +24,9 @@ root = os.path.realpath(tempfile.mkdtemp(prefix="mt-sw-root")); home = tempfile.
 fake = home + "/fake-claude"
 open(fake, "w").write(f'''#!/bin/sh
 echo "$@" >> {home}/calls
-cat > /dev/null
-echo '{{"type":"system","subtype":"init","session_id":"unused","model":"fake-model"}}'
+read -r _
+while [ $# -gt 0 ]; do [ "$1" = "--resume" ] && sid="$2"; shift; done
+echo "{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\",\"model\":\"fake-model\"}}"
 echo '{{"type":"assistant","message":{{"id":"m1","role":"assistant","content":[{{"type":"text","text":"Delegate answer."}}]}}}}'
 echo '{{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","total_cost_usd":0.0,"usage":{{}},"modelUsage":{{"fake-model":{{"contextWindow":777000}}}}}}'
 ''')
@@ -81,7 +82,7 @@ form = forms()[0]; cid = os.path.basename(form)[:-6]; print("after it: saved, sh
 typed("next\r"); until("the delegate answers", lambda: "Delegate answer" in text())
 assert f"--resume {cid}" in open(home + "/calls").read(), "it goes on in that form"
 pump(0.5); assert "/ 777k" in text() or "777" in text(), "the window is the model's own: " + text()
-typed("/settings\r"); click("(   )  Local"); os.write(fd, b"\x13"); pump(1.0)
+typed("/settings\r"); click("(   )  Local"); click("Default model"); typed("\rm\r"); os.write(fd, b"\x13"); pump(1.0)
 assert saved()["provider"] == "local", "back: " + text(); typed("and on\r"); until("the provider answers", lambda: "Fake answer" in text())
 until("the form has those turns too", lambda: "and on" in open(form).read() and "Fake answer" in open(form).read())
 assert len(forms()) == 1

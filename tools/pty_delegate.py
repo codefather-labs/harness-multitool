@@ -12,7 +12,7 @@ root = tempfile.mkdtemp(prefix="mt-cc-root"); home = tempfile.mkdtemp(prefix="mt
 open(root + "/note.txt", "w").write("the secret word is mango\n")
 calls = home + "/calls"; fake = home + "/fake-claude"
 open(fake, "w").write(f'''#!/bin/sh
-prompt=$(cat)
+IFS= read -r prompt
 printf '%s' "$*" | tr '\\n' ' ' >> {calls}; echo >> {calls}
 echo '{{"type":"system","subtype":"init","session_id":"sess-1","model":"fake-model"}}'
 case "$prompt" in

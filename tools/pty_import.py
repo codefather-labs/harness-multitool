@@ -25,7 +25,7 @@ else:
     calls = home + "/calls"; fake = home + "/fake-claude"
     open(fake, "w").write(f"""#!/bin/sh
 echo "$@" >> {calls}
-cat > /dev/null
+read -r _
 echo '{{"type":"system","subtype":"init","session_id":"{cid}","model":"fake-model"}}'
 echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"a new answer"}}]}}}}'
 echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":5,"output_tokens":2}}}}'

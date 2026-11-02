@@ -117,7 +117,8 @@ impl Engine {
     /// line now, and made if there is none (CON-79). Not while its provider's program holds it.
     pub async fn catch_up(&self, connecting: bool) -> bool {
         let gained = self.pull_form().await;
-        let held = self.form().is_some_and(|(format, link)| format.held_by(&link.id).is_some());
+        let own = self.parts.backend.as_ref().and_then(|b| b.own_process());
+        let held = self.form().is_some_and(|(format, link)| format.held_by(&link.id, own).is_some());
         if connecting && !held {
             if self.parts.backend.is_some() {
                 if let Err(message) = self.hand_over().await {
@@ -523,8 +524,12 @@ impl Engine {
     async fn run_backend(&self, backend: &dyn harness_api::AgentBackend, protocol: Option<&Protocol>) -> RunEnd {
         let source = backend.name().to_string();
         loop {
+            let before = self.form().map(|(_, link)| link.cursor);
             if let Err(message) = self.hand_over().await {
                 return self.fail(&source, message, protocol);
+            }
+            if self.form().map(|(_, link)| link.cursor) != before && before.is_some() {
+                backend.reset();
             }
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
@@ -534,7 +539,28 @@ impl Engine {
             let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
             let system = context.ok().and_then(|c| c.system);
             let stopped = || self.stop.is_set();
-            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
+            // A message that came during the run goes to it, and into the log as it goes.
+            let next_message = || -> Option<String> {
+                loop {
+                    let text = self.inbox.lock().expect("inbox").pop_front()?;
+                    let refused = {
+                        let mut hooks = std::pin::pin!(self.hooks(HookPoint::UserPromptSubmit { text: &text }));
+                        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                        loop {
+                            if let std::task::Poll::Ready(value) = hooks.as_mut().poll(&mut cx) {
+                                break value;
+                            }
+                        }
+                    };
+                    if let Some((hook, reason)) = refused {
+                        self.emit(Event::Error { source: hook, message: reason });
+                        continue;
+                    }
+                    self.emit(Event::UserMessage { text: text.clone() });
+                    return Some(text);
+                }
+            };
+            let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, next_message: &next_message, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped };
             let mut sink = |event: Event| {
                 self.emit(event);
                 !self.stop.is_set()
@@ -609,15 +635,21 @@ impl Engine {
 
     async fn run_event(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
         // CON-78: one writer to a form. Nothing is taken in that could not go on.
+        let own = self.parts.backend.as_ref().and_then(|b| b.own_process());
         if let Some((format, link)) = self.form()
-            && let Some(holder) = format.held_by(&link.id)
+            && let Some(holder) = format.held_by(&link.id, own)
         {
             let message = format!("This conversation is open in {holder}. Leave it there and send again: one writer at a time.");
             self.emit(Event::Error { source: format.name().to_string(), message: message.clone() });
             let _ = self.flush().await;
             return RunEnd::Failed(message);
         }
-        self.pull_form().await;
+        // What it remembers no longer holds all of the conversation.
+        if self.pull_form().await
+            && let Some(backend) = &self.parts.backend
+        {
+            backend.reset();
+        }
         let end = self.run_inner(event, text, protocol).await;
         self.push_form_or_say();
         if let Err(message) = self.flush().await {

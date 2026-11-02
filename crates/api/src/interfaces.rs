@@ -60,6 +60,8 @@ pub struct BackendRequest<'a> {
     pub cost_total_micro_usd: u64,
     pub turn: u32,
     pub stopped: &'a dyn Fn() -> bool,
+    /// What the user has sent since, one at a time: it goes to the backend during the run.
+    pub next_message: &'a dyn Fn() -> Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,13 @@ pub enum BackendEnd {
 /// what it does as the log's events. `sink` answers false when the user has stopped it.
 pub trait AgentBackend {
     fn name(&self) -> &str;
+    /// What it knows of the conversation is out of date: the next run starts from its form.
+    fn reset(&self) {}
+    /// Its own process, if it keeps one between runs: that one does not hold a conversation
+    /// against this session.
+    fn own_process(&self) -> Option<u32> {
+        None
+    }
     fn run<'a>(&'a self, request: BackendRequest<'a>, sink: &'a mut dyn FnMut(Event) -> bool) -> BoxFuture<'a, PluginResult<BackendEnd>>;
 }
 
@@ -455,5 +464,5 @@ pub trait ConversationFormat {
     /// already there stays. Refused if the form moved past `cursor`.
     fn append(&self, root: &str, id: &str, cursor: &str, history: &[Message]) -> PluginResult<String>;
     /// The provider's own program that has this conversation open right now, in words for the user.
-    fn held_by(&self, id: &str) -> Option<String>;
+    fn held_by(&self, id: &str, except: Option<u32>) -> Option<String>;
 }
