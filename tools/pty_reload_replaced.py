@@ -10,7 +10,11 @@ root = os.path.realpath(tempfile.mkdtemp(prefix="mt-rr-root")); home = tempfile.
 log = home + "/log"; fake = home + "/fake-claude"; here = home + "/bin"; os.makedirs(here)
 bin_ = here + "/multitool"; shutil.copy2(sys.argv[1], bin_)
 open(fake, "w").write(f'''#!/usr/bin/env python3
-import json, subprocess, sys, os
+import json, signal, subprocess, sys, os
+def asked(*_):
+    open({log!r} + ".signals", "a").write("term\\n")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, asked)
 args = sys.argv[1:]
 config = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["harness"]
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": "sess-9", "model": "fake-model"}}), flush=True)
@@ -55,6 +59,10 @@ while time.time() < end and not told:
 assert told, "the agent was not told: " + json.dumps(prompts())
 assert "--handoff" in open(f"/proc/{pid}/cmdline").read(), "not swapped"
 assert os.stat(f"/proc/{pid}/exe").st_ino == os.stat(bin_).st_ino, "it runs the old binary"
-print("swapped to the new file, and the agent was told"); print("ok")
+assert os.path.exists(log + ".signals"), "the old delegate was killed without being asked to end"
+children = open(f"/proc/{pid}/task/{pid}/children").read().split()
+defunct = [c for c in children if os.path.exists(f"/proc/{c}/stat") and open(f"/proc/{c}/stat").read().rsplit(")", 1)[1].split()[0] == "Z"]
+assert not defunct, f"defunct children under the window: {defunct}"
+print("swapped to the new file, and the agent was told; the old delegate was asked to end, nothing defunct"); print("ok")
 for c in "/exit\r": os.write(fd, c.encode()); time.sleep(0.005)
 pump(0.5)

@@ -1,7 +1,7 @@
 """Imported first by the debug scripts: when a script ends, even on a failed assertion, it stops the
-daemons it started. Only daemons whose address file is under a temp directory this script made,
+daemons it started and removes its temp directories. Only daemons whose address file is under a temp directory this script made,
 and only if that process still is a multitool."""
-import atexit, glob, json, os, signal, tempfile
+import atexit, glob, json, os, shutil, signal, tempfile, time
 
 _made = []
 _mkdtemp = tempfile.mkdtemp
@@ -28,5 +28,9 @@ def _stop():
                     os.kill(pid, signal.SIGTERM)
             except (OSError, ValueError, KeyError):
                 pass
+    # What it made goes too, once what it stopped has let go.
+    time.sleep(0.2)
+    for made in _made:
+        shutil.rmtree(made, ignore_errors=True)
 
 atexit.register(_stop)

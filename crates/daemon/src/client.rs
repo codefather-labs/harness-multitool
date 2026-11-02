@@ -21,6 +21,27 @@ pub struct Registered {
     pub url: String,
 }
 
+/// Starts the daemon detached: it outlives whoever started it, and is nobody's child to wait for.
+#[cfg(unix)]
+fn start_daemon(program: &Path) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    // Through a shell that ends at once and is waited for here, so the daemon is never left
+    // defunct under a window that goes on for days.
+    let mut shell = std::process::Command::new("sh");
+    shell.args(["-c", "\"$0\" daemon </dev/null >/dev/null 2>&1 &"]).arg(program).process_group(0);
+    shell.status().map(|_| ())
+}
+
+#[cfg(windows)]
+fn start_daemon(program: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let mut command = std::process::Command::new(program);
+    command.arg("daemon").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.creation_flags(DETACHED_PROCESS);
+    command.spawn().map(|_| ())
+}
+
 impl Client {
     pub fn new(address: &Address) -> Client {
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(40))).build().into();
@@ -39,20 +60,7 @@ impl Client {
         if let Some(client) = Client::find(data_dir) {
             return Ok(client);
         }
-        let mut command = std::process::Command::new(program);
-        command.arg("daemon").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const DETACHED_PROCESS: u32 = 0x0000_0008;
-            command.creation_flags(DETACHED_PROCESS);
-        }
-        command.spawn().map_err(|e| format!("starting the daemon: {e}"))?;
+        start_daemon(program).map_err(|e| format!("starting the daemon: {e}"))?;
         for _ in 0..50 {
             std::thread::sleep(Duration::from_millis(100));
             if let Some(client) = Client::find(data_dir) {

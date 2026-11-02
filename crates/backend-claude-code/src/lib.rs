@@ -443,6 +443,10 @@ impl ClaudeCode {
 /// How long a result waits for a message sent just before it to come back.
 const LATE_ECHO: Duration = Duration::from_secs(3);
 
+/// How long it has to end by itself once asked.
+#[cfg(unix)]
+const ENDING: Duration = Duration::from_secs(3);
+
 /// A running Claude Code, kept between the messages of a session.
 struct Live {
     child: Child,
@@ -481,7 +485,22 @@ impl Drop for ClaudeCode {
 }
 
 impl Drop for Live {
+    /// Asked to end, it ends what it runs in the background; killed, it leaves that running with
+    /// nobody knowing of it. So it is asked first.
     fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let asked = std::process::Command::new("kill").args(["-TERM", &self.child.id().to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            if asked.is_ok_and(|status| status.success()) {
+                let end = Instant::now() + ENDING;
+                while Instant::now() < end {
+                    if !matches!(self.child.try_wait(), Ok(None)) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

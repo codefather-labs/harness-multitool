@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Debug: multitool debug screenshot, against a real TUI in a pty. Reads the PNG's header, not the screen,
 so it needs no pyte.
-Usage: tools/pty_screenshot.py <absolute path to multitool>"""
+Usage: tools/pty_screenshot.py <absolute path to multitool> [a directory to keep the pictures in]"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
-import fcntl, hashlib, pty, select, struct, subprocess, tempfile, termios, time
+import fcntl, hashlib, pty, select, shutil, struct, subprocess, tempfile, termios, time
 
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-ss-root")); home = tempfile.mkdtemp(prefix="mt-ss-home"); os.makedirs(home + "/cfg/harness-multitool")
 bin_ = sys.argv[1]; COLS, ROWS = 120, 40
@@ -49,6 +49,10 @@ assert digest(first) != digest(second), "the picture did not change with the scr
 print("it follows the screen")
 again, _ = shot("a.png")
 assert digest(again) == digest(second), "a second call overwrites, and shows the same state"
-print("a second call overwrites"); print("ok")
-for c in "\x15/exit\r": os.write(fd, c.encode()); time.sleep(0.005)
+print("a second call overwrites")
+for c in "/" + "a long message with many words that has to wrap inside the frame " * 12 + "THE-END": os.write(fd, c.encode()); time.sleep(0.001)
+pump(0.5)
+long, _ = shot("long.png")
+if len(sys.argv) > 2: shutil.copy(long, sys.argv[2])
+print("ok")
 pump(0.5)
