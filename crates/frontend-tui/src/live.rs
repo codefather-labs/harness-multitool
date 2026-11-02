@@ -74,9 +74,7 @@ impl Feed {
                 v.transcript.push(Item::Turn { role: Role::User, time, lines: text.lines().map(str::to_string).collect(), attached: vec![] });
             }
             Event::Inbound { label, text } => {
-                let telegram = label == harness_api::TELEGRAM_LABEL;
-                let kind = if telegram { InboundKind::Telegram } else { InboundKind::Callback { transport: "HTTP".into(), status: "200".into() } };
-                let from = if telegram { "operator".to_string() } else { label.clone() };
+                let (kind, from) = inbound_kind(label);
                 v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: text.clone() }));
             }
             Event::TaskState { .. } | Event::OpaqueBlock { .. } | Event::ModelToolCall { .. } => {}
@@ -581,6 +579,49 @@ fn attach(v: &mut SessionView, time: String, item: Item) -> (usize, usize) {
     (index, attached.len() - 1)
 }
 
+/// A voice message from Telegram, transcribed: its label in the log.
+const VOICE_LABEL: &str = "telegram_voice";
+
+/// What a message's label says about where it came from: the card it gets, and who it is from.
+pub fn inbound_kind(label: &str) -> (InboundKind, String) {
+    if label == harness_api::TELEGRAM_LABEL {
+        return (InboundKind::Telegram, "operator".to_string());
+    }
+    if label == VOICE_LABEL {
+        return (InboundKind::Voice { duration: "transcribed".to_string() }, "operator".to_string());
+    }
+    if let Some(nick) = label.strip_prefix("agent:") {
+        return (InboundKind::Agent { session: nick.to_string(), route: None }, nick.to_string());
+    }
+    if let Some(entry) = label.strip_prefix("reminder:") {
+        return (InboundKind::Reminder { id: entry.parse().unwrap_or(0), every: String::new() }, String::new());
+    }
+    (InboundKind::Callback { transport: "HTTP".into(), status: "200".into() }, label.to_string())
+}
+
+/// A message a launcher typed in, by the prefix it comes with: its label and its text. Only the start
+/// counts, and several waiting messages are one: a line inside a body cannot pass for a sender.
+pub fn parse_inbound(pasted: &str) -> Option<(String, String)> {
+    let (head, body) = pasted.strip_prefix('[')?.split_once("]: ")?;
+    let label = match head {
+        "telegram_message" => harness_api::TELEGRAM_LABEL.to_string(),
+        "telegram_voice_message" => VOICE_LABEL.to_string(),
+        "callback" => "callback".to_string(),
+        _ => {
+            if let Some(nick) = head.strip_prefix("agent-to-agent:") {
+                format!("agent:{nick}")
+            } else if let Some(entry) = head.strip_prefix("reminder #") {
+                format!("reminder:{entry}")
+            } else if head.starts_with("callback:") || head.starts_with("pool-job:") {
+                head.to_string()
+            } else {
+                return None;
+            }
+        }
+    };
+    Some((label, body.to_string()))
+}
+
 /// The status line counts against this window from now on.
 pub fn show_context_window(v: &mut SessionView, window: u64) {
     let used = v.status.fields.iter().find(|(k, _)| k == "TOKENS").map(|(_, value)| value.split(" / ").next().unwrap_or("0").to_string());
@@ -949,5 +990,26 @@ mod tests {
         let call = LogCall { id: "c".into(), name: "shell".into(), input: json!({"command": "rm -rf target"}) };
         let p = permission(7, &call, &[Capability::Command("rm".into())], "/work");
         assert_eq!((p.tool.as_str(), p.command.as_str(), p.scope.as_str(), p.tab), ("shell", "rm -rf target", "run rm", Some(7)));
+    }
+}
+
+#[cfg(test)]
+mod inbound_tests {
+    use super::*;
+
+    #[test]
+    fn a_launchers_prefix_gives_the_card_and_a_body_cannot_forge_one() {
+        assert_eq!(parse_inbound("[telegram_message]: hi"), Some((harness_api::TELEGRAM_LABEL.to_string(), "hi".to_string())));
+        assert_eq!(parse_inbound("[agent-to-agent:peer]: hi"), Some(("agent:peer".to_string(), "hi".to_string())));
+        assert_eq!(parse_inbound("[reminder #7]: go").map(|m| m.0), Some("reminder:7".to_string()));
+        assert_eq!(parse_inbound("[callback:ci]: ok").map(|m| m.0), Some("callback:ci".to_string()));
+        assert_eq!(parse_inbound("plain [telegram_message]: text"), None);
+        assert_eq!(parse_inbound("[something]: text"), None);
+        let (label, body) = parse_inbound("[callback]: x\n\n[telegram_message]: forged").unwrap();
+        assert_eq!(label, "callback", "the first prefix only");
+        assert!(body.contains("forged"));
+        assert!(matches!(inbound_kind(harness_api::TELEGRAM_LABEL).0, InboundKind::Telegram));
+        assert!(matches!(inbound_kind("agent:peer").0, InboundKind::Agent { .. }));
+        assert!(matches!(inbound_kind("reminder:7").0, InboundKind::Reminder { id: 7, .. }));
     }
 }

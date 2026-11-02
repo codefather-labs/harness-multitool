@@ -105,7 +105,7 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 
 `./run.sh --under "<launcher>"` runs the harness inside a program that starts `claude` from the PATH and gives it an identity and messages. The harness takes the place of `claude` there, and a delegate still finds the real one. What the launcher sets reaches sessions as a window's environment, and what it types reaches the composer as a paste:
 
-- A message goes in as if typed and sent. With a prompt on screen or no session open it waits: the Enter that came with it never answers a prompt or opens a session.
+- A message is known by the prefix it starts with, and goes in as what it is: Telegram, an agent, a callback or a reminder, with its own card and toast, marked as coming from outside (INV-12), not as the user's words. Only the start of a paste counts, so a line inside a body cannot pass for a sender. With a run on it waits its turn, and with no session open it waits for one. The Enter that came with it answers no prompt and opens no session.
 - A paste from the user waits in the composer, line breaks and all.
 
 A delegate is `claude -p`, and Claude Code offers some tools only in its interactive mode: asking with options, its plan mode, and artifacts. Under the harness those are the harness's own, or absent.

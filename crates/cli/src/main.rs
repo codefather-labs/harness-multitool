@@ -437,6 +437,8 @@ struct Live {
     sessions: harness_session::remote::SessionLink,
     /// Tabs opened on a run still on: entries up to this number came from the log.
     shown_up_to: std::collections::HashMap<u64, u64>,
+    /// Messages typed in by a launcher, until there is a session to take them.
+    held_inbound: Vec<(String, String)>,
     /// The user chose the context window: what a model reports does not change it (CON-80).
     context_chosen: bool,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
@@ -759,7 +761,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1645,6 +1647,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     // screen), with whether its Enter came too. An Enter right after a paste belongs to the paste:
     // it must not open a session or answer a prompt.
     let (mut held_paste, mut held_enter, mut pasted_at) = (String::new(), false, None::<std::time::Instant>);
+    let mut inbound_at = None::<std::time::Instant>;
     // Which graphics protocol the terminal speaks and its cell size in pixels; asked once, after
     // raw mode is on (ratatui-image 11 examples). Halfblocks means no real graphics: keep the
     // text fallback the view already drew.
@@ -1697,6 +1700,15 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         s.model_menu = None;
                         s.editing_model = false;
                     }
+                    dirty = true;
+                }
+                // Messages go to the tab in front, once there is one; a run on takes them after it.
+                for (label, body) in std::mem::take(&mut live.held_inbound) {
+                    let (kind, from) = frontend_tui::live::inbound_kind(&label);
+                    w.toast = Some(frontend_tui::model::Toast { kind, from, text: body.clone() });
+                    let tab = w.tabs[w.active].id;
+                    w.tabs[w.active].view.generating = true;
+                    live.sessions.inbound(tab, label, body);
                     dirty = true;
                 }
                 // What a paste left waiting has its composer now.
@@ -1763,6 +1775,13 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             let outcome = match event::read()? {
                 Event::Paste(text) => {
                     pasted_at = Some(std::time::Instant::now());
+                    // A message a launcher typed in is that message, with its own card: not the
+                    // user's words, and its Enter is nobody's.
+                    if let Some((label, body)) = frontend_tui::live::parse_inbound(&text) {
+                        inbound_at = pasted_at;
+                        live.held_inbound.push((label, body));
+                        continue;
+                    }
                     match &mut state.mode {
                         frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.text.push_str(&text),
                         // A field being typed in takes it, line breaks aside.
@@ -1776,6 +1795,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     }
                     continue;
                 }
+                Event::Key(k) if k.kind == KeyEventKind::Press && k.code == KeyCode::Enter && inbound_at.take().is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1)) => continue,
                 Event::Key(k) if k.kind == KeyEventKind::Press && k.code == KeyCode::Enter && !held_paste.is_empty() && pasted_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1)) => {
                     held_enter = true;
                     continue;
