@@ -105,7 +105,8 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 
 Choosing another adapter or model in the harness's settings moves every open conversation of the window onto it, at once:
 
-- The daemon reconnects each conversation: its form is brought in line (INV-20), and its next message goes through the new adapter. The status line says so straight away. Nothing has to be reopened.
+- The choice is saved by the harness itself: nobody edits a configuration file to change an adapter, and the next start opens on the same one.
+- The daemon reconnects each conversation and brings its form for the chosen adapter in line with the log at that moment (INV-20), creating it if that adapter keeps conversations and has none for this one yet. Its next message goes through the new adapter. The status line says so straight away. Nothing has to be reopened.
 - **While a run is on, the adapter cannot be changed.** While any conversation of the window has a run on or a prompt waiting, the adapter and model controls are shown disabled, wherever they are, and choosing one changes nothing and says why. They come back when the last run ends.
 - The daemon holds to the same rule: a change that reaches it during a run is refused, so no frontend can move a conversation in the middle of a run (CON-79).
 
