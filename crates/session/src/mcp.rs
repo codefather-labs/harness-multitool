@@ -79,6 +79,9 @@ impl Tool for SetNick {
     }
 }
 
+/// What an agent on this server reads before its tools (CON-96).
+const INSTRUCTIONS: &str = "The harness you run under: its project journal, maps and flowcharts, Telegram, your name, and rebuilding it. These are utilities: each does one thing and answers. Read the journal's agenda on a fresh context. The harness also has modes, plan and debug, which on its own loop are tools named mode__; a program running as an agent backend has its own plan mode instead, so they are not offered here yet. docs/tools.md in the harness's repository documents every tool and mode.";
+
 fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     let client = Client::find(&serving.data_dir);
     let memory: Rc<dyn Memory> = match &client {
@@ -108,6 +111,7 @@ fn answer(message: &Value, tools: &[Rc<dyn Tool>], serving: &Serving) -> Option<
             "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "harness", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": INSTRUCTIONS,
         }),
         "ping" => json!({}),
         "tools/list" => {

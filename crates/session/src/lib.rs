@@ -1031,3 +1031,60 @@ impl Sessions {
         self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop, running, retired, thread });
     }
 }
+
+#[cfg(test)]
+mod every_tool {
+    use super::*;
+    use harness_api::{Tool, ToolSpec};
+
+    const DOCS: &str = include_str!("../../../docs/tools.md");
+    /// Enough to say what it is for, when, and what comes back.
+    const LEAST: usize = 70;
+
+    fn all() -> Vec<ToolSpec> {
+        let dir = std::env::temp_dir().join(format!("mt-every-tool-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let memory: Rc<dyn harness_api::Memory> = Rc::new(harness_memory_journal::plugin::JournalMemory::open(&dir, std::path::Path::new("git:example/every-tool"), "test").unwrap());
+        let background = Some(Rc::new(harness_tools_builtin::Background::new(&dir.to_string_lossy())));
+        let mut tools: Vec<Rc<dyn Tool>> = vec![
+            Rc::new(harness_tools_builtin::Read),
+            Rc::new(harness_tools_builtin::Edit),
+            Rc::new(harness_tools_builtin::Shell { background }),
+            Rc::new(harness_tools_builtin::Shell::default()),
+            Rc::new(harness_tools_builtin::Search),
+            Rc::new(harness_tools_builtin::Fetch),
+            Rc::new(host_tools::PluginsList(Arc::new(|| json!({})))),
+            Rc::new(host_tools::PluginsReload(Default::default())),
+            Rc::new(host_tools::DebugContract),
+            Rc::new(host_tools::DebugRuns { root: String::new() }),
+            Rc::new(host_tools::TelegramSend { data_dir: dir.clone(), from: None }),
+        ];
+        for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
+            tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name).unwrap()));
+        }
+        let specs = tools.iter().map(|t| t.spec()).chain(harness_core::engine::own_tool_specs()).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        specs
+    }
+
+    #[test]
+    fn each_is_documented_and_says_enough_for_an_agent_to_act_on() {
+        let specs = all();
+        assert!(specs.len() > 30, "{}", specs.len());
+        let missing: Vec<&str> = specs.iter().filter(|s| !DOCS.contains(&format!("`{}`", s.name))).map(|s| s.name.as_str()).collect();
+        assert!(missing.is_empty(), "missing from docs/tools.md: {missing:?}");
+        let thin: Vec<String> = specs.iter().filter(|s| s.description.len() < LEAST).map(|s| format!("{}: {}", s.name, s.description)).collect();
+        assert!(thin.is_empty(), "these say too little: {thin:#?}");
+    }
+
+    #[test]
+    fn modes_stand_apart_from_utilities() {
+        let specs = all();
+        let modes: Vec<&ToolSpec> = specs.iter().filter(|s| s.name.starts_with("mode__")).collect();
+        assert_eq!(modes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["mode__plan_enter", "mode__plan_exit", "mode__debug"]);
+        assert!(modes.iter().all(|s| s.description.starts_with("HARNESS MODE")), "an agent sees it is no utility");
+        for old in ["plan_enter", "plan_exit", "debug_mode"] {
+            assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");
+        }
+        assert!(specs.iter().filter(|s| !s.name.starts_with("mode__")).all(|s| !s.description.starts_with("HARNESS MODE")));
+    }
+}

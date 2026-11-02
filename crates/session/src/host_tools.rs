@@ -13,7 +13,7 @@ impl Tool for PluginsList {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "plugins_list".into(),
-            description: "List the plugins and callback handlers connected in this build.".into(),
+            description: "Answer with the plugins and callback handlers connected in this build, and what this session has chosen of them. Use it to see what the harness can do here before assuming.".into(),
             schema: json!({"type": "object", "properties": {}}),
         }
     }
@@ -33,7 +33,7 @@ impl Tool for PluginsReload {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "plugins_reload".into(),
-            description: "Rebuild this harness with its plugins and swap the running binary without ending the session. It happens once your turn is over.".into(),
+            description: "Rebuild this harness from its source and swap the running binary without ending the conversation. It builds now and swaps when your turn ends; then you get a message saying so, or why the build failed, and you go on. Finish background work first: it ends with the swap.".into(),
             schema: json!({"type": "object", "properties": {}}),
         }
     }
@@ -66,7 +66,7 @@ impl Tool for TelegramSend {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "telegram_send".into(),
-            description: "Send a message to the operator on Telegram: to the chat they last wrote from. Use it to answer a message that came from Telegram.".into(),
+            description: "Send a message to the operator on Telegram, to the chat or topic bound to this conversation or else the one they last wrote from. They cannot see your normal answer there, so use it to answer a message that came from Telegram. Asks permission like any outward action. Answers how many messages it took.".into(),
             schema: json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
         }
     }
@@ -95,7 +95,7 @@ impl Tool for DebugContract {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "debug_contract".into(),
-            description: "The OpenAPI contract every step-debug router is built by.".into(),
+            description: "Answer with the OpenAPI contract every step-debug router is built by. A utility to read, not a switch: debug mode itself is mode__debug. Read it before building a router for a pipeline.".into(),
             schema: json!({"type": "object", "properties": {}}),
         }
     }
@@ -118,7 +118,7 @@ impl Tool for DebugRuns {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "debug_runs".into(),
-            description: "The latest saved step-debug runs of this project, newest first, with their steps.".into(),
+            description: "Answer with the latest saved step-debug runs of this project, newest first, with their steps, to compare a run with an earlier one. A utility to read, not a switch: debug mode itself is mode__debug.".into(),
             schema: json!({"type": "object", "properties": {"limit": {"type": "integer"}}}),
         }
     }

@@ -29,6 +29,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if last.get("type") == "function_call_output":
             emit({"type": "response.output_text.delta", "delta": "After the tool."})
         elif "use agenda" in said: call("journal_agenda", {"limit": 1}, "c1")
+        elif "enter plan" in said: call("mode__plan_enter", {}, "c5")
         elif "long command" in said: call("shell", {"command": f"sleep {MARK}; echo never"}, "c2")
         elif "silent" in said: gate.wait(40)
         elif "start background" in said: call("shell", {"command": "sleep 1.5; echo finished-marker", "run_in_background": True}, "c3")
@@ -89,7 +90,16 @@ out = bodies[-1]["input"][-1]["output"]; assert "agenda" in out, out
 tools = [t.get("name") for t in bodies[0]["tools"]]; assert "journal_agenda" in tools and "journal_abandon" in tools, tools
 assert "telegram_send" not in tools or True
 print("the larger set is on, journal_agenda ran:", len(tools), "tools")
+modes = sorted(t for t in tools if t.startswith("mode__")); assert modes == ["mode__debug", "mode__plan_enter", "mode__plan_exit"], modes
+assert not {"plan_enter", "plan_exit", "debug_mode"} & set(tools), tools
+assert "mode__plan_enter" in bodies[0]["instructions"] and "modes of the harness" in bodies[0]["instructions"], "the prompt says what a mode is"
 pump(0.5)
+n = len(bodies); typed("enter plan\r")
+until("the mode answered", lambda: len(bodies) > n and bodies[-1]["input"][-1].get("type") == "function_call_output")
+assert "Plan mode is on" in bodies[-1]["input"][-1]["output"], bodies[-1]["input"][-1]
+edit = next(t for t in bodies[-1]["tools"] if t.get("name") == "edit"); assert edit["description"].startswith("PLAN MODE"), edit
+print("mode__plan_enter entered plan mode: the edit tool says so, and the prompt explains modes")
+pump(0.5); typed("/plan off\r"); pump(0.8)
 # A long command, stopped.
 typed("long command\r"); allow_when_asked()
 until("the command runs", lambda: running(f"sleep {MARK}"))

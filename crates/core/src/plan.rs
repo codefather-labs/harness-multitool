@@ -6,8 +6,8 @@ use std::cell::Cell;
 use harness_api::event::HookOutcome;
 use harness_api::{BoxFuture, Capability, Hook, HookPoint, ToolCall};
 
-pub const ENTER_TOOL: &str = "plan_enter";
-pub const EXIT_TOOL: &str = "plan_exit";
+pub const ENTER_TOOL: &str = "mode__plan_enter";
+pub const EXIT_TOOL: &str = "mode__plan_exit";
 
 /// Commands that only read, when they stand alone with no operators.
 const READ_ONLY: [&str; 11] = ["ls", "cat", "head", "tail", "wc", "grep", "rg", "pwd", "stat", "du", "df"];
@@ -42,7 +42,7 @@ pub fn refusal(capabilities: &[Capability], root: &str) -> Option<String> {
     })
 }
 
-const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then plan_exit.";
+const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then mode__plan_exit.";
 
 /// The project's documentation, the one thing written while planning: a feature is described
 /// before it is built. A path that climbs out does not count.
@@ -70,15 +70,15 @@ impl PlanFirst {
     }
 }
 
-const WHY: &str = "This changes the project and no plan has been made in this session. If this is an app, a feature, a fix or any change that is not trivial, call plan_enter first.";
+const WHY: &str = "This changes the project and no plan has been made in this session. If this is an app, a feature, a fix or any change that is not trivial, call mode__plan_enter first.";
 
 /// The agent behaviour specification (ADR 0021), each step of it said when it is the step at hand:
 /// a small model does not carry a long system prompt through a long run (CON-66).
-const REMIND_START: &str = "Agent behaviour spec: an app, a feature, a fix or any change that is not trivial starts with plan_enter, before anything is written.";
-const REMIND_PLAN: &str = "Agent behaviour spec, planning: first ask the user what only they can decide, with ask_user. Then journal_add each decision, journal_add a todo with its test protocol for each work item, mindmap_new and mindmap_add what is known, flowchart_new and flowchart_add each flow, describe it under docs/ if the project has docs/. Then plan_exit.";
-const REMIND_BUILD: &str = "Agent behaviour spec, the plan is approved. Nothing you tried to write while planning exists yet: build what the plan says with edit, old_text empty to create a file; leave the user's data as it is, run it and read the result. Then call debug_mode with on true and debug it.";
-const REMIND_DEBUG: &str = "Agent behaviour spec, debug mode: run each test protocol of the plan and compare what you get with what it should show. Fix what is wrong and run it again. Journal the evidence with journal_add: what ran and what it showed. Then call debug_mode with on false.";
-const REMIND_DONE: &str = "Agent behaviour spec: a new feature or fix starts again with plan_enter. Work ends with evidence in the journal, not a claim.";
+const REMIND_START: &str = "Agent behaviour spec: an app, a feature, a fix or any change that is not trivial starts with mode__plan_enter, before anything is written.";
+const REMIND_PLAN: &str = "Agent behaviour spec, planning: first ask the user what only they can decide, with ask_user. Then journal_add each decision, journal_add a todo with its test protocol for each work item, mindmap_new and mindmap_add what is known, flowchart_new and flowchart_add each flow, describe it under docs/ if the project has docs/. Then mode__plan_exit.";
+const REMIND_BUILD: &str = "Agent behaviour spec, the plan is approved. Nothing you tried to write while planning exists yet: build what the plan says with edit, old_text empty to create a file; leave the user's data as it is, run it and read the result. Then call mode__debug with on true and debug it.";
+const REMIND_DEBUG: &str = "Agent behaviour spec, debug mode: run each test protocol of the plan and compare what you get with what it should show. Fix what is wrong and run it again. Journal the evidence with journal_add: what ran and what it showed. Then call mode__debug with on false.";
+const REMIND_DONE: &str = "Agent behaviour spec: a new feature or fix starts again with mode__plan_enter. Work ends with evidence in the journal, not a claim.";
 
 /// Where the session is in the cycle of ADR 0021.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ impl ModeGuide {
             return HookOutcome::Ok;
         }
         self.stage.set(Stage::Planning { journal, map, chart, sent_back: true });
-        HookOutcome::Blocked { reason: format!("The plan is what the journal and the maps hold, so the next session finds it, and this one has none of: {}. Record it with them, ask_user if anything is still open, then call plan_exit again.", missing.join(", ")) }
+        HookOutcome::Blocked { reason: format!("The plan is what the journal and the maps hold, so the next session finds it, and this one has none of: {}. Record it with them, ask_user if anything is still open, then call mode__plan_exit again.", missing.join(", ")) }
     }
 
     /// What using this tool counts towards the plan.
@@ -245,7 +245,7 @@ mod tests {
         let (edit, ls, journal, rm) = (call("edit", serde_json::json!({})), call("shell", serde_json::json!({"command": "ls"})), call("journal_add", serde_json::json!({})), call("shell", serde_json::json!({"command": "rm a"})));
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &ls }), HookOutcome::Ok);
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &journal }), HookOutcome::Ok);
-        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &rm }), HookOutcome::Reminder { lines } if lines[0].contains("plan_enter")));
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &rm }), HookOutcome::Reminder { lines } if lines[0].contains("mode__plan_enter")));
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Ok, "once");
         run(&g, HookPoint::UserPromptSubmit { text: "next" });
         assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Reminder { .. }), "once a message");
@@ -258,7 +258,7 @@ mod tests {
     fn enforce_refuses_until_a_plan_and_off_does_nothing() {
         let g = ModeGuide::new(PlanFirst::Enforce);
         let edit = call("edit", serde_json::json!({}));
-        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Blocked { reason } if reason.contains("plan_enter")));
+        assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Blocked { reason } if reason.contains("mode__plan_enter")));
         assert!(matches!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Blocked { .. }), "every time");
         run(&g, HookPoint::PlanEnter);
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &edit }), HookOutcome::Ok);
@@ -295,13 +295,13 @@ mod tests {
     #[test]
     fn the_guide_says_each_step_of_the_cycle_when_it_is_the_step_at_hand() {
         let g = ModeGuide::new(PlanFirst::Remind);
-        assert!(line(run(&g, HookPoint::UserPromptSubmit { text: "x" })).contains("plan_enter"));
+        assert!(line(run(&g, HookPoint::UserPromptSubmit { text: "x" })).contains("mode__plan_enter"));
         assert_eq!(run(&g, HookPoint::Stop), HookOutcome::Ok, "nothing is due before a plan");
         assert!(line(run(&g, HookPoint::PlanEnter)).contains("ask the user"));
         assert_eq!(run(&g, HookPoint::Stop), HookOutcome::Ok, "waiting for answers is right while planning");
         assert!(line(run(&g, HookPoint::UserPromptSubmit { text: "answers" })).contains("ask the user"));
-        assert!(line(run(&g, HookPoint::PlanExit)).contains("debug_mode"));
-        assert!(matches!(run(&g, HookPoint::Stop), HookOutcome::Continue { lines } if lines[0].contains("debug_mode")));
+        assert!(line(run(&g, HookPoint::PlanExit)).contains("mode__debug"));
+        assert!(matches!(run(&g, HookPoint::Stop), HookOutcome::Continue { lines } if lines[0].contains("mode__debug")));
         assert_eq!(run(&g, HookPoint::Stop), HookOutcome::Ok, "once a message: it cannot loop");
         run(&g, HookPoint::UserPromptSubmit { text: "go on" });
         assert!(matches!(run(&g, HookPoint::Stop), HookOutcome::Continue { .. }));

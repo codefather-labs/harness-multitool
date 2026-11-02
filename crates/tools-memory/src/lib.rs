@@ -163,7 +163,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_search" => tool(
             "journal_search",
-            "Search the project's journal for earlier decisions and findings before deciding something.",
+            "Search the project's journal by words for earlier decisions and findings, before deciding something or redoing work. Answers with the closest entries whole. Trust a replaced or deprecated entry only as history.",
             || object(json!({"query": {"type": "string"}}), &["query"]),
             |memory, input| {
                 Box::pin(async move {
@@ -174,7 +174,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_get" => tool(
             "journal_get",
-            "Read one journal entry in full.",
+            "Read one journal entry in full, with its flags, tags and what blocks it, by id. Use it on what journal_agenda or journal_list show only the start of, and before relying on an entry.",
             || object(json!({"id": {"type": "integer"}}), &["id"]),
             |memory, input| {
                 Box::pin(async move {
@@ -204,7 +204,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "mindmap_new" => tool(
             "mindmap_new",
-            "Start a mind map: the map of what is known about a topic. It keeps decisions, questions and constraints, and answers why the system is the way it is.",
+            "Start a mind map: the map of what is known about a topic. It keeps decisions, questions and constraints, and answers why the system is the way it is. Use it for a long task or a hunt for a cause. Answers with the map and its root node's id.",
             || object(json!({"title": {"type": "string"}}), &["title"]),
             |memory, input| map_new(memory, input, MapKind::MindMap),
         ),
@@ -219,10 +219,10 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
             },
             map_add,
         ),
-        "mindmap_show" => tool("mindmap_show", "Read a mind map and draw it for the user.", || object(json!({"map": {"type": "integer"}}), &["map"]), map_show),
+        "mindmap_show" => tool("mindmap_show", "Read a mind map back as an outline, and draw it for the user. Use it after a resume or a compaction, before going on with a task or changing the map. Answers with its nodes and their states.", || object(json!({"map": {"type": "integer"}}), &["map"]), map_show),
         "flowchart_new" => tool(
             "flowchart_new",
-            "Start a flowchart: how something flows from a start to an end. `direction` is down or right.",
+            "Start a flowchart: how something flows from a start to an end, for a process, a request path or a pipeline. `direction` is down or right. Answers with the chart and its id; flowchart_add draws in it.",
             || object(json!({"title": {"type": "string"}, "direction": {"type": "string", "enum": ["down", "right"]}}), &["title"]),
             |memory, input| map_new(memory, input, MapKind::Flowchart),
         ),
@@ -237,7 +237,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
             },
             map_add,
         ),
-        "flowchart_show" => tool("flowchart_show", "Read a flowchart and draw it for the user.", || object(json!({"map": {"type": "integer"}}), &["map"]), map_show),
+        "flowchart_show" => tool("flowchart_show", "Read a flowchart back as an outline, and draw it for the user. Use it before changing the chart or walking the flow in debug mode. Answers with its symbols, arrows and states.", || object(json!({"map": {"type": "integer"}}), &["map"]), map_show),
         "journal_list" => tool(
             "journal_list",
             "List journal entries, newest first, by category, tags (any of), flags (any of), feature. `open` narrows to open or closed items. Reports the total; page with `offset`.",
@@ -281,43 +281,43 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_reopen" => tool(
             "journal_reopen",
-            "Reopen an entry's closed work items: the named flags, or all.",
+            "Reopen an entry's closed work items, the named flags or all, when what was closed comes back. A reopened blocker blocks again whatever is still waiting for it. Answers with what was reopened.",
             || object(json!({"id": {"type": "integer"}, "flags": {"type": "array", "items": {"type": "string"}}}), &["id"]),
             |memory, input| more(memory, number(input, "id").map(|id| MemoryOp::JournalReopen { id, flags: strings(&input["flags"]) })),
         ),
         "journal_abandon" => tool(
             "journal_abandon",
-            "Close a todo whose work was dropped, not done: no evidence is needed, the resolution says why, and it is recorded as abandoned.",
+            "Close a todo whose work was dropped, not done: no evidence is needed, the resolution says why, and it is recorded as abandoned. The answer's `released` names what waited for it: what they needed is still not there, so re-read each.",
             || object(json!({"id": {"type": "integer"}, "resolution": {"type": "string"}}), &["id", "resolution"]),
             |memory, input| more(memory, number(input, "id").and_then(|id| Ok(MemoryOp::JournalAbandon { id, resolution: require(input, "resolution")?.to_string() }))),
         ),
         "journal_branch" => tool(
             "journal_branch",
-            "The work branch an entry belongs to: its todo, what implements and verifies it, whether it is open, verified or closed.",
+            "Show the work branch an entry belongs to: its todo, what implements and verifies it, and whether it is open, verified or closed. Use it to see what a todo still lacks before closing it.",
             || object(json!({"id": {"type": "integer"}}), &["id"]),
             |memory, input| more(memory, number(input, "id").map(|id| MemoryOp::JournalBranch { id })),
         ),
         "journal_link" => tool(
             "journal_link",
-            "Link two entries whose text does not mention each other. `kind` is cites (default), replaces or fixes.",
+            "Link two entries whose text does not mention each other. `kind` is cites (default), replaces or fixes. A journal#N in an entry's text already links it. To say one waits for another, use blocked_by instead.",
             || object(json!({"from": {"type": "integer"}, "to": {"type": "integer"}, "kind": {"type": "string", "enum": ["cites", "replaces", "fixes"]}}), &["from", "to"]),
             |memory, input| more(memory, number(input, "from").and_then(|from| Ok(MemoryOp::JournalLink { from, to: number(input, "to")?, kind: input["kind"].as_str().unwrap_or("cites").to_string() }))),
         ),
         "journal_tags" => tool(
             "journal_tags",
-            "The journal's tag vocabulary, most used first, and its categories. Reuse these rather than near-synonyms.",
+            "Answer with the journal's tag vocabulary, most used first, and its categories. Read it before tagging an entry, and reuse these rather than near-synonyms: tags are how an entry is found again.",
             || object(json!({"category": {"type": "string"}}), &[]),
             |memory, input| more(memory, Ok(MemoryOp::JournalTags { category: input["category"].as_str().map(str::to_string) })),
         ),
         "map_edit" => tool(
             "map_edit",
-            "Change a node of a mind map or a flowchart: its text, its kind, or both.",
+            "Change a node of a mind map or a flowchart: its text, its kind, or both, by map and node id. Keep a map true as what you know changes. Answers with the map as it now stands.",
             || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}}), &["map", "node"]),
             |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapEdit { map, node: number(input, "node")?, text: input["text"].as_str().map(str::to_string), kind: input["kind"].as_str().map(str::to_string) }))),
         ),
         "map_node_state" => tool(
             "map_node_state",
-            "Mark a node of a map: done, dropped, or open again.",
+            "Mark a node of a map as done, dropped, or open again, as work moves on. A dropped node stays visible, so what was ruled out is not tried twice. Answers with the map as it now stands.",
             || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "state": {"type": "string", "enum": ["open", "done", "dropped"]}}), &["map", "node", "state"]),
             |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapNodeState { map, node: number(input, "node")?, state: require(input, "state")?.to_string() }))),
         ),
@@ -329,13 +329,13 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "map_ref" => tool(
             "map_ref",
-            "Point a node of a map at the journal entries it rests on.",
+            "Point a node of a map at the journal entries it rests on, so the map holds where you are and the journal the detail. Answers with the map as it now stands.",
             || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "entries": {"type": "array", "items": {"type": "integer"}}}), &["map", "node", "entries"]),
             |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapRef { map, node: number(input, "node")?, entries: ids(&input["entries"]) }))),
         ),
         "map_close" => tool(
             "map_close",
-            "Close a map whose task is done. It stays readable.",
+            "Close a map whose task is done, so it stops showing as open work. It stays readable by mindmap_show and flowchart_show. Answers with the map.",
             || object(json!({"map": {"type": "integer"}}), &["map"]),
             |memory, input| more(memory, number(input, "map").map(|map| MemoryOp::MapClose { map })),
         ),

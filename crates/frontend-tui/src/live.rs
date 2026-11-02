@@ -808,6 +808,9 @@ fn edit_diff(input: &Value) -> Option<(Diff, u32, u32)> {
 /// A tool's name as it is drawn: an MCP tool's own name, and the server it is on. The log keeps
 /// the real one.
 pub fn tool_title(name: &str) -> (&str, Option<&str>) {
+    if let Some(tool) = name.strip_prefix("mode__") {
+        return (tool, Some("mode"));
+    }
     name.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")).map_or((name, None), |(server, tool)| (tool, Some(server)))
 }
 

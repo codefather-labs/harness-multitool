@@ -20,7 +20,7 @@ use crate::registry::Parts;
 
 /// Asks the loop to stop at its next step. Safe to set from another thread.
 /// The tool the engine answers itself: the mode is its own state.
-const DEBUG_MODE_TOOL: &str = "debug_mode";
+const DEBUG_MODE_TOOL: &str = "mode__debug";
 const NICK_TOOL: &str = "set_nick";
 const ASK_TOOL: &str = "ask_user";
 /// The same call failing the same way, within one user message: said at the first, stopped at
@@ -50,6 +50,38 @@ impl StopFlag {
     fn take(&self) -> bool {
         self.0.swap(0, Ordering::SeqCst) > 0
     }
+}
+
+/// The tools the engine answers itself. The first three are modes of the harness, not utilities: a
+/// mode changes what the agent may do and what it is told until it ends (CON-96).
+pub fn own_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        ToolSpec {
+            name: plan::ENTER_TOOL.into(),
+            description: "HARNESS MODE, not a utility. Enter plan mode before building an app, a prototype, a feature or a fix, or any change that is not trivial, even if nobody said plan and even if the result was asked for directly. In the mode you can read, search, fetch, run single read-only commands, write under docs/, and use the journal and maps; everything else is refused and your instructions change. It lasts until the user approves mode__plan_exit. Answers with the mode's rules.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        ToolSpec {
+            name: plan::EXIT_TOOL.into(),
+            description: "HARNESS MODE, not a utility. Show the user the plan and design, after asking what only they can decide and journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode: the answer says whether they approved, and if not, what to change.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
+        },
+        ToolSpec {
+            name: ASK_TOOL.into(),
+            description: "Ask the user what only they can decide, and wait: the question is shown, your turn ends, and the answer comes as their next message. Offer options when the answers are known: the user picks one or types their own. One question per call.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "maxItems": harness_api::question::MAX_OPTIONS, "description": "The likely answers, best first.", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string", "description": "What choosing this means."}}, "required": ["label"]}}}, "required": ["question"]}),
+        },
+        ToolSpec {
+            name: NICK_TOOL.into(),
+            description: "Change the name you go by in this conversation: it replaces ASSISTANT above your messages, names the tab, and is what /switch in Telegram finds you by. Use it when the user names you or asks you to pick a name. Answers with the name, or why it was refused.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"nick": {"type": "string", "description": "1 to 32 characters, one line."}}, "required": ["nick"]}),
+        },
+        ToolSpec {
+            name: DEBUG_MODE_TOOL.into(),
+            description: "HARNESS MODE, not a utility: on or off. Switch debug mode: your instructions change to reproducing and verifying, and the window follows the run. Turn it on for every planned fix, before changing anything, and for every planned feature once it is built and running; turn it off when the result is verified and the evidence is in the journal. A large pipeline, above all a distributed one, is also walked step by step; a small program is checked by running it and by tests.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
+        },
+    ]
 }
 
 /// How a run of the loop ended.
@@ -213,7 +245,7 @@ impl Engine {
         let (count, name) = worst;
         if count == REPEAT_WARN {
             let line = if self.state.borrow().plan_mode {
-                format!("You have made this exact {name} call {count} times. You are in PLAN MODE: the environment is fine, this is refused on purpose, and nothing you tried to write exists. It runs after the user approves the plan. Record the plan with journal_add, mindmap_new and flowchart_new, then call plan_exit.")
+                format!("You have made this exact {name} call {count} times. You are in PLAN MODE: the environment is fine, this is refused on purpose, and nothing you tried to write exists. It runs after the user approves the plan. Record the plan with journal_add, mindmap_new and flowchart_new, then call mode__plan_exit.")
             } else {
                 format!("You have made this exact {name} call {count} times and it failed the same way each time. It will not work: do something different, or use ask_user.")
             };
@@ -326,37 +358,13 @@ impl Engine {
         if self.state.borrow().plan_mode {
             for spec in &mut specs {
                 match spec.name.as_str() {
-                    "edit" => spec.description = format!("PLAN MODE: only paths under docs/ can be written until the user approves plan_exit; anything else is refused and nothing is created. {}", spec.description),
-                    "shell" => spec.description = format!("PLAN MODE: only one read-only command at a time (ls, cat, grep, git log...); nothing can be run or created until the user approves plan_exit. {}", spec.description),
+                    "edit" => spec.description = format!("PLAN MODE: only paths under docs/ can be written until the user approves mode__plan_exit; anything else is refused and nothing is created. {}", spec.description),
+                    "shell" => spec.description = format!("PLAN MODE: only one read-only command at a time (ls, cat, grep, git log...); nothing can be run or created until the user approves mode__plan_exit. {}", spec.description),
                     _ => {}
                 }
             }
         }
-        specs.push(ToolSpec {
-            name: plan::ENTER_TOOL.into(),
-            description: "Enter plan mode before building an app, a prototype, a feature or a fix, or any change that is not trivial, even if nobody said plan and even if the result was asked for directly. Study and plan there; nothing is built until the user approves.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {}}),
-        });
-        specs.push(ToolSpec {
-            name: plan::EXIT_TOOL.into(),
-            description: "Show the user the plan and design, after asking what only they can decide and journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
-        });
-        specs.push(ToolSpec {
-            name: ASK_TOOL.into(),
-            description: "Ask the user what only they can decide, and wait: the question is shown, your turn ends, and the answer comes as their next message. Offer options when the answers are known: the user picks one or types their own. One question per call.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "maxItems": harness_api::question::MAX_OPTIONS, "description": "The likely answers, best first.", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string", "description": "What choosing this means."}}, "required": ["label"]}}}, "required": ["question"]}),
-        });
-        specs.push(ToolSpec {
-            name: NICK_TOOL.into(),
-            description: "Change the name you go by in this session; it replaces ASSISTANT above your messages. Use it when the user names you or asks you to pick a name.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {"nick": {"type": "string", "description": "1 to 32 characters, one line."}}, "required": ["nick"]}),
-        });
-        specs.push(ToolSpec {
-            name: DEBUG_MODE_TOOL.into(),
-            description: "Switch debug mode. Turn it on for every planned fix, before changing anything, and for every planned feature once it is built and running; turn it off when the result is verified and the evidence is in the journal. A large pipeline, above all a distributed one, is also walked step by step; a small program is checked by running it and by tests.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}),
-        });
+        specs.extend(own_tool_specs());
         specs
     }
 
@@ -631,7 +639,7 @@ impl Engine {
         let result = |output: String, is_error: bool| self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
         if call.name == plan::ENTER_TOOL {
             self.set_plan_mode(true, "agent").await;
-            return result("Plan mode is on. Follow its rules; plan_exit asks the user to approve the plan.".into(), false);
+            return result("Plan mode is on. Follow its rules; mode__plan_exit asks the user to approve the plan.".into(), false);
         }
         if !self.state.borrow().plan_mode {
             return result("plan mode is not on".into(), true);
@@ -651,7 +659,7 @@ impl Engine {
         }
         self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: None });
         self.set_plan_mode(false, "user").await;
-        result("The user approved the plan. Plan mode is off. A fix: call debug_mode with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call debug_mode with on true and debug it.".into(), false);
+        result("The user approved the plan. Plan mode is off. A fix: call mode__debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call mode__debug with on true and debug it.".into(), false);
     }
 
     /// What the harness left running: the panel kept true, an end kept for when no run is on.
@@ -890,7 +898,7 @@ impl Engine {
         if call.name == DEBUG_MODE_TOOL {
             self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
             let (output, is_error) = match call.input["on"].as_bool() {
-                Some(true) if self.state.borrow().plan_mode => ("You are in plan mode: debugging comes after the user approves the plan. Finish the plan, then call plan_exit.".to_string(), true),
+                Some(true) if self.state.borrow().plan_mode => ("You are in plan mode: debugging comes after the user approves the plan. Finish the plan, then call mode__plan_exit.".to_string(), true),
                 Some(on) => {
                     self.set_step_debug(on, "agent").await;
                     (format!("Step-debug mode is {}.", if on { "on" } else { "off" }), false)
