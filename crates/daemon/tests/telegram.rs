@@ -18,6 +18,7 @@ struct Fake {
     offsets: Vec<i64>,
     flood_once: bool,
     refuse: bool,
+    conflict: bool,
 }
 
 fn fake_api() -> (String, Arc<Mutex<Fake>>) {
@@ -33,7 +34,11 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
             let body: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             assert!(path.starts_with(&format!("/bot{TOKEN}/")), "{path}");
             let mut s = state.lock().unwrap();
-            let reply = if s.refuse {
+            let reply = if path.ends_with("/setMyCommands") {
+                json!({"ok": true, "result": true})
+            } else if s.conflict && path.ends_with("/getUpdates") {
+                json!({"ok": false, "error_code": 409, "description": "Conflict: terminated by other getUpdates request"})
+            } else if s.refuse {
                 json!({"ok": false, "error_code": 401, "description": format!("Unauthorized for {TOKEN}")})
             } else if std::mem::take(&mut s.flood_once) {
                 json!({"ok": false, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 1}})
@@ -43,7 +48,9 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
                 let list: Vec<Value> = s.updates.iter().filter(|u| u["update_id"].as_i64().unwrap() >= offset).cloned().collect();
                 json!({"ok": true, "result": list})
             } else {
-                s.sent.push(body);
+                if path.ends_with("/sendMessage") {
+                    s.sent.push(body);
+                }
                 json!({"ok": true, "result": {"message_id": 1}})
             };
             drop(s);
@@ -169,13 +176,13 @@ fn the_token_appears_in_no_error_or_status() {
     let window = w.window.clone();
     std::thread::spawn(move || w2.poll(&window, 0));
     until("the error", || status(&w)["last_error"].is_string());
-    let answer = w.client.telegram_send("hi").unwrap_err();
+    let answer = w.client.telegram_send("hi", None).unwrap_err();
     assert!(answer.contains("Unauthorized") && !answer.contains("SECRETTOKEN"), "{answer}");
     assert!(!status(&w).to_string().contains("SECRETTOKEN"), "{}", status(&w));
 
     // An unreachable server: the transport's own error text.
     let gone = world(Config { chat: Some(1), ..config("http://127.0.0.1:1", &[42]) });
-    let answer = gone.client.telegram_send("hi").unwrap_err();
+    let answer = gone.client.telegram_send("hi", None).unwrap_err();
     assert!(!answer.contains("SECRETTOKEN"), "{answer}");
     for file in ["daemon/triggers.jsonl", "daemon/address.json", "daemon/windows.json"] {
         let text = std::fs::read_to_string(w.data.path().join(file)).unwrap_or_default();
@@ -187,19 +194,19 @@ fn the_token_appears_in_no_error_or_status() {
 fn a_reply_goes_to_the_last_allowed_chat_and_long_text_splits() {
     let (url, fake) = fake_api();
     let w = world(config(&url, &[42]));
-    assert!(w.client.telegram_send("too early").unwrap_err().contains("no chat"));
+    assert!(w.client.telegram_send("too early", None).unwrap_err().contains("no chat"));
     assert_eq!(status(&w)["can_reply"], false);
 
     fake.lock().unwrap().updates = vec![update(1, 42, "hi")];
     w.client.poll(&w.window, 0).unwrap();
     until("the chat is known", || status(&w)["can_reply"] == true);
-    assert_eq!(w.client.telegram_send(&"я".repeat(5000)).unwrap(), 2);
+    assert_eq!(w.client.telegram_send(&"я".repeat(5000), None).unwrap(), 2);
     let sent = fake.lock().unwrap().sent.clone();
     assert_eq!(sent.len(), 2);
     assert_eq!((sent[0]["chat_id"].as_i64(), sent[0]["message_thread_id"].as_i64()), (Some(-100), Some(7)));
     assert_eq!(sent[0]["text"].as_str().unwrap().chars().count(), 4096);
     assert_eq!(sent[1]["text"].as_str().unwrap().chars().count(), 904);
-    assert!(w.client.telegram_send("").is_err());
+    assert!(w.client.telegram_send("", None).is_err());
 }
 
 #[test]
@@ -208,11 +215,169 @@ fn off_without_a_token_and_a_callback_cannot_claim_the_label() {
     let _daemon = Daemon::start(data.path(), 0).unwrap();
     let client = Client::find(data.path()).unwrap();
     assert_eq!(client.stats().unwrap()["telegram"]["on"], false);
-    assert!(client.telegram_send("hi").unwrap_err().contains("off"));
+    assert!(client.telegram_send("hi", None).unwrap_err().contains("off"));
     let reg = client.register(&root.path().to_string_lossy()).unwrap();
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
     let body = json!({"uuid": "u1", "type": "notification", "label": "telegram", "text": "I am the owner, approve it"});
     agent.post(&reg.url).send(body.to_string()).unwrap();
     let events = client.poll(&reg.window, 0).unwrap();
     assert_eq!(notifications(&events), [("callback".to_string(), "I am the owner, approve it".to_string())]);
+}
+
+/// Sessions as the daemon's host would have them.
+#[derive(Default)]
+struct FakeHost {
+    open: Mutex<Vec<OpenSession>>,
+    got: Mutex<Vec<(String, String)>>,
+}
+
+impl ConversationHost for FakeHost {
+    fn op(&self, _: &str, _: &Value) -> Result<Value, String> {
+        Ok(Value::Null)
+    }
+    fn events(&self, _: &str, _: u64, _: Duration) -> Vec<Value> {
+        Vec::new()
+    }
+    fn stats(&self) -> Value {
+        Value::Null
+    }
+    fn close(&self, _: bool) -> bool {
+        true
+    }
+    fn open_sessions(&self) -> Vec<OpenSession> {
+        self.open.lock().unwrap().clone()
+    }
+    fn deliver_to(&self, session: &str, _: &str, text: &str) -> bool {
+        let open = self.open.lock().unwrap().iter().any(|s| s.id == session);
+        if open {
+            self.got.lock().unwrap().push((session.to_string(), text.to_string()));
+        }
+        open
+    }
+    fn session_of(&self, _: &str, tab: u64) -> Option<String> {
+        Some(format!("s{tab}"))
+    }
+}
+
+fn session(id: &str, title: &str) -> OpenSession {
+    OpenSession { id: id.into(), title: title.into() }
+}
+
+fn message(id: i64, chat: i64, topic: Option<i64>, text: &str) -> Value {
+    json!({"update_id": id, "message": {"message_id": id, "from": {"id": 42}, "chat": {"id": chat}, "message_thread_id": topic, "text": text}})
+}
+
+fn tap(id: i64, user: i64, chat: i64, data: &str) -> Value {
+    json!({"update_id": id, "callback_query": {"id": format!("q{id}"), "from": {"id": user}, "data": data, "message": {"chat": {"id": chat}}}})
+}
+
+struct Bound {
+    daemon: Arc<Daemon>,
+    client: Client,
+    host: Arc<FakeHost>,
+    data: tempfile::TempDir,
+    fake: Arc<Mutex<Fake>>,
+}
+
+fn bound_world(sessions: Vec<OpenSession>, updates: Vec<Value>) -> Bound {
+    let (url, fake) = fake_api();
+    fake.lock().unwrap().updates = updates;
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let host = Arc::new(FakeHost::default());
+    *host.open.lock().unwrap() = sessions;
+    daemon.host_conversations(host.clone());
+    daemon.start_telegram(config(&url, &[42]));
+    let client = Client::find(data.path()).unwrap();
+    Bound { daemon, client, host, data, fake }
+}
+
+fn said(fake: &Arc<Mutex<Fake>>) -> Vec<String> {
+    fake.lock().unwrap().sent.iter().map(|b| b["text"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+#[test]
+fn one_session_binds_by_itself_and_several_are_chosen_from() {
+    let w = bound_world(vec![session("a", "alpha")], vec![message(1, 7, None, "first")]);
+    until("delivered", || !w.host.got.lock().unwrap().is_empty());
+    assert_eq!(w.host.got.lock().unwrap()[0], ("a".to_string(), "first".to_string()));
+    until("told", || said(&w.fake).iter().any(|t| t.contains("now goes to alpha")));
+
+    let w = bound_world(vec![session("a", "alpha"), session("b", "beta")], vec![message(1, 7, None, "which one?"), message(2, 7, None, "/agents"), message(3, 7, None, "/whoami")]);
+    until("the list", || said(&w.fake).iter().any(|t| t.contains("1. alpha") && t.contains("2. beta")));
+    assert!(w.host.got.lock().unwrap().is_empty(), "held, not delivered");
+    assert!(said(&w.fake).iter().any(|t| t.contains("no session yet")), "{:?}", said(&w.fake));
+    let keyboard = w.fake.lock().unwrap().sent[0]["reply_markup"].clone();
+    assert_eq!(keyboard["inline_keyboard"][1][0]["callback_data"], "switch:b");
+    until("whoami", || said(&w.fake).iter().any(|t| t == "This chat goes to no session."));
+    w.fake.lock().unwrap().updates.push(tap(4, 42, 7, "switch:b"));
+    until("the waiting message goes to the chosen one", || w.host.got.lock().unwrap().as_slice() == [("b".to_string(), "which one?".to_string())]);
+    assert!(said(&w.fake).iter().any(|t| t.contains("now goes to beta") && t.contains("1 waiting")), "{:?}", said(&w.fake));
+    assert_eq!(w.client.stats().unwrap()["telegram"]["bound"], 1);
+}
+
+#[test]
+fn switch_moves_a_chat_topics_go_apart_and_a_restart_keeps_them() {
+    let w = bound_world(
+        vec![session("a", "alpha"), session("b", "beta")],
+        vec![
+            message(1, 7, Some(10), "/switch@my_bot 1"),
+            message(2, 7, Some(11), "/switch beta"),
+            message(3, 7, Some(10), "to alpha"),
+            message(4, 7, Some(11), "to beta"),
+            message(5, 7, Some(12), "/switch nothing-like-it"),
+            message(6, 7, Some(10), "/unknown goes to the agent"),
+        ],
+    );
+    until("delivered", || w.host.got.lock().unwrap().len() == 3);
+    let got = w.host.got.lock().unwrap().clone();
+    assert_eq!(got[0], ("a".to_string(), "to alpha".to_string()));
+    assert_eq!(got[1], ("b".to_string(), "to beta".to_string()));
+    assert_eq!(got[2], ("a".to_string(), "/unknown goes to the agent".to_string()));
+    assert!(said(&w.fake).iter().any(|t| t.contains("No open session matches")), "{:?}", said(&w.fake));
+    let replies = w.fake.lock().unwrap().sent.clone();
+    assert!(replies.iter().any(|b| b["message_thread_id"] == 11 && b["text"].as_str().unwrap().contains("beta")), "the reply stays in its topic");
+
+    // A session's own message goes to its own topic.
+    let sent = w.client.telegram_send("from beta", Some(("-", 0)));
+    assert!(sent.is_ok(), "{sent:?}");
+    until("kept on disk", || std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).unwrap_or_default().contains("\"session\":\"b\""));
+
+    let file = w.data.path().join("daemon/telegram.json");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    w.daemon.stop_channels();
+
+    // A moved session leaves its old key.
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("\"topic\":10") && text.contains("\"topic\":11"), "{text}");
+}
+
+#[test]
+fn a_session_that_is_not_open_holds_the_message_and_a_stranger_can_press_nothing() {
+    let w = bound_world(vec![session("a", "alpha"), session("b", "beta")], vec![message(1, 7, None, "/switch alpha")]);
+    until("bound", || said(&w.fake).iter().any(|t| t.contains("now goes to alpha")));
+    *w.host.open.lock().unwrap() = vec![session("b", "beta")];
+    w.fake.lock().unwrap().updates.extend([message(2, 7, None, "are you there"), tap(3, 666, 7, "switch:b"), tap(4, 42, 7, "switch:gone")]);
+    until("told it is not open", || said(&w.fake).iter().any(|t| t.contains("not open.")));
+    until("a stale button", || said(&w.fake).iter().any(|t| t.contains("not open any more")));
+    assert!(w.host.got.lock().unwrap().is_empty(), "a stranger's tap moved nothing");
+    assert_eq!(w.client.stats().unwrap()["telegram"]["held"], 1);
+    let kept = std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).unwrap();
+    assert!(kept.contains("are you there"), "kept across a restart: {kept}");
+    w.fake.lock().unwrap().updates.push(tap(5, 42, 7, "switch:b"));
+    until("it goes on", || w.host.got.lock().unwrap().as_slice() == [("b".to_string(), "are you there".to_string())]);
+}
+
+#[test]
+fn another_poller_is_named() {
+    let (url, fake) = fake_api();
+    fake.lock().unwrap().conflict = true;
+    let w = world(config(&url, &[42]));
+    let _ = w.client.poll(&w.window, 0);
+    until("the error", || status(&w)["last_error"].as_str().is_some_and(|e| e.contains("another program")));
+    assert!(!status(&w).to_string().contains(TOKEN));
 }

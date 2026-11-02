@@ -179,12 +179,13 @@ impl Client {
     }
 
     /// Sends through the Telegram channel; the number of messages it took.
-    pub fn telegram_send(&self, text: &str) -> Result<u64, String> {
+    /// Sends to the operator; `from`, a window and its tab, answers where that session is bound.
+    pub fn telegram_send(&self, text: &str, from: Option<(&str, u64)>) -> Result<u64, String> {
         let mut response = self
             .agent
             .post(format!("{}/telegram/send", self.base))
             .header("authorization", &format!("Bearer {}", self.admin))
-            .send(json!({"text": text}).to_string())
+            .send(json!({"text": text, "window": from.map(|f| f.0), "tab": from.map(|f| f.1)}).to_string())
             .map_err(|e| format!("reaching the daemon: {e}"))?;
         let body: Value = response.body_mut().read_json().map_err(|e| format!("the daemon's answer: {e}"))?;
         match body["error"].as_str() {

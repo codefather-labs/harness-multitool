@@ -429,6 +429,37 @@ impl DaemonHost {
 }
 
 impl ConversationHost for DaemonHost {
+    fn open_sessions(&self) -> Vec<harness_daemon::OpenSession> {
+        let windows = self.windows.lock().expect("windows");
+        let data = self.data_dir.to_string_lossy();
+        let mut out = Vec::new();
+        for window in windows.values().filter(|w| !w.closed) {
+            for (_, session) in window.sessions.open() {
+                if !out.iter().any(|s: &harness_daemon::OpenSession| s.id == session) {
+                    out.push(harness_daemon::OpenSession { title: crate::title_of(&data, &window.root, &session), id: session });
+                }
+            }
+        }
+        out.sort_by(|a, b| a.title.cmp(&b.title));
+        out
+    }
+
+    fn deliver_to(&self, session: &str, label: &str, text: &str) -> bool {
+        let mut windows = self.windows.lock().expect("windows");
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
+                window.sessions.inbound(tab, label.to_string(), text.to_string());
+                self.wake.notify_all();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn session_of(&self, window: &str, tab: u64) -> Option<String> {
+        self.windows.lock().expect("windows").get(window)?.sessions.session_of(tab).map(str::to_string)
+    }
+
     fn close(&self, only_if_idle: bool) -> bool {
         let threads: Vec<_> = {
             // Under the lock every operation takes: no message starts a run between the look and the close.

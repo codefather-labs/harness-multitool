@@ -273,6 +273,28 @@ pub fn read_log(data_dir: &str, root: &str, id: &str) -> Vec<LogEntry> {
     text.lines().map_while(|l| harness_api::event::from_line(l).ok()).collect()
 }
 
+/// What a person knows a session by: its folder and the first thing said in it. Reads only the
+/// start of the log, which can be very large.
+pub fn title_of(data_dir: &str, root: &str, id: &str) -> String {
+    use std::io::BufRead;
+    let folder = std::path::Path::new(root).file_name().map_or(root.to_string(), |n| n.to_string_lossy().into_owned());
+    let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
+    let first = std::fs::File::open(path).ok().and_then(|file| {
+        std::io::BufReader::new(file).lines().map_while(Result::ok).take(2000).find_map(|line| match harness_api::event::from_line(&line).ok()?.event {
+            Event::UserMessage { text } => Some(text),
+            _ => None,
+        })
+    });
+    match first {
+        Some(words) => {
+            let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+            let cut: String = words.chars().take(40).collect();
+            format!("{folder}: {cut}{}", if cut.len() < words.len() { "…" } else { "" })
+        }
+        None => format!("{folder}: {}", id.chars().take(16).collect::<String>()),
+    }
+}
+
 /// This folder's sessions, newest first.
 pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
     let Ok(files) = std::fs::read_dir(sessions_dir(data_dir, root)) else { return Vec::new() };
@@ -359,7 +381,8 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         if telegram {
             selection.tools.push("telegram_send".to_string());
             let data_dir = data_dir.clone();
-            registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone() })));
+            let window = host.window.clone().map(|window| (window, tab));
+            registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone(), from: window.clone() })));
         }
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
@@ -655,6 +678,11 @@ impl Sessions {
     /// A run is on in some tab.
     pub fn busy(&self) -> bool {
         self.handles.values().any(|h| h.running.load(Ordering::SeqCst))
+    }
+
+    /// The stored sessions of the tabs that have one.
+    pub fn open(&self) -> Vec<(u64, String)> {
+        self.handles.iter().map(|(tab, handle)| (*tab, handle.session.clone())).collect()
     }
 
     /// A run of this stored session is on.

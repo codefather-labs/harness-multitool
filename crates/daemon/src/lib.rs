@@ -95,6 +95,26 @@ pub trait ConversationHost: Send + Sync {
     /// Ends every conversation and whatever process it holds, unless `only_if_idle` and a run is
     /// on, which answers false and changes nothing.
     fn close(&self, only_if_idle: bool) -> bool;
+    /// The sessions open in its windows, for a channel to choose from.
+    fn open_sessions(&self) -> Vec<OpenSession> {
+        Vec::new()
+    }
+    /// A message for this session as an inbound. False if it is not open.
+    fn deliver_to(&self, _session: &str, _label: &str, _text: &str) -> bool {
+        false
+    }
+    /// The session behind a window's tab.
+    fn session_of(&self, _window: &str, _tab: u64) -> Option<String> {
+        None
+    }
+}
+
+/// A session open in a window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSession {
+    pub id: String,
+    /// What a person knows it by.
+    pub title: String,
 }
 
 /// The path to run this program by. A rebuild puts a new file at that path, after which the OS
@@ -268,6 +288,10 @@ impl Daemon {
         self.channels_stopped.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    fn conversations(&self) -> Option<Arc<dyn ConversationHost>> {
+        self.conversations.lock().expect("conversations").clone()
+    }
+
     fn with_channel(&self, change: impl FnOnce(&mut telegram::Channel)) {
         if let Some(channel) = self.telegram.lock().expect("telegram").as_mut() {
             change(channel);
@@ -302,7 +326,10 @@ impl Daemon {
         let Some(text) = serde_json::from_str::<Value>(body).ok().and_then(|v| v["text"].as_str().map(str::to_string)) else {
             return (400, json!({"error": "text is required"}));
         };
-        match telegram::send(self, &text) {
+        let input = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+        // The session asking, if it says: it answers where it is bound.
+        let session = input["window"].as_str().zip(input["tab"].as_u64()).and_then(|(window, tab)| self.conversations.lock().expect("conversations").as_ref()?.session_of(window, tab));
+        match telegram::send(self, &text, session.as_deref()) {
             Ok(parts) => (200, json!({"parts": parts})),
             Err(error) => (500, json!({"error": error})),
         }

@@ -58,6 +58,8 @@ impl Tool for PluginsReload {
 /// machine, so it asks permission like any outward action.
 pub struct TelegramSend {
     pub data_dir: std::path::PathBuf,
+    /// The window and tab asking: it answers where that session is bound.
+    pub from: Option<(String, u64)>,
 }
 
 impl Tool for TelegramSend {
@@ -77,7 +79,7 @@ impl Tool for TelegramSend {
         let answer = match (input["text"].as_str(), harness_daemon::client::Client::find(&self.data_dir)) {
             (None, _) => ToolOutput::error("text is required".to_string()),
             (_, None) => ToolOutput::error("the daemon is not running".to_string()),
-            (Some(text), Some(client)) => match client.telegram_send(text) {
+            (Some(text), Some(client)) => match client.telegram_send(text, self.from.as_ref().map(|f| (f.0.as_str(), f.1))) {
                 Ok(parts) => ToolOutput::ok(format!("sent, in {parts} message(s)")),
                 Err(error) => ToolOutput::error(error),
             },
