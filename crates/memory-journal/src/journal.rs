@@ -126,6 +126,10 @@ CREATE TABLE IF NOT EXISTS entry_proofs (
 /// The link of an entry to one that has to be closed first. Set by `block`, which refuses what
 /// could never close, so it is not among the kinds anyone can link by.
 const BLOCKED_BY: &str = "blocked_by";
+/// How the resolution of dropped work begins.
+const ABANDONED: &str = "abandoned:";
+/// An open work item on the entry named by `{}`, as SQL.
+const OPEN_ITEM_SQL: &str = "SELECT 1 FROM entry_flags f WHERE f.entry_id = {} AND f.closed_at IS NULL AND f.flag NOT IN (SELECT value FROM json_each(?))";
 pub const LINK_KINDS: [&str; 5] = ["cites", "replaces", "fixes", "implements", "verifies"];
 
 /// The `journal#N` references in an entry, with what the (up to three) words
@@ -276,6 +280,11 @@ const MARKS: [&str; 8] =
 /// Marks that neither hold an entry past retention nor belong in the agenda:
 /// history, evidence, and notes kept for what they say.
 pub const PASSIVE: [&str; 5] = ["idea", "concept", "comment", "verified", "deprecated"];
+
+/// The marks, for SQL to tell them from work items.
+fn marks_json() -> String {
+    serde_json::to_string(&MARKS).expect("strings serialise")
+}
 
 pub fn closable(flag: &str) -> bool {
     !MARKS.contains(&flag)
@@ -1028,6 +1037,12 @@ pub fn close_with(
         }
     }
 
+    // How a dropped entry is told from a solved one, whichever work item it was.
+    if mode == CloseMode::Abandon && !resolution.as_deref().is_some_and(|r| r.starts_with(ABANDONED)) {
+        let Some(why) = resolution.take() else { bail!("--abandon needs --resolution \"<why the work was dropped>\"") };
+        resolution = Some(format!("{ABANDONED} {why}"));
+    }
+
     let mut closed = Vec::new();
     for flag in &targets {
         tx.execute(
@@ -1296,6 +1311,8 @@ pub struct Filter {
     /// With `Some`, only entries whose (named) flag is open (`true`) or
     /// closed (`false`).
     pub open: Option<bool>,
+    /// Only what can be worked on now: leaves out entries waiting for an open blocker.
+    pub not_blocked: bool,
 }
 
 impl Filter {
@@ -1332,6 +1349,11 @@ impl Filter {
                 None => {}
             }
             clauses.push(format!("e.id IN ({sub})"));
+        }
+        if self.not_blocked {
+            let open = OPEN_ITEM_SQL.replace("{}", "l.to_id");
+            clauses.push(format!("NOT EXISTS (SELECT 1 FROM entry_links l WHERE l.from_id = e.id AND l.kind = '{BLOCKED_BY}' AND EXISTS ({open}))"));
+            values.push(Value::Text(marks_json()));
         }
         let tags = normalize_tags(&self.tags);
         if !tags.is_empty() {
@@ -1384,6 +1406,9 @@ pub struct Entry {
     /// What has to close before this one can, of what it was blocked by: those still open.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<i64>,
+    /// Of what it was blocked by, what was dropped instead of solved: to be re-read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocker_dropped: Vec<i64>,
 }
 
 /// An entry that comes back to its author while its `reminder` is open.
@@ -1461,6 +1486,7 @@ fn entry_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         proofs: Vec::new(),
         remind: None,
         blocked_by: Vec::new(),
+        blocker_dropped: Vec::new(),
     })
 }
 
@@ -1494,6 +1520,7 @@ fn attach_tags(conn: &Connection, entries: &mut [Entry]) -> Result<()> {
         e.flags = set;
         e.links = links_of(conn, e.id)?;
         e.blocked_by = open_blockers(conn, e.id)?;
+        e.blocker_dropped = dropped_blockers(conn, e.id)?;
         e.proofs = proofs_of(conn, e.id)?;
         e.remind = reminder_of(conn, e.id)?;
     }
@@ -1591,13 +1618,88 @@ pub fn agenda(conn: &Connection, limit: usize) -> Result<Vec<(String, i64, Vec<E
     let mut out = Vec::new();
     // Evidence, history and plain notes are not "open": the passive marks stay out.
     for flag in FLAGS.iter().filter(|f| !PASSIVE.contains(f)) {
-        let filter = Filter { flags: vec![flag.to_string()], open: Some(true), ..Default::default() };
+        // What waits for something is not there to be taken: it has its own group below.
+        let filter = Filter { flags: vec![flag.to_string()], open: Some(true), not_blocked: closable(flag), ..Default::default() };
         let (total, entries) = list(conn, &filter, 0, limit)?;
         if total > 0 {
             out.push((flag.to_string(), total, entries));
         }
     }
+    let waiting = open_entries_with_blocker(conn)?;
+    let mut group = |name: &str, ids: Vec<i64>| -> Result<()> {
+        if !ids.is_empty() {
+            let total = ids.len() as i64;
+            let entries = ids.into_iter().take(limit.max(1)).map(|id| get(conn, id)).collect::<Result<Vec<_>>>()?.into_iter().flatten().collect();
+            out.push((name.to_string(), total, entries));
+        }
+        Ok(())
+    };
+    let mut blocked = Vec::new();
+    let mut dropped = Vec::new();
+    for id in waiting {
+        if !open_blockers(conn, id)?.is_empty() {
+            blocked.push(id);
+        }
+        if !dropped_blockers(conn, id)?.is_empty() {
+            dropped.push(id);
+        }
+    }
+    group("blocked", blocked)?;
+    group("blocker_dropped", dropped)?;
     Ok(out)
+}
+
+/// Entries with something open and a block on them, newest first.
+fn open_entries_with_blocker(conn: &Connection) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached("SELECT DISTINCT from_id FROM entry_links WHERE kind = ?1 ORDER BY from_id DESC")?;
+    let ids: Vec<i64> = stmt.query_map(params![BLOCKED_BY], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut open = Vec::new();
+    for id in ids {
+        if !open_work_items(conn, id)?.is_empty() {
+            open.push(id);
+        }
+    }
+    Ok(open)
+}
+
+/// The blockers of an open entry that were dropped, not solved: it no longer waits for them, and
+/// what it waited on is still not there. Stays until the link is lifted or the entry closes.
+fn dropped_blockers(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    let mut dropped = Vec::new();
+    if open_work_items(conn, id)?.is_empty() {
+        return Ok(dropped);
+    }
+    for blocker in blockers_of(conn, id)? {
+        let abandoned = conn
+            .query_row(
+                "SELECT 1 FROM entry_flags WHERE entry_id = ?1 AND closed_at IS NOT NULL AND resolution LIKE ?2 LIMIT 1",
+                params![blocker, format!("{ABANDONED}%")],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if abandoned && open_work_items(conn, blocker)?.is_empty() {
+            dropped.push(blocker);
+        }
+    }
+    Ok(dropped)
+}
+
+/// What closing `id` set free: open entries that waited for it or for its branch, with no open
+/// blocker left. Asked right after the close.
+pub fn released_by(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    let closing = if is_todo(conn, id)? { branch_ids(conn, id)? } else { vec![id] };
+    let mut released = Vec::new();
+    let mut stmt = conn.prepare_cached("SELECT from_id FROM entry_links WHERE to_id = ?1 AND kind = ?2 ORDER BY from_id")?;
+    for closed in closing {
+        let waiting: Vec<i64> = stmt.query_map(params![closed, BLOCKED_BY], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for e in waiting {
+            if !released.contains(&e) && !open_work_items(conn, e)?.is_empty() && open_blockers(conn, e)?.is_empty() {
+                released.push(e);
+            }
+        }
+    }
+    Ok(released)
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Entry>> {
@@ -2600,6 +2702,105 @@ mod tests {
         let moved = hits.iter().find(|e| e.body == "what rests on it").unwrap();
         let cause = hits.iter().find(|e| e.body == "the cause").unwrap();
         assert_eq!(moved.blocked_by, [cause.id]);
+    }
+
+    fn group(c: &Connection, name: &str) -> Vec<i64> {
+        agenda(c, 10).unwrap().into_iter().find(|(flag, _, _)| flag == name).map_or(Vec::new(), |(_, _, entries)| entries.iter().map(|e| e.id).collect())
+    }
+
+    #[test]
+    fn the_agenda_shows_what_can_be_taken_apart_from_what_waits() {
+        let (_d, mut c) = journal();
+        let (first, second, free) = (todo(&mut c, "first"), todo(&mut c, "second"), todo(&mut c, "free"));
+        block(&mut c, second, first).unwrap();
+        assert_eq!(group(&c, "todo"), [free, first]);
+        assert_eq!(group(&c, "blocked"), [second]);
+        let total = agenda(&c, 10).unwrap().into_iter().find(|(flag, _, _)| flag == "todo").unwrap().1;
+        assert_eq!(total, 2, "the count says the same");
+        proven(&mut c, first);
+        close(&mut c, first, &[], None, None, 2000).unwrap();
+        assert_eq!(group(&c, "todo"), [free, second], "taken up again");
+        assert!(group(&c, "blocked").is_empty());
+    }
+
+    #[test]
+    fn a_marked_entry_that_waits_still_shows_under_its_mark() {
+        let (_d, mut c) = journal();
+        let blocker = todo(&mut c, "blocker");
+        let e = NewEntry { flags: vec!["todo".into(), "important".into()], blocked_by: vec![blocker], ..entry("both", "todo", &["t"]) };
+        let id = add(&mut c, &e, 1000).unwrap().1;
+        assert_eq!(group(&c, "important"), [id], "a mark is not work to take");
+        assert_eq!(group(&c, "todo"), [blocker]);
+    }
+
+    #[test]
+    fn a_close_says_what_it_set_free() {
+        let (_d, mut c) = journal();
+        let (first, other, one, both) = (todo(&mut c, "first"), todo(&mut c, "other"), todo(&mut c, "one"), todo(&mut c, "both"));
+        block(&mut c, one, first).unwrap();
+        block(&mut c, both, first).unwrap();
+        block(&mut c, both, other).unwrap();
+        proven(&mut c, first);
+        close(&mut c, first, &[], None, None, 2000).unwrap();
+        assert_eq!(released_by(&c, first).unwrap(), [one], "not what another still holds");
+        proven(&mut c, other);
+        close(&mut c, other, &[], None, None, 2000).unwrap();
+        assert_eq!(released_by(&c, other).unwrap(), [both]);
+        proven(&mut c, one);
+        close(&mut c, one, &[], None, None, 2000).unwrap();
+        assert_eq!(released_by(&c, first).unwrap(), [both], "what closed is not told again");
+    }
+
+    #[test]
+    fn closing_a_todo_counts_what_waited_for_its_branch() {
+        let (_d, mut c) = journal();
+        let (root, waits) = (todo(&mut c, "the work"), todo(&mut c, "waits for a part of it"));
+        let part = NewEntry { flags: vec!["problem".into()], ..entry(&format!("Implements journal#{root}: the change"), "update", &["t"]) };
+        let part = add(&mut c, &part, 1000).unwrap().1;
+        block(&mut c, waits, part).unwrap();
+        let body = format!("Verifies journal#{part}: ran it all on this machine once and it printed what it must");
+        add(&mut c, &NewEntry { flags: vec!["verified".into()], ..entry(&body, "verification", &["t"]) }, 1000).unwrap();
+        close(&mut c, root, &[], None, None, 2000).unwrap();
+        assert_eq!(released_by(&c, root).unwrap(), [waits]);
+    }
+
+    #[test]
+    fn a_dropped_blocker_is_not_silent_until_the_entry_is_seen_to() {
+        let (_d, mut c) = journal();
+        let (dropped, waits, solved, after) = (todo(&mut c, "dropped"), todo(&mut c, "waits"), todo(&mut c, "solved"), todo(&mut c, "after"));
+        block(&mut c, waits, dropped).unwrap();
+        block(&mut c, after, solved).unwrap();
+        close_with(&mut c, dropped, &[], None, Some("not worth it"), 2000, CloseMode::Abandon).unwrap();
+        assert_eq!(released_by(&c, dropped).unwrap(), [waits]);
+        assert_eq!(get(&c, waits).unwrap().unwrap().blocker_dropped, [dropped]);
+        assert_eq!(group(&c, "blocker_dropped"), [waits]);
+        assert!(group(&c, "todo").contains(&waits), "it can be taken: it waits for nothing now");
+
+        proven(&mut c, solved);
+        close(&mut c, solved, &[], None, None, 2000).unwrap();
+        assert!(get(&c, after).unwrap().unwrap().blocker_dropped.is_empty(), "solved is not dropped");
+
+        assert!(unblock(&c, waits, dropped).unwrap());
+        assert!(group(&c, "blocker_dropped").is_empty(), "lifted by someone who read it");
+
+        block(&mut c, after, waits).unwrap();
+        reopen(&mut c, dropped, &[]).unwrap();
+        block(&mut c, waits, dropped).unwrap();
+        close_with(&mut c, dropped, &[], None, Some("again"), 2000, CloseMode::Abandon).unwrap();
+        assert_eq!(group(&c, "blocker_dropped"), [waits]);
+        close_with(&mut c, waits, &[], None, Some("no longer wanted"), 2000, CloseMode::Abandon).unwrap();
+        assert!(!group(&c, "blocker_dropped").contains(&waits), "closed, so nothing is left to re-read");
+    }
+
+    #[test]
+    fn dropping_any_work_item_says_it_was_dropped() {
+        let (_d, mut c) = journal();
+        let e = NewEntry { flags: vec!["question".into()], ..entry("a question", "question", &["t"]) };
+        let (question, waits) = (add(&mut c, &e, 1000).unwrap().1, todo(&mut c, "waits"));
+        block(&mut c, waits, question).unwrap();
+        close_with(&mut c, question, &[], None, Some("moot"), 2000, CloseMode::Abandon).unwrap();
+        assert_eq!(get(&c, question).unwrap().unwrap().flags[0].resolution.as_deref(), Some("abandoned: moot"));
+        assert_eq!(get(&c, waits).unwrap().unwrap().blocker_dropped, [question]);
     }
 
     #[test]

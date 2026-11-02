@@ -30,6 +30,7 @@ fn record(e: journal::Entry) -> JournalRecord {
         body: e.body.clone(),
         flags: e.flags.iter().map(|f| f.flag.clone()).collect(),
         blocked_by: e.blocked_by.iter().map(|id| *id as u64).collect(),
+        blocker_dropped: e.blocker_dropped.iter().map(|id| *id as u64).collect(),
     }
 }
 
@@ -187,7 +188,16 @@ impl JournalMemory {
             }
             MemoryOp::JournalUnmark { id, flags } => json!({"id": id, "unmarked": journal::unmark(&mut conn, id as i64, &flags)?}),
             MemoryOp::JournalReopen { id, flags } => json!({"id": id, "reopened": journal::reopen(&mut conn, id as i64, &flags)?}),
-            MemoryOp::JournalAbandon { id, resolution } => json!({"id": id, "abandoned": journal::close_with(&mut conn, id as i64, &[], by, Some(&resolution), now(), journal::CloseMode::Abandon)?}),
+            MemoryOp::JournalAbandon { id, resolution } => {
+                let abandoned = journal::close_with(&mut conn, id as i64, &[], by, Some(&resolution), now(), journal::CloseMode::Abandon)?;
+                let released = journal::released_by(&conn, id as i64)?;
+                if released.is_empty() {
+                    json!({"id": id, "abandoned": abandoned})
+                } else {
+                    json!({"id": id, "abandoned": abandoned, "released": released, "note": "These waited for what was just dropped, so what they needed is still not there: re-read each, then lift the link with journal_mark remove, or block it on something else."})
+                }
+            }
+            MemoryOp::JournalReleased { id } => json!({"released": journal::released_by(&conn, id as i64)?}),
             MemoryOp::JournalBranch { id } => match journal::branch(&conn, id as i64)? {
                 Some(branch) => serde_json::to_value(branch)?,
                 None => anyhow::bail!("entry #{id} belongs to no branch"),

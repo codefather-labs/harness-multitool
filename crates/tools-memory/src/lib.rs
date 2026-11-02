@@ -186,13 +186,19 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_close" => tool(
             "journal_close",
-            "Close an entry's open work items, saying how it was resolved.",
+            "Close an entry's open work items, saying how it was resolved. The answer's `released` names the entries this set free: they can be worked on now.",
             || object(json!({"id": {"type": "integer"}, "resolution": {"type": "string"}}), &["id", "resolution"]),
             |memory, input| {
                 Box::pin(async move {
                     let id = number(input, "id")?;
                     memory.journal_close(id, require(input, "resolution")?).await?;
-                    Ok(json!({"closed": id}))
+                    // The close stands whatever this says: it only tells more.
+                    let released = memory.more(MemoryOp::JournalReleased { id }).await.ok().map_or(Value::Null, |answer| answer["released"].clone());
+                    if released.as_array().is_some_and(|list| !list.is_empty()) {
+                        Ok(json!({"closed": id, "released": released}))
+                    } else {
+                        Ok(json!({"closed": id}))
+                    }
                 })
             },
         ),
@@ -250,7 +256,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_agenda" => tool(
             "journal_agenda",
-            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications and constraints that bind the work. Read it on a fresh context.",
+            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications and constraints that bind the work. Read it on a fresh context. Those groups hold what can be worked on now; `blocked` is what waits for another entry, and `blocker_dropped` is what waited for something dropped instead of solved: re-read those, then lift the link with journal_mark.",
             || object(json!({"limit": {"type": "integer", "description": "entries per flag, 10 by default"}}), &[]),
             |memory, input| more(memory, Ok(MemoryOp::JournalAgenda { limit: input["limit"].as_u64().unwrap_or(10) as usize })),
         ),
