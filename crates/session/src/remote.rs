@@ -455,6 +455,14 @@ impl ConversationHost for DaemonHost {
         if name == "busy" {
             return Ok(json!({"busy": windows.values().any(|w| w.sessions.busy())}));
         }
+        // A debug call: the window the user is most likely looking at draws itself into a file.
+        if name == "screenshot" {
+            let path = op["text"].as_str().ok_or("text is required: the file to write")?;
+            let window = windows.values_mut().filter(|w| !w.silent()).max_by_key(|w| w.polled).ok_or("no window is open")?;
+            window.say(json!({"kind": "screenshot", "path": path}));
+            self.wake.notify_all();
+            return Ok(json!({"ok": true}));
+        }
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
         window.polled = Instant::now();
         let tab = op["tab"].as_u64().unwrap_or(0);
@@ -517,6 +525,8 @@ pub struct RemoteSessions {
     say: Sender<FromSession>,
     /// The tab whose agent asked for a reload.
     asked_by: Arc<std::sync::atomic::AtomicU64>,
+    /// Where a debug call has asked this window to draw itself.
+    shot: Arc<Mutex<Option<String>>>,
 }
 
 impl RemoteSessions {
@@ -534,8 +544,9 @@ impl RemoteSessions {
         let (sender, incoming) = channel();
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
         let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
-        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload, asked_by.clone());
-        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender, asked_by })
+        let shot: Arc<Mutex<Option<String>>> = Arc::default();
+        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload, asked_by.clone(), shot.clone());
+        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender, asked_by, shot })
     }
 
     fn call(&self, op: &str, tab: u64, mut rest: Value) -> Option<Value> {
@@ -559,7 +570,7 @@ impl Drop for RemoteSessions {
     }
 }
 
-fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, reload: Arc<AtomicBool>, asked_by: Arc<std::sync::atomic::AtomicU64>) {
+fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, reload: Arc<AtomicBool>, asked_by: Arc<std::sync::atomic::AtomicU64>, shot: Arc<Mutex<Option<String>>>) {
     std::thread::spawn(move || {
         let (mut after, mut failures) = (0, 0);
         while !stopped.load(Ordering::SeqCst) {
@@ -568,7 +579,9 @@ fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc
                     failures = 0;
                     for event in events {
                         after = event["seq"].as_u64().unwrap_or(after);
-                        if event["event"]["kind"] == "reload" {
+                        if event["event"]["kind"] == "screenshot" {
+                            *shot.lock().expect("shot") = event["event"]["path"].as_str().map(str::to_string);
+                        } else if event["event"]["kind"] == "reload" {
                             // Which tab asked, if the asking came from outside this process.
                             if let Some(tab) = event["event"]["tab"].as_u64() {
                                 asked_by.store(tab, Ordering::SeqCst);
@@ -670,6 +683,14 @@ impl SessionLink {
     }
 
     /// The tab whose agent asked for the reload in hand, if one did from outside this process.
+    /// The file a debug call wants this window drawn into, once.
+    pub fn screenshot_asked(&self) -> Option<String> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => r.shot.lock().expect("shot").take(),
+        }
+    }
+
     pub fn reload_asked_by(&self) -> Option<u64> {
         match self {
             SessionLink::Local(_) => None,

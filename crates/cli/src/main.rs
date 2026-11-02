@@ -30,6 +30,12 @@ enum DebugAction {
         #[arg(long)]
         approve: bool,
     },
+    /// Draw the open window as it is now into a PNG, and print where. For debugging any screen.
+    Screenshot {
+        /// The file to write; a temporary one by default.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// The saved runs of the project in this directory, newest first.
     Runs {
         #[arg(long, default_value_t = 5)]
@@ -260,6 +266,21 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Docs { action: DocsAction::Check } => docs_check(),
+        Command::Debug { action: DebugAction::Screenshot { out } } => {
+            let path = std::env::current_dir()?.join(out.unwrap_or_else(|| std::env::temp_dir().join(format!("multitool-screen-{}.png", std::process::id()))));
+            let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("the daemon is not running, so no window is open"))?;
+            let _ = std::fs::remove_file(&path);
+            client.conversation_op(&serde_json::json!({"window": "-", "op": "screenshot", "text": path})).map_err(|e| anyhow!(e))?;
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !path.exists() {
+                if std::time::Instant::now() > end {
+                    bail!("the window did not answer in 10 s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            println!("{}", path.display());
+            Ok(())
+        }
         Command::Debug { action: DebugAction::Contract } => {
             print!("{}", harness_daemon::stepdebug::CONTRACT);
             Ok(())
@@ -365,6 +386,15 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The window's state as a picture, at the sizes `multitool screen` uses. The file appears whole.
+fn draw_to_file(state: &frontend_tui::AppState, theme: &Theme, cols: u16, rows: u16, path: &std::path::Path) -> Result<()> {
+    let image = Raster::new(20.0, 26)?.render_with(state, theme, cols, rows, true);
+    let partial = path.with_extension("partial.png");
+    image.save(&partial)?;
+    std::fs::rename(&partial, path)?;
+    Ok(())
 }
 
 /// A log time as a card's stamp.
@@ -1910,6 +1940,11 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
+            if let Some(path) = live.sessions.screenshot_asked() {
+                let size = terminal.size()?;
+                // A failure here is the debug call's to report, by its timeout: the window goes on.
+                let _ = draw_to_file(&state, &current, size.width, size.height, std::path::Path::new(&path));
+            }
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
                 // CON-79: the adapter and model stay as they are while anything is running.
                 let run_on = w.tabs.iter().any(|t| t.view.generating) || matches!(w.overlay, Some(frontend_tui::model::Overlay::Permission(_))) || !live.asks.is_empty();
