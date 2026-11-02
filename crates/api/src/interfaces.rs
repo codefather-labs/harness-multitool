@@ -261,6 +261,21 @@ pub enum MemoryOp {
 }
 
 /// A tool call's result when the user stopped it: a card knows it by this.
+/// What the harness itself has left running, for a session with no agent backend to report it.
+pub trait BackgroundWatch {
+    /// What changed since it was last asked.
+    fn check(&self) -> BackgroundNews;
+    fn running(&self) -> Vec<crate::event::BackgroundTask>;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackgroundNews {
+    /// All that runs now, if that changed.
+    pub running: Option<Vec<crate::event::BackgroundTask>>,
+    /// What the agent is to be told of tasks that ended.
+    pub ended: Vec<String>,
+}
+
 pub const TOOL_STOPPED: &str = "Stopped by the user.";
 
 /// A stored journal entry.

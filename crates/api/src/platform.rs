@@ -23,8 +23,41 @@ pub struct ProcessOutput {
 }
 
 /// IF-21. Absent in the browser, where tools that need it are not offered.
+/// Whether the run on this thread has been asked to stop. A session's loop is one thread whose calls
+/// block: a command or a silent model would hold it past any check the loop can make, so what blocks
+/// looks here (CON-95). A thread with none set is never stopped.
+pub mod stopping {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        static ASKED: RefCell<Option<Arc<dyn Fn() -> bool + Send + Sync>>> = const { RefCell::new(None) };
+    }
+
+    pub fn bind(asked: Arc<dyn Fn() -> bool + Send + Sync>) {
+        ASKED.with(|cell| *cell.borrow_mut() = Some(asked));
+    }
+
+    pub fn asked() -> bool {
+        ASKED.with(|cell| cell.borrow().as_ref().is_some_and(|asked| asked()))
+    }
+}
+
 pub trait Process {
     fn run(&self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> BoxFuture<'_, PluginResult<ProcessOutput>>;
+    /// A command left running, what it says going to the file `output`. Dropping what comes back
+    /// ends it.
+    fn start(&self, _command: &str, _cwd: Option<&str>, _output: &str) -> PluginResult<Box<dyn RunningCommand>> {
+        Err(crate::PluginError::new("this platform cannot leave a command running"))
+    }
+}
+
+/// A command left running.
+pub trait RunningCommand {
+    /// Its exit code once it has ended: the outer `None` while it runs, the inner where it has none.
+    fn finished(&mut self) -> Option<Option<i32>>;
+    /// The end of what it has said.
+    fn tail(&self) -> String;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -110,15 +110,98 @@ impl Tool for Edit {
     }
 }
 
-pub struct Shell;
+/// Commands left running by the shell tool of one session (CON-95). Ending with it ends them, and
+/// takes their output files along.
+#[derive(Default)]
+pub struct Background {
+    dir: String,
+    tasks: std::cell::RefCell<Vec<BackgroundRun>>,
+    started: std::cell::Cell<u32>,
+    /// The list has changed since it was last asked about.
+    changed: std::cell::Cell<bool>,
+}
+
+struct BackgroundRun {
+    id: String,
+    command: String,
+    output: String,
+    running: Box<dyn harness_api::platform::RunningCommand>,
+}
+
+impl Background {
+    /// Their output goes under `dir`.
+    pub fn new(dir: &str) -> Background {
+        Background { dir: dir.to_string(), tasks: Default::default(), started: Default::default(), changed: Default::default() }
+    }
+
+    fn start(&self, command: &str, cx: &ToolContext) -> ToolOutput {
+        let Some(process) = &cx.platform.process else { return ToolOutput::error("this platform has no processes") };
+        let number = self.started.get() + 1;
+        self.started.set(number);
+        let id = format!("bg{number}");
+        let output = format!("{}/{}-{}-{id}.log", self.dir.trim_end_matches('/'), std::process::id(), cx.platform.clock.now_ms());
+        match process.start(command, Some(&cx.root), &output) {
+            Ok(running) => {
+                self.tasks.borrow_mut().push(BackgroundRun { id: id.clone(), command: command.to_string(), output: output.clone(), running });
+                self.changed.set(true);
+                ToolOutput::ok(format!("Running in the background as {id}. Its output goes to {output}. You will be told when it ends; do not wait for it."))
+            }
+            Err(e) => ToolOutput::error(e.to_string()),
+        }
+    }
+}
+
+impl harness_api::BackgroundWatch for Background {
+    fn check(&self) -> harness_api::BackgroundNews {
+        let mut tasks = self.tasks.borrow_mut();
+        let mut ended = Vec::new();
+        tasks.retain_mut(|task| {
+            let Some(code) = task.running.finished() else { return true };
+            let code = code.map_or("none".to_string(), |c| c.to_string());
+            ended.push(format!("The background task {} has ended, exit code {code}: {}\nIts output is in {}. It ends with:\n{}", task.id, task.command, task.output, task.running.tail()));
+            false
+        });
+        let running = (self.changed.replace(false) || !ended.is_empty()).then(|| tasks.iter().map(BackgroundRun::view).collect());
+        harness_api::BackgroundNews { running, ended }
+    }
+
+    fn running(&self) -> Vec<harness_api::event::BackgroundTask> {
+        self.tasks.borrow().iter().map(BackgroundRun::view).collect()
+    }
+}
+
+impl BackgroundRun {
+    fn view(&self) -> harness_api::event::BackgroundTask {
+        harness_api::event::BackgroundTask { id: self.id.clone(), description: self.command.clone(), kind: "shell".to_string() }
+    }
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        for task in self.tasks.borrow_mut().drain(..) {
+            let output = task.output.clone();
+            drop(task);
+            let _ = std::fs::remove_file(output);
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Shell {
+    /// Where a command left running is kept; with none, the tool only waits.
+    pub background: Option<std::rc::Rc<Background>>,
+}
 
 impl Tool for Shell {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "shell".into(),
-            description: "Run a shell command in the project's directory.".into(),
-            schema: json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
-        }
+        let mut properties = json!({"command": {"type": "string"}});
+        let description = if self.background.is_some() {
+            properties["run_in_background"] = json!({"type": "boolean", "description": "Leave it running and go on: for a server, a watcher, a long build. You are told when it ends."});
+            "Run a shell command in the project's directory. It waits for the command, unless run_in_background is true."
+        } else {
+            "Run a shell command in the project's directory."
+        };
+        ToolSpec { name: "shell".into(), description: description.into(), schema: json!({"type": "object", "properties": properties, "required": ["command"]}) }
     }
 
     fn capabilities(&self, input: &Value) -> Result<Vec<Capability>, String> {
@@ -130,6 +213,11 @@ impl Tool for Shell {
             let Ok(command) = text_arg(input, "command") else { return ToolOutput::error("command must be a string") };
             if let Err(e) = granted(cx, &Capability::Command(command.to_string())) {
                 return e;
+            }
+            if input["run_in_background"] == true
+                && let Some(background) = &self.background
+            {
+                return background.start(command, cx);
             }
             let Some(process) = &cx.platform.process else { return ToolOutput::error("this platform has no processes") };
             match process.run(command, Some(&cx.root), &[]).await {

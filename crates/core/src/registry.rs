@@ -80,6 +80,8 @@ impl std::error::Error for RegistryError {}
 pub struct Parts {
     /// Runs turns instead of the providers, when set (IF-17).
     pub backend: Option<Rc<dyn harness_api::AgentBackend>>,
+    /// What the harness left running for this session, if it runs its own turns.
+    pub background: Option<Rc<dyn harness_api::BackgroundWatch>>,
     /// The backend's own form of a conversation, to hand it a session made elsewhere (IF-18).
     pub conversations: Option<Rc<dyn harness_api::ConversationFormat>>,
     pub providers: BTreeMap<String, Rc<dyn Provider>>,
@@ -185,6 +187,7 @@ impl Registry {
             hooks.push(self.hooks.build(name, &cx("hook", name))?);
         }
         Ok(Parts {
+            background: None,
             backend: None,
             conversations: None,
             providers,

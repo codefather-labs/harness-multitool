@@ -81,13 +81,18 @@ impl Settings {
         self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "claude-code")
     }
 
+    fn on_large_model(&self) -> bool {
+        self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "openai-responses") || self.auth.get(&self.provider).is_some_and(|a| a["oauth"] == "chatgpt")
+    }
+
     fn selection(&self) -> Selection {
         Selection {
             auth: "api-key".into(),
             // A delegate is no provider: the engine hands its turns over (IF-17).
             providers: if self.runs_delegate() { Vec::new() } else { vec![self.provider.clone()] },
             router: "one-model".into(),
-            tools: self.tools.clone(),
+            // A plan's model takes the whole set of the journal's tools; a small local one need not.
+            tools: self.tools.iter().map(String::as_str).chain(if self.on_large_model() { harness_tools_memory::MORE.as_slice() } else { &[] }.iter().copied()).map(String::from).collect(),
             policy: "default".into(),
             hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(["docs-mirror".to_string(), "mode-guide".to_string()]).collect(),
             memory: "journal".into(),
@@ -141,7 +146,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
         .tool("edit", |_| Ok(Rc::new(harness_tools_builtin::Edit)))
-        .tool("shell", |_| Ok(Rc::new(harness_tools_builtin::Shell)))
+        .tool("shell", |_| Ok(Rc::new(harness_tools_builtin::Shell::default())))
         .tool("search", |_| Ok(Rc::new(harness_tools_builtin::Search)))
         .tool("fetch", |_| Ok(Rc::new(harness_tools_builtin::Fetch)))
         .policy("default", move |_| Ok(Rc::new(harness_policy_default::DefaultPolicy::new(&root_a))))
@@ -400,7 +405,12 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             let window = host.window.clone().map(|window| (window, tab));
             registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone(), from: window.clone() })));
         }
+        // What a session runs on its own loop can leave running; a delegate has its own.
+        let background = (!settings.runs_delegate()).then(|| Rc::new(harness_tools_builtin::Background::new(&data_dir.join("background").to_string_lossy())));
+        let shell_background = background.clone();
+        registry.tool("shell", move |_| Ok(Rc::new(harness_tools_builtin::Shell { background: shell_background.clone() })));
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
+        parts.background = background.map(|b| b as Rc<dyn harness_api::BackgroundWatch>);
         if settings.runs_delegate() {
             // The harness's own tools go with it, whichever way the row runs.
             let mcp = harness_daemon::own_program().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
@@ -915,6 +925,9 @@ impl Sessions {
         let (running, retired) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (running_here, retired_here) = (running.clone(), retired.clone());
         let thread = std::thread::spawn(move || {
+            // What blocks this thread listens for a stop (CON-95).
+            let asked = flag.clone();
+            harness_api::platform::stopping::bind(Arc::new(move || asked.is_set()));
             let parts = match factory(tab) {
                 Ok(parts) => parts,
                 Err(message) => {

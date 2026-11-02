@@ -237,7 +237,7 @@ fn no_tool_acts_outside_what_was_granted() {
     let cases: Vec<(Box<dyn Tool>, serde_json::Value)> = vec![
         (Box::new(Read), json!({"path": "a.txt"})),
         (Box::new(Edit), json!({"path": "a.txt", "old_text": "", "new_text": "x"})),
-        (Box::new(Shell), json!({"command": format!("touch {marker}")})),
+        (Box::new(Shell::default()), json!({"command": format!("touch {marker}")})),
         (Box::new(Search), json!({"text": "secret"})),
         (Box::new(Fetch), json!({"url": "http://127.0.0.1:9/x"})),
     ];

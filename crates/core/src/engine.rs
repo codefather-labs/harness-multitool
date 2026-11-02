@@ -43,7 +43,7 @@ impl StopFlag {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn is_set(&self) -> bool {
+    pub fn is_set(&self) -> bool {
         self.0.load(Ordering::SeqCst) > 0
     }
 
@@ -67,6 +67,8 @@ pub enum RunEnd {
 pub struct Engine {
     /// `ask_user` was called: the run ends after this turn's calls.
     asked: std::cell::Cell<bool>,
+    /// What the agent is to hear of background tasks that ended, when no run is on.
+    told_later: RefCell<Vec<String>>,
     /// How many times each failure has come back in this message.
     failures: RefCell<std::collections::HashMap<String, u32>>,
     /// A `Stop` hook asked the run to go on.
@@ -91,6 +93,7 @@ impl Engine {
         let started_ms = parts.platform.clock.now_ms();
         Engine {
             asked: std::cell::Cell::new(false),
+            told_later: RefCell::default(),
             failures: RefCell::default(),
             go_on: std::cell::Cell::new(false),
             inbox: Inbox::default(),
@@ -651,9 +654,24 @@ impl Engine {
         result("The user approved the plan. Plan mode is off. A fix: call debug_mode with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call debug_mode with on true and debug it.".into(), false);
     }
 
+    /// What the harness left running: the panel kept true, an end kept for when no run is on.
+    fn watch_background(&self) {
+        let Some(watch) = &self.parts.background else { return };
+        let news = watch.check();
+        if let Some(tasks) = news.running {
+            self.emit(Event::BackgroundTasks { tasks });
+        }
+        self.told_later.borrow_mut().extend(news.ended);
+    }
+
     /// What an agent backend has said since its last run reaches the log. True when it has begun
     /// a turn by itself, for `run_woken`.
     pub async fn between_runs(&self) -> bool {
+        self.watch_background();
+        if !self.told_later.borrow().is_empty() {
+            let _ = self.flush().await;
+            return true;
+        }
         let Some(backend) = self.parts.backend.clone() else { return false };
         let mut sink = |event: Event| self.emit(event);
         let woke = backend.between_runs(&mut sink);
@@ -663,6 +681,10 @@ impl Engine {
 
     /// The turn an agent backend began by itself, as a run: no message starts it.
     pub async fn run_woken(&self) -> RunEnd {
+        let told = self.told_later.take();
+        if !told.is_empty() {
+            return self.run_inbound(harness_api::HARNESS_LABEL, &told.join("\n\n")).await;
+        }
         let Some(backend) = self.parts.backend.clone() else { return RunEnd::AwaitingInput };
         self.run_backend(backend.as_ref(), None, true).await
     }
@@ -736,6 +758,7 @@ impl Engine {
             if self.stop.take() {
                 return self.stopped(protocol);
             }
+            self.watch_background();
             self.take_queued().await;
             let route = match self.parts.router.route(&self.spent()) {
                 Ok(route) => route,
@@ -743,6 +766,11 @@ impl Engine {
             };
             let (calls, stop) = match self.turn(&route).await {
                 Ok(end) => end,
+                // What it was stopped in the middle of says so: that is no failure.
+                Err(_) if self.stop.is_set() => {
+                    self.stop.take();
+                    return self.stopped(protocol);
+                }
                 Err(message) => return self.fail(&route.provider, message, protocol),
             };
             if stop == StopReason::Stopped || self.stop.take() {
