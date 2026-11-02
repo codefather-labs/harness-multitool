@@ -158,7 +158,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
         .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget, mode_rules: !delegate_session })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
-    for name in harness_tools_memory::NAMES {
+    for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
         r.tool(name, move |cx| {
             let memory = cx.memory.clone().ok_or("the tool was built before Memory")?;
             let tool = harness_tools_memory::tool(memory, name).ok_or("no such memory tool")?;

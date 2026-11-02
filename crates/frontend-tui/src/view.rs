@@ -127,7 +127,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(widgets::panel_height(v, area.width)),
-        Constraint::Length(4),
+        Constraint::Length(widgets::composer_height(&v.composer, inset(area).width.saturating_sub(15))),
     ])
     .areas(body);
     let tr = inset(transcript);
@@ -167,6 +167,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     let [input, _, button] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(14)]).areas(inset(bottom));
     widgets::composer(f, input, t, &v.composer);
+    let button = Rect { height: button.height.min(4), ..button };
     widgets::button(f, button, t, "⚙ Settings", "Ctrl+,");
     out.hits.push(Hit { rect: button, target: Target::Settings });
     // An overlay takes the clicks: only its own targets stay live.

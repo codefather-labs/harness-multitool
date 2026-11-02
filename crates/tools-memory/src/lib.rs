@@ -77,6 +77,14 @@ pub const NAMES: [&str; 10] = [
     "flowchart_show",
 ];
 
+/// The rest of the store: a delegate gets them, since its project's rules use them. A model on its
+/// own loop has them by name in the configuration; each costs prompt on a small one.
+pub const MORE: [&str; 13] = ["journal_list", "journal_agenda", "journal_mark", "journal_reopen", "journal_abandon", "journal_branch", "journal_link", "journal_tags", "map_edit", "map_node_state", "map_link", "map_ref", "map_close"];
+
+fn more<'a>(memory: &'a dyn Memory, op: PluginResult<MemoryOp>) -> BoxFuture<'a, PluginResult<Value>> {
+    Box::pin(async move { memory.more(op?).await })
+}
+
 fn map_new<'a>(memory: &'a dyn Memory, input: &'a Value, kind: MapKind) -> BoxFuture<'a, PluginResult<Value>> {
     let start = require(input, "title").map(|title| memory.map_new(kind, title, input["direction"].as_str()));
     finish_map(start)
@@ -119,7 +127,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
     match name {
         "journal_add" => tool(
             "journal_add",
-            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, problem, unverified, specification, constraint, important, idea, concept, comment, deprecated.",
+            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, problem, unverified, verified, specification, constraint, important, idea, concept, comment, deprecated.",
             || {
                 object(
                     json!({
@@ -219,6 +227,99 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
             map_add,
         ),
         "flowchart_show" => tool("flowchart_show", "Read a flowchart and draw it for the user.", || object(json!({"map": {"type": "integer"}}), &["map"]), map_show),
+        "journal_list" => tool(
+            "journal_list",
+            "List journal entries, newest first, by category, tags (any of), flags (any of), feature. `open` narrows to open or closed items. Reports the total; page with `offset`.",
+            || object(json!({"category": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "flags": {"type": "array", "items": {"type": "string"}}, "open": {"type": "boolean"}, "feature": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}), &[]),
+            |memory, input| {
+                more(memory, Ok(MemoryOp::JournalList {
+                    category: input["category"].as_str().map(str::to_string),
+                    tags: strings(&input["tags"]),
+                    flags: strings(&input["flags"]),
+                    open: input["open"].as_bool(),
+                    feature: input["feature"].as_str().map(str::to_string),
+                    offset: input["offset"].as_u64().unwrap_or(0) as usize,
+                    limit: input["limit"].as_u64().unwrap_or(20) as usize,
+                }))
+            },
+        ),
+        "journal_agenda" => tool(
+            "journal_agenda",
+            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications and constraints that bind the work. Read it on a fresh context.",
+            || object(json!({"limit": {"type": "integer", "description": "entries per flag, 10 by default"}}), &[]),
+            |memory, input| more(memory, Ok(MemoryOp::JournalAgenda { limit: input["limit"].as_u64().unwrap_or(10) as usize })),
+        ),
+        "journal_mark" => tool(
+            "journal_mark",
+            "Set flags on an existing entry, or with `remove` take marks off. For example deprecated when an entry stops being true. An unverified flag lifts only by an entry that verifies it.",
+            || object(json!({"id": {"type": "integer"}, "flags": {"type": "array", "items": {"type": "string"}}, "remove": {"type": "boolean"}}), &["id", "flags"]),
+            |memory, input| {
+                more(memory, number(input, "id").map(|id| {
+                    let flags = strings(&input["flags"]);
+                    if input["remove"] == true { MemoryOp::JournalUnmark { id, flags } } else { MemoryOp::JournalMark { id, flags } }
+                }))
+            },
+        ),
+        "journal_reopen" => tool(
+            "journal_reopen",
+            "Reopen an entry's closed work items: the named flags, or all.",
+            || object(json!({"id": {"type": "integer"}, "flags": {"type": "array", "items": {"type": "string"}}}), &["id"]),
+            |memory, input| more(memory, number(input, "id").map(|id| MemoryOp::JournalReopen { id, flags: strings(&input["flags"]) })),
+        ),
+        "journal_abandon" => tool(
+            "journal_abandon",
+            "Close a todo whose work was dropped, not done: no evidence is needed, the resolution says why, and it is recorded as abandoned.",
+            || object(json!({"id": {"type": "integer"}, "resolution": {"type": "string"}}), &["id", "resolution"]),
+            |memory, input| more(memory, number(input, "id").and_then(|id| Ok(MemoryOp::JournalAbandon { id, resolution: require(input, "resolution")?.to_string() }))),
+        ),
+        "journal_branch" => tool(
+            "journal_branch",
+            "The work branch an entry belongs to: its todo, what implements and verifies it, whether it is open, verified or closed.",
+            || object(json!({"id": {"type": "integer"}}), &["id"]),
+            |memory, input| more(memory, number(input, "id").map(|id| MemoryOp::JournalBranch { id })),
+        ),
+        "journal_link" => tool(
+            "journal_link",
+            "Link two entries whose text does not mention each other. `kind` is cites (default), replaces or fixes.",
+            || object(json!({"from": {"type": "integer"}, "to": {"type": "integer"}, "kind": {"type": "string", "enum": ["cites", "replaces", "fixes"]}}), &["from", "to"]),
+            |memory, input| more(memory, number(input, "from").and_then(|from| Ok(MemoryOp::JournalLink { from, to: number(input, "to")?, kind: input["kind"].as_str().unwrap_or("cites").to_string() }))),
+        ),
+        "journal_tags" => tool(
+            "journal_tags",
+            "The journal's tag vocabulary, most used first, and its categories. Reuse these rather than near-synonyms.",
+            || object(json!({"category": {"type": "string"}}), &[]),
+            |memory, input| more(memory, Ok(MemoryOp::JournalTags { category: input["category"].as_str().map(str::to_string) })),
+        ),
+        "map_edit" => tool(
+            "map_edit",
+            "Change a node of a mind map or a flowchart: its text, its kind, or both.",
+            || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}}), &["map", "node"]),
+            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapEdit { map, node: number(input, "node")?, text: input["text"].as_str().map(str::to_string), kind: input["kind"].as_str().map(str::to_string) }))),
+        ),
+        "map_node_state" => tool(
+            "map_node_state",
+            "Mark a node of a map: done, dropped, or open again.",
+            || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "state": {"type": "string", "enum": ["open", "done", "dropped"]}}), &["map", "node", "state"]),
+            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapNodeState { map, node: number(input, "node")?, state: require(input, "state")?.to_string() }))),
+        ),
+        "map_link" => tool(
+            "map_link",
+            "Draw an arrow between two nodes of a map, with a label such as contradicts, a condition, or a loop back. `refs` are journal entries.",
+            || object(json!({"map": {"type": "integer"}, "from": {"type": "integer"}, "to": {"type": "integer"}, "label": {"type": "string"}, "refs": {"type": "array", "items": {"type": "integer"}}}), &["map", "from", "to"]),
+            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapLink { map, from: number(input, "from")?, to: number(input, "to")?, label: input["label"].as_str().unwrap_or_default().to_string(), refs: ids(&input["refs"]) }))),
+        ),
+        "map_ref" => tool(
+            "map_ref",
+            "Point a node of a map at the journal entries it rests on.",
+            || object(json!({"map": {"type": "integer"}, "node": {"type": "integer"}, "entries": {"type": "array", "items": {"type": "integer"}}}), &["map", "node", "entries"]),
+            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapRef { map, node: number(input, "node")?, entries: ids(&input["entries"]) }))),
+        ),
+        "map_close" => tool(
+            "map_close",
+            "Close a map whose task is done. It stays readable.",
+            || object(json!({"map": {"type": "integer"}}), &["map"]),
+            |memory, input| more(memory, number(input, "map").map(|map| MemoryOp::MapClose { map })),
+        ),
         _ => None,
     }
 }

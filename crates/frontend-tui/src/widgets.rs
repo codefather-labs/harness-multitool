@@ -107,17 +107,71 @@ pub fn composer(f: &mut Frame, area: Rect, t: &Theme, c: &Composer) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
         .style(Style::default().bg(t.background));
-    let mut spans = vec![Span::raw(" ")];
-    if c.text.is_empty() {
-        spans.push(Span::styled(c.placeholder.clone(), Style::default().fg(t.text_muted)));
-    } else {
-        spans.push(Span::styled(c.text.clone(), Style::default().fg(t.text)));
-    }
-    if c.focused {
-        spans.push(Span::styled("█", Style::default().fg(t.accent_line)));
-    }
-    let lines = vec![Line::from(spans), hint_line(t, &c.hints)];
+    let color = if c.text.is_empty() { t.text_muted } else { t.text };
+    let shown = composer_rows(c, area.width);
+    let last = shown.len() - 1;
+    let mut lines: Vec<Line> = shown
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut spans = vec![Span::raw(" "), Span::styled(row, Style::default().fg(color))];
+            if c.focused && i == last {
+                spans.push(Span::styled("█", Style::default().fg(t.accent_line)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    lines.push(hint_line(t, &c.hints));
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// As many rows of text as the composer grows to; beyond them its end stays in view.
+const COMPOSER_ROWS: usize = 8;
+
+/// The rows of text the composer shows in a frame this wide: wrapped at spaces where it can, every
+/// character kept, the end in view with room for the cursor.
+fn composer_rows(c: &Composer, frame_width: u16) -> Vec<String> {
+    // The frame, the margin on the left.
+    let width = frame_width.saturating_sub(3).max(1) as usize;
+    let text = if c.text.is_empty() { &c.placeholder } else { &c.text };
+    let mut rows = wrap_keeping(text, width);
+    let cells = |row: &str| row.chars().map(crate::markdown::cell_width).sum::<usize>();
+    if c.focused && rows.last().is_some_and(|row| cells(row) >= width) {
+        rows.push(String::new());
+    }
+    let skip = rows.len().saturating_sub(COMPOSER_ROWS);
+    rows.split_off(skip)
+}
+
+/// How tall the composer is in a frame this wide: its text, its hints, the frame.
+pub fn composer_height(c: &Composer, frame_width: u16) -> u16 {
+    composer_rows(c, frame_width).len() as u16 + 3
+}
+
+/// Splits into rows of at most `width` cells, at a space where one is on the row, losing nothing.
+fn wrap_keeping(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in text.split('\n') {
+        let mut row: Vec<char> = Vec::new();
+        let mut used = 0;
+        for ch in line.chars() {
+            let cell = crate::markdown::cell_width(ch);
+            if used + cell > width && !row.is_empty() {
+                // A space on the row keeps the word whole, unless it is the row's only break at its start.
+                let moved = match row.iter().rposition(|c| *c == ' ') {
+                    Some(at) if at + 1 < row.len() => row.split_off(at + 1),
+                    _ => Vec::new(),
+                };
+                rows.push(row.iter().collect());
+                used = moved.iter().copied().map(crate::markdown::cell_width).sum();
+                row = moved;
+            }
+            row.push(ch);
+            used += cell;
+        }
+        rows.push(row.into_iter().collect());
+    }
+    rows
 }
 
 /// `key label · key label · …` in muted text, keys a step brighter.
@@ -247,4 +301,56 @@ pub fn question(f: &mut Frame, area: Rect, t: &Theme, question: &harness_api::qu
     let hint = if question.options.is_empty() { "   type your answer below" } else { "   ↑↓ and Enter, or a number  ·  or type your own answer" };
     lines.push(Line::from(Span::styled(hint, muted.add_modifier(Modifier::DIM))));
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn composer(text: &str) -> Composer {
+        Composer { text: text.to_string(), placeholder: "Ask".to_string(), focused: true, ..Default::default() }
+    }
+
+    #[test]
+    fn long_text_wraps_and_keeps_every_character() {
+        assert_eq!(wrap_keeping("aa bb cc", 5), vec!["aa ", "bb cc"]);
+        assert_eq!(wrap_keeping("abcdefgh", 3), vec!["abc", "def", "gh"]);
+        assert_eq!(wrap_keeping("a\n\nb", 3), vec!["a", "", "b"]);
+        let text = "слово и ещё одно длинное слово, end ";
+        assert_eq!(wrap_keeping(text, 7).concat(), text);
+    }
+
+    #[test]
+    fn the_composer_grows_with_its_text_up_to_a_limit() {
+        assert_eq!(composer_height(&composer(""), 40), 4, "as it always was, empty");
+        assert_eq!(composer_height(&composer("one line"), 40), 4);
+        assert_eq!(composer_height(&composer("two\nlines"), 40), 5);
+        assert_eq!(composer_height(&composer(&"word ".repeat(30)), 40), 8);
+        assert_eq!(composer_height(&composer(&"word ".repeat(500)), 40), COMPOSER_ROWS as u16 + 3);
+        assert_eq!(composer_height(&composer(&"x".repeat(37)), 40), 5, "a full row leaves room for the cursor");
+    }
+
+    #[test]
+    fn nothing_leaves_the_frame_and_the_end_stays_in_view() {
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut text = "word ".repeat(200);
+        text.push_str("THEEND");
+        let c = composer(&text);
+        let (w, h) = (40, composer_height(&c, 40));
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| composer_draw(f, &t, &c)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let row = |y: u16| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        let all: Vec<String> = (0..h).map(row).collect();
+        for line in &all[1..all.len() - 1] {
+            assert!(line.ends_with('│') && line.starts_with('│'), "{line}");
+        }
+        assert!(all.iter().any(|l| l.contains("THEEND█")), "{all:#?}");
+    }
+
+    fn composer_draw(f: &mut Frame, t: &crate::theme::Theme, c: &Composer) {
+        let area = f.area();
+        super::composer(f, area, t, c);
+    }
 }

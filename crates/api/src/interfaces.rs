@@ -219,6 +219,28 @@ pub struct JournalFilter {
     pub limit: usize,
 }
 
+/// What an agent does with the journal and its maps beyond writing and reading an entry. Its answer
+/// is the store's own JSON, for the model to read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MemoryOp {
+    JournalList { category: Option<String>, tags: Vec<String>, flags: Vec<String>, open: Option<bool>, feature: Option<String>, offset: usize, limit: usize },
+    JournalAgenda { limit: usize },
+    JournalMark { id: u64, flags: Vec<String> },
+    JournalUnmark { id: u64, flags: Vec<String> },
+    JournalReopen { id: u64, flags: Vec<String> },
+    /// Closes a todo whose work was dropped: no evidence is needed, the resolution says why.
+    JournalAbandon { id: u64, resolution: String },
+    JournalBranch { id: u64 },
+    JournalLink { from: u64, to: u64, kind: String },
+    JournalTags { category: Option<String> },
+    MapEdit { map: u64, node: u64, text: Option<String>, kind: Option<String> },
+    MapNodeState { map: u64, node: u64, state: String },
+    MapLink { map: u64, from: u64, to: u64, label: String, refs: Vec<u64> },
+    MapRef { map: u64, node: u64, entries: Vec<u64> },
+    MapClose { map: u64 },
+}
+
 /// A stored journal entry.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct JournalRecord {
@@ -294,6 +316,10 @@ pub trait Memory {
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>>;
     fn map_add(&self, map: u64, node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>>;
     fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>>;
+    /// The rest of what the store can do. A memory that keeps less says so.
+    fn more(&self, _op: MemoryOp) -> BoxFuture<'_, PluginResult<serde_json::Value>> {
+        Box::pin(std::future::ready(Err(crate::PluginError::new("this memory does not do that"))))
+    }
 }
 
 /// The context of one turn.

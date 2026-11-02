@@ -36,6 +36,7 @@ pub enum Call {
     MapNew { kind: MapKind, title: String, direction: Option<String> },
     MapAdd { map: u64, node: NewMapNode },
     MapRead { map: u64 },
+    More { more: MemoryOp },
 }
 
 #[derive(Debug)]
@@ -61,6 +62,7 @@ pub fn serve(store: &dyn Memory, call: Call) -> Result<Value, String> {
         Call::MapNew { kind, title, direction } => answer(crate::now_ready(store.map_new(kind, &title, direction.as_deref()))),
         Call::MapAdd { map, node } => answer(crate::now_ready(store.map_add(map, node))),
         Call::MapRead { map } => answer(crate::now_ready(store.map_read(map))),
+        Call::More { more } => answer(crate::now_ready(store.more(more))),
     }
 }
 
@@ -134,5 +136,8 @@ impl Memory for DaemonMemory {
     }
     fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>> {
         self.ready(Call::MapRead { map })
+    }
+    fn more(&self, op: MemoryOp) -> BoxFuture<'_, PluginResult<Value>> {
+        self.ready(Call::More { more: op })
     }
 }

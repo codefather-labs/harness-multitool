@@ -153,6 +153,59 @@ impl Memory for JournalMemory {
         let loaded = mindmap::load(&self.conn.borrow(), map as i64);
         ready(loaded.map(|m| m.map(map_data)).map_err(fail))
     }
+
+    fn more(&self, op: MemoryOp) -> BoxFuture<'_, PluginResult<serde_json::Value>> {
+        ready(self.do_more(op).map_err(fail))
+    }
+}
+
+impl JournalMemory {
+    fn do_more(&self, op: MemoryOp) -> anyhow::Result<serde_json::Value> {
+        use serde_json::json;
+        let mut conn = self.conn.borrow_mut();
+        let by = Some(self.owner.nick.as_str());
+        Ok(match op {
+            MemoryOp::JournalList { category, tags, flags, open, feature, offset, limit } => {
+                let filter = journal::Filter { category, tags, flags, open, feature, ..Default::default() };
+                let (total, entries) = journal::list(&conn, &filter, offset, limit.min(journal::MAX_PAGE_SIZE))?;
+                json!({"total": total, "entries": entries})
+            }
+            MemoryOp::JournalAgenda { limit } => {
+                let groups = journal::agenda(&conn, limit.min(journal::MAX_PAGE_SIZE))?;
+                json!({"agenda": groups.into_iter().map(|(flag, total, entries)| json!({"flag": flag, "total": total, "entries": entries})).collect::<Vec<_>>()})
+            }
+            MemoryOp::JournalMark { id, flags } => json!({"id": id, "marked": journal::mark(&mut conn, id as i64, &flags, now())?}),
+            MemoryOp::JournalUnmark { id, flags } => json!({"id": id, "unmarked": journal::unmark(&mut conn, id as i64, &flags)?}),
+            MemoryOp::JournalReopen { id, flags } => json!({"id": id, "reopened": journal::reopen(&mut conn, id as i64, &flags)?}),
+            MemoryOp::JournalAbandon { id, resolution } => json!({"id": id, "abandoned": journal::close_with(&mut conn, id as i64, &[], by, Some(&resolution), now(), journal::CloseMode::Abandon)?}),
+            MemoryOp::JournalBranch { id } => match journal::branch(&conn, id as i64)? {
+                Some(branch) => serde_json::to_value(branch)?,
+                None => anyhow::bail!("entry #{id} belongs to no branch"),
+            },
+            MemoryOp::JournalLink { from, to, kind } => json!({"linked": journal::link(&mut conn, from as i64, to as i64, &kind)?}),
+            MemoryOp::JournalTags { category } => json!({"tags": journal::tags(&conn, category.as_deref())?, "categories": journal::categories(&conn)?}),
+            MemoryOp::MapEdit { map, node, text, kind } => {
+                mindmap::edit_node(&mut conn, map as i64, node as i64, text.as_deref(), kind.as_deref(), now())?;
+                json!({"map": map, "node": node})
+            }
+            MemoryOp::MapNodeState { map, node, state } => {
+                mindmap::set_node_state(&mut conn, map as i64, node as i64, &state, now())?;
+                json!({"map": map, "node": node, "state": state})
+            }
+            MemoryOp::MapLink { map, from, to, label, refs } => {
+                let refs: Vec<i64> = refs.iter().map(|r| *r as i64).collect();
+                json!({"map": map, "edge": mindmap::add_edge(&mut conn, map as i64, from as i64, to as i64, &label, &refs, now())?})
+            }
+            MemoryOp::MapRef { map, node, entries } => {
+                let entries: Vec<i64> = entries.iter().map(|r| *r as i64).collect();
+                json!({"map": map, "node": node, "added": mindmap::add_refs(&mut conn, map as i64, mindmap::Target::Node(node as i64), &entries, now())?})
+            }
+            MemoryOp::MapClose { map } => {
+                mindmap::set_state(&conn, map as i64, false, now())?;
+                json!({"closed": map})
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +240,44 @@ mod tests {
             std::task::Poll::Ready(v) => v,
             std::task::Poll::Pending => panic!("the plugin's future was not ready"),
         }
+    }
+
+    #[test]
+    fn the_rest_of_the_store_answers_through_the_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
+        let more = |op| pollster_free(m.more(op));
+        let entry = |body: &str, flags: &[&str]| JournalEntry { body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
+        let todo = pollster_free(m.journal_add(entry("do the thing", &["todo"]))).unwrap().id;
+        let other = pollster_free(m.journal_add(entry("a remark", &[]))).unwrap().id;
+
+        let listed = more(MemoryOp::JournalList { category: None, tags: vec![], flags: vec!["todo".into()], open: Some(true), feature: None, offset: 0, limit: 10 }).unwrap();
+        assert_eq!((listed["total"].as_i64(), listed["entries"][0]["id"].as_u64()), (Some(1), Some(todo)));
+        let agenda = more(MemoryOp::JournalAgenda { limit: 5 }).unwrap();
+        assert_eq!(agenda["agenda"][0]["flag"], "todo");
+        assert_eq!(more(MemoryOp::JournalMark { id: other, flags: vec!["important".into()] }).unwrap()["marked"][0], "important");
+        assert_eq!(more(MemoryOp::JournalUnmark { id: other, flags: vec!["important".into()] }).unwrap()["unmarked"][0], "important");
+        assert!(more(MemoryOp::JournalMark { id: other, flags: vec!["nonsense".into()] }).is_err(), "the store's refusals reach the agent");
+        assert!(more(MemoryOp::JournalBranch { id: todo }).unwrap().to_string().contains("do the thing"));
+        assert_eq!(more(MemoryOp::JournalLink { from: other, to: todo, kind: "cites".into() }).unwrap()["linked"], true);
+        assert_eq!(more(MemoryOp::JournalTags { category: None }).unwrap()["tags"][0]["name"], "t");
+        assert!(pollster_free(m.journal_close(todo, "no evidence")).is_err(), "a todo still closes only with evidence");
+        assert_eq!(more(MemoryOp::JournalAbandon { id: todo, resolution: "dropped".into() }).unwrap()["abandoned"][0], "todo");
+        assert_eq!(more(MemoryOp::JournalReopen { id: todo, flags: vec![] }).unwrap()["reopened"][0], "todo");
+
+        let map = pollster_free(m.map_new(MapKind::MindMap, "topic", None)).unwrap();
+        let added = pollster_free(m.map_add(map.id, NewMapNode { text: "a".into(), ..Default::default() })).unwrap();
+        let added = pollster_free(m.map_add(added.id, NewMapNode { text: "b".into(), ..Default::default() })).unwrap();
+        let nodes: Vec<u64> = added.nodes.iter().filter(|n| n.text != "topic").map(|n| n.id).collect();
+        more(MemoryOp::MapEdit { map: map.id, node: nodes[0], text: Some("a2".into()), kind: Some("fact".into()) }).unwrap();
+        more(MemoryOp::MapNodeState { map: map.id, node: nodes[0], state: "done".into() }).unwrap();
+        more(MemoryOp::MapLink { map: map.id, from: nodes[0], to: nodes[1], label: "leads to".into(), refs: vec![todo] }).unwrap();
+        assert_eq!(more(MemoryOp::MapRef { map: map.id, node: nodes[1], entries: vec![other] }).unwrap()["added"], 1);
+        let read = pollster_free(m.map_read(map.id)).unwrap().unwrap();
+        let first = read.nodes.iter().find(|n| n.id == nodes[0]).unwrap();
+        assert_eq!((first.text.as_str(), first.state.as_str()), ("a2", "done"));
+        assert_eq!(read.edges[0].label, "leads to");
+        more(MemoryOp::MapClose { map: map.id }).unwrap();
+        assert!(!pollster_free(m.map_list()).unwrap().iter().any(|(id, _)| *id == map.id), "a closed map is off the list");
     }
 }

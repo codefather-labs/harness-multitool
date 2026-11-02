@@ -54,7 +54,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
         None => Rc::new(crate::project_memory(&serving.data_dir.to_string_lossy(), &serving.root)?),
     };
     let mut out: Vec<Rc<dyn Tool>> = Vec::new();
-    for name in harness_tools_memory::NAMES {
+    for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
         if let Some(tool) = harness_tools_memory::tool(memory.clone(), name) {
             out.push(Rc::new(tool));
         }

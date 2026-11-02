@@ -140,7 +140,8 @@ impl Feed {
             Event::ToolResult { id, output, is_error } => {
                 let started = self.calls.get(id).map(|c| c.started_ms);
                 let diff = self.calls.get(id).filter(|c| c.name == "edit" && !*is_error).and_then(|c| edit_diff(&c.input));
-                let memory_card = self.calls.get(id).filter(|_| !*is_error).and_then(|c| memory_card(&c.name, output, &time));
+                let memory_card = self.calls.get(id).filter(|_| !*is_error).and_then(|c| memory_card(harness_tool(&c.name), output, &time));
+                let words = self.calls.get(id).filter(|_| !*is_error).and_then(|c| memory_words(harness_tool(&c.name), output));
                 if let Some(card) = memory_card {
                     if let Item::Journal(j) = &card {
                         self.known.push(j.clone());
@@ -159,7 +160,7 @@ impl Feed {
                     if !denied {
                         card.outcome = if *is_error { "failed".into() } else { "completed".into() };
                         card.outcome_tone = if *is_error { Tone::Error } else { Tone::Success };
-                        card.body = output_body(output);
+                        card.body = words.unwrap_or_else(|| output_body(output));
                         if let Some((diff, added, removed)) = diff {
                             card.outcome = "applied".into();
                             card.diffstat = Some((added, removed));
@@ -323,10 +324,66 @@ fn slot<'a>(v: &'a mut SessionView, place: &CallPlace) -> Option<&'a mut Item> {
     }
 }
 
+/// A tool of the harness's own, by the name its loop knows it, whichever way it was reached: a
+/// delegate has them over MCP. Another server's tool of that name is not one of them.
+fn harness_tool(name: &str) -> &str {
+    match tool_title(name) {
+        (tool, None | Some("harness")) => tool,
+        _ => name,
+    }
+}
+
+/// What a memory tool answered with no card of its own, in words: its JSON is for the model.
+fn memory_words(tool: &str, output: &str) -> Option<ToolBody> {
+    const SHOWN: usize = 5;
+    let answer: Value = serde_json::from_str(output).ok()?;
+    let entry_line = |e: &Value| {
+        let text = e["body"].as_str().or(e["excerpt"].as_str()).unwrap_or_default();
+        let first = text.lines().next().unwrap_or_default();
+        let cut = if first.chars().count() > 100 { format!("{}…", first.chars().take(99).collect::<String>()) } else { first.to_string() };
+        format!("#{}  {}  {cut}", e["id"], e["category"].as_str().unwrap_or_default())
+    };
+    let listed = |entries: Vec<&Value>, total: usize| {
+        if entries.is_empty() {
+            return ToolBody::Note("Nothing found.".to_string());
+        }
+        let lines: Vec<String> = entries.iter().take(SHOWN).map(|e| entry_line(e)).collect();
+        let more = total.saturating_sub(lines.len());
+        ToolBody::Output { label: None, lines, numbered: false, more }
+    };
+    Some(match tool {
+        "journal_search" | "journal_list" => {
+            let entries: Vec<&Value> = answer["entries"].as_array()?.iter().collect();
+            let total = answer["total"].as_u64().map_or(entries.len(), |t| t as usize);
+            listed(entries, total)
+        }
+        "journal_branch" => {
+            let entries: Vec<&Value> = answer["entries"].as_array()?.iter().map(|e| &e["entry"]).collect();
+            let total = entries.len();
+            let ToolBody::Output { lines, more, .. } = listed(entries, total) else { return None };
+            ToolBody::Output { label: Some(answer["state"].as_str().unwrap_or_default().to_string()), lines, numbered: false, more }
+        }
+        "journal_agenda" => {
+            let groups = answer["agenda"].as_array()?;
+            if groups.is_empty() {
+                ToolBody::Note("Nothing open.".to_string())
+            } else {
+                ToolBody::Note(groups.iter().map(|g| format!("{} {}", g["flag"].as_str().unwrap_or_default(), g["total"])).collect::<Vec<_>>().join("  ·  "))
+            }
+        }
+        "journal_tags" => {
+            let names = |list: &Value| list.as_array().map_or(String::new(), |all| all.iter().take(12).map(|t| format!("{} {}", t["name"].as_str().unwrap_or_default(), t["count"])).collect::<Vec<_>>().join("  ·  "));
+            ToolBody::Note(names(&answer["tags"]))
+        }
+        "journal_close" | "journal_mark" | "journal_reopen" | "journal_abandon" | "journal_link" | "map_edit" | "map_node_state" | "map_link" | "map_ref" | "map_close" => ToolBody::Note(summary(&answer)),
+        _ => return None,
+    })
+}
+
 /// A memory tool's result as its own card: JOURNAL, MINDMAP or FLOWCHART (ADR 0011).
 fn memory_card(tool: &str, output: &str, date: &str) -> Option<Item> {
     match tool {
-        "journal_add" => {
+        "journal_add" | "journal_get" => {
             let r: harness_api::JournalRecord = serde_json::from_str(output).ok()?;
             Some(Item::Journal(JournalEvent { id: r.id as u32, category: r.category, tags: r.tags, date: date.to_string(), text: r.body }))
         }
@@ -539,6 +596,10 @@ fn live_thinking(v: &mut SessionView) -> Option<&mut ThinkingView> {
 /// The reasoning of the running turn grows one block, inside the turn, above its answer.
 fn append_thinking(v: &mut SessionView, time: String, text: &str, secs: u64) {
     if live_thinking(v).is_none() {
+        // Reasoning with nothing to show has no card: the status line says it is on.
+        if text.trim().is_empty() {
+            return;
+        }
         let reusable = matches!(v.transcript.last(), Some(Item::Turn { role: Role::Assistant, lines, attached, .. }) if attached.is_empty() && lines.iter().all(|l| l.is_empty()));
         if !reusable {
             v.transcript.push(Item::Turn { role: Role::Assistant, time, lines: vec![], attached: vec![] });
@@ -1079,5 +1140,44 @@ mod inbound_tests {
         v.generating = false;
         assert!(tick_activity(&mut v, 2000), "the activity goes");
         assert!(!tick_activity(&mut v, 3000), "an idle session draws nothing");
+    }
+
+    #[test]
+    fn a_tool_of_the_harness_shows_no_json() {
+        use serde_json::json;
+        let note = |body: Option<ToolBody>| match body { Some(ToolBody::Note(text)) => text, other => panic!("{other:?}") };
+        let m = |tool, value: Value| memory_words(harness_tool(tool), &value.to_string());
+        let entry = |id: u64, body: &str| json!({"id": id, "category": "todo", "body": body});
+        let Some(ToolBody::Output { lines, more, .. }) = m("mcp__harness__journal_search", json!({"entries": [entry(1, "first\nsecond"), entry(2, "other")]})) else { panic!() };
+        assert_eq!((lines[0].as_str(), lines[1].as_str(), more), ("#1  todo  first", "#2  todo  other", 0));
+        let many: Vec<Value> = (0..7).map(|i| entry(i, "x")).collect();
+        let Some(ToolBody::Output { lines, more, .. }) = m("journal_list", json!({"total": 40, "entries": many})) else { panic!() };
+        assert_eq!((lines.len(), more), (5, 35));
+        assert_eq!(note(m("journal_search", json!({"entries": []}))), "Nothing found.");
+        assert_eq!(note(m("mcp__harness__journal_agenda", json!({"agenda": [{"flag": "todo", "total": 3}, {"flag": "question", "total": 1}]}))), "todo 3  ·  question 1");
+        assert_eq!(note(m("mcp__harness__journal_close", json!({"closed": 7}))), "closed: 7");
+        let Some(ToolBody::Output { label, lines, .. }) = m("mcp__harness__journal_branch", json!({"state": "open", "entries": [{"entry": entry(4, "the work")}]})) else { panic!() };
+        assert_eq!((label.as_deref(), lines[0].as_str()), (Some("open"), "#4  todo  the work"));
+        assert_eq!(harness_tool("mcp__other__journal_add"), "mcp__other__journal_add", "another server's is not ours");
+        assert!(m("Bash", json!({"a": 1})).is_none());
+    }
+
+    #[test]
+    fn a_journal_call_over_mcp_gets_the_journal_card() {
+        let record = serde_json::json!({"id": 7, "created": "", "category": "decision", "tags": ["x"], "body": "why", "flags": []}).to_string();
+        assert!(matches!(memory_card(harness_tool("mcp__harness__journal_add"), &record, "d"), Some(Item::Journal(_))));
+        assert!(matches!(memory_card(harness_tool("mcp__harness__journal_get"), &record, "d"), Some(Item::Journal(_))));
+    }
+
+    #[test]
+    fn reasoning_with_no_text_has_no_card() {
+        let mut v = SessionView::default();
+        append_thinking(&mut v, "10:00".into(), "", 1);
+        append_thinking(&mut v, "10:00".into(), "  ", 2);
+        assert!(v.transcript.is_empty(), "not even an empty turn");
+        append_thinking(&mut v, "10:00".into(), "now words", 3);
+        let Item::Turn { attached, .. } = &v.transcript[0] else { panic!() };
+        let Item::Thinking(t) = &attached[0] else { panic!() };
+        assert_eq!((t.lines[0].as_str(), t.secs, t.live), ("now words", 3, true));
     }
 }
