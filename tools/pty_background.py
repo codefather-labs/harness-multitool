@@ -5,7 +5,7 @@ background task reaches the log. Reads the session's log, not the screen, so it 
 --features claude-code.
 Usage: tools/pty_background.py <absolute path to multitool>"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
-import fcntl, glob, json, pty, select, struct, tempfile, termios, time
+import fcntl, glob, json, pty, re, select, struct, tempfile, termios, time
 
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-bg-root")); home = tempfile.mkdtemp(prefix="mt-bg-home"); os.makedirs(home + "/cfg/harness-multitool")
 log = home + "/log"; fake = home + "/fake-claude"
@@ -45,13 +45,17 @@ pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "welcome"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 46, 130, 0, 0))
+drawn = ""
 def pump(sec):
+    global drawn
     end = time.time() + sec
     while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.02)
         if r:
-            try: os.read(fd, 65536)
+            try: raw = os.read(fd, 65536)
             except OSError: return
+            # What was written to the screen, with the styling and the moves taken out.
+            drawn = (drawn + re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw.decode("utf8", "replace")))[-200000:]
 def events():
     out = []
     for name in glob.glob(home + "/data/**/*", recursive=True):
@@ -71,7 +75,8 @@ pump(1.5)
 typed("start task\r")
 until("the first answer", lambda: "Heard: start task" in said())
 until("the task is in the log", lambda: any("a long job" in json.dumps(e) for e in events()))
-print("the task reached the log")
+until("the panel on the screen", lambda: "in background" in drawn and "a long job" in drawn[drawn.index("in background"):])
+print("the task reached the log and the panel:", drawn[drawn.index("in background") - 4:][:40].replace("\n", " "))
 until("the turn it began by itself, with nothing typed", lambda: "I noticed by myself" in said())
 print("the turn it began by itself was read")
 until("the task's end", lambda: any("Background command finished" in json.dumps(e) for e in events()))
