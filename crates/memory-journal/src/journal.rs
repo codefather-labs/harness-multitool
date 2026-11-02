@@ -1558,9 +1558,14 @@ fn links_of(conn: &Connection, id: i64) -> Result<Vec<Link>> {
 fn brief(conn: &Connection, id: i64) -> Result<Option<Brief>> {
     let Some(e) = get(conn, id)? else { return Ok(None) };
     let flags = e.flags.iter().map(|f| if f.open { f.flag.clone() } else { format!("{} (closed)", f.flag) }).collect();
-    let flat = e.body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let excerpt = if flat.chars().count() > 160 { format!("{}…", flat.chars().take(160).collect::<String>()) } else { flat };
+    let excerpt = excerpt(&e.body);
     Ok(Some(Brief { id: e.id, created: e.created, category: e.category, flags, excerpt }))
+}
+
+/// The start of an entry, on one line.
+pub fn excerpt(body: &str) -> String {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 160 { format!("{}…", flat.chars().take(160).collect::<String>()) } else { flat }
 }
 
 /// What entry `id` intersects: its links, the `similar` entries closest to it

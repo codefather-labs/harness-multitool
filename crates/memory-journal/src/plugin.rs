@@ -21,6 +21,24 @@ fn now() -> i64 {
     journal::now_secs()
 }
 
+/// An entry in the agenda: enough to choose by. It is read on every fresh context, so it says what
+/// `journal_get` would repeat only in brief.
+fn agenda_entry(e: &journal::Entry) -> serde_json::Value {
+    let mut short = serde_json::json!({
+        "id": e.id,
+        "category": e.category,
+        "open": e.flags.iter().filter(|f| f.open).map(|f| f.flag.as_str()).collect::<Vec<_>>(),
+        "excerpt": journal::excerpt(&e.body),
+    });
+    if !e.blocked_by.is_empty() {
+        short["blocked_by"] = serde_json::json!(e.blocked_by);
+    }
+    if !e.blocker_dropped.is_empty() {
+        short["blocker_dropped"] = serde_json::json!(e.blocker_dropped);
+    }
+    short
+}
+
 fn record(e: journal::Entry) -> JournalRecord {
     JournalRecord {
         id: e.id as u64,
@@ -175,7 +193,7 @@ impl JournalMemory {
             }
             MemoryOp::JournalAgenda { limit } => {
                 let groups = journal::agenda(&conn, limit.min(journal::MAX_PAGE_SIZE))?;
-                json!({"agenda": groups.into_iter().map(|(flag, total, entries)| json!({"flag": flag, "total": total, "entries": entries})).collect::<Vec<_>>()})
+                json!({"agenda": groups.into_iter().map(|(flag, total, entries)| json!({"flag": flag, "total": total, "entries": entries.iter().map(agenda_entry).collect::<Vec<_>>()})).collect::<Vec<_>>()})
             }
             MemoryOp::JournalMark { id, flags } => json!({"id": id, "marked": journal::mark(&mut conn, id as i64, &flags, now())?}),
             MemoryOp::JournalBlock { id, by } => {
@@ -275,6 +293,16 @@ mod tests {
         assert_eq!((listed["total"].as_i64(), listed["entries"][0]["id"].as_u64()), (Some(1), Some(todo)));
         let agenda = more(MemoryOp::JournalAgenda { limit: 5 }).unwrap();
         assert_eq!(agenda["agenda"][0]["flag"], "todo");
+        assert_eq!(agenda["agenda"][0]["entries"][0]["open"][0], "todo");
+        let long = format!("{} the end", "words to be cut ".repeat(40));
+        let waits = pollster_free(m.journal_add(JournalEntry { blocked_by: Some(todo), ..entry(&long, &["question"]) })).unwrap().id;
+        let agenda = more(MemoryOp::JournalAgenda { limit: 5 }).unwrap();
+        let blocked = agenda["agenda"].as_array().unwrap().iter().find(|g| g["flag"] == "blocked").unwrap();
+        let short = &blocked["entries"][0];
+        assert_eq!(short["id"], waits);
+        assert_eq!(short["blocked_by"][0], todo);
+        assert!(short["excerpt"].as_str().unwrap().ends_with('…'));
+        assert!(!short.to_string().contains("the end"), "the whole body is for journal_get: {short}");
         assert_eq!(more(MemoryOp::JournalMark { id: other, flags: vec!["important".into()] }).unwrap()["marked"][0], "important");
         assert_eq!(more(MemoryOp::JournalUnmark { id: other, flags: vec!["important".into()] }).unwrap()["unmarked"][0], "important");
         assert!(more(MemoryOp::JournalMark { id: other, flags: vec!["nonsense".into()] }).is_err(), "the store's refusals reach the agent");
