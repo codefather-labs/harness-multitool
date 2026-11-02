@@ -691,6 +691,7 @@ impl Live {
                 }
                 feed.replayed(view);
                 self.feeds.insert(id, feed);
+                frontend_tui::live::name_tab(w.tabs.last_mut().expect("just pushed"));
             }
             if let (Some(client), Some(window), Some(url)) = (&client, &saved.window, &saved.url) {
                 self.windows.insert(id);
@@ -1509,6 +1510,8 @@ impl Live {
                 frontend_tui::live::show_context_window(view, window);
             }
             self.feeds.insert(tab, feed);
+            let active = w.active;
+            frontend_tui::live::name_tab(&mut w.tabs[active]);
             if opened == harness_session::remote::Opened::Ready {
                 self.syncing.insert(tab);
                 w.overlay = Some(syncing_overlay("Catching up with the conversation"));
@@ -1765,6 +1768,7 @@ impl Live {
                     let feed = self.feeds.entry(tab).or_insert_with(|| Feed::new(local_time, window));
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         feed.apply(&mut t.view, &entry);
+                        frontend_tui::live::name_tab(t);
                         // A plan is not billed per token: its COST says so, and what the same
                         // tokens would cost on the API.
                         if let harness_api::Event::TurnFinished { usage, .. } = &entry.event {

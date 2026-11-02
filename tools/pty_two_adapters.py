@@ -29,6 +29,8 @@ for line in sys.stdin:
     prompt = json.loads(line)["message"]["content"][0]["text"]
     open({log!r}, "a").write(prompt + "\\n")
     if "slow" in prompt: time.sleep(5)
+    if "be named" in prompt:
+        subprocess.run([config["command"]] + config["args"], input=json.dumps({{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"name": "set_nick", "arguments": {{"nick": "orchid"}}}}}}) + "\\n", capture_output=True, text=True)
     if "do reload" in prompt:
         subprocess.run([config["command"]] + config["args"], input=json.dumps({{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"name": "plugins_reload", "arguments": {{}}}}}}) + "\\n", capture_output=True, text=True)
     print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "Delegate"}}}}}}), flush=True)
@@ -43,12 +45,14 @@ pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "welcome"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 46, 130, 0, 0))
+seen = b""
 def pump(sec):
+    global seen
     end = time.time() + sec
     while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.02)
         if r:
-            try: os.read(fd, 65536)
+            try: seen = (seen + os.read(fd, 65536))[-300000:]
             except OSError: return
 def typed(s):
     for c in s: os.write(fd, c.encode()); time.sleep(0.004)
@@ -99,10 +103,15 @@ keys("\x1b"); pump(5)
 # Back on the fake for what follows, by the settings again.
 typed("/settings\r"); pump(0.4); keys("\t", down, down, "\r", down, down, down, down, down, "\r", "b", "\r"); shot("two-adapters-back.png"); keys("\x13"); pump(1); keys("\x1b"); pump(0.3)
 assert saved()["provider"] == "local", saved()["provider"]
-keys("\x1b1"); pump(0.3); typed("do reload now\r")
+keys("\x1b1"); pump(0.3); seen = b""; typed("be named\r")
+until("the agent's own tool named the tab as /nick does", lambda: b"orchid" in seen)
+pump(0.3); shot("two-adapters-named.png")
+print("the agent's own set_nick named the tab")
+typed("do reload now\r")
 until("the agent was told of the reload", lambda: "rebuilt and restarted" in delegate(), 40)
 print("reloaded, a new binary at the same path")
 pump(1)
+shot("two-adapters-named-after-reload.png")
 typed("the delegate after\r")
 until("tab one still on the delegate", lambda: "the delegate after" in delegate())
 assert "the delegate after" not in responses()

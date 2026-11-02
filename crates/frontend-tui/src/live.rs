@@ -691,6 +691,16 @@ fn attach(v: &mut SessionView, time: String, item: Item) -> (usize, usize) {
 /// A voice message from Telegram, transcribed: its label in the log.
 const VOICE_LABEL: &str = harness_api::TELEGRAM_VOICE_LABEL;
 
+/// A tab goes by the name its agent goes by, however it was given: /nick, the agent's own tool, or
+/// Telegram. All of them reach here as the same event.
+pub fn name_tab(tab: &mut crate::model::Tab) {
+    if let Some(name) = &tab.view.agent_name
+        && tab.title != *name
+    {
+        tab.title.clone_from(name);
+    }
+}
+
 /// What a message's label says about where it came from: the card it gets, and who it is from.
 pub fn inbound_kind(label: &str) -> (InboundKind, String) {
     if label == harness_api::TELEGRAM_LABEL {
@@ -844,6 +854,17 @@ mod activity_tests {
 
     fn at(at_ms: u64, event: Event) -> Entry {
         Entry { seq: 0, at_ms, event }
+    }
+
+    #[test]
+    fn a_tab_goes_by_the_name_its_agent_was_given() {
+        let mut tab = crate::model::Tab::new("4f7e3c2a", crate::model::TabIcon::Prompt, crate::model::TabMark::None, Default::default());
+        name_tab(&mut tab);
+        assert_eq!(tab.title, "4f7e3c2a", "no name yet");
+        let mut feed = Feed::new(|_| String::new(), 1000);
+        feed.apply(&mut tab.view, &LogEntry { seq: 1, at_ms: 0, event: Event::AgentName { name: "multitool-arch".into(), by: "agent".into() } });
+        name_tab(&mut tab);
+        assert_eq!(tab.title, "multitool-arch");
     }
 
     #[test]
