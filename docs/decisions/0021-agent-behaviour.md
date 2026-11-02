@@ -17,7 +17,7 @@ The harness specifies how its agent behaves, because a model will not reach for 
 
 The rules are in every session's system prompt, and `mode__plan_enter`'s description says when to use it. A built-in hook, `mode-guide`, watches for the first write in a message when no plan has been made in the session. `session.plan_first` says what it does: `remind` adds one reminder for one turn, `enforce` refuses the write and says why, `off` does nothing. It never touches reads or memory, and cannot loop.
 
-Whether a task needs a plan stays the model's judgment under these rules: the harness does not classify a user's words.
+Whether a task needs a plan stays the model's judgment under these rules: the harness does not classify a user's words. The rules themselves are now one document, [the agent workflow specification](../agent-workflow.md), which ships with the harness (CON-97, CON-98). A user's own words can approve a plan: the agent quotes them in `mode__plan_exit`, and the harness checks they are in the user's last message.
 
 ## The whole cycle, held by reminders
 

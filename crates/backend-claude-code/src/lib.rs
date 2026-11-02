@@ -48,6 +48,7 @@ fn news(e: &Value) -> Option<Event> {
         "background_tasks_changed" => Some(Event::BackgroundTasks {
             tasks: e["tasks"].as_array()?.iter().map(|t| harness_api::event::BackgroundTask { id: text(&t["task_id"]), description: text(&t["description"]), kind: text(&t["task_type"]) }).collect(),
         }),
+        "compact_boundary" => Some(Event::BackendCompacted),
         "task_notification" => Some(Event::BackgroundDone { id: text(&e["task_id"]), status: text(&e["status"]), summary: text(&e["summary"]) }),
         _ => None,
     }
@@ -208,6 +209,7 @@ pub struct ClaudeCode {
     chrome: bool,
     /// The harness's own tools, as an MCP configuration.
     mcp: Option<String>,
+    readable_dir: Option<String>,
     live: std::cell::RefCell<Option<Live>>,
 }
 
@@ -224,9 +226,16 @@ impl ClaudeCode {
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
             chrome: settings["chrome"] != false,
+            readable_dir: None,
             mcp: None,
             live: std::cell::RefCell::new(None),
         }
+    }
+
+    /// A folder outside the project its tools may read: the harness's own, nothing else of its data.
+    pub fn with_readable_dir(mut self, dir: Option<String>) -> Self {
+        self.readable_dir = dir;
+        self
     }
 
     /// Gives it these MCP servers, on top of its own if it has its own environment.
@@ -273,6 +282,9 @@ impl ClaudeCode {
         }
         if request.plan_mode {
             args.extend(["--permission-mode".to_string(), "plan".to_string()]);
+        }
+        if let Some(dir) = &self.readable_dir {
+            args.extend(["--add-dir".to_string(), dir.clone()]);
         }
         args
     }

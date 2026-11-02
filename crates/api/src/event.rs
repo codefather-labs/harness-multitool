@@ -43,6 +43,7 @@ pub enum DecidedBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookPointKind {
     SessionStart,
+    SessionResume,
     UserPromptSubmit,
     PreToolUse,
     PostToolUse,
@@ -104,6 +105,8 @@ pub enum Event {
     /// What an agent backend says its session has cost in all: it counts across resumes, so a
     /// turn's own cost is the difference from the last of these.
     BackendCost { total_micro_usd: u64 },
+    /// An agent backend compacted its conversation by itself: what it knew of the session is gone.
+    BackendCompacted,
     /// What an agent backend has running in the background now, all of it.
     BackgroundTasks { tasks: Vec<BackgroundTask> },
     /// A background task of an agent backend has ended.

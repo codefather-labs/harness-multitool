@@ -9,11 +9,18 @@ use harness_api::{Answer, Capability, Decision, Policy, ToolCall};
 pub struct DefaultPolicy {
     root: String,
     remembered: RefCell<HashSet<(String, Capability)>>,
+    readable: Option<String>,
 }
 
 impl DefaultPolicy {
     pub fn new(root: &str) -> Self {
-        DefaultPolicy { root: root.trim_end_matches('/').to_string(), remembered: RefCell::default() }
+        DefaultPolicy { root: root.trim_end_matches('/').to_string(), remembered: RefCell::default(), readable: None }
+    }
+
+    /// This one file may be read wherever it is: the harness's own, and it says how to work.
+    pub fn may_read(mut self, path: &str) -> Self {
+        self.readable = Some(path.to_string());
+        self
     }
 
     fn inside_project(&self, path: &str) -> bool {
@@ -52,7 +59,7 @@ impl Policy for DefaultPolicy {
         let settled = |c: &Capability| {
             remembered.contains(&(call.name.clone(), c.clone()))
                 || match c {
-                    Capability::ReadPath(p) => self.inside_project(p),
+                    Capability::ReadPath(p) => self.inside_project(p) || self.readable.as_deref() == Some(p.as_str()),
                     Capability::Memory => true,
                     _ => false,
                 }
@@ -77,6 +84,15 @@ mod tests {
 
     fn call(name: &str) -> ToolCall {
         ToolCall { id: "c".into(), name: name.into(), input: json!({}) }
+    }
+
+    #[test]
+    fn the_workflow_spec_is_readable_and_nothing_near_it() {
+        let p = DefaultPolicy::new("/work/app").may_read("/data/spec/agent-workflow.md");
+        let d = |c| p.decide(&ToolCall { id: "1".into(), name: "read".into(), input: serde_json::json!({}) }, &[c]);
+        assert_eq!(d(Capability::ReadPath("/data/spec/agent-workflow.md".into())), Decision::Allow);
+        assert_eq!(d(Capability::ReadPath("/data/spec/other.md".into())), Decision::Ask);
+        assert_eq!(d(Capability::ReadPath("/data/auth/chatgpt/x".into())), Decision::Ask);
     }
 
     #[test]

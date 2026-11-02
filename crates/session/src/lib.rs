@@ -94,7 +94,7 @@ impl Settings {
             // A plan's model takes the whole set of the journal's tools; a small local one need not.
             tools: self.tools.iter().map(String::as_str).chain(if self.on_large_model() { harness_tools_memory::MORE.as_slice() } else { &[] }.iter().copied()).map(String::from).collect(),
             policy: "default".into(),
-            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(["docs-mirror".to_string(), "mode-guide".to_string()]).collect(),
+            hooks: (0..self.hooks.len()).map(|i| format!("shell-{i}")).chain(["docs-mirror".to_string(), "mode-guide".to_string(), "workflow-spec".to_string()]).collect(),
             memory: "journal".into(),
             context: "journal-aware".into(),
             store: "files".into(),
@@ -134,7 +134,28 @@ pub fn this_environment() -> BTreeMap<String, String> {
 }
 
 /// Everything shipped in this build, under its configuration names.
+/// The agent workflow specification, as this build has it (CON-98).
+const AGENT_WORKFLOW: &str = include_str!("../../../docs/agent-workflow.md");
+
+/// Where it is kept for agents to read: a folder of its own, so nothing else there comes with it. It
+/// always says what this build says.
+fn agent_workflow_file(data_dir: &str) -> String {
+    let path = std::path::Path::new(data_dir).join("spec").join("agent-workflow.md");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(AGENT_WORKFLOW)
+        && let Some(dir) = path.parent()
+        && std::fs::create_dir_all(dir).is_ok()
+    {
+        let partial = path.with_extension("partial");
+        if std::fs::write(&partial, AGENT_WORKFLOW).is_ok() {
+            let _ = std::fs::rename(&partial, &path);
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
 fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>, env: WindowEnvRead) -> Registry {
+    let spec_path = agent_workflow_file(data_dir);
+    let spec_read = spec_path.clone();
     let mut r = Registry::new();
     let (root_a, root_b, root_c) = (root.to_string(), root.to_string(), root.to_string());
     let delegate_session = settings.runs_delegate();
@@ -149,7 +170,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
         .tool("shell", |_| Ok(Rc::new(harness_tools_builtin::Shell::default())))
         .tool("search", |_| Ok(Rc::new(harness_tools_builtin::Search)))
         .tool("fetch", |_| Ok(Rc::new(harness_tools_builtin::Fetch)))
-        .policy("default", move |_| Ok(Rc::new(harness_policy_default::DefaultPolicy::new(&root_a))))
+        .policy("default", move |_| Ok(Rc::new(harness_policy_default::DefaultPolicy::new(&root_a).may_read(&spec_read))))
         .memory("none", |_| Ok(Rc::new(harness_context_default::NoMemory)))
         .memory("journal", move |_| {
             // CON-20: the daemon owns the store. With none running (a debug run, a test) the
@@ -173,6 +194,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
     // A delegate has none of the tools the guide speaks of.
     let plan_first = if delegate_session { harness_core::plan::PlanFirst::Off } else { harness_core::plan::PlanFirst::parse(settings.plan_first.as_deref()) };
     r.hook("mode-guide", move |_| Ok(Rc::new(harness_core::plan::ModeGuide::new(plan_first))));
+    r.hook("workflow-spec", move |_| Ok(Rc::new(harness_core::plan::WorkflowSpec::new(&spec_path))));
     let root_m = root.to_string();
     r.hook("docs-mirror", move |cx| {
         let memory = cx.memory.clone().ok_or("the docs mirror needs memory")?;
@@ -414,7 +436,8 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         if settings.runs_delegate() {
             // The harness's own tools go with it, whichever way the row runs.
             let mcp = harness_daemon::own_program().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
-            parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp)?);
+            let spec_dir = std::path::Path::new(&agent_workflow_file(&data)).parent().map(|d| d.to_string_lossy().into_owned());
+            parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp, spec_dir)?);
         }
         // A connected provider's form is kept in line whichever provider runs the session (INV-20).
         if settings.providers.values().any(|p| p["kind"] == "claude-code") {
@@ -426,9 +449,9 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
 
 /// Claude Code as a delegate, in a build that has it (ADR 0020).
 #[cfg(feature = "claude-code")]
-fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>, readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
-    let code = harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row);
+    let code = harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row).with_readable_dir(readable_dir);
     let code = match mcp {
         Some(mcp) => code.with_mcp(mcp),
         None => code,
@@ -458,7 +481,7 @@ fn conversation_source_in(_name: &str, _env: &dyn Fn(&str) -> Option<String>) ->
 }
 
 #[cfg(not(feature = "claude-code"))]
-fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, _mcp: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, _mcp: Option<String>, _readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     Err("this build has no Claude Code delegate: build with --features claude-code".to_string())
 }
 

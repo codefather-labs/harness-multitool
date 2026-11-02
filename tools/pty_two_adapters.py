@@ -29,6 +29,8 @@ for line in sys.stdin:
     prompt = json.loads(line)["message"]["content"][0]["text"]
     open({log!r}, "a").write(prompt + "\\n")
     if "slow" in prompt: time.sleep(5)
+    if "compact yourself" in prompt:
+        print(json.dumps({{"type": "system", "subtype": "compact_boundary", "session_id": "sess-one"}}), flush=True)
     if "be named" in prompt:
         subprocess.run([config["command"]] + config["args"], input=json.dumps({{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"name": "set_nick", "arguments": {{"nick": "orchid"}}}}}}) + "\\n", capture_output=True, text=True)
     if "do reload" in prompt:
@@ -107,6 +109,13 @@ keys("\x1b1"); pump(0.3); seen = b""; typed("be named\r")
 until("the agent's own tool named the tab as /nick does", lambda: b"orchid" in seen)
 pump(0.3); shot("two-adapters-named.png")
 print("the agent's own set_nick named the tab")
+spec = home + "/data/harness-multitool/spec/agent-workflow.md"
+assert spec in delegate().split("\n")[0], "the delegate's first message names the specification: " + delegate()[:200]
+assert spec not in delegate().split("the delegate again")[1], "for one turn"
+n = delegate().count(spec); typed("compact yourself\r"); until("it compacted", lambda: "compact yourself" in delegate()); pump(0.5)
+typed("after compacting\r"); until("the next message", lambda: "after compacting" in delegate())
+assert delegate().count(spec) == n + 1, "after its compaction the delegate is told again: " + delegate()[-400:]
+print("the delegate was given the path at its start and after its compaction")
 typed("do reload now\r")
 until("the agent was told of the reload", lambda: "rebuilt and restarted" in delegate(), 40)
 print("reloaded, a new binary at the same path")
@@ -114,6 +123,7 @@ pump(1)
 shot("two-adapters-named-after-reload.png")
 typed("the delegate after\r")
 until("tab one still on the delegate", lambda: "the delegate after" in delegate())
+assert spec in delegate().split("do reload now")[1], "after the reload, a resume, it is told again: " + delegate()[-400:]
 assert "the delegate after" not in responses()
 keys("\x1b2"); pump(0.5); typed("responses after\r")
 until("tab two still on the other", lambda: "responses after" in responses())

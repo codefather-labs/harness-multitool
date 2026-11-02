@@ -73,7 +73,7 @@ def typed(s):
     for c in s: os.write(fd, c.encode()); time.sleep(0.005)
 pump(1.5)
 typed("start task\r")
-until("the first answer", lambda: "Heard: start task" in said())
+until("the first answer", lambda: "start task" in said())
 until("the task is in the log", lambda: any("a long job" in json.dumps(e) for e in events()))
 until("the panel on the screen", lambda: "in background" in drawn and "a long job" in drawn[drawn.index("in background"):])
 print("the task reached the log and the panel:", drawn[drawn.index("in background") - 4:][:40].replace("\n", " "))

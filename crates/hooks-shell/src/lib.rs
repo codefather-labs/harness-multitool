@@ -21,6 +21,7 @@ pub struct ShellHook {
 pub fn point_kind(name: &str) -> Option<HookPointKind> {
     Some(match name {
         "SessionStart" => HookPointKind::SessionStart,
+        "SessionResume" => HookPointKind::SessionResume,
         "UserPromptSubmit" => HookPointKind::UserPromptSubmit,
         "PreToolUse" => HookPointKind::PreToolUse,
         "PostToolUse" => HookPointKind::PostToolUse,

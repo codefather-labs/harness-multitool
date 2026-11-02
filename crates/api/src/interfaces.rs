@@ -168,6 +168,8 @@ pub trait Policy {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HookPoint<'a> {
     SessionStart,
+    /// The first message after coming back to a stored conversation.
+    SessionResume,
     UserPromptSubmit { text: &'a str },
     PreToolUse { call: &'a ToolCall },
     PostToolUse { call: &'a ToolCall, output: &'a ToolOutput },
@@ -183,6 +185,7 @@ impl HookPoint<'_> {
     pub fn kind(&self) -> HookPointKind {
         match self {
             HookPoint::SessionStart => HookPointKind::SessionStart,
+            HookPoint::SessionResume => HookPointKind::SessionResume,
             HookPoint::UserPromptSubmit { .. } => HookPointKind::UserPromptSubmit,
             HookPoint::PreToolUse { .. } => HookPointKind::PreToolUse,
             HookPoint::PostToolUse { .. } => HookPointKind::PostToolUse,

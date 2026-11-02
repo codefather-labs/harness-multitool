@@ -209,6 +209,36 @@ impl Hook for ModeGuide {
     }
 }
 
+/// Tells the agent where the agent workflow specification is, whenever what it knew is new or gone
+/// (CON-98): at a session's start, which a resume also is, and after a compaction.
+pub struct WorkflowSpec {
+    line: String,
+}
+
+impl WorkflowSpec {
+    pub fn new(path: &str) -> WorkflowSpec {
+        WorkflowSpec { line: format!("The agent workflow specification is at {path}. It binds you: read it now, before acting, with no permission needed.") }
+    }
+}
+
+impl Hook for WorkflowSpec {
+    fn name(&self) -> &str {
+        "workflow-spec"
+    }
+
+    fn quiet_when_ok(&self) -> bool {
+        true
+    }
+
+    fn run<'a>(&'a self, point: &'a HookPoint<'a>) -> BoxFuture<'a, HookOutcome> {
+        let outcome = match point {
+            HookPoint::SessionStart | HookPoint::SessionResume | HookPoint::PostCompact => HookOutcome::Reminder { lines: vec![self.line.clone()] },
+            _ => HookOutcome::Ok,
+        };
+        Box::pin(std::future::ready(outcome))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +361,23 @@ mod tests {
             run(&g, HookPoint::PreToolUse { call: &call(name, serde_json::json!({})) });
         }
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &exit }), HookOutcome::Ok);
+    }
+
+    #[test]
+    fn the_workflow_spec_is_named_at_a_start_and_after_a_compaction_only() {
+        let hook = WorkflowSpec::new("/data/spec/agent-workflow.md");
+        let says = |point: HookPoint<'_>| {
+            let mut future = hook.run(&point);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(outcome) => outcome,
+                std::task::Poll::Pending => panic!("it has nothing to wait for"),
+            }
+        };
+        for point in [HookPoint::SessionStart, HookPoint::SessionResume, HookPoint::PostCompact] {
+            assert!(matches!(says(point), HookOutcome::Reminder { lines } if lines[0].contains("/data/spec/agent-workflow.md")));
+        }
+        assert_eq!(says(HookPoint::Stop), HookOutcome::Ok);
+        assert_eq!(says(HookPoint::UserPromptSubmit { text: "x" }), HookOutcome::Ok);
     }
 }

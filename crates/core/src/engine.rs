@@ -28,6 +28,9 @@ const ASK_TOOL: &str = "ask_user";
 const REPEAT_WARN: u32 = 3;
 const REPEAT_STOP: u32 = 5;
 const MAX_NICK: usize = 32;
+/// The shortest words of the user that count as saying to go.
+const MIN_QUOTE: usize = 2;
+const APPROVED: &str = "The user approved the plan. Plan mode is off. A fix: call mode__debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call mode__debug with on true and debug it.";
 
 /// How many binding entries the check for unchecked specifications looks at.
 const UNCHECKED_SCAN: usize = 500;
@@ -63,8 +66,8 @@ pub fn own_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: plan::EXIT_TOOL.into(),
-            description: "HARNESS MODE, not a utility. Show the user the plan and design, after asking what only they can decide and journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode: the answer says whether they approved, and if not, what to change.".into(),
-            schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}}, "required": ["plan"]}),
+            description: "HARNESS MODE, not a utility. Show the user the plan and design, after asking what only they can decide and journaling it, and ask to leave plan mode and start the work. Only the user's approval leaves the mode, given by their words in user_said or else when asked: the answer says whether they approved, and if not, what to change.".into(),
+            schema: serde_json::json!({"type": "object", "properties": {"plan": {"type": "string", "description": "The plan in short, with the journal ids of its work items."}, "user_said": {"type": "string", "description": "When the user has just said to implement the plan, their words, quoted exactly from their last message: that is their approval, and they are not asked again. Leave it out otherwise: they will be asked."}}, "required": ["plan"]}),
         },
         ToolSpec {
             name: ASK_TOOL.into(),
@@ -116,6 +119,8 @@ pub struct Engine {
     /// its sink, the store is not.
     unsaved: RefCell<Vec<LogEntry>>,
     started: Cell<bool>,
+    /// It came back to a conversation and has not told its hooks yet.
+    resumed: Cell<bool>,
     started_ms: u64,
     stop: StopFlag,
 }
@@ -137,6 +142,7 @@ impl Engine {
             seq: Cell::new(0),
             unsaved: RefCell::default(),
             started: Cell::new(false),
+            resumed: Cell::new(false),
             started_ms,
             stop: StopFlag::default(),
         }
@@ -177,6 +183,7 @@ impl Engine {
         drop(state);
         self.seq.set(entries.last().map_or(0, |e| e.seq + 1));
         self.started.set(!entries.is_empty());
+        self.resumed.set(!entries.is_empty());
         // A log cut off mid-tool has calls without results; the model must get one for each.
         for id in self.unanswered_calls() {
             self.emit(Event::ToolResult { id, output: "interrupted: the session ended before this call finished".into(), is_error: true });
@@ -584,6 +591,10 @@ impl Engine {
                     return Some(text);
                 }
             };
+            // A live process read its system prompt when it started: what is for this turn goes with
+            // the message.
+            let prompt = if state.reminders.is_empty() || prompt.is_empty() || prompt.starts_with("[from the harness] ") { prompt } else { format!("[from the harness] {}\n\n{prompt}", state.reminders.join(" ")) };
+            let compacted = Cell::new(false);
             let request = harness_api::BackendRequest { prompt: &prompt, session: state.backend_session.as_deref(), fork: state.backend_fork, next_message: &next_message, cost_total_micro_usd: state.backend_cost_total, system: system.as_deref(), plan_mode: state.plan_mode, turn: state.turns + 1, stopped: &stopped, woken };
             let mut sink = |event: Event| {
                 match &event {
@@ -591,10 +602,16 @@ impl Engine {
                     Event::ToolResult { id, .. } => open_calls.borrow_mut().retain(|open| open != id),
                     _ => {}
                 }
+                if event == Event::BackendCompacted {
+                    compacted.set(true);
+                }
                 self.emit(event);
                 true
             };
             let end = backend.run(request, &mut sink).await;
+            if compacted.get() {
+                self.hooks(HookPoint::PostCompact).await;
+            }
             // A card and the history both need the end of what will now never end.
             for id in open_calls.take() {
                 self.emit(Event::ToolResult { id, output: harness_api::TOOL_STOPPED.to_string(), is_error: true });
@@ -652,6 +669,14 @@ impl Engine {
             return result(reason, true);
         }
         // Always the user's call: nothing is remembered, and an "always" counts this once.
+        // The user has said to go (W-3): their own words, checked, are the approval.
+        if let Some(said) = call.input["user_said"].as_str().map(str::trim).filter(|said| said.chars().count() >= MIN_QUOTE)
+            && self.state.borrow().last_user_text().is_some_and(|text| text.contains(said))
+        {
+            self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: Some(format!("the user said: {said}")) });
+            self.set_plan_mode(false, "user").await;
+            return result(APPROVED.into(), false);
+        }
         let answer = self.frontend.ask(call, &[Capability::Command("leave plan mode and start the work".into())]).await;
         if answer == Answer::Deny {
             self.emit(Event::ToolDecision { id: call.id.clone(), allowed: false, by: DecidedBy::User, reason: None });
@@ -659,7 +684,7 @@ impl Engine {
         }
         self.emit(Event::ToolDecision { id: call.id.clone(), allowed: true, by: DecidedBy::User, reason: None });
         self.set_plan_mode(false, "user").await;
-        result("The user approved the plan. Plan mode is off. A fix: call mode__debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call mode__debug with on true and debug it.".into(), false);
+        result(APPROVED.into(), false)
     }
 
     /// What the harness left running: the panel kept true, an end kept for when no run is on.
@@ -681,8 +706,17 @@ impl Engine {
             return true;
         }
         let Some(backend) = self.parts.backend.clone() else { return false };
-        let mut sink = |event: Event| self.emit(event);
+        let compacted = Cell::new(false);
+        let mut sink = |event: Event| {
+            if event == Event::BackendCompacted {
+                compacted.set(true);
+            }
+            self.emit(event);
+        };
         let woke = backend.between_runs(&mut sink);
+        if compacted.get() {
+            self.hooks(HookPoint::PostCompact).await;
+        }
         let _ = self.flush().await;
         woke
     }
@@ -737,6 +771,9 @@ impl Engine {
     async fn run_inner(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
         if !self.started.replace(true) {
             self.hooks(HookPoint::SessionStart).await;
+        }
+        if self.resumed.take() {
+            self.hooks(HookPoint::SessionResume).await;
         }
         self.failures.borrow_mut().clear();
         if self.state.borrow().task.is_final() {
@@ -827,14 +864,17 @@ impl Engine {
 
     async fn turn(&self, route: &Route) -> Result<(Vec<ToolCall>, StopReason), String> {
         let provider = self.parts.providers.get(&route.provider).ok_or_else(|| format!("the router chose an unknown provider: {}", route.provider))?;
-        let context = {
+        let build = || async {
             let mut state = self.state.borrow().clone();
             state.enter_model(&route.provider, &route.model);
-            self.parts.context.build(&state, self.parts.memory.as_ref()).await.map_err(|e| format!("context: {e}"))?
+            self.parts.context.build(&state, self.parts.memory.as_ref()).await.map_err(|e| format!("context: {e}"))
         };
-        if let Some(cut) = context.compacted {
+        let mut context = build().await?;
+        if let Some(cut) = context.compacted.take() {
             self.emit(Event::Compacted { upto: cut.upto, tokens_before: cut.tokens_before, tokens_after: cut.tokens_after });
             self.hooks(HookPoint::PostCompact).await;
+            // What the hooks said after a compaction is for this very turn.
+            context = build().await?;
         }
         let turn = self.state.borrow().turns + 1;
         self.emit(Event::TurnStarted { turn, provider: route.provider.clone(), model: route.model.clone() });

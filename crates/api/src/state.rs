@@ -81,6 +81,14 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    /// What the user said last, as text.
+    pub fn last_user_text(&self) -> Option<String> {
+        self.messages.iter().rev().filter(|m| m.role == Role::User).find_map(|m| {
+            let words: Vec<&str> = m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect();
+            (!words.is_empty()).then(|| words.join("\n"))
+        })
+    }
+
     pub fn apply(&mut self, event: &Event) {
         match event {
             // One after another, as a message woven in after tool results is: the same turn of
@@ -147,7 +155,7 @@ impl SessionState {
                 self.messages.push(Message::user(format!("[a summary of the conversation so far]\n{text}")));
             }
             Event::BackendCost { total_micro_usd } => self.backend_cost_total = *total_micro_usd,
-            Event::BackgroundTasks { .. } | Event::BackgroundDone { .. } | Event::Notice { .. } => {}
+            Event::BackgroundTasks { .. } | Event::BackgroundDone { .. } | Event::Notice { .. } | Event::BackendCompacted => {}
             Event::ConversationImported { id, .. } => {
                 self.backend_session = Some(id.clone());
                 self.backend_fork = true;

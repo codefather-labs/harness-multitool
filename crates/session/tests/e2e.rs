@@ -512,6 +512,9 @@ fn context_comes_from_memory_and_survives_compaction() {
     assert!(cuts.windows(2).all(|w| w[0] < w[1]), "cuts only move forward: {cuts:?}");
     assert!(entries.iter().any(|e| matches!(&e.event, Event::HookRan { point: event_kinds::HookPointKind::PostCompact, .. })));
     assert!(system.contains("Re-read the specifications."), "the hook's context reaches the model");
+    let named = requests.iter().filter(|r| r["system"].as_str().unwrap().contains("agent-workflow.md")).count();
+    assert!(named >= 2, "the workflow specification is named at the start and after a compaction: {named}");
+    assert!(named < requests.len(), "and only then");
 
     let messages = last["messages"].as_array().unwrap();
     let full: usize = entries.iter().filter(|e| matches!(e.event, Event::UserMessage { .. })).count();

@@ -14,7 +14,7 @@ bodies = []; gate = threading.Event()
 def asked(n=-1): return json.dumps(bodies[n]) if bodies else ""
 def last_user(body):
     said = [i for i in body["input"] if i.get("role") == "user"]
-    return json.dumps(said[-1]) if said else ""
+    return json.dumps(said[-1], ensure_ascii=False) if said else ""
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
@@ -30,6 +30,8 @@ class H(http.server.BaseHTTPRequestHandler):
             emit({"type": "response.output_text.delta", "delta": "After the tool."})
         elif "use agenda" in said: call("journal_agenda", {"limit": 1}, "c1")
         elif "enter plan" in said: call("mode__plan_enter", {}, "c5")
+        elif "теперь давай реализуем" in said: call("mode__plan_exit", {"plan": "the plan", "user_said": "теперь давай реализуем"}, "c6")
+        elif "false quote" in said: call("mode__plan_exit", {"plan": "the plan", "user_said": "the user never wrote this"}, "c7")
         elif "long command" in said: call("shell", {"command": f"sleep {MARK}; echo never"}, "c2")
         elif "silent" in said: gate.wait(40)
         elif "start background" in said: call("shell", {"command": "sleep 1.5; echo finished-marker", "run_in_background": True}, "c3")
@@ -99,7 +101,20 @@ until("the mode answered", lambda: len(bodies) > n and bodies[-1]["input"][-1].g
 assert "Plan mode is on" in bodies[-1]["input"][-1]["output"], bodies[-1]["input"][-1]
 edit = next(t for t in bodies[-1]["tools"] if t.get("name") == "edit"); assert edit["description"].startswith("PLAN MODE"), edit
 print("mode__plan_enter entered plan mode: the edit tool says so, and the prompt explains modes")
-pump(0.5); typed("/plan off\r"); pump(0.8)
+spec = home + "/data/harness-multitool/spec/agent-workflow.md"
+assert os.path.exists(spec) and "W-3" in open(spec).read(), "the specification is on disk"
+assert spec in bodies[0]["instructions"], "the first request names the specification: " + bodies[0]["instructions"][-300:]
+assert spec not in bodies[1]["instructions"], "for one turn, not every turn"
+print("the first turn was given the specification's path")
+pump(0.5); seen = b""; n = len(bodies); typed("false quote\r"); pump(1.5)
+assert b"leave plan mode" in seen, "words the user did not say get no approval: the user is asked"
+os.write(fd, b"3"); pump(0.8)
+n = len(bodies); typed("теперь давай реализуем\r")
+until("the agent went on", lambda: len(bodies) > n and bodies[-1]["input"][-1].get("type") == "function_call_output" and bodies[-1]["input"][-1]["call_id"] == "c6")
+assert "approved the plan" in bodies[-1]["input"][-1]["output"], bodies[-1]["input"][-1]
+edit = next(t for t in bodies[-1]["tools"] if t.get("name") == "edit"); assert not edit["description"].startswith("PLAN MODE"), "the mode ended"
+print("the user's own words left plan mode with no second question; words they did not say did not")
+pump(0.5)
 # A long command, stopped.
 typed("long command\r"); allow_when_asked()
 until("the command runs", lambda: running(f"sleep {MARK}"))

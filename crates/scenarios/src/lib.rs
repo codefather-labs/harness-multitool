@@ -250,6 +250,7 @@ pub fn line(entry: &LogEntry) -> String {
         Event::BackendSessionLost => "backend     session lost to another provider".to_string(),
         Event::ContextSummary { text } => format!("summary     {} chars", text.len()),
         Event::BackendCost { total_micro_usd } => format!("cost        {total_micro_usd} in all"),
+        Event::BackendCompacted => "backend compacted".to_string(),
         Event::Notice { text, .. } => format!("notice  {text}"),
         Event::BackgroundTasks { tasks } => format!("background  {} on", tasks.len()),
         Event::BackgroundDone { status, summary, .. } => format!("background  {status}: {summary}"),

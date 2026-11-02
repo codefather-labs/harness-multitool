@@ -60,6 +60,7 @@ Open the settings with `Ctrl+,` and choose a provider: a key for an API, a local
 | [Interfaces](docs/spec/interfaces.md) | every pluggable component: its contract and its boundaries |
 | [Architecture](docs/architecture/overview.md) | how the pieces fit, with a map |
 | [Terminal UI](docs/tui.md) | running it, keys, debug commands, screens as images |
+| [Agent workflow](docs/agent-workflow.md) | what an agent must do in each situation; ships with the harness, and agents are given its path |
 | [Tools and modes](docs/tools.md) | what an agent can call, and how the harness's modes differ from utilities |
 | [Design](docs/design/README.md) | the logo, icons, themes and the mockups the UI is built against |
 | [Decisions](docs/decisions/) | why the project is the way it is (ADRs) |

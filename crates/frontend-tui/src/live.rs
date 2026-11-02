@@ -212,6 +212,7 @@ impl Feed {
                 let (kind, from) = inbound_kind(harness_api::HARNESS_LABEL);
                 v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: summary.clone() }));
             }
+            Event::BackendCompacted => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["The agent's own program compacted what it holds of this conversation.".to_string()] }),
             Event::ContextSummary { .. } => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["What is above went into a summary here.".to_string()] }),
             Event::ConversationImported { source, title, .. } => {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
