@@ -116,6 +116,7 @@ Choosing another adapter or model in the harness's settings moves every open con
 
 - The choice is saved by the harness itself: nobody edits a configuration file to change an adapter, and the next start opens on the same one.
 - The daemon reconnects each conversation and brings its form for the chosen adapter in line with the log at that moment (INV-20), creating it if that adapter keeps conversations and has none for this one yet. Its next message goes through the new adapter. The status line says so straight away. Nothing has to be reopened.
+- **The window waits for the daemon.** Bringing a form in line can take long: writing a form the adapter does not have yet means the whole conversation, and a long one runs to gigabytes. From the moment it starts until the daemon signals success or failure, the window shows the moon-phase spinner with what is being done, and takes no input: no message, no command, no other control. Failure leaves the window usable, says what went wrong, and the conversation stays on the adapter it had. The same holds for opening a conversation whose form has to be read or caught up (CON-81).
 - The context window is a dropdown beside them, per provider: Auto takes what the server or the model reports, and a chosen value wins over a report and is what compaction goes by. A delegate compacts by itself, so there it decides only what the status line counts against (CON-80).
 - **While a run is on, the adapter cannot be changed.** While any conversation of the window has a run on or a prompt waiting, the adapter, model and context window controls are shown disabled, wherever they are, and choosing one changes nothing and says why. They come back when the last run ends.
 - The daemon holds to the same rule: a change that reaches it during a run is refused, so no frontend can move a conversation in the middle of a run (CON-79).
@@ -138,7 +139,8 @@ Choosing another adapter or model in the harness's settings moves every open con
 | A form cannot be written | An error on screen. The count of what it holds has not moved, so the next step tries again from there. |
 | A conversation open in the provider's program | Sending is refused, naming it (CON-78). |
 | The adapter is changed while a run is on | Not possible: the controls are disabled, and the daemon refuses (CON-79). |
-| A conversation cannot be reconnected to the chosen adapter | An error on that conversation's tab. It stays on the adapter it had, and the status line shows that one. |
+| A conversation cannot be reconnected to the chosen adapter | The daemon signals the failure and the spinner ends. An error on that conversation's tab; it stays on the adapter it had, and the status line shows that one. |
+| The window goes away during a sync | The daemon finishes it: an append is whole lines, and a new form appears whole or not at all. The next window opens it as it stands. |
 | The daemon stops | Its windows say so. The log keeps everything up to its last flush, and the conversation opens again. |
 | A daemon of another build | Replaced when idle. If it is running conversations, the window works on its own. |
 | Claude Code will not load a transcript | An error on screen, not a silent loss of context. Its format is undocumented and can change with its version. |
