@@ -545,7 +545,7 @@ impl RemoteSessions {
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
         let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
         let shot: Arc<Mutex<Option<String>>> = Arc::default();
-        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload, asked_by.clone(), shot.clone());
+        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), Asks { reload, asked_by: asked_by.clone(), shot: shot.clone() });
         Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender, asked_by, shot })
     }
 
@@ -570,7 +570,15 @@ impl Drop for RemoteSessions {
     }
 }
 
-fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, reload: Arc<AtomicBool>, asked_by: Arc<std::sync::atomic::AtomicU64>, shot: Arc<Mutex<Option<String>>>) {
+/// What the daemon can ask of this window beyond its conversations.
+struct Asks {
+    reload: Arc<AtomicBool>,
+    asked_by: Arc<std::sync::atomic::AtomicU64>,
+    shot: Arc<Mutex<Option<String>>>,
+}
+
+fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
+    let Asks { reload, asked_by, shot } = asks;
     std::thread::spawn(move || {
         let (mut after, mut failures) = (0, 0);
         while !stopped.load(Ordering::SeqCst) {
