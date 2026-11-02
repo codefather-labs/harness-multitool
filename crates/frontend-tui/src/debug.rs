@@ -38,7 +38,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
     ("/clear", "empty the transcript"),
-    ("/exit, /quit", "close the harness (also Ctrl+C)"),
+    ("/exit, /quit", "close the harness (also Ctrl+C twice)"),
 ];
 
 /// What sending the composer's line led to.

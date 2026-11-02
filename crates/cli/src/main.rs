@@ -66,7 +66,7 @@ enum JournalAction {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the terminal UI on a named state (default: welcome). F2 cycles themes; /exit or Ctrl+C quits (docs/tui.md).
+    /// Open the terminal UI on a named state (default: welcome). F2 cycles themes; /exit or Ctrl+C twice quits, Ctrl+C alone stops a run (docs/tui.md).
     Preview {
         #[arg(default_value = "welcome")]
         name: String,
@@ -1891,6 +1891,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    let mut ctrl_c_at = None;
     // Text that came as a paste and has no composer to go to yet (the start page, a prompt on
     // screen), with whether its Enter came too. An Enter right after a paste belongs to the paste:
     // it must not open a session or answer a prompt.
@@ -2064,7 +2065,12 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 }
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                        return Ok(());
+                        if frontend_tui::input::interrupt(&mut state, &mut ctrl_c_at, std::time::Instant::now()) == frontend_tui::input::Outcome::Quit {
+                            return Ok(());
+                        }
+                        live.send(&mut state);
+                        dirty = true;
+                        continue;
                     }
                     if k.code == KeyCode::F(2) {
                         theme_idx = (theme_idx + 1) % BUILTIN.len();

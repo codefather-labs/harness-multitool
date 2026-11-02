@@ -70,6 +70,9 @@ pub struct BackendRequest<'a> {
 pub enum BackendEnd {
     Done,
     Stopped,
+    /// Stopped with messages sent during the run that it never took: they are in the log, and the
+    /// next run takes them.
+    StoppedBeforeMessages,
 }
 
 /// IF-17. Runs a session's turns on its own instead of the engine with a `Provider`, and reports

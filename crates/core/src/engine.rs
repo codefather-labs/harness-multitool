@@ -581,6 +581,11 @@ impl Engine {
                     self.stop.take();
                     return self.stopped(protocol);
                 }
+                // What the user sent meanwhile is what they stopped it for (CON-83).
+                Ok(harness_api::BackendEnd::StoppedBeforeMessages) => {
+                    self.stop.take();
+                    continue;
+                }
                 Ok(harness_api::BackendEnd::Done) => {}
             }
             if self.take_queued().await {

@@ -33,8 +33,15 @@ Plugins stay crates linked into the binary; a reload swaps the binary in the sam
 2. **Safe point.** Wait until no model turn is streaming and no tool call is in flight.
 3. **Hand-off.** The process writes everything it holds only in memory to a hand-off file: tabs, transcripts, scroll positions, open journal tickets and expanded flowchart instances, the input draft, the open overlay.
 4. **Swap in the same terminal.**
-   - Linux and macOS: the process replaces itself with the new binary (`exec`) — the same process and terminal, raw mode and the alternate screen kept; neither the shell nor the terminal notices.
+   - Linux and macOS: the process gives the terminal back as the shell left it and replaces itself with the new binary (`exec`), which takes the terminal again: the same process and terminal, and the shell does not notice.
    - Windows: a process cannot replace itself, so the old one starts the new binary in the same console, waits for it and passes its exit code on; the console window stays.
 5. **Restore.** The new process reads the hand-off, redraws every tab as it was and deletes the file. Callbacks that came during the swap were taken by the daemon and are delivered now.
 
 Done when the test protocol of journal#330 passes on Linux and once on a Windows host.
+
+## Modes with several agents
+
+Beside plan mode, the harness will have two more session modes for work shared between agents. Like plan mode they belong to the harness, whichever adapter runs the agent: the user or the agent switches them, a switch is logged and comes back on a resume, and a mode's rules are in the system prompt only while it is on. Neither is built yet. Both need an agent-to-agent channel and tools for opening tabs, which the harness does not have yet.
+
+- **Brainstorming mode.** The agent gets tools to open several tabs with other agents and bring them into a brainstorm over agent-to-agent messages. They are peers: each says what it thinks of the same question, and answers the others.
+- **Orchestration mode.** The agent gets tools to spawn agents in tabs of their own. It is the master and they are its slaves: it gives each its work, follows it, and takes the result.

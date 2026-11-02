@@ -357,7 +357,7 @@ impl ClaudeCode {
         loop {
             if (request.stopped)() {
                 *slot = None;
-                return Ok(BackendEnd::Stopped);
+                return Ok(stopped(&unechoed));
             }
             // Done first: what comes after this result is the next run's, from its start.
             if let Some((until, end)) = &end_held
@@ -399,7 +399,7 @@ impl ClaudeCode {
                             Mapped::Event(event) => {
                                 if !sink(event) {
                                     *slot = None;
-                                    return Ok(BackendEnd::Stopped);
+                                    return Ok(stopped(&unechoed));
                                 }
                             }
                             // Before its prompt came back: the end of a turn before this run.
@@ -438,6 +438,11 @@ impl ClaudeCode {
             }
         }
     }
+}
+
+/// A run stopped: messages it was given and never took go on to the next, or stopping would lose them.
+fn stopped(unechoed: &std::collections::VecDeque<String>) -> BackendEnd {
+    if unechoed.is_empty() { BackendEnd::Stopped } else { BackendEnd::StoppedBeforeMessages }
 }
 
 /// How long a result waits for a message sent just before it to come back.

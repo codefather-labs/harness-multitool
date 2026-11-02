@@ -41,6 +41,30 @@ pub enum Outcome {
     OpenSettings,
 }
 
+/// How long a second Ctrl+C counts as meaning it.
+pub const QUIT_AGAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Ctrl+C (CON-86): with a run on it stops the run, as Esc does, and what is queued goes next.
+/// With none, a session asks for it again, so one meant for a run that just ended closes nothing.
+/// Elsewhere it quits. `idle_press` is when it last asked.
+pub fn interrupt(s: &mut AppState, idle_press: &mut Option<std::time::Instant>, now: std::time::Instant) -> Outcome {
+    let Mode::Session(w) = &mut s.mode else { return Outcome::Quit };
+    if !w.live {
+        return Outcome::Quit;
+    }
+    if w.view().generating {
+        let tab = w.tabs[w.active].id;
+        w.outbox.push(crate::model::Outgoing::Stop { tab });
+        return Outcome::Stay;
+    }
+    if idle_press.is_some_and(|at| now.duration_since(at) < QUIT_AGAIN) {
+        return Outcome::Quit;
+    }
+    *idle_press = Some(now);
+    w.toast = Some(crate::model::Toast { kind: crate::model::InboundKind::System, from: "harness".to_string(), text: "Ctrl+C again to quit".to_string() });
+    Outcome::Stay
+}
+
 pub fn key(s: &mut AppState, k: Key) -> Outcome {
     if k == Key::Esc && !matches!(s.mode, Mode::Session(_)) {
         return Outcome::Quit;
@@ -99,7 +123,7 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                 }
                 Key::Char(c) => w.view_mut().composer.text.push(c),
                 // Esc stops a generating agent, else closes the toast; the session itself is
-                // left with Ctrl+C.
+                // left with /exit or Ctrl+C twice.
                 Key::Esc if w.live && w.view().generating => {
                     let tab = w.tabs[w.active].id;
                     w.outbox.push(crate::model::Outgoing::Stop { tab });
@@ -584,5 +608,29 @@ mod tests {
         assert!(expanded(&s, 0), "the older one is untouched");
         key(&mut s, Key::Ctrl('o'));
         assert!(!expanded(&s, 1));
+    }
+
+    #[test]
+    fn ctrl_c_stops_a_run_and_quits_only_when_meant() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut idle = None;
+        let mut s = crate::fixtures::welcome();
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        w.live = true;
+        w.view_mut().generating = true;
+        assert_eq!(interrupt(&mut s, &mut idle, start), Outcome::Stay, "a run: it stops, the window stays");
+        assert_eq!(interrupt(&mut s, &mut idle, start), Outcome::Stay, "pressed again during the run: still stays");
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        assert_eq!(w.outbox.iter().filter(|o| matches!(o, crate::model::Outgoing::Stop { .. })).count(), 2);
+        assert!(idle.is_none(), "stopping a run is no step towards quitting");
+        w.view_mut().generating = false;
+        assert_eq!(interrupt(&mut s, &mut idle, start), Outcome::Stay, "idle: it asks");
+        let Mode::Session(w) = &s.mode else { unreachable!() };
+        assert!(w.toast.as_ref().is_some_and(|t| t.text.contains("again")));
+        assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(3)), Outcome::Stay, "too late: it asks again");
+        assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(4)), Outcome::Quit, "in time: it quits");
+        let mut page = crate::fixtures::splash();
+        assert_eq!(interrupt(&mut page, &mut None, start), Outcome::Quit, "no session: it quits at once");
     }
 }
