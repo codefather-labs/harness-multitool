@@ -393,6 +393,9 @@ fn card(width: u16, t: &Theme, stripe: Color, label: Vec<Span<'static>>, body: V
     cv.finish(h)
 }
 
+/// How far a person's message goes from the card's surface to the window's background.
+const USER_STEP: f32 = 0.6;
+
 #[allow(clippy::too_many_arguments)]
 fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, lines: &[String], attached: &[Item], agent: &str) -> Drawn {
     let mut cv = Canvas::new(width, t, known);
@@ -401,7 +404,12 @@ fn turn(width: u16, t: &Theme, known: &[JournalEvent], role: Role, time: &str, l
         Role::User => "USER",
         Role::Assistant => agent,
     };
-    let bg = t.surface;
+    // A person's message sits a step back from the agent's, towards the window's own background,
+    // in any theme.
+    let bg = match role {
+        Role::User => tint(t.background, t.surface, USER_STEP),
+        Role::Assistant => t.surface,
+    };
     cv.line(CX, 0, tw, vec![Span::styled(name.to_string(), bold(t.accent)), Span::styled(format!("  {time}"), plain(t.text_muted))], bg);
     let mut y = 1;
     // The reasoning comes before the answer it led to, wherever it arrived.
@@ -1488,5 +1496,19 @@ mod tests {
         assert!(card.contains("🌑") && card.contains("Calling journal_get") && card.contains("running"), "{card}");
         let finished = row_text(&tool(ToolState::Done, 0, note));
         assert!(!finished.contains("Calling") && finished.contains("completed"), "{finished}");
+    }
+
+    #[test]
+    fn a_persons_message_sits_a_step_back_from_the_agents_in_every_theme() {
+        for (id, _) in crate::theme::BUILTIN {
+            let t = Theme::builtin(id).unwrap();
+            let card = |role| {
+                let d = item(&Item::Turn { role, time: "1".into(), lines: vec!["hi".into()], attached: vec![] }, 40, &t, &[]);
+                d.buf[(30, 1)].bg
+            };
+            assert_eq!(card(Role::Assistant), t.surface, "{id}: the agent's as it was");
+            assert_ne!(card(Role::User), t.surface, "{id}");
+            assert_ne!(card(Role::User), t.background, "{id}: still a card");
+        }
     }
 }
