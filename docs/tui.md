@@ -5,6 +5,7 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 ## Run
 
 ```bash
+./install.sh --local             # build it and put `multitool` on your PATH (install.ps1 on Windows)
 ./run.sh                        # build (release) and open the TUI at the splash
 ./run.sh preview main-session   # open on a named state (see `screen --list`)
 ./run.sh --graphics off         # text only; auto|sixel|kitty|iterm2|off

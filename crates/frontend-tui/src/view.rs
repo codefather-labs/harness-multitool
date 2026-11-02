@@ -54,6 +54,10 @@ pub enum Target {
     DelegateOwn,
     DelegateSkip,
     ContextChoice(usize),
+    /// A row of the settings' Speech to text page.
+    VoiceRow(usize),
+    /// A choice in that page's open dropdown.
+    VoiceChoice(usize),
     /// A provider row on the settings window's provider page.
     Provider(usize),
     /// A row of the settings' Callbacks tab.

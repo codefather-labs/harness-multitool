@@ -462,6 +462,8 @@ enum Input {
     StepDebug(bool),
     Nick(String),
     Inbound { label: String, text: String },
+    /// For the user to read; no run.
+    Notice { label: String, text: String },
 }
 
 struct Handle {
@@ -843,6 +845,16 @@ impl Sessions {
         }
     }
 
+    /// Something for the user to read in this conversation: the agent is not woken and never sees it.
+    pub fn notice(&mut self, tab: u64, label: String, text: String) {
+        if !self.handles.contains_key(&tab) {
+            self.start(tab, None);
+        }
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Notice { label, text });
+        }
+    }
+
     pub fn answer(&self, tab: u64, answer: Answer) {
         if let Some(handle) = self.handles.get(&tab) {
             let _ = handle.answers.send(answer);
@@ -944,8 +956,14 @@ impl Sessions {
                     pollster::block_on(engine.set_step_debug(on, "user"));
                     continue;
                 }
+                if let Input::Notice { label, text } = &input {
+                    if !retired_here.load(Ordering::SeqCst) {
+                        pollster::block_on(engine.notice(label, text));
+                    }
+                    continue;
+                }
                 let end = match input {
-                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) => unreachable!("handled above"),
+                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) | Input::Notice { .. } => unreachable!("handled above"),
                     Input::Next => {
                         let next = {
                             let mut inbox = inbox.lock().expect("inbox");

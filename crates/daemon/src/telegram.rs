@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use harness_api::{Secret, TELEGRAM_LABEL};
+use harness_api::{Secret, TELEGRAM_LABEL, MISSING_SPEECH_BACKEND, TELEGRAM_VOICE_LABEL};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -20,6 +20,8 @@ const MAX_SEND_WAIT_S: u64 = 30;
 const ERROR_WAIT: Duration = Duration::from_secs(5);
 /// Messages kept for one chat with no session to go to; the oldest makes way, and it is said.
 const MAX_HELD: usize = 20;
+/// The Bot API gives bots files up to this size.
+const MAX_FILE: u64 = 20 * 1024 * 1024;
 
 pub struct Config {
     pub base_url: String,
@@ -28,7 +30,12 @@ pub struct Config {
     /// Where a reply goes before anyone allowed has written.
     pub chat: Option<i64>,
     pub poll_timeout_s: u64,
+    /// What turns a voice note into words; none when speech is off.
+    pub transcriber: Option<Transcriber>,
 }
+
+/// A voice note's bytes to its words.
+pub type Transcriber = Arc<dyn Fn(&[u8]) -> Result<String, String> + Send + Sync>;
 
 /// A chat, and a forum topic in it.
 type Key = (i64, Option<i64>);
@@ -170,6 +177,23 @@ impl Requester {
     }
 }
 
+impl Requester {
+    /// A file a message has, by its id. The address holds the token: errors are cleaned.
+    fn fetch_file(&self, id: &str) -> Result<Vec<u8>, String> {
+        let path = match self.call("getFile", &json!({"file_id": id})) {
+            Answer::Result(file) => file["file_path"].as_str().map(str::to_string).ok_or("Telegram gave no file path")?,
+            Answer::Wait(seconds) => return Err(format!("Telegram asks to wait {seconds} s")),
+            Answer::Failed(message) => return Err(message),
+        };
+        let url = format!("{}/file/bot{}/{path}", self.base_url, self.token.expose());
+        let mut response = self.agent.get(&url).call().map_err(|e| self.clean(&format!("fetching the note: {e}")))?;
+        if !response.status().is_success() {
+            return Err(format!("fetching the note: Telegram answered {}", response.status().as_u16()));
+        }
+        response.body_mut().with_config().limit(MAX_FILE).read_to_vec().map_err(|e| self.clean(&format!("fetching the note: {e}")))
+    }
+}
+
 fn kept_path(data_dir: &Path) -> PathBuf {
     data_dir.join("daemon").join("telegram.json")
 }
@@ -264,7 +288,7 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
 }
 
 /// One update. False if it has to wait for a window.
-fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed: &[i64]) -> bool {
+fn take(daemon: &Arc<Daemon>, requester: &Requester, update: &Value, id: i64, allowed: &[i64]) -> bool {
     if update["callback_query"].is_object() {
         button(daemon, requester, &update["callback_query"], allowed);
         return true;
@@ -279,19 +303,74 @@ fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed
         return true;
     }
     let from_allowed = message["from"]["id"].as_i64().is_some_and(|user| allowed.contains(&user));
-    let (Some(text), true) = (message["text"].as_str(), from_allowed) else {
-        // A stranger's text is not kept anywhere, not even in the log.
+    if !from_allowed {
+        // A stranger's message is not kept anywhere, not even in the log, nor a voice note fetched.
         daemon.with_channel(|c| c.ignored += 1);
         daemon.trigger_log(&format!("telegram-{id}"), TELEGRAM_LABEL, "", "ignored", "");
         return true;
-    };
+    }
     let Some(chat) = message["chat"]["id"].as_i64() else { return true };
     let key: Key = (chat, message["message_thread_id"].as_i64());
     daemon.with_channel(|c| c.reply_to = Some(key));
+    let Some(text) = message["text"].as_str() else {
+        match message["voice"]["file_id"].as_str() {
+            Some(file) => voice(daemon, requester, key, id, file),
+            None => say(daemon, requester, key, "Only text and voice messages reach an agent here.", None),
+        }
+        return true;
+    };
     if command(daemon, requester, key, text) {
         return true;
     }
-    let uuid = format!("telegram-{id}");
+    route(daemon, requester, key, &format!("telegram-{id}"), TELEGRAM_LABEL, text)
+}
+
+/// A voice note, off this thread: other chats wait for nobody's transcribing.
+fn voice(daemon: &Arc<Daemon>, requester: &Requester, key: Key, id: i64, file: &str) {
+    let transcriber = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.config.transcriber.clone());
+    let Some(transcriber) = transcriber else {
+        no_speech_backend(daemon, requester, key, id);
+        return;
+    };
+    let daemon = daemon.clone();
+    let (requester, file) = (requester.clone(), file.to_string());
+    std::thread::spawn(move || {
+        let uuid = format!("telegram-{id}");
+        let words = requester.fetch_file(&file).and_then(|note| transcriber(&note));
+        match words {
+            Ok(words) if words.trim().is_empty() => say(&daemon, &requester, key, "I heard no words in that voice note.", None),
+            Ok(words) => {
+                if !route(&daemon, &requester, key, &uuid, TELEGRAM_VOICE_LABEL, &words) {
+                    hold(&daemon, &requester, key, &words, &[], false);
+                }
+            }
+            // Set up when the channel started, and gone since.
+            Err(why) if why == MISSING_SPEECH_BACKEND => no_speech_backend(&daemon, &requester, key, id),
+            Err(why) => {
+                say(&daemon, &requester, key, &format!("I could not transcribe that voice note: {why}"), None);
+                daemon.trigger_log(&uuid, TELEGRAM_VOICE_LABEL, "", "failed", &why);
+            }
+        }
+    });
+}
+
+/// No engine to hear a note with. The user is told, in the chat and in the conversation it goes
+/// to; the agent is not, since setting one up is the user's own choice (CON-89).
+fn no_speech_backend(daemon: &Daemon, requester: &Requester, key: Key, id: i64) {
+    say(daemon, requester, key, MISSING_SPEECH_BACKEND, None);
+    if let Some(host) = daemon.conversations() {
+        let open = host.open_sessions();
+        let bound = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.bound_session(key));
+        let only = (open.len() == 1).then(|| open[0].id.clone());
+        if let Some(session) = bound.or(only) {
+            host.notify(&session, TELEGRAM_VOICE_LABEL, MISSING_SPEECH_BACKEND);
+        }
+    }
+    daemon.trigger_log(&format!("telegram-{id}"), TELEGRAM_VOICE_LABEL, "", "no_backend", "");
+}
+
+/// A message for whichever session this chat goes to. False if it has to wait for a window.
+fn route(daemon: &Daemon, requester: &Requester, key: Key, uuid: &str, label: &str, text: &str) -> bool {
     let host = daemon.conversations();
     let open = host.as_ref().map_or_else(Vec::new, |h| h.open_sessions());
     let bound = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.bound_session(key));
@@ -304,20 +383,20 @@ fn take(daemon: &Daemon, requester: &Requester, update: &Value, id: i64, allowed
     }
     let target = only.map(|o| o.id).or(bound.clone());
     if let (Some(host), Some(session)) = (&host, &target)
-        && host.deliver_to(session, TELEGRAM_LABEL, text)
+        && host.deliver_to(session, label, text)
     {
-        delivered(daemon, &uuid, session);
+        delivered(daemon, uuid, session);
         return true;
     }
     if !open.is_empty() || bound.is_some() {
         hold(daemon, requester, key, text, &open, bound.is_some());
-        daemon.trigger_log(&uuid, TELEGRAM_LABEL, "", "held", "");
+        daemon.trigger_log(uuid, label, "", "held", "");
         return true;
     }
     // No session yet: the window that is there starts one with it.
     let Some(window) = daemon.listening_window() else { return false };
-    daemon.deliver(&window, WindowEvent::Notification { uuid: uuid.clone(), label: TELEGRAM_LABEL.to_string(), text: text.to_string() });
-    delivered(daemon, &uuid, &window);
+    daemon.deliver(&window, WindowEvent::Notification { uuid: uuid.to_string(), label: label.to_string(), text: text.to_string() });
+    delivered(daemon, uuid, &window);
     true
 }
 

@@ -20,6 +20,11 @@ pub const CLAUDE_SUBSCRIPTION_REFUSED: &str = "Sorry, claude-subscription is for
 
 /// The label of a message from the Telegram channel. Reserved: a callback cannot claim it.
 pub const TELEGRAM_LABEL: &str = "telegram";
+/// A voice note from there, in the words it was transcribed to.
+pub const TELEGRAM_VOICE_LABEL: &str = "telegram_voice";
+/// What the user is told of a voice note when no speech engine is set up. It is theirs to set up:
+/// it goes to them, never to the agent (CON-89).
+pub const MISSING_SPEECH_BACKEND: &str = "Voice Transcript error. Missing speech to text backend. Choose any one inside of harness settings";
 /// The label of what the harness itself tells its agent. No callback can use it.
 pub const HARNESS_LABEL: &str = "harness";
 
@@ -71,6 +76,9 @@ pub enum Event {
     UserMessage { text: String },
     /// A callback for the agent (IF-13). It reaches the model marked as external data (INV-12).
     Inbound { label: String, text: String },
+    /// Something for the user to read in this conversation. It starts no run and never reaches the
+    /// model, in this session or in any form it is brought to.
+    Notice { label: String, text: String },
     TaskState { to: TaskState, reason: Option<String> },
     TurnStarted { turn: u32, provider: String, model: String },
     TextDelta { text: String },

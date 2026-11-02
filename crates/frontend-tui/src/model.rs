@@ -59,6 +59,7 @@ pub struct Workspace {
     /// What the settings' Callbacks tab shows when opened, as the app knows it.
     pub callbacks: Option<CallbacksPage>,
     pub telegram: Option<TelegramPage>,
+    pub voice: Option<VoicePage>,
     /// The sign-in state as the running harness knows it.
     pub auth: Option<AuthPage>,
 }
@@ -69,6 +70,14 @@ pub enum Outgoing {
     Prompt { tab: u64, text: String },
     /// A message that is a task: done only when its checks pass (INV-4).
     Task { tab: u64, text: String, steps: Vec<String> },
+    /// Fetch this speech model.
+    DownloadVoiceModel { model: String },
+    /// The Speech to text page saved.
+    SaveVoice { engine: Option<String>, model: String },
+    /// The page's test: the microphone on.
+    StartVoiceTest { model: String },
+    /// The microphone off: what it heard goes to the engine.
+    StopVoiceTest,
     /// The Telegram page saved: a new token if one was typed, and who may speak.
     SaveTelegram { token: Option<String>, users: Vec<i64> },
     /// The Login button of gpt-subscription, and what follows it.
@@ -169,6 +178,7 @@ pub struct SettingsView {
     pub fallback: bool,
     pub callbacks: CallbacksPage,
     pub telegram: TelegramPage,
+    pub voice: VoicePage,
     pub auth: AuthPage,
     /// The model name is being typed.
     pub editing_model: bool,
@@ -303,7 +313,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None }
+        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -905,6 +915,69 @@ pub struct StatusLine {
     pub fields: Vec<(String, String)>,
 }
 
+/// A speech model on the settings' page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VoiceModel {
+    pub engine: String,
+    pub name: String,
+    pub size: String,
+    /// Downloaded.
+    pub there: bool,
+}
+
+/// How the page's test stands.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum VoiceTest {
+    #[default]
+    Idle,
+    /// The microphone is on: how loud it is now, 0 to 1, and for how long so far.
+    Listening { level: f32, seconds: usize },
+    /// What was said is being turned into words.
+    Hearing,
+    Heard(String),
+}
+
+/// The settings' Speech to text page.
+#[derive(Debug, Clone, Default)]
+pub struct VoicePage {
+    /// The chosen engine's id, none for off.
+    pub engine: Option<String>,
+    pub models: Vec<VoiceModel>,
+    /// The chosen model's name.
+    pub model: String,
+    /// The runtime is here, or it comes with the first download: what it comes to, if it does.
+    pub runtime_size: Option<String>,
+    /// 0 the engine, 1 the model, 2 the download, 3 the test.
+    pub cursor: usize,
+    /// The dropdown of the row under the cursor is open, at this choice.
+    pub menu: Option<usize>,
+    /// A download is running: how far it has got.
+    pub downloading: Option<String>,
+    pub test: VoiceTest,
+    /// How it stands, in words.
+    pub status: String,
+}
+
+impl VoicePage {
+    pub fn models_of_engine(&self) -> Vec<&VoiceModel> {
+        self.models.iter().filter(|m| Some(&m.engine) == self.engine.as_ref()).collect()
+    }
+
+    pub fn chosen(&self) -> Option<&VoiceModel> {
+        self.models_of_engine().into_iter().find(|m| m.name == self.model)
+    }
+
+    /// Choosing an engine chooses a model of it: one already here if there is one.
+    pub fn choose_engine(&mut self, engine: Option<String>) {
+        self.engine = engine;
+        if self.chosen().is_none() {
+            let of_engine = self.models_of_engine();
+            let first = of_engine.iter().find(|m| m.there).or(of_engine.first());
+            self.model = first.map_or(String::new(), |m| m.name.clone());
+        }
+    }
+}
+
 /// The settings' Telegram page. A saved token is never here, only whether there is one.
 #[derive(Clone, Default)]
 pub struct TelegramPage {
@@ -931,6 +1004,11 @@ pub struct Composer {
     pub placeholder: String,
     pub focused: bool,
     pub hints: Vec<KeyHint>,
+    /// How many characters the cursor stands before the end: what is typed goes there, and text
+    /// set from outside leaves it at the end.
+    pub back: usize,
+    /// The width of its last drawing, for moving up and down its rows.
+    pub drawn_width: std::cell::Cell<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -942,5 +1020,89 @@ pub struct KeyHint {
 impl KeyHint {
     pub fn new(key: &str, label: &str) -> KeyHint {
         KeyHint { key: key.into(), label: label.into() }
+    }
+}
+
+impl Composer {
+    fn at(&mut self) -> usize {
+        let len = self.text.chars().count();
+        self.back = self.back.min(len);
+        len - self.back
+    }
+
+    fn byte(&self, char_index: usize) -> usize {
+        self.text.char_indices().nth(char_index).map_or(self.text.len(), |(byte, _)| byte)
+    }
+
+    /// Where the cursor stands, as a character index.
+    pub fn cursor(&self) -> usize {
+        let len = self.text.chars().count();
+        len - self.back.min(len)
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        let at = self.at();
+        let byte = self.byte(at);
+        self.text.insert_str(byte, text);
+    }
+
+    pub fn backspace(&mut self) {
+        let at = self.at();
+        if at > 0 {
+            let byte = self.byte(at - 1);
+            self.text.remove(byte);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        let at = self.at();
+        if self.back > 0 {
+            let byte = self.byte(at);
+            self.text.remove(byte);
+            self.back -= 1;
+        }
+    }
+
+    pub fn left(&mut self) {
+        let at = self.at();
+        if at > 0 {
+            self.back += 1;
+        }
+    }
+
+    pub fn right(&mut self) {
+        self.at();
+        self.back = self.back.saturating_sub(1);
+    }
+
+    fn move_to(&mut self, index: usize) {
+        self.back = self.text.chars().count().saturating_sub(index);
+    }
+
+    /// The start of the row the cursor is on, or its end: rows as they are drawn.
+    pub fn home(&mut self) {
+        let at = self.at();
+        let rows = crate::widgets::text_rows(&self.text, self.drawn_width.get());
+        let row = crate::widgets::row_of(&rows, at);
+        self.move_to(rows[row].0);
+    }
+
+    pub fn end(&mut self) {
+        let at = self.at();
+        let rows = crate::widgets::text_rows(&self.text, self.drawn_width.get());
+        let row = crate::widgets::row_of(&rows, at);
+        self.move_to(rows[row].0 + rows[row].1);
+    }
+
+    /// One row up or down, keeping the column. False if there is no row that way.
+    pub fn vertical(&mut self, up: bool) -> bool {
+        let at = self.at();
+        let rows = crate::widgets::text_rows(&self.text, self.drawn_width.get());
+        let row = crate::widgets::row_of(&rows, at);
+        let target = if up { row.checked_sub(1) } else { Some(row + 1).filter(|r| *r < rows.len()) };
+        let Some(target) = target else { return false };
+        let column = at - rows[row].0;
+        self.move_to(rows[target].0 + column.min(rows[target].1));
+        true
     }
 }

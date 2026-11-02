@@ -19,6 +19,7 @@ struct Fake {
     flood_once: bool,
     refuse: bool,
     conflict: bool,
+    files_asked: u32,
 }
 
 fn fake_api() -> (String, Arc<Mutex<Fake>>) {
@@ -34,6 +35,10 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
             // As the real one does: with no JSON content type the body is not read at all.
             let json_body = request.headers().iter().any(|h| h.field.equiv("content-type") && h.value.as_str().starts_with("application/json"));
             let body: Value = if json_body { serde_json::from_str(&body).unwrap_or(Value::Null) } else { json!({"offset": 0}) };
+            if path.starts_with(&format!("/file/bot{TOKEN}/")) {
+                request.respond(tiny_http::Response::from_data(b"OggS-a-note".to_vec())).unwrap();
+                continue;
+            }
             assert!(path.starts_with(&format!("/bot{TOKEN}/")), "{path}");
             let mut s = state.lock().unwrap();
             let reply = if path.ends_with("/setMyCommands") {
@@ -44,6 +49,9 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
                 json!({"ok": false, "error_code": 401, "description": format!("Unauthorized for {TOKEN}")})
             } else if std::mem::take(&mut s.flood_once) {
                 json!({"ok": false, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 1}})
+            } else if path.ends_with("/getFile") {
+                s.files_asked += 1;
+                json!({"ok": true, "result": {"file_path": "voice/note.oga"}})
             } else if path.ends_with("/getUpdates") {
                 let offset = body["offset"].as_i64().unwrap();
                 s.offsets.push(offset);
@@ -67,7 +75,7 @@ fn update(id: i64, user: i64, text: &str) -> Value {
 }
 
 fn config(url: &str, allowed: &[i64]) -> Config {
-    Config { base_url: url.into(), token: Secret::new(TOKEN), allowed_users: allowed.to_vec(), chat: None, poll_timeout_s: 0 }
+    Config { base_url: url.into(), token: Secret::new(TOKEN), allowed_users: allowed.to_vec(), chat: None, poll_timeout_s: 0, transcriber: None }
 }
 
 struct World {
@@ -231,6 +239,7 @@ fn off_without_a_token_and_a_callback_cannot_claim_the_label() {
 struct FakeHost {
     open: Mutex<Vec<OpenSession>>,
     got: Mutex<Vec<(String, String)>>,
+    notices: Mutex<Vec<(String, String)>>,
 }
 
 impl ConversationHost for FakeHost {
@@ -255,6 +264,10 @@ impl ConversationHost for FakeHost {
             self.got.lock().unwrap().push((session.to_string(), text.to_string()));
         }
         open
+    }
+    fn notify(&self, session: &str, _: &str, text: &str) -> bool {
+        self.notices.lock().unwrap().push((session.to_string(), text.to_string()));
+        true
     }
     fn session_of(&self, _: &str, tab: u64) -> Option<String> {
         Some(format!("s{tab}"))
@@ -422,4 +435,75 @@ fn anyone_can_learn_their_own_id_and_nothing_else() {
     let log = std::fs::read_to_string(w.data.path().join("daemon/triggers.jsonl")).unwrap_or_default();
     let kept = std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).unwrap_or_default();
     assert!(!log.contains("SECRET-WORDS") && !kept.contains("SECRET-WORDS") && !kept.contains("666"), "{log} {kept}");
+}
+
+fn voice_note(id: i64, user: i64, chat: i64) -> Value {
+    json!({"update_id": id, "message": {"message_id": id, "from": {"id": user}, "chat": {"id": chat}, "voice": {"file_id": "F1", "duration": 2}}})
+}
+
+fn voice_world(transcriber: Option<telegram::Transcriber>, updates: Vec<Value>) -> Bound {
+    let (url, fake) = fake_api();
+    fake.lock().unwrap().updates = updates;
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let host = Arc::new(FakeHost::default());
+    *host.open.lock().unwrap() = vec![session("a", "alpha")];
+    daemon.host_conversations(host.clone());
+    daemon.start_telegram(Config { transcriber, ..config(&url, &[42]) });
+    let client = Client::find(data.path()).unwrap();
+    Bound { daemon, client, host, data, fake }
+}
+
+#[test]
+fn a_voice_note_reaches_the_session_in_words_and_a_stranger_fetches_nothing() {
+    let w = voice_world(Some(Arc::new(|_: &[u8]| Ok("said aloud".to_string()))), vec![voice_note(1, 666, 7), voice_note(2, 42, 7)]);
+    until("the words delivered", || w.host.got.lock().unwrap().as_slice() == [("a".to_string(), "said aloud".to_string())]);
+    assert_eq!(w.fake.lock().unwrap().files_asked, 1, "a stranger's note is never fetched");
+}
+
+#[test]
+fn a_voice_note_that_cannot_be_heard_is_said_so() {
+    let w = voice_world(Some(Arc::new(|_: &[u8]| Err("the model is missing".to_string()))), vec![voice_note(1, 42, 7)]);
+    until("told why", || said(&w.fake).iter().any(|t| t.contains("could not transcribe") && t.contains("the model is missing")));
+    assert!(w.host.got.lock().unwrap().is_empty());
+
+    let w = voice_world(Some(Arc::new(|_: &[u8]| Ok("  ".to_string()))), vec![voice_note(1, 42, 7)]);
+    until("no words", || said(&w.fake).iter().any(|t| t.contains("no words")));
+
+    let w = voice_world(None, vec![json!({"update_id": 2, "message": {"message_id": 2, "from": {"id": 42}, "chat": {"id": 7}, "photo": []}})]);
+    until("a photo", || said(&w.fake).iter().any(|t| t.contains("Only text and voice")));
+}
+
+/// It is the user's to set up: they read this in the chat and the window, and the agent gets nothing.
+#[test]
+fn with_no_speech_backend_the_user_is_told_and_the_agent_is_not() {
+    const NOTICE: &str = "Voice Transcript error. Missing speech to text backend. Choose any one inside of harness settings";
+    let w = voice_world(None, vec![voice_note(1, 42, 7)]);
+    until("told in the chat", || said(&w.fake).iter().any(|t| t == NOTICE));
+    until("told in the window", || w.host.notices.lock().unwrap().iter().any(|(_, t)| t == NOTICE));
+    assert!(w.host.got.lock().unwrap().is_empty(), "nothing for the agent");
+    assert_eq!(w.fake.lock().unwrap().files_asked, 0, "nothing fetched for nothing");
+
+    // Installed when the channel started and gone since: the same.
+    let w = voice_world(Some(Arc::new(|_: &[u8]| Err(NOTICE.to_string()))), vec![voice_note(1, 42, 7)]);
+    until("told again", || w.host.notices.lock().unwrap().iter().any(|(_, t)| t == NOTICE));
+    assert!(w.host.got.lock().unwrap().is_empty(), "nothing for the agent");
+    assert!(said(&w.fake).iter().all(|t| !t.contains("could not transcribe")));
+}
+
+#[test]
+fn transcribing_holds_up_no_other_chat() {
+    let (gate, wait) = std::sync::mpsc::channel::<()>();
+    let wait = Mutex::new(wait);
+    let w = voice_world(
+        Some(Arc::new(move |_: &[u8]| {
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(8));
+            Ok("late words".to_string())
+        })),
+        vec![voice_note(1, 42, 7), message(2, 7, None, "right away")],
+    );
+    until("the text goes first", || w.host.got.lock().unwrap().iter().any(|(_, t)| t == "right away"));
+    assert!(!w.host.got.lock().unwrap().iter().any(|(_, t)| t == "late words"));
+    gate.send(()).unwrap();
+    until("then the words", || w.host.got.lock().unwrap().iter().any(|(_, t)| t == "late words"));
 }

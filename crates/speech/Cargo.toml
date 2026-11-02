@@ -1,0 +1,21 @@
+[package]
+name = "harness-speech"
+description = "Speech to text on this machine: a runtime and models fetched on the user's word, voice notes decoded, the microphone."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+harness-api = { version = "0.1.0-dev", path = "../api" }
+bzip2-rs = "0.1"
+ogg = "0.9"
+opus-decoder = "0.1"
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3"
+tiny_http = "0.12"

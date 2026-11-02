@@ -386,6 +386,21 @@ fn main() -> Result<()> {
     }
 }
 
+/// How a speech model's download stands, between its thread and the window.
+#[derive(Default)]
+struct VoiceDownload {
+    how_far: String,
+    end: Option<Result<(), String>>,
+}
+
+/// The settings' test of speech to text, between the microphone, the engine and the page.
+struct VoiceTestRun {
+    /// On until it is stopped.
+    recording: Option<harness_speech::Recording>,
+    model: harness_speech::Model,
+    heard: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+}
+
 /// How the Telegram channel stands, in words, as the daemon says. Holds no token.
 fn telegram_status() -> String {
     let stats = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).and_then(|c| c.stats().ok());
@@ -555,6 +570,9 @@ struct Live {
     windows: std::collections::HashSet<u64>,
     /// Each tab's window at the daemon, for the hand-off.
     registered: std::collections::HashMap<u64, harness_daemon::client::Registered>,
+    /// A speech model on its way, if one is.
+    voice_download: Option<std::sync::Arc<std::sync::Mutex<VoiceDownload>>>,
+    voice_test: Option<VoiceTestRun>,
     /// The agent's `plugins_reload` tool raises this.
     reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Tabs whose conversation the daemon is bringing in line: the window waits (CON-81).
@@ -599,6 +617,7 @@ impl Live {
         if self.windows.len() != before {
             w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
+            w.voice = Some(self.voice_page());
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
         }
@@ -689,6 +708,7 @@ impl Live {
         w.active = handoff.active.min(w.tabs.len().saturating_sub(1));
         w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
+            w.voice = Some(self.voice_page());
         state
     }
 
@@ -897,7 +917,7 @@ impl Live {
             Some(_) => None,
             None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -905,6 +925,7 @@ impl Live {
         if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
             w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
+            w.voice = Some(self.voice_page());
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
             }
@@ -944,6 +965,96 @@ impl Live {
             .collect();
         let daemon = client.map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
         CallbacksPage { standard, custom, conditions, daemon, cursor: 0, open: None }
+    }
+
+    fn voice_page(&self) -> frontend_tui::model::VoicePage {
+        let voice = config::load().map(|c| c.voice).unwrap_or_default();
+        let data = config::data_dir().ok();
+        let chosen = voice.chosen();
+        let models = harness_speech::MODELS.iter().map(|m| frontend_tui::model::VoiceModel { engine: m.engine.id().to_string(), name: m.name.to_string(), size: m.size.to_string(), there: data.as_ref().is_some_and(|d| harness_speech::model_present(d, *m)) }).collect();
+        let runtime_size = (!data.as_ref().is_some_and(|d| harness_speech::runtime_present(d))).then(|| harness_speech::RUNTIME_SIZE.to_string());
+        frontend_tui::model::VoicePage { engine: chosen.map(|m| m.engine.id().to_string()), model: chosen.map_or(String::new(), |m| m.name.to_string()), models, runtime_size, ..Default::default() }
+    }
+
+    /// Moves a speech download along on the page.
+    fn tick_voice_download(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        let Some(progress) = &self.voice_download else { return false };
+        let (how_far, end) = {
+            let mut p = progress.lock().expect("download");
+            (p.how_far.clone(), p.end.take())
+        };
+        if end.is_none() {
+            let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay else { return false };
+            let changed = s.voice.downloading.as_deref() != Some(how_far.as_str());
+            s.voice.downloading = Some(how_far);
+            return changed;
+        }
+        self.voice_download = None;
+        // A channel that started without it hears notes from now on.
+        if let Some(client) = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)) {
+            let _ = client.telegram_reload();
+        }
+        let fresh = self.voice_page();
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+            s.voice.models = fresh.models.clone();
+            s.voice.runtime_size = fresh.runtime_size.clone();
+            s.voice.downloading = None;
+            s.voice.status = match end {
+                Some(Ok(())) => "Downloaded.".to_string(),
+                Some(Err(why)) => why,
+                None => String::new(),
+            };
+        }
+        w.voice = Some(fresh);
+        true
+    }
+
+    /// The settings' test: the level while the microphone is on, then the words.
+    fn tick_voice_test(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        use frontend_tui::model::VoiceTest;
+        let Some(test) = &mut self.voice_test else { return false };
+        let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay else {
+            // The settings closed: the microphone goes off with them.
+            self.voice_test = None;
+            return false;
+        };
+        if let Some(recording) = &test.recording {
+            if !recording.finished() {
+                let now = VoiceTest::Listening { level: recording.level(), seconds: recording.seconds() };
+                let changed = s.voice.test != now;
+                // A press of Enter is on its way here as a stop, not to be drawn over.
+                if matches!(s.voice.test, VoiceTest::Listening { .. }) {
+                    s.voice.test = now;
+                }
+                return changed;
+            }
+            s.voice.test = VoiceTest::Hearing;
+            self.stop_voice_test();
+            return true;
+        }
+        let Some(result) = test.heard.lock().expect("heard").take() else { return false };
+        self.voice_test = None;
+        match result {
+            Ok(words) => s.voice.test = VoiceTest::Heard(words),
+            Err(why) => {
+                s.voice.test = VoiceTest::Idle;
+                s.voice.status = why;
+            }
+        }
+        true
+    }
+
+    /// The microphone off, and what it heard to the engine, off the window's thread.
+    fn stop_voice_test(&mut self) {
+        let Some(test) = &mut self.voice_test else { return };
+        let Some(recording) = test.recording.take() else { return };
+        let (model, heard) = (test.model, test.heard.clone());
+        let Ok(data) = config::data_dir() else { return };
+        std::thread::spawn(move || {
+            let samples = recording.stop();
+            let result = harness_speech::transcribe_samples(&data, model, &samples);
+            *heard.lock().expect("heard") = Some(result);
+        });
     }
 
     fn telegram_page(&self) -> frontend_tui::model::TelegramPage {
@@ -1508,7 +1619,56 @@ impl Live {
                         s.telegram.status = status;
                     }
                     w.telegram = Some(self.telegram_page());
+                    w.voice = Some(self.voice_page());
                 }
+                Outgoing::DownloadVoiceModel { model } => {
+                    let progress: std::sync::Arc<std::sync::Mutex<VoiceDownload>> = Default::default();
+                    self.voice_download = Some(progress.clone());
+                    let wanted = harness_speech::model(&model).ok_or_else(|| format!("no model {model}"));
+                    let data = config::data_dir().map_err(|e| e.to_string());
+                    std::thread::spawn(move || {
+                        let ours = progress.clone();
+                        let end = wanted.and_then(|wanted| {
+                            harness_speech::install(&data?, wanted, &mut |step| {
+                                let mb = |bytes: u64| bytes / (1024 * 1024);
+                                ours.lock().expect("download").how_far = match step {
+                                    harness_speech::Progress::Fetching { what, have, whole: Some(whole) } => format!("{what}: {} of {} MB", mb(have), mb(whole)),
+                                    harness_speech::Progress::Fetching { what, have, whole: None } => format!("{what}: {} MB", mb(have)),
+                                    harness_speech::Progress::Unpacking { what } => format!("{what}: unpacking"),
+                                };
+                            })
+                        });
+                        progress.lock().expect("download").end = Some(end);
+                    });
+                }
+                Outgoing::SaveVoice { engine, model } => {
+                    let saved = config::load().and_then(|mut c| {
+                        c.voice.backend = engine;
+                        c.voice.model = Some(model).filter(|m| !m.is_empty());
+                        config::save(&c)
+                    });
+                    let reloaded = saved.map_err(|e| e.to_string()).and_then(|_| {
+                        let client = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).ok_or("the daemon is not running")?;
+                        client.telegram_reload()
+                    });
+                    if let (Err(error), Some(frontend_tui::model::Overlay::Settings(s))) = (&reloaded, &mut w.overlay) {
+                        s.voice.status = format!("Could not save: {error}");
+                    }
+                    w.voice = Some(self.voice_page());
+                }
+                Outgoing::StartVoiceTest { model } => {
+                    let started = harness_speech::model(&model).ok_or_else(|| format!("no model {model}")).and_then(|model| Ok((model, harness_speech::Recording::start()?)));
+                    match started {
+                        Ok((model, recording)) => self.voice_test = Some(VoiceTestRun { recording: Some(recording), model, heard: Default::default() }),
+                        Err(why) => {
+                            if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                                s.voice.test = frontend_tui::model::VoiceTest::Idle;
+                                s.voice.status = why;
+                            }
+                        }
+                    }
+                }
+                Outgoing::StopVoiceTest => self.stop_voice_test(),
                 Outgoing::SaveCallbacks { handlers, disabled } => {
                     let settings = harness_daemon::conditions::ProjectCallbacks { handlers: handlers.into_iter().collect(), disabled };
                     let note = match harness_daemon::conditions::write_project(&self.root, &settings) {
@@ -1516,7 +1676,8 @@ impl Live {
                         Err(e) => format!("Could not save: {e}"),
                     };
                     w.callbacks = Some(self.callbacks_page());
-            w.telegram = Some(self.telegram_page());
+                    w.telegram = Some(self.telegram_page());
+                    w.voice = Some(self.voice_page());
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::Reload => {
@@ -2020,7 +2181,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 }
                 // What a paste left waiting has its composer now.
                 if !held_paste.is_empty() && w.overlay.is_none() {
-                    w.view_mut().composer.text.push_str(&std::mem::take(&mut held_paste));
+                    w.view_mut().composer.insert(&std::mem::take(&mut held_paste));
                     dirty = true;
                     if std::mem::take(&mut held_enter) {
                         input::key(&mut state, Key::Enter);
@@ -2036,6 +2197,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 live.tick_first_start(w);
                 dirty |= live.tick_toast(w);
                 dirty |= live.tick_login(w);
+                dirty |= live.tick_voice_download(w);
+                dirty |= live.tick_voice_test(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
@@ -2090,7 +2253,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         continue;
                     }
                     match &mut state.mode {
-                        frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.text.push_str(&text),
+                        frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.insert(&text),
                         // A field being typed in takes it, line breaks aside.
                         frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.telegram.editing || s.auth.entry.is_some()) => {
                             pasted_at = None;
@@ -2130,6 +2293,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         KeyCode::PageDown => Key::PageDown,
                         KeyCode::Home => Key::Home,
                         KeyCode::End => Key::End,
+                        KeyCode::Delete => Key::Delete,
                         KeyCode::Enter => Key::Enter,
                         KeyCode::Esc => Key::Esc,
                         KeyCode::Up => Key::Up,

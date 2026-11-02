@@ -15,6 +15,7 @@ pub enum Key {
     Right,
     Tab,
     Backspace,
+    Delete,
     PageUp,
     PageDown,
     Home,
@@ -122,10 +123,11 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                         return Outcome::Quit;
                     }
                 }
-                Key::Backspace => {
-                    w.view_mut().composer.text.pop();
-                }
-                Key::Char(c) => w.view_mut().composer.text.push(c),
+                Key::Backspace => w.view_mut().composer.backspace(),
+                Key::Delete => w.view_mut().composer.delete(),
+                Key::Char(c) => w.view_mut().composer.insert(c.encode_utf8(&mut [0; 4])),
+                Key::Left => w.view_mut().composer.left(),
+                Key::Right => w.view_mut().composer.right(),
                 // Esc stops a generating agent, else closes the toast; the session itself is
                 // left with /exit or Ctrl+C twice.
                 Key::Esc if w.live && w.view().generating => {
@@ -143,6 +145,11 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                 }
                 Key::PageUp => scroll_view(w, 10),
                 Key::PageDown => scroll_view(w, -10),
+                // With text they move in it; with none they move the transcript.
+                Key::Home if !w.view().composer.text.is_empty() => w.view_mut().composer.home(),
+                Key::End if !w.view().composer.text.is_empty() => w.view_mut().composer.end(),
+                Key::Up if w.view_mut().composer.vertical(true) => {}
+                Key::Down if w.view_mut().composer.vertical(false) => {}
                 Key::Home => scroll_view(w, 100_000),
                 Key::End => {
                     w.view_mut().scroll = 0;

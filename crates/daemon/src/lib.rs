@@ -103,6 +103,10 @@ pub trait ConversationHost: Send + Sync {
     fn deliver_to(&self, _session: &str, _label: &str, _text: &str) -> bool {
         false
     }
+    /// Something for the user to read in this session; the agent is not told. False if it is not open.
+    fn notify(&self, _session: &str, _label: &str, _text: &str) -> bool {
+        false
+    }
     /// The session behind a window's tab.
     fn session_of(&self, _window: &str, _tab: u64) -> Option<String> {
         None
@@ -627,7 +631,7 @@ impl Daemon {
     /// INV-12: only the text and label travel; nothing in the payload selects anything.
     fn notification(&self, window: &str, uuid: &str, input: &Value) -> Result<Value, String> {
         // The channel's label is reserved: a callback is not the operator (INV-12).
-        let label = input["label"].as_str().filter(|l| *l != TELEGRAM_LABEL && *l != harness_api::HARNESS_LABEL).unwrap_or("callback").to_string();
+        let label = input["label"].as_str().filter(|l| *l != TELEGRAM_LABEL && *l != harness_api::TELEGRAM_VOICE_LABEL && *l != harness_api::HARNESS_LABEL).unwrap_or("callback").to_string();
         let text = match input["text"].as_str() {
             Some(text) => text.to_string(),
             None => {

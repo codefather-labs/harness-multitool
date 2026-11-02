@@ -188,6 +188,13 @@ impl Feed {
             }
             Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost | Event::FormSynced { .. } => {}
             Event::ContextWindow { tokens } => self.context_window = *tokens,
+            Event::Notice { label, text } => {
+                let (mut kind, _) = inbound_kind(label);
+                if matches!(kind, InboundKind::Voice { .. }) {
+                    kind = InboundKind::Voice { duration: "not transcribed".to_string() };
+                }
+                v.transcript.push(Item::Inbound(Inbound { kind, from: "harness".to_string(), time, text: text.clone() }));
+            }
             Event::BackgroundTasks { tasks } => {
                 let known = std::mem::take(&mut v.background);
                 v.background = tasks
@@ -682,7 +689,7 @@ fn attach(v: &mut SessionView, time: String, item: Item) -> (usize, usize) {
 }
 
 /// A voice message from Telegram, transcribed: its label in the log.
-const VOICE_LABEL: &str = "telegram_voice";
+const VOICE_LABEL: &str = harness_api::TELEGRAM_VOICE_LABEL;
 
 /// What a message's label says about where it came from: the card it gets, and who it is from.
 pub fn inbound_kind(label: &str) -> (InboundKind, String) {

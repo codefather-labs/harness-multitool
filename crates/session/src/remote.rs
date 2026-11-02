@@ -488,6 +488,18 @@ impl ConversationHost for DaemonHost {
         false
     }
 
+    fn notify(&self, session: &str, label: &str, text: &str) -> bool {
+        let mut windows = self.windows.lock().expect("windows");
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
+                window.sessions.notice(tab, label.to_string(), text.to_string());
+                self.wake.notify_all();
+                return true;
+            }
+        }
+        false
+    }
+
     fn session_of(&self, window: &str, tab: u64) -> Option<String> {
         self.windows.lock().expect("windows").get(window)?.sessions.session_of(tab).map(str::to_string)
     }

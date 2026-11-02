@@ -26,6 +26,25 @@ pub struct Terminal {
     pub graphics: Graphics,
 }
 
+/// Speech to text: what the settings' page chose. What is downloaded is in the data directory.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Voice {
+    /// `whisper` or `parakeet`, none for off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl Voice {
+    /// The chosen model, or the engine's first when none of its own is named.
+    pub fn chosen(&self) -> Option<harness_speech::Model> {
+        let engine = harness_speech::Engine::from_id(self.backend.as_deref()?)?;
+        let named = self.model.as_deref().and_then(harness_speech::model).filter(|m| m.engine == engine);
+        named.or_else(|| harness_speech::MODELS.into_iter().find(|m| m.engine == engine))
+    }
+}
+
 /// The Telegram channel: off with no token. The token is the harness's own bot's, better kept in
 /// MULTITOOL_TELEGRAM_TOKEN than here. `allowed_users` is who may reach an agent.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,6 +63,8 @@ pub struct Telegram {
 pub struct Config {
     #[serde(default)]
     pub terminal: Terminal,
+    #[serde(default)]
+    pub voice: Voice,
     #[serde(default)]
     pub telegram: Telegram,
     /// The model and plugins a session runs on: provider, model, budgets, keys (never required
@@ -88,6 +109,13 @@ pub fn save(c: &Config) -> Result<PathBuf> {
     Ok(p)
 }
 
+/// What turns a voice note into words, if one is chosen and downloaded.
+fn transcriber() -> Option<harness_daemon::telegram::Transcriber> {
+    let chosen = load().map(|c| c.voice).unwrap_or_default().chosen()?;
+    let data = data_dir().ok()?;
+    harness_speech::ready(&data, chosen).then(|| -> harness_daemon::telegram::Transcriber { std::sync::Arc::new(move |note: &[u8]| harness_speech::transcribe(&data, chosen, note)) })
+}
+
 /// The Telegram channel's settings, if it has a token: the environment wins over the file.
 pub fn telegram() -> Option<harness_daemon::telegram::Config> {
     let file = load().map(|c| c.telegram).unwrap_or_default();
@@ -98,6 +126,7 @@ pub fn telegram() -> Option<harness_daemon::telegram::Config> {
         allowed_users: file.allowed_users,
         chat: file.chat,
         poll_timeout_s: 25,
+        transcriber: transcriber(),
     })
 }
 

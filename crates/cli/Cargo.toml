@@ -12,6 +12,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
+harness-speech = { version = "0.1.0-dev", path = "../speech" }
 harness-docs-mirror = { version = "0.1.0-dev", path = "../docs-mirror" }
 harness-platform-native = { version = "0.1.0-dev", path = "../platform-native" }
 harness-auth-chatgpt = { version = "0.1.0-dev", path = "../auth-chatgpt" }

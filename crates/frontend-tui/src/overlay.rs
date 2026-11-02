@@ -44,6 +44,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.telegram {
         s.telegram = page.clone();
     }
+    if let Some(page) = &w.voice {
+        s.voice = page.clone();
+    }
     if let Some(page) = &w.auth {
         s.auth = page.clone();
     }
@@ -109,7 +112,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", "Theme"].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, "Theme"].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -126,6 +129,7 @@ pub fn sample_settings() -> SettingsView {
         fallback: true,
         callbacks: CallbacksPage::default(),
         telegram: Default::default(),
+        voice: Default::default(),
         auth: AuthPage::default(),
         editing_model: false,
         model_menu: None,
@@ -199,6 +203,172 @@ pub fn sample_callbacks() -> CallbacksPage {
 }
 
 /// The Callbacks tab (settings-callbacks-*): one list under three headings, rows at one cursor.
+const VOICE_SECTION: &str = "Speech to text";
+/// The engines one can choose, as (id, what the row says).
+const VOICE_ENGINES: [(Option<&str>, &str); 3] = [(None, "Off"), (Some("whisper"), "Whisper"), (Some("parakeet"), "Parakeet")];
+const LEVEL_CELLS: usize = 24;
+
+fn voice_engine_label(p: &crate::model::VoicePage) -> &'static str {
+    VOICE_ENGINES.iter().find(|(id, _)| *id == p.engine.as_deref()).map_or("Off", |(_, label)| label)
+}
+
+/// Speech to text: the engine, its model, the download, and a test from the microphone.
+fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
+    use crate::model::VoiceTest;
+    let p = &s.voice;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let chosen = p.chosen();
+    let model = match (&p.engine, chosen) {
+        (None, _) => "none, with no engine".to_string(),
+        (_, Some(m)) => format!("{}, {} ▾", m.name, m.size),
+        _ => "▾".to_string(),
+    };
+    let download = match (&p.downloading, chosen) {
+        (Some(how_far), _) => format!("Downloading {how_far}"),
+        (None, Some(m)) if m.there && p.runtime_size.is_none() => "Downloaded".to_string(),
+        (None, Some(m)) => {
+            let runtime = p.runtime_size.as_ref().map_or(String::new(), |size| format!(", and the runtime, {size}"));
+            format!("{}{runtime}", if m.there { "The model is here" } else { m.size.as_str() })
+        }
+        (None, None) => "Choose an engine first".to_string(),
+    };
+    let meter = |level: f32| {
+        let lit = ((level.clamp(0.0, 1.0) * LEVEL_CELLS as f32).round() as usize).min(LEVEL_CELLS);
+        ("█".repeat(lit), "░".repeat(LEVEL_CELLS - lit))
+    };
+    let (test_label, test_spans): (&str, Vec<Span>) = match &p.test {
+        VoiceTest::Listening { level, seconds } => {
+            let (on, off) = meter(*level);
+            ("[ Stop ]", vec![Span::styled(on, Style::default().fg(t.success)), Span::styled(off, muted), Span::styled(format!(" {seconds} s"), muted)])
+        }
+        VoiceTest::Hearing => ("[ Test ]", vec![Span::styled("Turning it into words…", muted)]),
+        _ => ("[ Test ]", vec![Span::styled("Say something, then Enter again", muted)]),
+    };
+    let rows: [(&str, Vec<Span>); 4] = [
+        ("Engine", vec![Span::styled(format!("{} ▾", voice_engine_label(p)), strong)]),
+        ("Model", vec![Span::styled(model, strong)]),
+        ("", vec![Span::styled("[ Download ] ", strong), Span::styled(download, muted)]),
+        ("", std::iter::once(Span::styled(format!("{test_label} "), strong)).chain(test_spans).collect()),
+    ];
+    for (i, (label, value)) in rows.into_iter().enumerate() {
+        let row_bg = if focus && p.cursor == i { t.surface_raised } else { bg };
+        let mut spans = vec![Span::styled(format!(" {label:<16}"), muted)];
+        spans.extend(value);
+        text(f, r.x, r.y + 1 + i as u16, r.width, spans, row_bg);
+        out.hits.push(Hit { rect: Rect::new(r.x, r.y + 1 + i as u16, r.width, 1), target: Target::VoiceRow(i) });
+    }
+    text(f, r.x, r.y + 6, r.width, vec![Span::styled(format!(" {}", p.status), muted)], bg);
+    if let VoiceTest::Heard(words) = &p.test {
+        // The words, in a window of their own.
+        let chars: Vec<char> = words.chars().collect();
+        let wrapped = crate::widgets::text_rows(words, r.width.saturating_sub(3)).into_iter().map(|(from, count)| chars[from..from + count].iter().collect::<String>());
+        let lines: Vec<String> = if words.is_empty() { vec!["No words heard.".to_string()] } else { wrapped.collect() };
+        let height = (lines.len() as u16 + 2).min(r.height.saturating_sub(8).max(3));
+        let inner = modal(f, Rect::new(r.x + 1, r.y + 8, r.width.saturating_sub(2), height), t.accent_line, t.surface);
+        for (row, line) in lines.iter().enumerate().take(inner.height as usize) {
+            text(f, inner.x, inner.y + row as u16, inner.width, vec![Span::styled(format!(" {line}"), strong)], t.surface);
+        }
+    } else {
+        let notes = ["Voice notes from Telegram are transcribed here: nothing leaves", "this machine. A bigger model hears better and takes longer.", "Ctrl+S saves."];
+        for (i, note) in notes.iter().enumerate() {
+            text(f, r.x, r.y + 8 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+        }
+    }
+    if let Some(at) = p.menu {
+        let choices = voice_choices(p);
+        let height = choices.len() as u16 + 2;
+        let inner = modal(f, Rect::new(r.x + 17, r.y + 2 + p.cursor as u16, r.width.saturating_sub(18), height), t.accent_line, t.surface);
+        for (row, (label, detail, current)) in choices.iter().enumerate() {
+            let under = row == at;
+            let spans = vec![
+                Span::styled(if *current { " ● " } else { "   " }, Style::default().fg(t.success)),
+                Span::styled(format!("{label:<14}"), Style::default().fg(t.text).add_modifier(if under { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled(detail.clone(), muted),
+            ];
+            text(f, inner.x, inner.y + row as u16, inner.width, spans, if under { t.surface_raised } else { t.surface });
+            out.hits.push(Hit { rect: Rect::new(inner.x, inner.y + row as u16, inner.width, 1), target: Target::VoiceChoice(row) });
+        }
+    }
+}
+
+/// What the open dropdown lists: a label, a detail, whether it is the current one.
+fn voice_choices(p: &crate::model::VoicePage) -> Vec<(String, String, bool)> {
+    if p.cursor == 0 {
+        return VOICE_ENGINES.iter().map(|(id, label)| (label.to_string(), String::new(), *id == p.engine.as_deref())).collect();
+    }
+    p.models_of_engine().iter().map(|m| (m.name.clone(), if m.there { format!("{}, downloaded", m.size) } else { m.size.clone() }, m.name == p.model)).collect()
+}
+
+/// A key on the Speech to text page.
+fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>) {
+    use crate::model::VoiceTest;
+    if let Some(at) = p.menu {
+        let count = voice_choices(p).len();
+        match k {
+            Key::Up => p.menu = Some(at.saturating_sub(1)),
+            Key::Down => p.menu = Some((at + 1).min(count.saturating_sub(1))),
+            Key::Enter | Key::Char(' ') => {
+                if p.cursor == 0 {
+                    p.choose_engine(VOICE_ENGINES[at].0.map(str::to_string));
+                } else if let Some(name) = p.models_of_engine().get(at).map(|m| m.name.clone()) {
+                    p.model = name;
+                }
+                p.menu = None;
+            }
+            _ => {}
+        }
+        return;
+    }
+    let listening = matches!(p.test, VoiceTest::Listening { .. });
+    match k {
+        Key::Up if !listening => p.cursor = p.cursor.saturating_sub(1),
+        Key::Down if !listening => p.cursor = (p.cursor + 1).min(3),
+        Key::Enter | Key::Char(' ') if p.cursor < 2 => {
+            let choices = voice_choices(p);
+            if choices.is_empty() {
+                p.status = "Choose an engine first.".to_string();
+            } else {
+                p.menu = Some(choices.iter().position(|c| c.2).unwrap_or(0));
+            }
+        }
+        Key::Enter if p.cursor == 2 && p.downloading.is_none() => match p.chosen() {
+            Some(m) if !m.there || p.runtime_size.is_some() => {
+                let model = m.name.clone();
+                p.downloading = Some("…".to_string());
+                p.status.clear();
+                outbox.push(Outgoing::DownloadVoiceModel { model });
+            }
+            Some(_) => p.status = "It is here already.".to_string(),
+            None => p.status = "Choose an engine first.".to_string(),
+        },
+        Key::Enter if p.cursor == 3 => match &p.test {
+            VoiceTest::Listening { .. } => {
+                p.test = VoiceTest::Hearing;
+                outbox.push(Outgoing::StopVoiceTest);
+            }
+            VoiceTest::Hearing => {}
+            _ => match p.chosen() {
+                Some(m) if m.there && p.runtime_size.is_none() => {
+                    let model = m.name.clone();
+                    p.test = VoiceTest::Listening { level: 0.0, seconds: 0 };
+                    p.status.clear();
+                    outbox.push(Outgoing::StartVoiceTest { model });
+                }
+                Some(_) => p.status = "Download it first.".to_string(),
+                None => p.status = "Choose an engine first.".to_string(),
+            },
+        },
+        Key::Ctrl('s') => {
+            let waiting = p.engine.is_some() && (p.runtime_size.is_some() || !p.chosen().is_some_and(|m| m.there));
+            p.status = if waiting { "Saved. It still has to be downloaded.".to_string() } else { "Saved.".to_string() };
+            outbox.push(Outgoing::SaveVoice { engine: p.engine.clone(), model: p.model.clone() });
+        }
+        _ => {}
+    }
+}
+
 /// The bot's token and who may speak to it. The token shows only as dots.
 fn telegram_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let p = &s.telegram;
@@ -556,6 +726,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     text(f, px, body_y, pw, vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))], bg);
     if name == "Callbacks" {
         callbacks_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
+    } else if name == VOICE_SECTION {
+        voice_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == "Telegram" {
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if s.section != 0 {
@@ -982,6 +1154,14 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 answer(w, i);
             }
         }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == VOICE_SECTION) && s.voice.menu.is_some() && matches!(k, Key::Esc) => s.voice.menu = None,
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == VOICE_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            if matches!(k, Key::Tab) && s.voice.menu.is_none() {
+                s.focus = SettingsPane::Sections;
+            } else {
+                voice_key(&mut s.voice, k, &mut w.outbox);
+            }
+        }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Telegram") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
             let p = &mut s.telegram;
             match k {
@@ -1167,6 +1347,18 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             choose_provider(w, i);
         }
         (Some(Overlay::Settings(s)), Target::ModelRow | Target::ModelChoice(_) | Target::AuthButton | Target::ContextRow | Target::ContextChoice(_) | Target::DelegateOwn | Target::DelegateSkip) if s.run_on => w.toast = Some(system_toast(RUN_ON)),
+        (Some(Overlay::Settings(s)), Target::VoiceRow(row)) if s.voice.menu.is_none() && !matches!(s.voice.test, crate::model::VoiceTest::Listening { .. }) => {
+            s.voice.cursor = row;
+            s.focus = SettingsPane::Page;
+            voice_key(&mut s.voice, Key::Enter, &mut w.outbox);
+        }
+        // On the button that stops it, Enter stops it; elsewhere a click does nothing while it listens.
+        (Some(Overlay::Settings(s)), Target::VoiceRow(3)) if s.voice.menu.is_none() => voice_key(&mut s.voice, Key::Enter, &mut w.outbox),
+        (Some(Overlay::Settings(s)), Target::VoiceRow(_)) => s.voice.menu = None,
+        (Some(Overlay::Settings(s)), Target::VoiceChoice(at)) => {
+            s.voice.menu = Some(at);
+            voice_key(&mut s.voice, Key::Enter, &mut w.outbox);
+        }
         (Some(Overlay::Settings(s)), Target::DelegateOwn) => s.delegate_own = !s.delegate_own,
         (Some(Overlay::Settings(s)), Target::DelegateSkip) => s.delegate_skip = !s.delegate_skip,
         (Some(Overlay::Settings(s)), Target::ContextRow) => {
@@ -1640,5 +1832,115 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveTelegram { token: Some(t), users }) if t == "1:S" && users == [42, 7]));
         key(&mut w, Key::Ctrl('s'));
         assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveTelegram { token: None, .. })), "the saved one stays");
+    }
+
+    fn voice_settings() -> Workspace {
+        use crate::model::{VoiceModel, VoicePage};
+        let mut w = Workspace::one(Default::default(), "t");
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == VOICE_SECTION).unwrap();
+        s.focus = SettingsPane::Page;
+        let voice_model = |engine: &str, name: &str, there| VoiceModel { engine: engine.into(), name: name.into(), size: "1 MB".into(), there };
+        s.voice = VoicePage { models: vec![voice_model("whisper", "tiny", true), voice_model("whisper", "base", false), voice_model("parakeet", "parakeet-v3", false)], runtime_size: Some("28 MB".into()), ..Default::default() };
+        w.overlay = Some(Overlay::Settings(s));
+        w
+    }
+
+    fn voice_of(w: &Workspace) -> crate::model::VoicePage {
+        match &w.overlay {
+            Some(Overlay::Settings(s)) => s.voice.clone(),
+            _ => panic!("settings closed"),
+        }
+    }
+
+    #[test]
+    fn the_engine_and_the_model_are_two_dropdowns_and_a_download_is_one_at_a_time() {
+        let mut w = voice_settings();
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).menu, Some(0), "open on Off");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).engine.as_deref(), Some("whisper"));
+        assert_eq!(voice_of(&w).model, "tiny", "the one that is here");
+        assert_eq!(voice_of(&w).menu, None);
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).menu, Some(0));
+        key(&mut w, Key::Esc);
+        assert_eq!(voice_of(&w).menu, None);
+        assert!(w.overlay.is_some(), "Esc closed the list, not the settings");
+        key(&mut w, Key::Enter);
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).model, "base");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert!(voice_of(&w).downloading.is_some());
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::DownloadVoiceModel { model }) if model == "base"));
+        key(&mut w, Key::Enter);
+        assert!(w.outbox.is_empty(), "one at a time");
+        key(&mut w, Key::Ctrl('s'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveVoice { engine: Some(engine), model }) if engine == "whisper" && model == "base"));
+        assert!(voice_of(&w).status.contains("still has to be downloaded"), "{}", voice_of(&w).status);
+    }
+
+    #[test]
+    fn with_no_engine_there_is_nothing_to_fetch_or_test() {
+        let mut w = voice_settings();
+        for _ in 0..3 {
+            key(&mut w, Key::Down);
+            key(&mut w, Key::Enter);
+            assert!(w.outbox.is_empty());
+            assert_eq!(voice_of(&w).menu, None);
+        }
+        assert!(voice_of(&w).status.contains("engine"), "{}", voice_of(&w).status);
+    }
+
+    #[test]
+    fn the_test_runs_on_a_model_that_is_here_and_enter_stops_it() {
+        use crate::model::VoiceTest;
+        let mut w = voice_settings();
+        let set = |w: &mut Workspace, f: &dyn Fn(&mut crate::model::VoicePage)| {
+            if let Some(Overlay::Settings(s)) = &mut w.overlay {
+                f(&mut s.voice);
+            }
+        };
+        set(&mut w, &|p| p.choose_engine(Some("whisper".into())));
+        set(&mut w, &|p| p.cursor = 3);
+        key(&mut w, Key::Enter);
+        assert!(w.outbox.is_empty() && voice_of(&w).status.contains("Download"), "the runtime is not here yet");
+        set(&mut w, &|p| p.runtime_size = None);
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::StartVoiceTest { model }) if model == "tiny"));
+        assert!(matches!(voice_of(&w).test, VoiceTest::Listening { .. }));
+        key(&mut w, Key::Up);
+        assert_eq!(voice_of(&w).cursor, 3, "stays on the button that stops it");
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::StopVoiceTest)));
+        assert_eq!(voice_of(&w).test, VoiceTest::Hearing);
+        key(&mut w, Key::Enter);
+        assert!(w.outbox.is_empty(), "the engine is at it");
+    }
+
+    #[test]
+    fn the_page_shows_the_level_and_the_words_in_their_own_window() {
+        use crate::model::VoiceTest;
+        let draw_page = |test: VoiceTest| {
+            let mut s = sample_settings();
+            s.voice.test = test;
+            s.voice.engine = Some("parakeet".into());
+            let backend = ratatui::backend::TestBackend::new(90, 24);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let theme = Theme::builtin("dark").unwrap();
+            terminal.draw(|f| voice_page(f, f.area(), &s, &theme, Color::Reset, &mut Drawn::default())).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..24).map(|y| (0..90).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let listening = draw_page(VoiceTest::Listening { level: 0.5, seconds: 3 });
+        assert!(listening.contains(&"█".repeat(12)) && listening.contains(&"░".repeat(12)), "{listening}");
+        assert!(listening.contains("[ Stop ]") && listening.contains("3 s"), "{listening}");
+        let heard = draw_page(VoiceTest::Heard("привет как дела".into()));
+        assert!(heard.contains("привет как дела") && heard.contains("┌") | heard.contains("╭"), "{heard}");
+        assert!(draw_page(VoiceTest::Heard(String::new())).contains("No words heard"));
     }
 }

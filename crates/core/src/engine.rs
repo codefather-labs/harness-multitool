@@ -371,6 +371,12 @@ impl Engine {
     }
 
     /// The user named the agent: a bad name shows as an error, and nothing changes.
+    /// Something for the user to read: in the log and on screen, not in what the model is sent.
+    pub async fn notice(&self, label: &str, text: &str) {
+        self.emit(Event::Notice { label: label.to_string(), text: text.to_string() });
+        let _ = self.flush().await;
+    }
+
     pub async fn set_agent_name_by_user(&self, name: &str) {
         if let Err(message) = self.set_agent_name(name, "user").await {
             self.emit(Event::Error { source: "nick".into(), message });

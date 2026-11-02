@@ -90,7 +90,7 @@ pub fn flow_instances() -> AppState {
     let view = SessionView {
         transcript: vec![turn(Role::User, "14:50", &["deploy all three"]), card("req-1", "n3", "entered", false, 0), card("req-2", "n2", "passed", true, 0), card("req-3", "n1", "entered", false, 6)],
         status: status("8.4k / 200k", "$0.06", "$10.00"),
-        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints() },
+        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints(), ..Default::default() },
         ..Default::default()
     };
     AppState { header: header("session/deploy"), eyes: Eyes::Open, pictures: false, mode: Mode::Session(ws(view, "deploy")) }
@@ -195,7 +195,7 @@ pub fn reasoning() -> AppState {
             ),
         ],
         status: status("8.4k / 200k", "$0.06", "$10.00"),
-        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints() },
+        composer: Composer { text: String::new(), placeholder: "Type a message, / for commands, @ to mention...".into(), focused: true, hints: session_hints(), ..Default::default() },
         generating: true,
         activity: Some(crate::model::Activity { state: "Thinking".into(), started_ms: 0, now_ms: 12_000 }),
         ..Default::default()
@@ -228,8 +228,7 @@ pub fn welcome() -> AppState {
                 text: String::new(),
                 placeholder: "Ask about the repo, request an edit, or type / for commands…".into(),
                 focused: true,
-                hints: session_hints(),
-            },
+                hints: session_hints(), ..Default::default() },
             ..Default::default()
         }, "4f7e3c2a")),
     }
@@ -306,8 +305,7 @@ pub fn main_session() -> AppState {
                 text: "Add a test for the no-adapter case and run the suite.".into(),
                 placeholder: String::new(),
                 focused: true,
-                hints: session_hints(),
-            },
+                hints: session_hints(), ..Default::default() },
             ..Default::default()
         }, "4f7e3c2a")),
     }
@@ -411,7 +409,7 @@ pub fn startup() -> AppState {
 }
 
 fn composer(placeholder: &str, hints: Vec<KeyHint>) -> Composer {
-    Composer { text: String::new(), placeholder: placeholder.into(), focused: true, hints }
+    Composer { text: String::new(), placeholder: placeholder.into(), focused: true, hints, ..Default::default() }
 }
 
 fn inbound(kind: InboundKind, from: &str, time: &str, text: &str) -> Item {
@@ -599,6 +597,7 @@ pub fn session_tabs() -> AppState {
         outbox: Vec::new(),
         callbacks: None,
         telegram: None,
+        voice: None,
         auth: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }

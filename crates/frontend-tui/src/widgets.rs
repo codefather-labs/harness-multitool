@@ -108,15 +108,29 @@ pub fn composer(f: &mut Frame, area: Rect, t: &Theme, c: &Composer) {
         .border_style(Style::default().fg(border))
         .style(Style::default().bg(t.background));
     let color = if c.text.is_empty() { t.text_muted } else { t.text };
-    let shown = composer_rows(c, area.width);
-    let last = shown.len() - 1;
+    c.drawn_width.set(area.width);
+    let (shown, cursor) = composer_rows(c, area.width);
     let mut lines: Vec<Line> = shown
         .into_iter()
         .enumerate()
         .map(|(i, row)| {
-            let mut spans = vec![Span::raw(" "), Span::styled(row, Style::default().fg(color))];
-            if c.focused && i == last {
-                spans.push(Span::styled("█", Style::default().fg(t.accent_line)));
+            let mut spans = vec![Span::raw(" ")];
+            let style = Style::default().fg(color);
+            match cursor.filter(|(at_row, _)| *at_row == i && c.focused) {
+                Some((_, column)) => {
+                    let chars: Vec<char> = row.chars().collect();
+                    let (before, rest) = chars.split_at(column.min(chars.len()));
+                    spans.push(Span::styled(before.iter().collect::<String>(), style));
+                    match rest.split_first() {
+                        // On a character it shows through, so the text stays readable.
+                        Some((under, after)) => {
+                            spans.push(Span::styled(under.to_string(), Style::default().fg(t.background).bg(t.accent_line)));
+                            spans.push(Span::styled(after.iter().collect::<String>(), style));
+                        }
+                        None => spans.push(Span::styled("█", Style::default().fg(t.accent_line))),
+                    }
+                }
+                None => spans.push(Span::styled(row, style)),
             }
             Line::from(spans)
         })
@@ -125,54 +139,79 @@ pub fn composer(f: &mut Frame, area: Rect, t: &Theme, c: &Composer) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// As many rows of text as the composer grows to; beyond them its end stays in view.
+/// As many rows of text as the composer grows to; beyond them the cursor's stay in view.
 const COMPOSER_ROWS: usize = 8;
 
-/// The rows of text the composer shows in a frame this wide: wrapped at spaces where it can, every
-/// character kept, the end in view with room for the cursor.
-fn composer_rows(c: &Composer, frame_width: u16) -> Vec<String> {
-    // The frame, the margin on the left.
-    let width = frame_width.saturating_sub(3).max(1) as usize;
-    let text = if c.text.is_empty() { &c.placeholder } else { &c.text };
-    let mut rows = wrap_keeping(text, width);
-    let cells = |row: &str| row.chars().map(crate::markdown::cell_width).sum::<usize>();
-    if c.focused && rows.last().is_some_and(|row| cells(row) >= width) {
-        rows.push(String::new());
+/// What fits a row in a frame this wide: the frame, the margin on the left.
+fn text_width(frame_width: u16) -> usize {
+    frame_width.saturating_sub(3).max(1) as usize
+}
+
+/// The rows of a text in a frame this wide, as (first character, characters): wrapped at spaces
+/// where it can, every character kept, line breaks standing for themselves between rows.
+pub fn text_rows(text: &str, frame_width: u16) -> Vec<(usize, usize)> {
+    let width = if frame_width == 0 { usize::MAX } else { text_width(frame_width) };
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for line in text.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        let (mut from, mut used, mut space) = (0, 0, None);
+        for (i, ch) in chars.iter().enumerate() {
+            let cell = crate::markdown::cell_width(*ch);
+            if used + cell > width && i > from {
+                // A space on the row keeps the word whole.
+                let cut = space.filter(|s: &usize| *s + 1 > from && *s + 1 < i + 1).map_or(i, |s| s + 1);
+                rows.push((start + from, cut - from));
+                from = cut;
+                used = chars[from..i].iter().copied().map(crate::markdown::cell_width).sum();
+                space = None;
+            }
+            if *ch == ' ' {
+                space = Some(i);
+            }
+            used += cell;
+        }
+        rows.push((start + from, chars.len() - from));
+        start += chars.len() + 1;
     }
-    let skip = rows.len().saturating_sub(COMPOSER_ROWS);
-    rows.split_off(skip)
+    rows
+}
+
+/// The row a character index stands on. At a wrap it counts as the start of the next.
+pub fn row_of(rows: &[(usize, usize)], at: usize) -> usize {
+    rows.iter().rposition(|(start, _)| *start <= at).unwrap_or(0)
+}
+
+/// The rows the composer shows in a frame this wide, and the cursor among them as (row, column).
+fn composer_rows(c: &Composer, frame_width: u16) -> (Vec<String>, Option<(usize, usize)>) {
+    let width = text_width(frame_width);
+    if c.text.is_empty() {
+        let rows = text_rows(&c.placeholder, frame_width);
+        let chars: Vec<char> = c.placeholder.chars().collect();
+        let shown: Vec<String> = rows.iter().take(COMPOSER_ROWS).map(|(s, n)| chars[*s..*s + *n].iter().collect()).collect();
+        // Its cursor comes after the placeholder, which is not there to edit.
+        let last = shown.len().saturating_sub(1);
+        return (shown.clone(), Some((last, shown.last().map_or(0, |r| r.chars().count()))));
+    }
+    let chars: Vec<char> = c.text.chars().collect();
+    let mut rows = text_rows(&c.text, frame_width);
+    let at = c.cursor();
+    let cells = |row: &(usize, usize)| chars[row.0..row.0 + row.1].iter().copied().map(crate::markdown::cell_width).sum::<usize>();
+    // A full row leaves room for the cursor at the end.
+    if c.focused && c.back == 0 && rows.last().is_some_and(|row| cells(row) >= width) {
+        rows.push((chars.len(), 0));
+    }
+    let row = row_of(&rows, at);
+    let first = row.saturating_sub(COMPOSER_ROWS - 1).max(rows.len().saturating_sub(COMPOSER_ROWS).min(row));
+    let shown: Vec<String> = rows.iter().skip(first).take(COMPOSER_ROWS).map(|(s, n)| chars[*s..*s + *n].iter().collect()).collect();
+    (shown, Some((row - first, at - rows[row].0)))
 }
 
 /// How tall the composer is in a frame this wide: its text, its hints, the frame.
 pub fn composer_height(c: &Composer, frame_width: u16) -> u16 {
-    composer_rows(c, frame_width).len() as u16 + 3
+    composer_rows(c, frame_width).0.len() as u16 + 3
 }
 
-/// Splits into rows of at most `width` cells, at a space where one is on the row, losing nothing.
-fn wrap_keeping(text: &str, width: usize) -> Vec<String> {
-    let mut rows = Vec::new();
-    for line in text.split('\n') {
-        let mut row: Vec<char> = Vec::new();
-        let mut used = 0;
-        for ch in line.chars() {
-            let cell = crate::markdown::cell_width(ch);
-            if used + cell > width && !row.is_empty() {
-                // A space on the row keeps the word whole, unless it is the row's only break at its start.
-                let moved = match row.iter().rposition(|c| *c == ' ') {
-                    Some(at) if at + 1 < row.len() => row.split_off(at + 1),
-                    _ => Vec::new(),
-                };
-                rows.push(row.iter().collect());
-                used = moved.iter().copied().map(crate::markdown::cell_width).sum();
-                row = moved;
-            }
-            row.push(ch);
-            used += cell;
-        }
-        rows.push(row.into_iter().collect());
-    }
-    rows
-}
 
 /// `key label · key label · …` in muted text, keys a step brighter.
 pub fn hint_line(t: &Theme, items: &[KeyHint]) -> Line<'static> {
@@ -348,11 +387,13 @@ mod composer_tests {
 
     #[test]
     fn long_text_wraps_and_keeps_every_character() {
-        assert_eq!(wrap_keeping("aa bb cc", 5), vec!["aa ", "bb cc"]);
-        assert_eq!(wrap_keeping("abcdefgh", 3), vec!["abc", "def", "gh"]);
-        assert_eq!(wrap_keeping("a\n\nb", 3), vec!["a", "", "b"]);
+        // A frame of width 8 has 5 cells for text.
+        assert_eq!(text_rows("aa bb cc", 8), vec![(0, 3), (3, 5)]);
+        assert_eq!(text_rows("abcdefgh", 6), vec![(0, 3), (3, 3), (6, 2)]);
+        assert_eq!(text_rows("a\n\nb", 6), vec![(0, 1), (2, 0), (3, 1)]);
         let text = "слово и ещё одно длинное слово, end ";
-        assert_eq!(wrap_keeping(text, 7).concat(), text);
+        let total: usize = text_rows(text, 10).iter().map(|r| r.1).sum();
+        assert_eq!(total, text.chars().count());
     }
 
     #[test]
@@ -403,5 +444,65 @@ mod composer_tests {
         let row = |y: u16| (0..60).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
         assert!(row(0).contains("in background") && row(0).contains("job 0") && row(0).contains("7s"), "{}", row(0));
         assert!(row(3).contains("2 more"), "{}", row(3));
+    }
+
+    #[test]
+    fn the_cursor_moves_every_way_and_typing_goes_where_it_is() {
+        let mut c = composer("héllo");
+        c.left();
+        c.left();
+        c.insert("X");
+        assert_eq!(c.text, "hélXlo");
+        c.backspace();
+        assert_eq!(c.text, "héllo");
+        c.delete();
+        assert_eq!(c.text, "hélo");
+        assert_eq!(c.cursor(), 3);
+        c.right();
+        c.right();
+        c.right();
+        assert_eq!(c.back, 0, "stops at the end");
+        for _ in 0..9 {
+            c.left();
+        }
+        assert_eq!(c.cursor(), 0, "stops at the start");
+        c.backspace();
+        assert_eq!(c.text, "hélo");
+        c.end();
+        assert_eq!(c.back, 0);
+        c.home();
+        assert_eq!(c.cursor(), 0);
+        c.text = "abcd\nef\nghij".into();
+        c.back = 0;
+        assert_eq!(c.cursor(), 12);
+        assert!(c.vertical(true));
+        assert_eq!(c.cursor(), 7, "to the shorter row's end");
+        assert!(c.vertical(true));
+        assert_eq!(c.cursor(), 2, "the column it had in that row");
+        assert!(!c.vertical(true), "no row above");
+        assert!(c.vertical(false));
+        assert_eq!(c.cursor(), 7);
+        c.text.clear();
+        c.left();
+        c.insert("a");
+        c.insert("b");
+        assert_eq!(c.text, "ab", "text cleared from outside leaves the cursor sane");
+    }
+
+    #[test]
+    fn the_cursor_shows_on_a_character_and_stays_in_view_in_long_text() {
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut c = composer(&"word ".repeat(200));
+        c.back = 900;
+        let (shown, cursor) = composer_rows(&c, 40);
+        assert_eq!(shown.len(), COMPOSER_ROWS);
+        assert!(cursor.is_some_and(|(row, _)| row < COMPOSER_ROWS));
+        let mut short = composer("abc");
+        short.back = 2;
+        let mut term = Terminal::new(TestBackend::new(40, 4)).unwrap();
+        term.draw(|f| composer_draw(f, &t, &short)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let cell = (0..40).map(|x| &buf[(x, 1)]).find(|cell| cell.symbol() == "b").unwrap();
+        assert_eq!(cell.bg, t.accent_line, "the character under the cursor");
     }
 }
