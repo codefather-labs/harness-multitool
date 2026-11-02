@@ -1430,3 +1430,46 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
     assert_eq!(seen.lock().unwrap().len(), 3);
     assert!(seen.lock().unwrap()[2].contains("Rest of the run"), "the session went on with all of it");
 }
+
+/// INV-20: a window gone: its run ends, and what it had queued does not start by itself. It waits
+/// for whoever opens the session next.
+#[test]
+fn what_a_gone_window_queued_does_not_start() {
+    use harness_session::remote::{DaemonHost, MakeHost};
+    let root = temp_dir("left");
+    let data = temp_dir("left-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("l1", "shell", json!({"command": "echo done"}))), "Running."), anthropic_turn(None, "End of the run."), anthropic_turn(None, "Must not come.")]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let op = |window: &str, op: serde_json::Value| {
+        let mut op = op;
+        op["window"] = json!(window);
+        client.conversation_op(&op).unwrap()
+    };
+    let (gone, next) = ("conv-333-a", "conv-444-b");
+    let s = settings(&url, "k");
+    op(gone, json!({"op": "open", "root": root, "settings": s}));
+    op(gone, json!({"op": "prompt", "tab": 1, "text": "start"}));
+    let (mut after, deadline) = (0, std::time::Instant::now() + Duration::from_secs(10));
+    let mut asked = false;
+    while !asked && std::time::Instant::now() < deadline {
+        for event in client.conversation_events(gone, after).unwrap() {
+            after = event["seq"].as_u64().unwrap();
+            asked |= event["event"]["kind"] == "ask";
+        }
+    }
+    assert!(asked);
+    let session = op(gone, json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
+    op(gone, json!({"op": "prompt", "tab": 1, "text": "queued, then gone"}));
+    // It goes silent with the run on. Whatever answers the prompt, the run ends with that.
+    std::thread::sleep(Duration::from_secs(7));
+    op(gone, json!({"op": "answer", "tab": 1, "answer": "once"}));
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(seen.lock().unwrap().len(), 2, "the queued message started nothing");
+    assert_eq!(user_texts(&read_log(&data, &root, &session)), ["start"]);
+    op(next, json!({"op": "open", "root": root, "settings": s}));
+    assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!(["queued, then gone"]));
+    assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([]), "once");
+}

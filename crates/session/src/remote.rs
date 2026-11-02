@@ -107,6 +107,7 @@ struct Window {
     /// What each tab's run has said so far: the log has it only as of its last flush, and a window
     /// taking the run over needs all of it.
     said: HashMap<u64, Vec<Value>>,
+    stopped_starting: bool,
     /// The window's environment, for reading a provider's conversations (the daemon's own is not it).
     environment: Option<crate::WindowEnv>,
 }
@@ -174,6 +175,9 @@ impl Window {
 /// The daemon's side: every conversation of every window runs here, and its log is written here.
 pub struct DaemonHost {
     windows: Mutex<HashMap<String, Window>>,
+    /// Messages a window sent and went away from, by session: for whoever opens it next. Only in
+    /// memory: a message that never reached the log is not the conversation yet.
+    left: Mutex<HashMap<String, Vec<String>>>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
@@ -181,7 +185,7 @@ pub struct DaemonHost {
 
 impl DaemonHost {
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -203,6 +207,15 @@ impl DaemonHost {
             let reload = window.reload.swap(false, Ordering::SeqCst);
             if window.polled.elapsed() > WINDOW_GONE {
                 window.closed = true;
+            }
+            // Gone: what it was still going to send does not start by itself. Its sender may be
+            // on the conversation in another program by now (INV-20).
+            if window.silent() && !window.stopped_starting {
+                window.stopped_starting = true;
+                let mut left = self.left.lock().expect("left");
+                for (session, waiting) in window.sessions.stop_starting() {
+                    left.entry(session).or_default().extend(waiting);
+                }
             }
             let (theirs, own): (Vec<_>, Vec<_>) = messages.into_iter().partition(|m| window.handed.contains_key(&tab_of(m)));
             for message in theirs {
@@ -399,7 +412,7 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
@@ -422,6 +435,10 @@ impl ConversationHost for DaemonHost {
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
         window.polled = Instant::now();
         let tab = op["tab"].as_u64().unwrap_or(0);
+        if name == "left" {
+            let waiting = self.left.lock().expect("left").remove(op["text"].as_str().unwrap_or_default()).unwrap_or_default();
+            return Ok(json!({"messages": waiting}));
+        }
         if name == "resume" {
             let session = op["text"].as_str().unwrap_or_default();
             if let Some(reply) = Self::take_over(&mut windows, id, tab, session) {
@@ -605,6 +622,14 @@ impl SessionLink {
                     std::thread::sleep(Duration::from_millis(250));
                 }
             }
+        }
+    }
+
+    /// What was sent to this session from a window that went away before it could go in.
+    pub fn left_waiting(&self, tab: u64, session: &str) -> Vec<String> {
+        match self {
+            SessionLink::Local(_) => Vec::new(),
+            SessionLink::Remote(r) => r.call("left", tab, json!({"text": session})).map_or(Vec::new(), |reply| serde_json::from_value(reply["messages"].clone()).unwrap_or_default()),
         }
     }
 

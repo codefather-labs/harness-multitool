@@ -658,6 +658,21 @@ impl Sessions {
         inbox.drain(..).collect()
     }
 
+    /// Every tab's waiting messages taken back, and no new run starts: whoever sent them has gone.
+    /// Runs already on go to their end. Returns (session, messages) where any were waiting.
+    pub fn stop_starting(&mut self) -> Vec<(String, Vec<String>)> {
+        let tabs: Vec<u64> = self.handles.keys().copied().collect();
+        let mut out = Vec::new();
+        for tab in tabs {
+            let session = self.handles[&tab].session.clone();
+            let waiting = self.hand_over(tab);
+            if !waiting.is_empty() {
+                out.push((session, waiting));
+            }
+        }
+        out
+    }
+
     /// Lets go of a tab's session: its thread ends once it has no run.
     pub fn forget(&mut self, tab: u64) {
         self.handles.remove(&tab);

@@ -1152,6 +1152,8 @@ impl Live {
             // Opened first and read after: what a run on says from here comes as events, and all
             // before is in the log. What both have shows once, by its number.
             let opened = self.sessions.resume(tab, &info.id);
+            // What was sent and did not go in comes back to the composer, for the user to send.
+            let left = self.sessions.left_waiting(tab, &info.id);
             let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &info.id);
             let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
             let view = w.view_mut();
@@ -1171,6 +1173,7 @@ impl Live {
                 feed.run_ended(view);
             }
             self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
+            view.composer.text.push_str(&left.join("\n\n"));
             // What the next message goes through, not what the last one went through.
             frontend_tui::live::set_status(view, "ADAPTER", &self.provider);
             frontend_tui::live::set_status(view, "MODEL", &self.model);
