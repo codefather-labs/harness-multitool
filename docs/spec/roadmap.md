@@ -45,3 +45,5 @@ Beside plan mode, the harness will have two more session modes for work shared b
 
 - **Brainstorming mode.** The agent gets tools to open several tabs with other agents and bring them into a brainstorm over agent-to-agent messages. They are peers: each says what it thinks of the same question, and answers the others.
 - **Orchestration mode.** The agent gets tools to spawn agents in tabs of their own. It is the master and they are its slaves: it gives each its work, follows it, and takes the result.
+
+In both, the master picks the adapter and the model of each agent it starts, from those available in the harness and signed in: a brainstorm can set different models against each other, and an orchestrator can give each piece of work the model that suits it.
