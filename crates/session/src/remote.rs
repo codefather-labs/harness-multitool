@@ -493,6 +493,8 @@ pub struct RemoteSessions {
     stopped: Arc<AtomicBool>,
     environment: std::collections::BTreeMap<String, String>,
     say: Sender<FromSession>,
+    /// The tab whose agent asked for a reload.
+    asked_by: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RemoteSessions {
@@ -509,8 +511,9 @@ impl RemoteSessions {
         client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
         let (sender, incoming) = channel();
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
-        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload);
-        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender })
+        let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
+        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), reload, asked_by.clone());
+        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender, asked_by })
     }
 
     fn call(&self, op: &str, tab: u64, mut rest: Value) -> Option<Value> {
@@ -534,7 +537,7 @@ impl Drop for RemoteSessions {
     }
 }
 
-fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, reload: Arc<AtomicBool>) {
+fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, reload: Arc<AtomicBool>, asked_by: Arc<std::sync::atomic::AtomicU64>) {
     std::thread::spawn(move || {
         let (mut after, mut failures) = (0, 0);
         while !stopped.load(Ordering::SeqCst) {
@@ -544,6 +547,10 @@ fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc
                     for event in events {
                         after = event["seq"].as_u64().unwrap_or(after);
                         if event["event"]["kind"] == "reload" {
+                            // Which tab asked, if the asking came from outside this process.
+                            if let Some(tab) = event["event"]["tab"].as_u64() {
+                                asked_by.store(tab, Ordering::SeqCst);
+                            }
                             reload.store(true, Ordering::SeqCst);
                         } else if let Some(message) = from_wire(&event["event"]) && sender.send(message).is_err() {
                             return;
@@ -637,6 +644,14 @@ impl SessionLink {
         match self {
             SessionLink::Local(_) => Vec::new(),
             SessionLink::Remote(r) => r.call("left", tab, json!({"text": session})).map_or(Vec::new(), |reply| serde_json::from_value(reply["messages"].clone()).unwrap_or_default()),
+        }
+    }
+
+    /// The tab whose agent asked for the reload in hand, if one did from outside this process.
+    pub fn reload_asked_by(&self) -> Option<u64> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => Some(r.asked_by.swap(0, Ordering::SeqCst)).filter(|tab| *tab != 0),
         }
     }
 

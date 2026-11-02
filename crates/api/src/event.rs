@@ -12,6 +12,8 @@ pub const CLAUDE_SUBSCRIPTION_REFUSED: &str = "Sorry, claude-subscription is for
 
 /// The label of a message from the Telegram channel. Reserved: a callback cannot claim it.
 pub const TELEGRAM_LABEL: &str = "telegram";
+/// The label of what the harness itself tells its agent. No callback can use it.
+pub const HARNESS_LABEL: &str = "harness";
 
 /// Who decided a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

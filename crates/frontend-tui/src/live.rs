@@ -587,6 +587,9 @@ pub fn inbound_kind(label: &str) -> (InboundKind, String) {
     if label == harness_api::TELEGRAM_LABEL {
         return (InboundKind::Telegram, "operator".to_string());
     }
+    if label == harness_api::HARNESS_LABEL {
+        return (InboundKind::System, "harness".to_string());
+    }
     if label == VOICE_LABEL {
         return (InboundKind::Voice { duration: "transcribed".to_string() }, "operator".to_string());
     }

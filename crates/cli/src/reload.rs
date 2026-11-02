@@ -24,6 +24,9 @@ pub struct Handoff {
     pub active: usize,
     pub theme: String,
     pub tabs: Vec<TabHandoff>,
+    /// The tab whose agent asked for this: it is told when it is done.
+    #[serde(default)]
+    pub tell: Option<usize>,
 }
 
 pub fn write_handoff(data_dir: &Path, handoff: &Handoff) -> Result<PathBuf> {

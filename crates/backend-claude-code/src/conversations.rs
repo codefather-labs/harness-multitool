@@ -197,6 +197,17 @@ impl ConversationFormat for ClaudeCodeConversations {
             }
             let Ok(value) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ())) else { continue };
             if value["sessionId"] == id && let Some(pid) = value["pid"].as_u64() && Some(pid) != except.map(u64::from) && process_lives(pid) {
+                // A program run for a session, as a daemon's that has just been replaced runs its
+                // own, goes within moments of losing its input.
+                if value["entrypoint"] == "sdk-cli" {
+                    let gone = (0..30).any(|_| {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        !process_lives(pid)
+                    });
+                    if gone {
+                        continue;
+                    }
+                }
                 return Some(format!("Claude Code (process {pid})"));
             }
         }

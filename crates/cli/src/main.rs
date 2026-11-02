@@ -511,6 +511,10 @@ struct Live {
     registered: std::collections::HashMap<u64, harness_daemon::client::Registered>,
     /// The agent's `plugins_reload` tool raises this.
     reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The reload in hand was the user's own.
+    reload_by_user: bool,
+    /// The tab to tell how the reload in hand went.
+    reload_for: Option<u64>,
     /// A rebuild in progress.
     reloading: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Built; the swap waits for a safe point.
@@ -590,7 +594,7 @@ impl Live {
         let Mode::Session(w) = &mut state.mode else { return state };
         let template = w.view().clone();
         w.tabs.clear();
-        for saved in &handoff.tabs {
+        for (index, saved) in handoff.tabs.iter().enumerate() {
             let mut view = template.clone();
             if saved.session.is_some() {
                 view.transcript.clear();
@@ -620,6 +624,11 @@ impl Live {
             // After the URL is known: the session's agent is told it.
             if let Some(session) = &saved.session {
                 self.sessions.resume(id, session);
+                // It asked for this: it goes on by itself.
+                if handoff.tell == Some(index) {
+                    w.tabs[index].view.generating = true;
+                    self.sessions.inbound(id, harness_api::HARNESS_LABEL.to_string(), "You asked for a reload: the harness has been rebuilt and restarted with your changes, and this conversation is here. Go on with what you were doing.".to_string());
+                }
             }
         }
         w.active = handoff.active.min(w.tabs.len().saturating_sub(1));
@@ -701,6 +710,9 @@ impl Live {
         };
         let mut changed = false;
         if self.reload_asked.swap(false, std::sync::atomic::Ordering::SeqCst) && self.reloading.is_none() && !self.ready_to_swap {
+            // The agent asked, unless the user did: then it hears how it went.
+            let asked_by = self.sessions.reload_asked_by();
+            self.reload_for = if std::mem::take(&mut self.reload_by_user) { None } else { Some(asked_by.unwrap_or(w.tabs[w.active].id)) };
             self.reloading = Some(reload::start_build());
             note(w, "Rebuilding…".to_string());
             changed = true;
@@ -710,7 +722,15 @@ impl Live {
             changed = true;
             match result {
                 Ok(()) => self.ready_to_swap = true,
-                Err(message) => note(w, format!("Nothing was swapped: {message}")),
+                Err(message) => {
+                    note(w, format!("Nothing was swapped: {message}"));
+                    if let Some(tab) = self.reload_for.take() {
+                        if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                            t.view.generating = true;
+                        }
+                        self.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("The build you asked for failed, and nothing was swapped: the harness is as it was.\n{message}"));
+                    }
+                }
             }
         }
         // CON-50: never during a model turn or a tool call, never over a permission prompt.
@@ -718,7 +738,9 @@ impl Live {
         if !self.ready_to_swap || busy {
             return Ok(changed);
         }
+        let tell = self.reload_for.take().and_then(|tab| w.tabs.iter().position(|t| t.id == tab));
         let handoff = reload::Handoff {
+            tell,
             active: w.active,
             theme: theme.to_string(),
             tabs: w
@@ -811,7 +833,7 @@ impl Live {
             Some(_) => None,
             None => std::env::current_exe().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1359,6 +1381,7 @@ impl Live {
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::Reload => {
+                    self.reload_by_user = true;
                     self.reload_asked.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 Outgoing::ReloadCallbacks => {

@@ -16,7 +16,7 @@ pub mod platform;
 pub mod sse;
 pub mod state;
 
-pub use event::{CLAUDE_SUBSCRIPTION_REFUSED, Event, LogEntry, TELEGRAM_LABEL};
+pub use event::{CLAUDE_SUBSCRIPTION_REFUSED, Event, HARNESS_LABEL, LogEntry, TELEGRAM_LABEL};
 pub use interfaces::*;
 pub use model::*;
 pub use state::{SessionState, TaskState};

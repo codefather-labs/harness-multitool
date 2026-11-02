@@ -527,7 +527,7 @@ impl Daemon {
     /// INV-12: only the text and label travel; nothing in the payload selects anything.
     fn notification(&self, window: &str, uuid: &str, input: &Value) -> Result<Value, String> {
         // The channel's label is reserved: a callback is not the operator (INV-12).
-        let label = input["label"].as_str().filter(|l| *l != TELEGRAM_LABEL).unwrap_or("callback").to_string();
+        let label = input["label"].as_str().filter(|l| *l != TELEGRAM_LABEL && *l != harness_api::HARNESS_LABEL).unwrap_or("callback").to_string();
         let text = match input["text"].as_str() {
             Some(text) => text.to_string(),
             None => {
