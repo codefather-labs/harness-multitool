@@ -573,6 +573,7 @@ struct Live {
     /// A speech model on its way, if one is.
     voice_download: Option<std::sync::Arc<std::sync::Mutex<VoiceDownload>>>,
     voice_test: Option<VoiceTestRun>,
+    voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
     reload_asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Tabs whose conversation the daemon is bringing in line: the window waits (CON-81).
@@ -917,7 +918,7 @@ impl Live {
             Some(_) => None,
             None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -973,7 +974,8 @@ impl Live {
         let chosen = voice.chosen();
         let models = harness_speech::MODELS.iter().map(|m| frontend_tui::model::VoiceModel { engine: m.engine.id().to_string(), name: m.name.to_string(), size: m.size.to_string(), there: data.as_ref().is_some_and(|d| harness_speech::model_present(d, *m)) }).collect();
         let runtime_size = (!data.as_ref().is_some_and(|d| harness_speech::runtime_present(d))).then(|| harness_speech::RUNTIME_SIZE.to_string());
-        frontend_tui::model::VoicePage { engine: chosen.map(|m| m.engine.id().to_string()), model: chosen.map_or(String::new(), |m| m.name.to_string()), models, runtime_size, ..Default::default() }
+        let device = voice.device.clone().map(|id| frontend_tui::model::VoiceDevice { name: voice.device_name.clone().unwrap_or_else(|| id.clone()), id });
+        frontend_tui::model::VoicePage { engine: chosen.map(|m| m.engine.id().to_string()), model: chosen.map_or(String::new(), |m| m.name.to_string()), models, runtime_size, device, ..Default::default() }
     }
 
     /// Moves a speech download along on the page.
@@ -1006,6 +1008,19 @@ impl Live {
             };
         }
         w.voice = Some(fresh);
+        true
+    }
+
+    /// What the system listed reaches the open dropdown.
+    fn tick_voice_devices(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        let Some(asked) = &self.voice_devices else { return false };
+        let Some(found) = asked.lock().expect("devices").take() else { return false };
+        self.voice_devices = None;
+        let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay else { return false };
+        s.voice.devices = found.list.into_iter().map(|d| frontend_tui::model::VoiceDevice { id: d.id, name: d.name }).collect();
+        s.voice.default_device = found.default;
+        // The list may have got shorter under the highlight.
+        s.voice.menu = s.voice.menu.map(|at| at.min(s.voice.devices.len()));
         true
     }
 
@@ -1641,10 +1656,16 @@ impl Live {
                         progress.lock().expect("download").end = Some(end);
                     });
                 }
-                Outgoing::SaveVoice { engine, model } => {
+                Outgoing::ListVoiceDevices => {
+                    let asked: std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>> = Default::default();
+                    self.voice_devices = Some(asked.clone());
+                    std::thread::spawn(move || *asked.lock().expect("devices") = Some(harness_speech::input_devices()));
+                }
+                Outgoing::SaveVoice { engine, model, device } => {
                     let saved = config::load().and_then(|mut c| {
                         c.voice.backend = engine;
                         c.voice.model = Some(model).filter(|m| !m.is_empty());
+                        (c.voice.device, c.voice.device_name) = device.map_or((None, None), |d| (Some(d.id), Some(d.name)));
                         config::save(&c)
                     });
                     let reloaded = saved.map_err(|e| e.to_string()).and_then(|_| {
@@ -1656,8 +1677,8 @@ impl Live {
                     }
                     w.voice = Some(self.voice_page());
                 }
-                Outgoing::StartVoiceTest { model } => {
-                    let started = harness_speech::model(&model).ok_or_else(|| format!("no model {model}")).and_then(|model| Ok((model, harness_speech::Recording::start()?)));
+                Outgoing::StartVoiceTest { model, device } => {
+                    let started = harness_speech::model(&model).ok_or_else(|| format!("no model {model}")).and_then(|model| Ok((model, harness_speech::Recording::start(device.as_deref())?)));
                     match started {
                         Ok((model, recording)) => self.voice_test = Some(VoiceTestRun { recording: Some(recording), model, heard: Default::default() }),
                         Err(why) => {
@@ -2199,6 +2220,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 dirty |= live.tick_login(w);
                 dirty |= live.tick_voice_download(w);
                 dirty |= live.tick_voice_test(w);
+                dirty |= live.tick_voice_devices(w);
             }
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.

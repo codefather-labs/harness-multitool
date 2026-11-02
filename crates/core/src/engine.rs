@@ -957,6 +957,7 @@ impl Engine {
         self.emit(Event::Verification { pass: result.pass, evidence: result.evidence.clone() });
         // IF-10: the evidence goes into memory. A store that cannot take it does not change the verdict.
         let entry = JournalEntry {
+            blocked_by: None,
             body: format!("Verification {} for the task: {task}\n{}", if result.pass { "passed" } else { "failed" }, result.evidence),
             category: "verification".into(),
             tags: vec!["verification".into()],

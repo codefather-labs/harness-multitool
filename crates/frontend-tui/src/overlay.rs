@@ -207,6 +207,9 @@ const VOICE_SECTION: &str = "Speech to text";
 /// The engines one can choose, as (id, what the row says).
 const VOICE_ENGINES: [(Option<&str>, &str); 3] = [(None, "Off"), (Some("whisper"), "Whisper"), (Some("parakeet"), "Parakeet")];
 const LEVEL_CELLS: usize = 24;
+const VOICE_DEVICE_ROW: usize = 2;
+const VOICE_DOWNLOAD_ROW: usize = 3;
+const VOICE_TEST_ROW: usize = 4;
 
 fn voice_engine_label(p: &crate::model::VoicePage) -> &'static str {
     VOICE_ENGINES.iter().find(|(id, _)| *id == p.engine.as_deref()).map_or("Off", |(_, label)| label)
@@ -246,9 +249,11 @@ fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
         VoiceTest::Hearing => ("[ Test ]", vec![Span::styled("Turning it into words…", muted)]),
         _ => ("[ Test ]", vec![Span::styled("Say something, then Enter again", muted)]),
     };
-    let rows: [(&str, Vec<Span>); 4] = [
+    let device = p.device.as_ref().map_or_else(|| p.default_device.as_ref().map_or("Default".to_string(), |name| format!("Default, {name}")), |d| d.name.clone());
+    let rows: [(&str, Vec<Span>); 5] = [
         ("Engine", vec![Span::styled(format!("{} ▾", voice_engine_label(p)), strong)]),
         ("Model", vec![Span::styled(model, strong)]),
+        ("Input device", vec![Span::styled(format!("{device} ▾"), strong)]),
         ("", vec![Span::styled("[ Download ] ", strong), Span::styled(download, muted)]),
         ("", std::iter::once(Span::styled(format!("{test_label} "), strong)).chain(test_spans).collect()),
     ];
@@ -259,21 +264,21 @@ fn voice_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
         text(f, r.x, r.y + 1 + i as u16, r.width, spans, row_bg);
         out.hits.push(Hit { rect: Rect::new(r.x, r.y + 1 + i as u16, r.width, 1), target: Target::VoiceRow(i) });
     }
-    text(f, r.x, r.y + 6, r.width, vec![Span::styled(format!(" {}", p.status), muted)], bg);
+    text(f, r.x, r.y + 7, r.width, vec![Span::styled(format!(" {}", p.status), muted)], bg);
     if let VoiceTest::Heard(words) = &p.test {
         // The words, in a window of their own.
         let chars: Vec<char> = words.chars().collect();
         let wrapped = crate::widgets::text_rows(words, r.width.saturating_sub(3)).into_iter().map(|(from, count)| chars[from..from + count].iter().collect::<String>());
         let lines: Vec<String> = if words.is_empty() { vec!["No words heard.".to_string()] } else { wrapped.collect() };
-        let height = (lines.len() as u16 + 2).min(r.height.saturating_sub(8).max(3));
-        let inner = modal(f, Rect::new(r.x + 1, r.y + 8, r.width.saturating_sub(2), height), t.accent_line, t.surface);
+        let height = (lines.len() as u16 + 2).min(r.height.saturating_sub(9).max(3));
+        let inner = modal(f, Rect::new(r.x + 1, r.y + 9, r.width.saturating_sub(2), height), t.accent_line, t.surface);
         for (row, line) in lines.iter().enumerate().take(inner.height as usize) {
             text(f, inner.x, inner.y + row as u16, inner.width, vec![Span::styled(format!(" {line}"), strong)], t.surface);
         }
     } else {
         let notes = ["Voice notes from Telegram are transcribed here: nothing leaves", "this machine. A bigger model hears better and takes longer.", "Ctrl+S saves."];
         for (i, note) in notes.iter().enumerate() {
-            text(f, r.x, r.y + 8 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+            text(f, r.x, r.y + 9 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
         }
     }
     if let Some(at) = p.menu {
@@ -312,6 +317,11 @@ fn voice_choices(p: &crate::model::VoicePage) -> Vec<(String, String, String, bo
             })
             .collect();
     }
+    if p.cursor == VOICE_DEVICE_ROW {
+        let default = ("Default".to_string(), String::new(), p.default_device.clone().unwrap_or_default(), p.device.is_none());
+        let others = p.devices.iter().map(|d| (d.name.clone(), String::new(), String::new(), p.device.as_ref().is_some_and(|c| c.id == d.id)));
+        return std::iter::once(default).chain(others).collect();
+    }
     p.models_of_engine().iter().map(|m| (m.name.clone(), m.size.clone(), if m.there { "✓ installed".to_string() } else { "not installed".to_string() }, m.name == p.model)).collect()
 }
 
@@ -326,6 +336,8 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
             Key::Enter | Key::Char(' ') => {
                 if p.cursor == 0 {
                     p.choose_engine(VOICE_ENGINES[at].0.map(str::to_string));
+                } else if p.cursor == VOICE_DEVICE_ROW {
+                    p.device = at.checked_sub(1).and_then(|i| p.devices.get(i)).cloned();
                 } else if let Some(name) = p.models_of_engine().get(at).map(|m| m.name.clone()) {
                     p.model = name;
                 }
@@ -338,16 +350,19 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
     let listening = matches!(p.test, VoiceTest::Listening { .. });
     match k {
         Key::Up if !listening => p.cursor = p.cursor.saturating_sub(1),
-        Key::Down if !listening => p.cursor = (p.cursor + 1).min(3),
-        Key::Enter | Key::Char(' ') if p.cursor < 2 => {
+        Key::Down if !listening => p.cursor = (p.cursor + 1).min(VOICE_TEST_ROW),
+        Key::Enter | Key::Char(' ') if p.cursor <= VOICE_DEVICE_ROW => {
             let choices = voice_choices(p);
             if choices.is_empty() {
                 p.status = "Choose an engine first.".to_string();
             } else {
                 p.menu = Some(choices.iter().position(|c| c.3).unwrap_or(0));
+                if p.cursor == VOICE_DEVICE_ROW {
+                    outbox.push(Outgoing::ListVoiceDevices);
+                }
             }
         }
-        Key::Enter if p.cursor == 2 && p.downloading.is_none() => match p.chosen() {
+        Key::Enter if p.cursor == VOICE_DOWNLOAD_ROW && p.downloading.is_none() => match p.chosen() {
             Some(m) if !m.there || p.runtime_size.is_some() => {
                 let model = m.name.clone();
                 p.downloading = Some("…".to_string());
@@ -357,7 +372,7 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
             Some(_) => p.status = "It is here already.".to_string(),
             None => p.status = "Choose an engine first.".to_string(),
         },
-        Key::Enter if p.cursor == 3 => match &p.test {
+        Key::Enter if p.cursor == VOICE_TEST_ROW => match &p.test {
             VoiceTest::Listening { .. } => {
                 p.test = VoiceTest::Hearing;
                 outbox.push(Outgoing::StopVoiceTest);
@@ -368,7 +383,7 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
                     let model = m.name.clone();
                     p.test = VoiceTest::Listening { level: 0.0, seconds: 0 };
                     p.status.clear();
-                    outbox.push(Outgoing::StartVoiceTest { model });
+                    outbox.push(Outgoing::StartVoiceTest { model, device: p.device.as_ref().map(|d| d.id.clone()) });
                 }
                 Some(_) => p.status = "Download it first.".to_string(),
                 None => p.status = "Choose an engine first.".to_string(),
@@ -377,7 +392,7 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
         Key::Ctrl('s') => {
             let waiting = p.engine.is_some() && (p.runtime_size.is_some() || !p.chosen().is_some_and(|m| m.there));
             p.status = if waiting { "Saved. It still has to be downloaded.".to_string() } else { "Saved.".to_string() };
-            outbox.push(Outgoing::SaveVoice { engine: p.engine.clone(), model: p.model.clone() });
+            outbox.push(Outgoing::SaveVoice { engine: p.engine.clone(), model: p.model.clone(), device: p.device.clone() });
         }
         _ => {}
     }
@@ -1367,7 +1382,7 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             voice_key(&mut s.voice, Key::Enter, &mut w.outbox);
         }
         // On the button that stops it, Enter stops it; elsewhere a click does nothing while it listens.
-        (Some(Overlay::Settings(s)), Target::VoiceRow(3)) if s.voice.menu.is_none() => voice_key(&mut s.voice, Key::Enter, &mut w.outbox),
+        (Some(Overlay::Settings(s)), Target::VoiceRow(VOICE_TEST_ROW)) if s.voice.menu.is_none() => voice_key(&mut s.voice, Key::Enter, &mut w.outbox),
         (Some(Overlay::Settings(s)), Target::VoiceRow(_)) => s.voice.menu = None,
         (Some(Overlay::Settings(s)), Target::VoiceChoice(at)) => {
             s.voice.menu = Some(at);
@@ -1888,14 +1903,52 @@ mod tests {
         key(&mut w, Key::Enter);
         assert_eq!(voice_of(&w).model, "base");
         key(&mut w, Key::Down);
+        key(&mut w, Key::Down);
         key(&mut w, Key::Enter);
         assert!(voice_of(&w).downloading.is_some());
         assert!(matches!(w.outbox.pop(), Some(Outgoing::DownloadVoiceModel { model }) if model == "base"));
         key(&mut w, Key::Enter);
         assert!(w.outbox.is_empty(), "one at a time");
         key(&mut w, Key::Ctrl('s'));
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveVoice { engine: Some(engine), model }) if engine == "whisper" && model == "base"));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveVoice { engine: Some(engine), model, device: None }) if engine == "whisper" && model == "base"), "the default until the user says otherwise");
         assert!(voice_of(&w).status.contains("still has to be downloaded"), "{}", voice_of(&w).status);
+    }
+
+    #[test]
+    fn the_input_device_is_default_until_chosen_and_the_test_records_from_it() {
+        use crate::model::{VoiceDevice, VoiceTest};
+        let mut w = voice_settings();
+        let mic = VoiceDevice { id: "alsa_input.usb".into(), name: "USB Mic".into() };
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.voice.cursor = VOICE_DEVICE_ROW;
+        }
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ListVoiceDevices)), "asks what is there now");
+        assert_eq!(voice_of(&w).menu, Some(0), "open on Default");
+        // What the system listed arrives while it is open.
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.voice.devices = vec![mic.clone()];
+        }
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).device.as_ref(), Some(&mic));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveVoice { device: Some(device), .. }) if device == mic));
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).menu, Some(1), "open on the chosen one");
+        w.outbox.clear();
+        key(&mut w, Key::Up);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).device, None, "back to the default");
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.voice.device = Some(mic.clone());
+            s.voice.choose_engine(Some("whisper".into()));
+            s.voice.runtime_size = None;
+            s.voice.cursor = VOICE_TEST_ROW;
+        }
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::StartVoiceTest { device: Some(device), .. }) if device == mic.id));
+        assert!(matches!(voice_of(&w).test, VoiceTest::Listening { .. }));
     }
 
     #[test]
@@ -1928,11 +1981,16 @@ mod tests {
     #[test]
     fn with_no_engine_there_is_nothing_to_fetch_or_test() {
         let mut w = voice_settings();
-        for _ in 0..3 {
-            key(&mut w, Key::Down);
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        assert_eq!(voice_of(&w).menu, None, "no models to list");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Down);
+        for _ in 0..2 {
             key(&mut w, Key::Enter);
             assert!(w.outbox.is_empty());
             assert_eq!(voice_of(&w).menu, None);
+            key(&mut w, Key::Down);
         }
         assert!(voice_of(&w).status.contains("engine"), "{}", voice_of(&w).status);
     }
@@ -1947,15 +2005,15 @@ mod tests {
             }
         };
         set(&mut w, &|p| p.choose_engine(Some("whisper".into())));
-        set(&mut w, &|p| p.cursor = 3);
+        set(&mut w, &|p| p.cursor = VOICE_TEST_ROW);
         key(&mut w, Key::Enter);
         assert!(w.outbox.is_empty() && voice_of(&w).status.contains("Download"), "the runtime is not here yet");
         set(&mut w, &|p| p.runtime_size = None);
         key(&mut w, Key::Enter);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::StartVoiceTest { model }) if model == "tiny"));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::StartVoiceTest { model, device: None }) if model == "tiny"));
         assert!(matches!(voice_of(&w).test, VoiceTest::Listening { .. }));
         key(&mut w, Key::Up);
-        assert_eq!(voice_of(&w).cursor, 3, "stays on the button that stops it");
+        assert_eq!(voice_of(&w).cursor, VOICE_TEST_ROW, "stays on the button that stops it");
         key(&mut w, Key::Enter);
         assert!(matches!(w.outbox.pop(), Some(Outgoing::StopVoiceTest)));
         assert_eq!(voice_of(&w).test, VoiceTest::Hearing);

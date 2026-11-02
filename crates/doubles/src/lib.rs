@@ -188,7 +188,7 @@ pub struct InMemoryJournal {
 impl Memory for InMemoryJournal {
     fn journal_add(&self, entry: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>> {
         let id = self.entries.borrow().len() as u64 + 1;
-        let record = JournalRecord { id, created: String::new(), category: entry.category, tags: entry.tags, body: entry.body, flags: entry.flags };
+        let record = JournalRecord { blocked_by: Vec::new(), id, created: String::new(), category: entry.category, tags: entry.tags, body: entry.body, flags: entry.flags };
         self.entries.borrow_mut().push(record.clone());
         ready(Ok(record))
     }

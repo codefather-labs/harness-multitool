@@ -29,6 +29,7 @@ fn record(e: journal::Entry) -> JournalRecord {
         tags: e.tags.clone(),
         body: e.body.clone(),
         flags: e.flags.iter().map(|f| f.flag.clone()).collect(),
+        blocked_by: e.blocked_by.iter().map(|id| *id as u64).collect(),
     }
 }
 
@@ -76,6 +77,7 @@ impl Memory for JournalMemory {
                 salience: journal::normalize_salience(entry.salience.as_deref())?,
                 feature: entry.feature,
                 flags: journal::normalize_flags(&entry.flags)?,
+                blocked_by: entry.blocked_by.iter().map(|id| *id as i64).collect(),
                 ..Default::default()
             };
             let mut conn = self.conn.borrow_mut();
@@ -175,6 +177,14 @@ impl JournalMemory {
                 json!({"agenda": groups.into_iter().map(|(flag, total, entries)| json!({"flag": flag, "total": total, "entries": entries})).collect::<Vec<_>>()})
             }
             MemoryOp::JournalMark { id, flags } => json!({"id": id, "marked": journal::mark(&mut conn, id as i64, &flags, now())?}),
+            MemoryOp::JournalBlock { id, by } => {
+                journal::block(&mut conn, id as i64, by as i64)?;
+                json!({"id": id, "blocked_by": journal::get(&conn, id as i64)?.map_or(Vec::new(), |e| e.blocked_by)})
+            }
+            MemoryOp::JournalUnblock { id, by } => {
+                let lifted = journal::unblock(&conn, id as i64, by as i64)?;
+                json!({"id": id, "lifted": lifted, "blocked_by": journal::get(&conn, id as i64)?.map_or(Vec::new(), |e| e.blocked_by)})
+            }
             MemoryOp::JournalUnmark { id, flags } => json!({"id": id, "unmarked": journal::unmark(&mut conn, id as i64, &flags)?}),
             MemoryOp::JournalReopen { id, flags } => json!({"id": id, "reopened": journal::reopen(&mut conn, id as i64, &flags)?}),
             MemoryOp::JournalAbandon { id, resolution } => json!({"id": id, "abandoned": journal::close_with(&mut conn, id as i64, &[], by, Some(&resolution), now(), journal::CloseMode::Abandon)?}),
@@ -216,7 +226,7 @@ mod tests {
     fn the_store_answers_through_the_interface() {
         let dir = tempfile::tempdir().unwrap();
         let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
-                let entry = JournalEntry { body: "chose sqlite because readers block".into(), category: "decision".into(), tags: vec!["sqlite".into()], flags: vec!["question".into()], salience: None, feature: None };
+                let entry = JournalEntry { blocked_by: None, body: "chose sqlite because readers block".into(), category: "decision".into(), tags: vec!["sqlite".into()], flags: vec!["question".into()], salience: None, feature: None };
         let added = pollster_free(m.journal_add(entry)).unwrap();
         assert_eq!(added.id, 1);
         assert_eq!(added.flags, vec!["question"]);
@@ -247,7 +257,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
         let more = |op| pollster_free(m.more(op));
-        let entry = |body: &str, flags: &[&str]| JournalEntry { body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
+        let entry = |body: &str, flags: &[&str]| JournalEntry { blocked_by: None, body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
         let todo = pollster_free(m.journal_add(entry("do the thing", &["todo"]))).unwrap().id;
         let other = pollster_free(m.journal_add(entry("a remark", &[]))).unwrap().id;
 
@@ -262,6 +272,16 @@ mod tests {
         assert_eq!(more(MemoryOp::JournalLink { from: other, to: todo, kind: "cites".into() }).unwrap()["linked"], true);
         assert_eq!(more(MemoryOp::JournalTags { category: None }).unwrap()["tags"][0]["name"], "t");
         assert!(pollster_free(m.journal_close(todo, "no evidence")).is_err(), "a todo still closes only with evidence");
+        let (first, second) = (pollster_free(m.journal_add(entry("blocker", &["question"]))).unwrap().id, pollster_free(m.journal_add(entry("blocked", &["question"]))).unwrap().id);
+        assert_eq!(more(MemoryOp::JournalBlock { id: second, by: first }).unwrap()["blocked_by"][0], first);
+        assert_eq!(pollster_free(m.journal_get(second)).unwrap().unwrap().blocked_by, [first]);
+        let refused = pollster_free(m.journal_close(second, "answered")).unwrap_err().to_string();
+        assert!(refused.contains("blocked by"), "{refused}");
+        assert_eq!(more(MemoryOp::JournalUnblock { id: second, by: first }).unwrap()["lifted"], true);
+        pollster_free(m.journal_close(second, "answered")).unwrap();
+        let third = JournalEntry { blocked_by: Some(first), ..entry("waits at birth", &["question"]) };
+        let third = pollster_free(m.journal_add(third)).unwrap();
+        assert_eq!(third.blocked_by, [first], "an entry says what holds it as soon as it is written");
         assert_eq!(more(MemoryOp::JournalAbandon { id: todo, resolution: "dropped".into() }).unwrap()["abandoned"][0], "todo");
         assert_eq!(more(MemoryOp::JournalReopen { id: todo, flags: vec![] }).unwrap()["reopened"][0], "todo");
 

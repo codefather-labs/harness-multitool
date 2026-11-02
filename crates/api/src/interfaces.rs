@@ -219,6 +219,9 @@ pub struct JournalEntry {
     pub flags: Vec<String>,
     pub salience: Option<String>,
     pub feature: Option<String>,
+    /// An entry that has to be closed before this one can be (CON-91).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<u64>,
 }
 
 /// Which entries `Memory::journal_list` returns.
@@ -238,6 +241,9 @@ pub enum MemoryOp {
     JournalList { category: Option<String>, tags: Vec<String>, flags: Vec<String>, open: Option<bool>, feature: Option<String>, offset: usize, limit: usize },
     JournalAgenda { limit: usize },
     JournalMark { id: u64, flags: Vec<String> },
+    /// `id` cannot be closed until `by` is (CON-91).
+    JournalBlock { id: u64, by: u64 },
+    JournalUnblock { id: u64, by: u64 },
     JournalUnmark { id: u64, flags: Vec<String> },
     JournalReopen { id: u64, flags: Vec<String> },
     /// Closes a todo whose work was dropped: no evidence is needed, the resolution says why.
@@ -264,6 +270,9 @@ pub struct JournalRecord {
     pub tags: Vec<String>,
     pub body: String,
     pub flags: Vec<String>,
+    /// What has to close before this one can, of what it was blocked by: those still open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<u64>,
 }
 
 /// The two map tools (ADR 0011).

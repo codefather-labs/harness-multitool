@@ -73,9 +73,11 @@ pub enum Outgoing {
     /// Fetch this speech model.
     DownloadVoiceModel { model: String },
     /// The Speech to text page saved.
-    SaveVoice { engine: Option<String>, model: String },
+    SaveVoice { engine: Option<String>, model: String, device: Option<VoiceDevice> },
+    /// The input devices' dropdown opened: what is there now.
+    ListVoiceDevices,
     /// The page's test: the microphone on.
-    StartVoiceTest { model: String },
+    StartVoiceTest { model: String, device: Option<String> },
     /// The microphone off: what it heard goes to the engine.
     StopVoiceTest,
     /// The Telegram page saved: a new token if one was typed, and who may speak.
@@ -925,6 +927,13 @@ pub struct VoiceModel {
     pub there: bool,
 }
 
+/// An input device on the settings' page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VoiceDevice {
+    pub id: String,
+    pub name: String,
+}
+
 /// How the page's test stands.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum VoiceTest {
@@ -947,7 +956,13 @@ pub struct VoicePage {
     pub model: String,
     /// The runtime is here, or it comes with the first download: what it comes to, if it does.
     pub runtime_size: Option<String>,
-    /// 0 the engine, 1 the model, 2 the download, 3 the test.
+    /// The chosen input device, none for the system's default.
+    pub device: Option<VoiceDevice>,
+    /// What the system listed when the dropdown last opened.
+    pub devices: Vec<VoiceDevice>,
+    /// What the system's default is named, when it says.
+    pub default_device: Option<String>,
+    /// 0 the engine, 1 the model, 2 the input device, 3 the download, 4 the test.
     pub cursor: usize,
     /// The dropdown of the row under the cursor is open, at this choice.
     pub menu: Option<usize>,

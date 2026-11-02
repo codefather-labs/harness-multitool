@@ -678,6 +678,7 @@ impl Daemon {
             tags.push("callback".to_string());
         }
         let entry = JournalEntry {
+            blocked_by: None,
             body: body.to_string(),
             category: input["category"].as_str().unwrap_or("finding").to_string(),
             tags,

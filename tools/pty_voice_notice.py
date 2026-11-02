@@ -40,6 +40,10 @@ bin_ = sys.argv[1]
 env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 env.pop("MULTITOOL_TELEGRAM_TOKEN", None)
 os.makedirs(home + "/bin"); open(home + "/bin/pw-record", "w").write("#!/bin/sh\nwhile :; do head -c 3200 /dev/urandom; sleep 0.1; done\n"); os.chmod(home + "/bin/pw-record", 0o755)
+dump = json.dumps([{"id": 40, "props": {"metadata.name": "default"}, "metadata": [{"key": "default.audio.source", "value": {"name": "alsa_input.pci"}}]},
+    {"id": 57, "info": {"props": {"media.class": "Audio/Source", "node.name": "alsa_input.pci", "node.description": "Ryzen HD Audio Controller Analog Stereo"}}},
+    {"id": 58, "info": {"props": {"media.class": "Audio/Source", "node.name": "alsa_input.usb", "node.description": "USB Microphone"}}}])
+open(home + "/bin/pw-dump", "w").write("#!/bin/sh\ncat <<'EOF'\n" + dump + "\nEOF\n"); os.chmod(home + "/bin/pw-dump", 0o755)
 env["PATH"] = home + "/bin:" + env["PATH"]
 # The page, with a stand-in for the runtime, a model and a microphone: what it draws is for a person to look at.
 data = home + "/data/harness-multitool/speech"; os.makedirs(data + "/runtime/bin"); os.makedirs(data + "/models/tiny")
@@ -102,7 +106,8 @@ down = "\x1b[B"
 typed("/settings\r"); pump(0.5)
 keys(*[down] * 8); keys("\t", "\r"); shot("speech-engine-dropdown.png")
 keys(down, "\r", down, "\r"); shot("speech-model-dropdown.png")
-keys("\x1b"); keys(down, down, "\r"); pump(1.2); shot("speech-listening.png")
+keys("\x1b"); keys(down, "\r"); pump(0.5); shot("speech-device-dropdown.png")
+keys(down, "\r"); keys(down, down, "\r"); pump(1.2); shot("speech-listening.png")
 keys("\r"); pump(1.5); shot("speech-heard.png")
 print("ok")
 os.write(fd, b"\x03"); pump(0.3); os.write(fd, b"\x03"); pump(0.3)

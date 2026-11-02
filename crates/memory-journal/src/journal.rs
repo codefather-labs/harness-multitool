@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS entry_proofs (
 
 /// How one entry refers to another. Read from the text (`journal#N`, see
 /// [`parse_refs`]) or set with `journal link`.
+/// The link of an entry to one that has to be closed first. Set by `block`, which refuses what
+/// could never close, so it is not among the kinds anyone can link by.
+const BLOCKED_BY: &str = "blocked_by";
 pub const LINK_KINDS: [&str; 5] = ["cites", "replaces", "fixes", "implements", "verifies"];
 
 /// The `journal#N` references in an entry, with what the (up to three) words
@@ -482,6 +485,8 @@ pub struct NewEntry {
     /// Do not read `journal#N` references from the text: an entry imported
     /// from another journal numbers them in that journal.
     pub foreign: bool,
+    /// Entries that have to be closed before this one can be (CON-91).
+    pub blocked_by: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -545,8 +550,18 @@ pub fn add(conn: &mut Connection, entry: &NewEntry, now: i64) -> Result<(AddStat
         insert_flags(&tx, id, &flags, now)?;
         insert_proofs(&tx, id, &entry.proofs)?;
         insert_reminder(&tx, id, entry, now)?;
+        for blocker in &entry.blocked_by {
+            insert_block(&tx, id, *blocker)?;
+        }
         tx.commit()?;
         return Ok((AddStatus::Deduped, id));
+    }
+    // Before anything is stored: a refused entry leaves nothing behind.
+    if !entry.blocked_by.is_empty() && !flags.iter().any(|f| closable(f)) {
+        bail!("this entry has nothing open to close, so nothing can block it: give it a work item such as todo");
+    }
+    for blocker in &entry.blocked_by {
+        check_blocker(&tx, *blocker)?;
     }
 
     tx.execute(
@@ -574,6 +589,9 @@ pub fn add(conn: &mut Connection, entry: &NewEntry, now: i64) -> Result<(AddStat
     if !entry.foreign {
         insert_links(&tx, id, body)?;
     }
+    for blocker in &entry.blocked_by {
+        insert_block(&tx, id, *blocker)?;
+    }
     tx.commit()?;
     Ok((AddStatus::Written, id))
 }
@@ -596,6 +614,76 @@ pub fn link(conn: &mut Connection, from: i64, to: i64, kind: &str) -> Result<boo
     let added = tx.execute("INSERT OR IGNORE INTO entry_links(from_id, to_id, kind) VALUES (?1, ?2, ?3)", params![from, to, kind])? > 0;
     tx.commit()?;
     Ok(added)
+}
+
+/// A blocker has to exist and have something open: what is closed already holds nothing up, and
+/// what has no work item could never release it.
+fn check_blocker(conn: &Connection, blocker: i64) -> Result<()> {
+    if !exists(conn, blocker)? {
+        bail!("no entry {blocker}");
+    }
+    if open_work_items(conn, blocker)?.is_empty() {
+        bail!("entry {blocker} has nothing open: it would hold nothing up, or never let go");
+    }
+    Ok(())
+}
+
+fn insert_block(conn: &Connection, id: i64, blocker: i64) -> Result<bool> {
+    if id == blocker {
+        bail!("an entry cannot be blocked by itself");
+    }
+    check_blocker(conn, blocker)?;
+    // Whatever the blocker waits for, at any depth: none of them may wait for this one.
+    let mut seen = vec![blocker];
+    let mut at = 0;
+    while at < seen.len() {
+        for next in blockers_of(conn, seen[at])? {
+            if next == id {
+                bail!("entry {blocker} already waits for entry {id}: neither could ever close");
+            }
+            if !seen.contains(&next) {
+                seen.push(next);
+            }
+        }
+        at += 1;
+    }
+    Ok(conn.execute("INSERT OR IGNORE INTO entry_links(from_id, to_id, kind) VALUES (?1, ?2, ?3)", params![id, blocker, BLOCKED_BY])? > 0)
+}
+
+fn blockers_of(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached("SELECT to_id FROM entry_links WHERE from_id = ?1 AND kind = ?2 ORDER BY to_id")?;
+    let found = stmt.query_map(params![id, BLOCKED_BY], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(found)
+}
+
+/// Those of an entry's blockers that are not closed yet.
+fn open_blockers(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    let mut open = Vec::new();
+    for blocker in blockers_of(conn, id)? {
+        if !open_work_items(conn, blocker)?.is_empty() {
+            open.push(blocker);
+        }
+    }
+    Ok(open)
+}
+
+/// `id` cannot be closed until `blocker` is (CON-91).
+pub fn block(conn: &mut Connection, id: i64, blocker: i64) -> Result<bool> {
+    let tx = write_tx(conn)?;
+    if !exists(&tx, id)? {
+        bail!("no entry {id}");
+    }
+    if open_work_items(&tx, id)?.is_empty() {
+        bail!("entry {id} has nothing open to close, so nothing can block it");
+    }
+    let added = insert_block(&tx, id, blocker)?;
+    tx.commit()?;
+    Ok(added)
+}
+
+/// Lifts a block. False if there was none.
+pub fn unblock(conn: &Connection, id: i64, blocker: i64) -> Result<bool> {
+    Ok(unlink(conn, id, blocker, Some(BLOCKED_BY))? > 0)
 }
 
 /// Remove links from `from` to `to` — of one kind, or all. Returns how many.
@@ -926,6 +1014,18 @@ pub fn close_with(
             CloseMode::Restore => unreachable!(),
         }
         also = branch.into_iter().filter(|e| *e != id).collect();
+    }
+
+    // Dropped work waits for nothing, and history comes back as it was.
+    if mode == CloseMode::Checked {
+        for e in std::iter::once(id).chain(also.iter().copied()) {
+            let waiting = open_blockers(&tx, e)?;
+            if !waiting.is_empty() {
+                let names = waiting.iter().map(|b| format!("#{b}")).collect::<Vec<_>>().join(", ");
+                let whose = if e == id { format!("entry {id}") } else { format!("entry {id}'s branch: entry {e}") };
+                bail!("{whose} cannot close yet: blocked by {names}, not closed. Close that first, or lift the block with journal_mark.");
+            }
+        }
     }
 
     let mut closed = Vec::new();
@@ -1281,6 +1381,9 @@ pub struct Entry {
     pub proofs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remind: Option<Reminder>,
+    /// What has to close before this one can, of what it was blocked by: those still open.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<i64>,
 }
 
 /// An entry that comes back to its author while its `reminder` is open.
@@ -1357,6 +1460,7 @@ fn entry_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         links: Vec::new(),
         proofs: Vec::new(),
         remind: None,
+        blocked_by: Vec::new(),
     })
 }
 
@@ -1389,6 +1493,7 @@ fn attach_tags(conn: &Connection, entries: &mut [Entry]) -> Result<()> {
         set.sort_by_key(|f| FLAGS.iter().position(|k| *k == f.flag));
         e.flags = set;
         e.links = links_of(conn, e.id)?;
+        e.blocked_by = open_blockers(conn, e.id)?;
         e.proofs = proofs_of(conn, e.id)?;
         e.remind = reminder_of(conn, e.id)?;
     }
@@ -1825,6 +1930,7 @@ pub fn merge_into(dst: &mut Connection, src: &Connection) -> Result<(usize, usiz
             remind_to: None,
             // Links are copied below by id; the text's numbers are src's.
             foreign: true,
+            blocked_by: Vec::new(),
         };
         let (status, new) = add(dst, &entry, e.created_at)?;
         match status {
@@ -2384,6 +2490,127 @@ mod tests {
         assert_eq!(parse_refs("this replaces the old journal#5"), vec![(5, "replaces")]);
         assert_eq!(parse_refs("Implements journal#7. Verifies journal#8"), vec![(7, "implements"), (8, "verifies")]);
         assert_eq!(parse_refs("the unverified journal#9"), vec![(9, "cites")], "unverified is not verifies");
+    }
+
+    fn todo(c: &mut Connection, body: &str) -> i64 {
+        let e = NewEntry { flags: vec!["todo".into()], ..entry(body, "todo", &["t"]) };
+        add(c, &e, 1000).unwrap().1
+    }
+
+    fn proven(c: &mut Connection, id: i64) {
+        let body = format!("Verifies journal#{id}: ran the whole protocol on this machine once and it printed what it must");
+        let e = NewEntry { flags: vec!["verified".into()], ..entry(&body, "verification", &["t"]) };
+        add(c, &e, 1000).unwrap();
+    }
+
+    #[test]
+    fn a_blocked_entry_closes_only_after_its_blocker() {
+        let (_d, mut c) = journal();
+        let (first, second) = (todo(&mut c, "the cause"), todo(&mut c, "what rests on it"));
+        assert!(block(&mut c, second, first).unwrap());
+        assert_eq!(get(&c, second).unwrap().unwrap().blocked_by, [first]);
+        proven(&mut c, second);
+        let refused = close(&mut c, second, &[], None, None, 2000).unwrap_err().to_string();
+        assert!(refused.contains("blocked by #") && refused.contains(&first.to_string()), "{refused}");
+        proven(&mut c, first);
+        close(&mut c, first, &[], None, None, 2000).unwrap();
+        assert!(get(&c, second).unwrap().unwrap().blocked_by.is_empty(), "shows only what is still open");
+        close(&mut c, second, &[], None, None, 2000).unwrap();
+    }
+
+    #[test]
+    fn a_blocker_reopened_blocks_again_and_abandoned_lets_go() {
+        let (_d, mut c) = journal();
+        let (first, second) = (todo(&mut c, "first"), todo(&mut c, "second"));
+        block(&mut c, second, first).unwrap();
+        proven(&mut c, first);
+        proven(&mut c, second);
+        close(&mut c, first, &[], None, None, 2000).unwrap();
+        reopen(&mut c, first, &[]).unwrap();
+        assert!(close(&mut c, second, &[], None, None, 2000).is_err(), "open again, so it holds again");
+        close_with(&mut c, first, &[], None, Some("not needed"), 2000, CloseMode::Abandon).unwrap();
+        close(&mut c, second, &[], None, None, 2000).unwrap();
+    }
+
+    #[test]
+    fn dropped_work_waits_for_nothing() {
+        let (_d, mut c) = journal();
+        let (first, second) = (todo(&mut c, "first"), todo(&mut c, "second"));
+        block(&mut c, second, first).unwrap();
+        close_with(&mut c, second, &[], None, Some("dropped"), 2000, CloseMode::Abandon).unwrap();
+    }
+
+    #[test]
+    fn a_block_cannot_be_walked_round_by_closing_its_branch() {
+        let (_d, mut c) = journal();
+        let (root, other) = (todo(&mut c, "the work"), todo(&mut c, "what it waits for"));
+        let body = format!("Implements journal#{root}: the change");
+        let part = NewEntry { flags: vec!["problem".into()], ..entry(&body, "update", &["t"]) };
+        let part = add(&mut c, &part, 1000).unwrap().1;
+        block(&mut c, part, other).unwrap();
+        let verified = NewEntry { flags: vec!["verified".into()], ..entry(&format!("Verifies journal#{part}: ran it all on this machine once and it printed what it must"), "verification", &["t"]) };
+        add(&mut c, &verified, 1000).unwrap();
+        let refused = close(&mut c, root, &[], None, None, 2000).unwrap_err().to_string();
+        assert!(refused.contains("branch") && refused.contains(&part.to_string()), "{refused}");
+    }
+
+    #[test]
+    fn what_could_never_close_is_refused_when_set() {
+        let (_d, mut c) = journal();
+        let (a, b, d) = (todo(&mut c, "a"), todo(&mut c, "b"), todo(&mut c, "d"));
+        assert!(block(&mut c, a, a).is_err(), "itself");
+        assert!(block(&mut c, a, 999).is_err(), "no such entry");
+        assert!(block(&mut c, 999, a).is_err(), "no such entry");
+        block(&mut c, a, b).unwrap();
+        block(&mut c, b, d).unwrap();
+        let cycle = block(&mut c, d, a).unwrap_err().to_string();
+        assert!(cycle.contains("neither could ever close"), "{cycle}");
+        let note = add(&mut c, &entry("a plain note", "finding", &["t"]), 1000).unwrap().1;
+        assert!(block(&mut c, a, note).is_err(), "a note never closes");
+        assert!(block(&mut c, note, a).is_err(), "a note has nothing to close");
+        assert!(unblock(&c, a, b).unwrap());
+        assert!(!unblock(&c, a, b).unwrap());
+        assert!(get(&c, a).unwrap().unwrap().blocked_by.is_empty());
+    }
+
+    #[test]
+    fn a_refused_entry_leaves_nothing_behind() {
+        let (_d, mut c) = journal();
+        let blocker = todo(&mut c, "blocker");
+        for (flags, by) in [(vec!["todo".to_string()], 999), (vec![], blocker)] {
+            let e = NewEntry { flags, blocked_by: vec![by], ..entry("should not stay", "todo", &["t"]) };
+            assert!(add(&mut c, &e, 1000).is_err());
+        }
+        let stored: i64 = c.query_row("SELECT count(*) FROM entries", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 1);
+        let e = NewEntry { flags: vec!["todo".to_string()], blocked_by: vec![blocker], ..entry("stays", "todo", &["t"]) };
+        let id = add(&mut c, &e, 1000).unwrap().1;
+        assert_eq!(get(&c, id).unwrap().unwrap().blocked_by, [blocker]);
+    }
+
+    #[test]
+    fn a_block_survives_being_merged_into_another_journal() {
+        let (_d, mut src) = journal();
+        let (first, second) = (todo(&mut src, "the cause"), todo(&mut src, "what rests on it"));
+        block(&mut src, second, first).unwrap();
+        let (_d2, mut dst) = journal();
+        todo(&mut dst, "already there, so the numbers differ");
+        merge_into(&mut dst, &src).unwrap();
+        let (_, hits) = list(&dst, &Filter::default(), 0, 10).unwrap();
+        let moved = hits.iter().find(|e| e.body == "what rests on it").unwrap();
+        let cause = hits.iter().find(|e| e.body == "the cause").unwrap();
+        assert_eq!(moved.blocked_by, [cause.id]);
+    }
+
+    #[test]
+    fn a_block_joins_no_branches_and_cannot_be_made_as_a_plain_link() {
+        let (_d, mut c) = journal();
+        let (a, b) = (todo(&mut c, "a"), todo(&mut c, "b"));
+        block(&mut c, a, b).unwrap();
+        proven(&mut c, b);
+        close(&mut c, b, &[], None, None, 2000).unwrap();
+        assert_eq!(get(&c, a).unwrap().unwrap().flags.iter().filter(|f| f.open).count(), 1, "closing the blocker closed nothing else");
+        assert!(link(&mut c, a, b, "blocked_by").is_err(), "only by `block`, which refuses cycles");
     }
 
     #[test]

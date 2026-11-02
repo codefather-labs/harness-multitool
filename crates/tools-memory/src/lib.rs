@@ -79,6 +79,9 @@ pub const NAMES: [&str; 10] = [
 
 /// The rest of the store: a delegate gets them, since its project's rules use them. A model on its
 /// own loop has them by name in the configuration; each costs prompt on a small one.
+/// When an agent is to use `blocked_by`, where it decides (CON-91).
+const BLOCKED_BY_RULE: &str = "The id of the journal entry that blocks this one. When a problem or a task cannot be solved now because another one in the journal has to be solved first, set this to that entry's id, writing the other one down first if it is not in the journal yet, and say in the body why it blocks. This entry then cannot close until that one is closed. Work on the blocker first. Do not set it for what is only related or merely easier afterwards: that is a citation.";
+
 pub const MORE: [&str; 13] = ["journal_list", "journal_agenda", "journal_mark", "journal_reopen", "journal_abandon", "journal_branch", "journal_link", "journal_tags", "map_edit", "map_node_state", "map_link", "map_ref", "map_close"];
 
 fn more<'a>(memory: &'a dyn Memory, op: PluginResult<MemoryOp>) -> BoxFuture<'a, PluginResult<Value>> {
@@ -137,6 +140,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         "flags": {"type": "array", "items": {"type": "string"}},
                         "salience": {"type": "string", "enum": ["high", "medium", "low"]},
                         "feature": {"type": "string"},
+                        "blocked_by": {"type": "integer", "description": BLOCKED_BY_RULE},
                     }),
                     &["body", "category", "tags"],
                 )
@@ -150,6 +154,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         flags: strings(&input["flags"]),
                         salience: input["salience"].as_str().map(str::to_string),
                         feature: input["feature"].as_str().map(str::to_string),
+                        blocked_by: input["blocked_by"].as_u64(),
                     };
                     let record = memory.journal_add(entry).await?;
                     Ok(serde_json::to_value(record).expect("an entry serialises"))
@@ -251,12 +256,20 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
         ),
         "journal_mark" => tool(
             "journal_mark",
-            "Set flags on an existing entry, or with `remove` take marks off. For example deprecated when an entry stops being true. An unverified flag lifts only by an entry that verifies it.",
-            || object(json!({"id": {"type": "integer"}, "flags": {"type": "array", "items": {"type": "string"}}, "remove": {"type": "boolean"}}), &["id", "flags"]),
+            "Set flags on an existing entry, or with `remove` take marks off. For example deprecated when an entry stops being true. An unverified flag lifts only by an entry that verifies it. `blocked_by` instead of flags blocks the entry, or with `remove` lifts that block.",
+            || object(json!({"id": {"type": "integer"}, "flags": {"type": "array", "items": {"type": "string"}}, "remove": {"type": "boolean"}, "blocked_by": {"type": "integer", "description": BLOCKED_BY_RULE}}), &["id"]),
             |memory, input| {
-                more(memory, number(input, "id").map(|id| {
+                more(memory, number(input, "id").and_then(|id| {
                     let flags = strings(&input["flags"]);
-                    if input["remove"] == true { MemoryOp::JournalUnmark { id, flags } } else { MemoryOp::JournalMark { id, flags } }
+                    let remove = input["remove"] == true;
+                    match input["blocked_by"].as_u64() {
+                        Some(_) if !flags.is_empty() => Err(PluginError::new("flags or blocked_by, one at a time")),
+                        Some(by) if remove => Ok(MemoryOp::JournalUnblock { id, by }),
+                        Some(by) => Ok(MemoryOp::JournalBlock { id, by }),
+                        None if flags.is_empty() => Err(PluginError::new("flags or blocked_by is required")),
+                        None if remove => Ok(MemoryOp::JournalUnmark { id, flags }),
+                        None => Ok(MemoryOp::JournalMark { id, flags }),
+                    }
                 }))
             },
         ),

@@ -381,25 +381,107 @@ pub struct Recording {
     done: Arc<AtomicBool>,
 }
 
-/// Programs that record, each as raw 16-bit 16 kHz mono on its output, in order of preference.
-fn recorders() -> Vec<(&'static str, Vec<&'static str>)> {
+/// Programs that record, each as raw 16-bit 16 kHz mono on its output, in order of preference. A
+/// device is what `input_devices` listed; none is the system's default.
+fn recorders(device: Option<&str>) -> Vec<(&'static str, Vec<String>)> {
+    let args = |target: Option<Vec<String>>, rest: &[&str]| target.unwrap_or_default().into_iter().chain(rest.iter().map(|a| a.to_string())).collect::<Vec<String>>();
     let mut list = Vec::new();
     if cfg!(target_os = "linux") {
-        list.push(("pw-record", vec!["--rate", "16000", "--channels", "1", "--format", "s16", "-"]));
-        list.push(("parec", vec!["--rate=16000", "--channels=1", "--format=s16le", "--raw"]));
-        list.push(("arecord", vec!["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"]));
+        list.push(("pw-record", args(device.map(|d| vec!["--target".to_string(), d.to_string()]), &["--rate", "16000", "--channels", "1", "--format", "s16", "-"])));
+        list.push(("parec", args(device.map(|d| vec![format!("--device={d}")]), &["--rate=16000", "--channels=1", "--format=s16le", "--raw"])));
+        list.push(("arecord", args(device.map(|d| vec!["-D".to_string(), d.to_string()]), &["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"])));
     }
     if cfg!(target_os = "macos") {
-        list.push(("rec", vec!["-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed", "-"]));
-        list.push(("ffmpeg", vec!["-loglevel", "quiet", "-f", "avfoundation", "-i", ":0", "-ar", "16000", "-ac", "1", "-f", "s16le", "-"]));
+        list.push(("rec", args(None, &["-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed", "-"])));
+        list.push(("ffmpeg", args(None, &["-loglevel", "quiet", "-f", "avfoundation", "-i", ":0", "-ar", "16000", "-ac", "1", "-f", "s16le", "-"])));
+    }
+    list
+}
+
+/// A device one can record from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InputDevice {
+    /// What the recording program is told.
+    pub id: String,
+    pub name: String,
+}
+
+/// What this machine records from now, read fresh each time: a microphone comes and goes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InputDevices {
+    /// The name of the system's default, when it says.
+    pub default: Option<String>,
+    pub list: Vec<InputDevice>,
+}
+
+/// Empty where nothing tells: only the default can be recorded from then.
+pub fn input_devices() -> InputDevices {
+    let read = |program: &str, args: &[&str]| -> Option<String> {
+        let output = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).to_string())
+    };
+    if !cfg!(target_os = "linux") {
+        return InputDevices::default();
+    }
+    if let Some(found) = read("pw-dump", &[]).and_then(|dump| pipewire_devices(&dump)) {
+        return found;
+    }
+    if let Some(sources) = read("pactl", &["list", "short", "sources"]) {
+        return InputDevices { default: None, list: pactl_devices(&sources) };
+    }
+    InputDevices { default: None, list: read("arecord", &["-L"]).map_or_else(Vec::new, |pcms| arecord_devices(&pcms)) }
+}
+
+/// From `pw-dump`: the nodes that are sources, and what the default is named. None if it says none.
+fn pipewire_devices(dump: &str) -> Option<InputDevices> {
+    let objects: Vec<serde_json::Value> = serde_json::from_str(dump).ok()?;
+    let list: Vec<InputDevice> = objects
+        .iter()
+        .filter_map(|object| {
+            let props = &object["info"]["props"];
+            if !props["media.class"].as_str()?.starts_with("Audio/Source") {
+                return None;
+            }
+            let id = props["node.name"].as_str()?.to_string();
+            let name = props["node.description"].as_str().or(props["node.nick"].as_str()).unwrap_or(&id).to_string();
+            Some(InputDevice { id, name })
+        })
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    let default_id = objects.iter().filter(|o| o["info"]["props"]["metadata.name"] == "default" || o["props"]["metadata.name"] == "default").find_map(|o| {
+        let entries = o["metadata"].as_array()?;
+        let entry = entries.iter().find(|e| e["key"] == "default.audio.source")?;
+        entry["value"]["name"].as_str().map(str::to_string)
+    });
+    let default = default_id.and_then(|id| list.iter().find(|d| d.id == id)).map(|d| d.name.clone());
+    Some(InputDevices { default, list })
+}
+
+/// From `pactl list short sources`: a monitor hears what plays, not the room.
+fn pactl_devices(sources: &str) -> Vec<InputDevice> {
+    sources.lines().filter_map(|line| line.split('\t').nth(1)).filter(|name| !name.ends_with(".monitor")).map(|name| InputDevice { id: name.to_string(), name: name.to_string() }).collect()
+}
+
+/// From `arecord -L`: each card once, by its default device, with the description under it.
+fn arecord_devices(pcms: &str) -> Vec<InputDevice> {
+    let mut lines = pcms.lines().peekable();
+    let mut list = Vec::new();
+    while let Some(line) = lines.next() {
+        if line.starts_with("sysdefault:") {
+            let name = lines.peek().map_or(line, |next| next.trim());
+            list.push(InputDevice { id: line.to_string(), name: name.to_string() });
+        }
     }
     list
 }
 
 impl Recording {
-    pub fn start() -> Result<Recording, String> {
+    /// From this device, or the system's default.
+    pub fn start(device: Option<&str>) -> Result<Recording, String> {
         let mut tried = Vec::new();
-        for (program, args) in recorders() {
+        for (program, args) in recorders(device) {
             match Command::new(program).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
                 Ok(child) => return Ok(Recording::reading(child)),
                 Err(_) => tried.push(program),
@@ -598,6 +680,57 @@ mod tests {
         let samples = recording.stop();
         assert_eq!(samples.len(), 8000);
         assert!(samples.iter().all(|s| *s > 0.9));
+    }
+
+    #[test]
+    fn what_each_system_lists_is_read() {
+        let dump = r#"[
+            {"id": 0, "type": "PipeWire:Interface:Core", "info": {"props": {}}},
+            {"id": 40, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"}, "metadata": [
+                {"subject": 0, "key": "default.audio.sink", "value": {"name": "out"}},
+                {"subject": 0, "key": "default.audio.source", "value": {"name": "alsa_input.usb"}}]},
+            {"id": 56, "type": "PipeWire:Interface:Node", "info": {"props": {"media.class": "Audio/Sink", "node.name": "out", "node.description": "Speakers"}}},
+            {"id": 57, "type": "PipeWire:Interface:Node", "info": {"props": {"media.class": "Audio/Source", "node.name": "alsa_input.pci", "node.description": "Built-in"}}},
+            {"id": 58, "type": "PipeWire:Interface:Node", "info": {"props": {"media.class": "Audio/Source", "node.name": "alsa_input.usb", "node.description": "USB Mic"}}}
+        ]"#;
+        let found = pipewire_devices(dump).unwrap();
+        assert_eq!(found.default.as_deref(), Some("USB Mic"));
+        assert_eq!(found.list.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["alsa_input.pci", "alsa_input.usb"]);
+        assert_eq!(found.list[0].name, "Built-in");
+        assert_eq!(pipewire_devices("[]"), None, "tells nothing, so the next is asked");
+        assert_eq!(pipewire_devices("not json"), None);
+
+        let sources = "57\talsa_input.pci\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n56\talsa_output.pci.monitor\tPipeWire\ts32le 2ch 48000Hz\tIDLE\n";
+        assert_eq!(pactl_devices(sources), [InputDevice { id: "alsa_input.pci".into(), name: "alsa_input.pci".into() }]);
+
+        let pcms = "null\n    Discard all samples\ndefault\n    Default ALSA Output\nsysdefault:CARD=Generic\n    HD-Audio Generic, ALC897 Analog\n    Default Audio Device\nfront:CARD=Generic,DEV=0\n    HD-Audio Generic\n";
+        assert_eq!(arecord_devices(pcms), [InputDevice { id: "sysdefault:CARD=Generic".into(), name: "HD-Audio Generic, ALC897 Analog".into() }]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_chosen_device_goes_to_the_recorder_and_none_leaves_it_to_the_system() {
+        let targets: Vec<Vec<String>> = recorders(Some("mic")).into_iter().map(|(_, args)| args).collect();
+        assert_eq!(targets[0][..2], ["--target", "mic"]);
+        assert_eq!(targets[0].last().unwrap(), "-", "the output stays last");
+        assert_eq!(targets[1][0], "--device=mic");
+        assert_eq!(targets[2][..2], ["-D", "mic"]);
+        assert!(recorders(None).iter().all(|(_, args)| !args.iter().any(|a| a.contains("mic") || a == "--target" || a == "-D")));
+    }
+
+    /// The real thing: a second from each device this machine lists. Samples are counted and let go.
+    #[test]
+    #[ignore]
+    fn a_real_device_records() {
+        let found = input_devices();
+        eprintln!("default: {:?}", found.default);
+        for device in std::iter::once(None).chain(found.list.iter().map(|d| Some(d.id.as_str()))) {
+            let recording = Recording::start(device).unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+            let samples = recording.stop();
+            eprintln!("{device:?}: {} samples", samples.len());
+            assert!(samples.len() > 4000, "{device:?}: {}", samples.len());
+        }
     }
 
     #[test]

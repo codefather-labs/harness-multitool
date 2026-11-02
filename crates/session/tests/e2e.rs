@@ -573,7 +573,7 @@ fn project_store(data: &str, root: &str) -> harness_memory_journal::plugin::Jour
 }
 
 fn spec(body: &str, flags: &[&str]) -> JournalEntry {
-    JournalEntry { body: body.into(), category: "specification".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
+    JournalEntry { blocked_by: None, body: body.into(), category: "specification".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
 }
 
 /// M4: done through the command, evidence in the journal, specifications as checks.
