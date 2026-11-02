@@ -191,6 +191,8 @@ pub struct DaemonHost {
     /// What each conversation runs on, by session (CON-94). Kept, so a reload or a change of the
     /// default moves nothing that is already going.
     conversations: Mutex<HashMap<String, crate::Choice>>,
+    /// What each conversation has sent other agents lately, by when.
+    a2a_sent: Mutex<HashMap<String, VecDeque<Instant>>>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
@@ -250,6 +252,84 @@ impl DaemonHost {
         Ok(json!({"ok": window.sessions.rebind(tab)}))
     }
 
+    /// What a conversation goes by, for other agents.
+    fn name_of(&self, window: &Window, session: &str) -> String {
+        self.nicks.lock().expect("nicks").get(session).cloned().unwrap_or_else(|| crate::title_of(&self.data_dir.to_string_lossy(), &window.root, session))
+    }
+
+    /// Each open conversation on this machine (CON-99).
+    fn agent_list(&self, windows: &HashMap<String, Window>) -> Value {
+        let stored = self.conversations.lock().expect("conversations");
+        let nicks = self.nicks.lock().expect("nicks");
+        let mut agents = Vec::new();
+        for window in windows.values().filter(|w| !w.closed) {
+            for (_, session) in window.sessions.open() {
+                let choice = stored.get(&session);
+                agents.push(json!({
+                    "nick": nicks.get(&session),
+                    "id": session,
+                    "adapter": choice.map(|c| c.provider.as_str()),
+                    "model": choice.map(|c| c.model.as_str()),
+                    "folder": window.root,
+                    "running": window.sessions.runs(&session),
+                }));
+            }
+        }
+        json!({"agents": agents})
+    }
+
+    /// A message to another agent, as data from outside (CON-99, INV-12).
+    fn agent_send(&self, windows: &mut HashMap<String, Window>, id: &str, tab: u64, op: &Value) -> Result<Value, String> {
+        const MAX_SENDS: usize = 60;
+        const SEND_WINDOW: Duration = Duration::from_secs(600);
+        let to = op["to"].as_str().map(str::trim).filter(|to| !to.is_empty()).ok_or("to is required: a nick or an id")?;
+        let text = op["text"].as_str().map(str::trim).filter(|text| !text.is_empty()).ok_or("text is required")?;
+        let (sender, from) = {
+            let window = windows.get(id).ok_or("this window is not open here")?;
+            let session = window.sessions.session_of(tab).ok_or("this tab has no conversation yet")?.to_string();
+            let from = self.name_of(window, &session);
+            (session, from)
+        };
+        let target = self.resolve_agent(windows, to)?;
+        if target == sender {
+            return Err("that is you: an agent does not message itself".to_string());
+        }
+        {
+            let mut sent = self.a2a_sent.lock().expect("a2a");
+            let times = sent.entry(sender).or_default();
+            while times.front().is_some_and(|at| at.elapsed() > SEND_WINDOW) {
+                times.pop_front();
+            }
+            if times.len() >= MAX_SENDS {
+                return Err(format!("{MAX_SENDS} messages to other agents in 10 minutes is the limit: wait, or say so to the user"));
+            }
+            times.push_back(Instant::now());
+        }
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == target) {
+                let queued = window.sessions.runs(&target);
+                window.sessions.inbound(their_tab, format!("agent:{from}"), text.to_string());
+                return Ok(json!({"delivered_to": target, "queued": queued}));
+            }
+        }
+        Err(format!("no open conversation {to}"))
+    }
+
+    /// A nick, any case, or an id, among what is open.
+    fn resolve_agent(&self, windows: &HashMap<String, Window>, to: &str) -> Result<String, String> {
+        let nicks = self.nicks.lock().expect("nicks");
+        let open: Vec<String> = windows.values().filter(|w| !w.closed).flat_map(|w| w.sessions.open().into_iter().map(|(_, session)| session)).collect();
+        if open.iter().any(|session| session == to) {
+            return Ok(to.to_string());
+        }
+        let found: Vec<&String> = open.iter().filter(|session| nicks.get(*session).is_some_and(|nick| nick.eq_ignore_ascii_case(to))).collect();
+        match found.as_slice() {
+            [] => Err(format!("no open conversation goes by {to}: agent_list shows who is here")),
+            [one] => Ok((*one).clone()),
+            many => Err(format!("several go by {to}, so send by id: {}", many.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))),
+        }
+    }
+
     fn remember_nick(&self, session: &str, nick: &str) {
         let mut nicks = self.nicks.lock().expect("nicks");
         if nicks.get(session).map(String::as_str) == Some(nick) {
@@ -264,7 +344,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -619,6 +699,14 @@ impl ConversationHost for DaemonHost {
         }
         if name == "choice_of" {
             return Ok(json!({"choice": window.choices.lock().expect("choices").get(&tab)}));
+        }
+        if name == "agent_list" {
+            return Ok(self.agent_list(&windows));
+        }
+        if name == "agent_send" {
+            let reply = self.agent_send(&mut windows, id, tab, op);
+            self.wake.notify_all();
+            return reply;
         }
         if name == "resume" {
             let session = op["text"].as_str().unwrap_or_default();

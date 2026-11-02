@@ -136,3 +136,60 @@ impl Tool for DebugRuns {
         Box::pin(std::future::ready(answer))
     }
 }
+
+/// The conversations on this machine (CON-99).
+pub struct AgentList {
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+}
+
+impl Tool for AgentList {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "agent_list".into(),
+            description: "List the other agents on this machine: each open conversation's nick, id, adapter, model, folder and whether it is running. Use it before agent_send, to see who is there.".into(),
+            schema: json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, _input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match self.client.conversation_op(&json!({"window": self.window, "op": "agent_list"})) {
+            Ok(reply) => ToolOutput::ok(reply.to_string()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
+/// A message to another agent (CON-99).
+pub struct AgentSend {
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for AgentSend {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "agent_send".into(),
+            description: "Send a message to another agent on this machine, by its nick or id. It reaches them marked as data from outside, with your name, and starts or queues a run of theirs. They answer the same way, so end your turn rather than waiting. Limited to 60 in 10 minutes. Answers whether it was delivered or queued.".into(),
+            schema: json!({"type": "object", "properties": {"to": {"type": "string", "description": "A nick, any case, or an id from agent_list."}, "text": {"type": "string"}}, "required": ["to", "text"]}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match self.client.conversation_op(&json!({"window": self.window, "op": "agent_send", "tab": self.tab, "to": input["to"], "text": input["text"]})) {
+            Ok(reply) => ToolOutput::ok(reply.to_string()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}

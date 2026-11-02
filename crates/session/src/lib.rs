@@ -419,6 +419,13 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         registry.tool("plugins_reload", move |_| Ok(Rc::new(host_tools::PluginsReload(reload.clone()))));
         registry.tool("debug_contract", |_| Ok(Rc::new(host_tools::DebugContract)));
         registry.tool("debug_runs", move |_| Ok(Rc::new(host_tools::DebugRuns { root: root_debug.clone() })));
+        // Other agents are reached through a daemon: with none, there is nobody to reach.
+        if let (Some(client), Some(window)) = (harness_daemon::client::Client::find(&data_dir), host.window.clone()) {
+            selection.tools.extend(["agent_list".to_string(), "agent_send".to_string()]);
+            let (list_client, list_window) = (client.clone(), window.clone());
+            registry.tool("agent_list", move |_| Ok(Rc::new(host_tools::AgentList { client: list_client.clone(), window: list_window.clone() })));
+            registry.tool("agent_send", move |_| Ok(Rc::new(host_tools::AgentSend { client: client.clone(), window: window.clone(), tab })));
+        }
         // Offered only when the daemon's channel is on: a tool that cannot work is noise.
         let telegram = harness_daemon::client::Client::find(&data_dir).and_then(|c| c.stats().ok()).is_some_and(|s| s["telegram"]["on"] == true);
         if telegram {
@@ -1068,6 +1075,7 @@ mod every_tool {
         let dir = std::env::temp_dir().join(format!("mt-every-tool-{}-{:?}", std::process::id(), std::thread::current().id()));
         let memory: Rc<dyn harness_api::Memory> = Rc::new(harness_memory_journal::plugin::JournalMemory::open(&dir, std::path::Path::new("git:example/every-tool"), "test").unwrap());
         let background = Some(Rc::new(harness_tools_builtin::Background::new(&dir.to_string_lossy())));
+        let client = harness_daemon::client::Client::new(&serde_json::from_value(json!({"port": 1, "admin": "x"})).unwrap());
         let mut tools: Vec<Rc<dyn Tool>> = vec![
             Rc::new(harness_tools_builtin::Read),
             Rc::new(harness_tools_builtin::Edit),
@@ -1080,6 +1088,8 @@ mod every_tool {
             Rc::new(host_tools::DebugContract),
             Rc::new(host_tools::DebugRuns { root: String::new() }),
             Rc::new(host_tools::TelegramSend { data_dir: dir.clone(), from: None }),
+            Rc::new(host_tools::AgentList { client: client.clone(), window: String::new() }),
+            Rc::new(host_tools::AgentSend { client, window: String::new(), tab: 0 }),
         ];
         for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
             tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name).unwrap()));

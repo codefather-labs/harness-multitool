@@ -34,6 +34,8 @@ Modes are offered on the harness's own loop. A program running as an agent backe
 |---|---|---|
 | `ask_user` | What only the user can decide, one question with up to 9 options. The turn ends. | The answer comes as their next message. |
 | `set_nick` | The name the agent goes by: above its messages, on the tab, and what `/switch` in Telegram finds. | The name, or why it was refused. |
+| `agent_list` | Who else is here: each open conversation's nick, id, adapter, model, folder, whether it runs. | The list. |
+| `agent_send` | A message to another agent, by nick or id. It reaches them as data from outside, with your name, and starts or queues a run. They answer the same way, so end your turn. | Delivered or queued. |
 | `telegram_send` | Answering a message that came from Telegram, in the chat or topic bound to this conversation. Asks. Offered when the channel is on. | How many messages it took. |
 
 ## The journal

@@ -96,6 +96,8 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     }
     out.push(Rc::new(crate::host_tools::TelegramSend { data_dir: serving.data_dir.clone(), from: serving.window.clone() }));
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
+        out.push(Rc::new(crate::host_tools::AgentList { client: client.clone(), window: window.clone() }));
+        out.push(Rc::new(crate::host_tools::AgentSend { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(SetNick { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(Reload { client, window: window.clone(), tab: *tab }));
     }
