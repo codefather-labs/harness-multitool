@@ -450,7 +450,7 @@ fn host_for(note: std::sync::Arc<dyn Fn(u64) -> Option<String> + Send + Sync>, r
         all["callback_handlers_standard"] = serde_json::json!(["notification", "journal", "flowstate_update"]);
         all
     });
-    harness_session::Host { note, plugins, reload, environment: None, window: None }
+    harness_session::Host { note, plugins, reload, environment: None, window: None, choices: Default::default() }
 }
 
 fn selection_summary(s: &harness_session::Settings) -> serde_json::Value {
@@ -1122,20 +1122,22 @@ impl Live {
     /// What was saved reaches the open tabs: each session goes on with its history under the new
     /// settings, a running one once its run ends. The status line says so at once, which is also
     /// where the settings window reads the current choice from.
-    fn apply_to_tabs(&mut self, w: &mut frontend_tui::model::Workspace, provider: &str, model: &str) {
-        for feed in self.feeds.values_mut() {
+    /// A tab's conversation goes on this adapter and model (CON-94); the others stay as they are.
+    fn apply_to_tab(&mut self, w: &mut frontend_tui::model::Workspace, tab: u64, provider: &str, model: &str) {
+        if let Some(feed) = self.feeds.get_mut(&tab) {
             feed.set_context_window(self.context_window);
         }
-        for t in &mut w.tabs {
-            frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
-            frontend_tui::live::set_status(&mut t.view, "MODEL", model);
-            frontend_tui::live::show_context_window(&mut t.view, self.context_window);
-            let has_session = self.sessions.session_of(t.id).is_some();
-            if t.view.generating || !self.sessions.rebind(t.id) {
-                self.rebind_after.insert(t.id);
-            } else if has_session {
-                self.syncing.insert(t.id);
+        let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) else { return };
+        frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
+        frontend_tui::live::set_status(&mut t.view, "MODEL", model);
+        frontend_tui::live::show_context_window(&mut t.view, self.context_window);
+        let has_session = self.sessions.session_of(tab).is_some();
+        match self.sessions.choose(tab, provider, model) {
+            Ok(true) if has_session => {
+                self.syncing.insert(tab);
             }
+            Ok(_) => {}
+            Err(why) => t.view.transcript.push(frontend_tui::model::Item::Tips { label: "SETTINGS".into(), lines: vec![why] }),
         }
         if !self.syncing.is_empty() && w.overlay.is_none() {
             w.overlay = Some(syncing_overlay("Bringing the conversation in line"));
@@ -1242,7 +1244,8 @@ impl Live {
         if let Some(model) = &use_plan
             && self.save_settings("chatgpt", model, plan_context, config::load().ok().and_then(|c| c.session.providers.get("chatgpt").filter(|row| row["context_chosen"] == true).and_then(|row| row["context_window"].as_u64()))).is_ok()
         {
-            self.apply_to_tabs(w, "chatgpt", model);
+            let tab = w.tabs[w.active].id;
+            self.apply_to_tab(w, tab, "chatgpt", model);
             applied = true;
         }
         self.update_auth(w, |a| match event {
@@ -1354,7 +1357,6 @@ impl Live {
             let host = host_for(note, self.reload_asked.clone(), selection_summary(&c.session));
             let (root, data) = (self.root.clone(), config::data_dir()?);
             let for_link = c.session.clone();
-            // The daemon first: it refuses during a run, and then nothing is saved either.
             let session = c.session.clone();
             self.sessions.configure(&root, &for_link, || harness_session::with_host(session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
             self.context_window = context_window;
@@ -1498,8 +1500,14 @@ impl Live {
             self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
             view.composer.text.push_str(&left.join("\n\n"));
             // What the next message goes through, not what the last one went through.
-            frontend_tui::live::set_status(view, "ADAPTER", &self.provider);
-            frontend_tui::live::set_status(view, "MODEL", &self.model);
+            let choice = self.sessions.choice_of(tab);
+            frontend_tui::live::set_status(view, "ADAPTER", choice.as_ref().map_or(&self.provider, |c| &c.provider));
+            frontend_tui::live::set_status(view, "MODEL", choice.as_ref().map_or(&self.model, |c| &c.model));
+            if let Some(choice) = &choice {
+                let window = config::load().map_or(self.context_window, |c| harness_session::Settings { provider: choice.provider.clone(), ..c.session }.context_window());
+                feed.set_context_window(window);
+                frontend_tui::live::show_context_window(view, window);
+            }
             self.feeds.insert(tab, feed);
             if opened == harness_session::remote::Opened::Ready {
                 self.syncing.insert(tab);
@@ -1713,14 +1721,16 @@ impl Live {
                     let provider = provider_id(&provider);
                     let auth = w.auth.clone().unwrap_or_default();
                     let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
-                    let previous = Some((self.provider.clone(), self.model.clone())).filter(|(p, m)| (p, m) != (&provider, &model));
+                    let tab = w.tabs[w.active].id;
+                    let now = self.sessions.choice_of(tab).map_or_else(|| (self.provider.clone(), self.model.clone()), |c| (c.provider, c.model));
+                    let previous = Some(now).filter(|(p, m)| (p, m) != (&provider, &model));
                     let note = match self.save_settings_with(&provider, &model, context, chosen, Some(delegate)) {
                         Ok(()) => {
                             self.previous_adapter = previous;
-                            self.apply_to_tabs(w, &provider, &model);
+                            self.apply_to_tab(w, tab, &provider, &model);
                             // The settings open next time as they were saved.
                             w.auth = Some(self.auth_page(w.auth.take()));
-                            format!("This session and new ones use {provider} / {model}.")
+                            format!("This conversation and new ones use {provider} / {model}. Other conversations stay on theirs.")
                         }
                         Err(e) => format!("Could not save the settings: {e}"),
                     };
@@ -1815,7 +1825,7 @@ impl Live {
                         if let Some((provider, model)) = self.previous_adapter.take()
                             && self.save_settings(&provider, &model, None, None).is_ok()
                         {
-                            self.apply_to_tabs(w, &provider, &model);
+                            self.apply_to_tab(w, tab, &provider, &model);
                         }
                     } else if self.syncing.is_empty() {
                         self.previous_adapter = None;
@@ -2173,8 +2183,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 let _ = draw_to_file(&state, &current, size.width, size.height, std::path::Path::new(&path));
             }
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
-                // CON-79: the adapter and model stay as they are while anything is running.
-                let run_on = w.tabs.iter().any(|t| t.view.generating) || matches!(w.overlay, Some(frontend_tui::model::Overlay::Permission(_))) || !live.asks.is_empty();
+                // CON-79, CON-94: a conversation's adapter stays as it is while that conversation runs.
+                let run_on = w.tabs[w.active].view.generating || matches!(w.overlay, Some(frontend_tui::model::Overlay::Permission(_))) || !live.asks.is_empty();
                 if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay
                     && s.run_on != run_on
                 {

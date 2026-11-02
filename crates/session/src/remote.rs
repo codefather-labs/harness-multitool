@@ -100,6 +100,10 @@ struct Window {
     next: u64,
     reload: Arc<AtomicBool>,
     notes: Arc<Mutex<HashMap<u64, String>>>,
+    /// What each tab runs on, once it is settled.
+    choices: crate::Choices,
+    /// What a conversation with no choice of its own starts on.
+    default: crate::Choice,
     polled: Instant,
     closed: bool,
     /// Tabs whose prompt nobody has answered yet, with the prompt.
@@ -184,6 +188,9 @@ pub struct DaemonHost {
     left: Mutex<HashMap<String, Vec<String>>>,
     /// The names sessions go by, by session: a log can be far too large to read them from.
     nicks: Mutex<HashMap<String, String>>,
+    /// What each conversation runs on, by session (CON-94). Kept, so a reload or a change of the
+    /// default moves nothing that is already going.
+    conversations: Mutex<HashMap<String, crate::Choice>>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
@@ -193,11 +200,56 @@ fn nicks_path(data_dir: &Path) -> PathBuf {
     data_dir.join("daemon").join("nicks.json")
 }
 
+fn conversations_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("daemon").join("conversations.json")
+}
+
+fn read_conversations(data_dir: &Path) -> HashMap<String, crate::Choice> {
+    std::fs::read_to_string(conversations_path(data_dir)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
 fn read_nicks(data_dir: &Path) -> HashMap<String, String> {
     std::fs::read_to_string(nicks_path(data_dir)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
 
 impl DaemonHost {
+    /// A tab has this session: from now on it runs on what the conversation runs on, what it was
+    /// told to, or else what is the default now.
+    fn settle(&self, window: &Window, tab: u64, session: &str) {
+        let mut stored = self.conversations.lock().expect("conversations");
+        let mut choices = window.choices.lock().expect("choices");
+        if let Some(choice) = stored.get(session) {
+            choices.insert(tab, choice.clone());
+            return;
+        }
+        let choice = choices.get(&tab).cloned().unwrap_or_else(|| window.default.clone());
+        choices.insert(tab, choice.clone());
+        stored.insert(session.to_string(), choice);
+        self.save_conversations(&stored);
+    }
+
+    fn save_conversations(&self, stored: &HashMap<String, crate::Choice>) {
+        let path = conversations_path(&self.data_dir);
+        let partial = path.with_extension("partial");
+        if serde_json::to_string(stored).is_ok_and(|text| std::fs::write(&partial, text).is_ok()) {
+            let _ = std::fs::rename(&partial, &path);
+        }
+    }
+
+    /// The user chooses for this tab's conversation, and it is brought in line. No other moves.
+    fn choose(&self, window: &mut Window, tab: u64, choice: crate::Choice) -> Result<Value, String> {
+        if window.sessions.running(tab) || window.asking.contains_key(&tab) {
+            return Err("a run is on in this conversation: its adapter can be changed when it ends".to_string());
+        }
+        window.choices.lock().expect("choices").insert(tab, choice.clone());
+        if let Some(session) = window.sessions.session_of(tab) {
+            let mut stored = self.conversations.lock().expect("conversations");
+            stored.insert(session.to_string(), choice);
+            self.save_conversations(&stored);
+        }
+        Ok(json!({"ok": window.sessions.rebind(tab)}))
+    }
+
     fn remember_nick(&self, session: &str, nick: &str) {
         let mut nicks = self.nicks.lock().expect("nicks");
         if nicks.get(session).map(String::as_str) == Some(nick) {
@@ -212,7 +264,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -427,15 +479,12 @@ impl DaemonHost {
     }
 
     fn open(&self, windows: &mut HashMap<String, Window>, id: &str, op: &Value) -> Result<Value, String> {
-        // CON-79: a conversation does not change adapter in the middle of a run.
-        if windows.get(id).is_some_and(|w| w.sessions.busy()) {
-            return Err("a run is on: the adapter can be changed when it ends".to_string());
-        }
         let root = op["root"].as_str().ok_or("root is required")?.to_string();
         let settings: Settings = serde_json::from_value(op["settings"].clone()).map_err(|e| format!("settings: {e}"))?;
-        let (reload, notes) = match windows.get(id) {
-            Some(w) => (w.reload.clone(), w.notes.clone()),
-            None => (Arc::default(), Arc::default()),
+        let default = crate::Choice { provider: settings.provider.clone(), model: settings.model.clone() };
+        let (reload, notes, choices) = match windows.get(id) {
+            Some(w) => (w.reload.clone(), w.notes.clone(), w.choices.clone()),
+            None => (Arc::default(), Arc::default(), Arc::default()),
         };
         let lookup = notes.clone();
         let note: Arc<dyn Fn(u64) -> Option<String> + Send + Sync> = Arc::new(move |tab| lookup.lock().ok()?.get(&tab).cloned());
@@ -443,16 +492,18 @@ impl DaemonHost {
         let mut host = (self.make_host)(&settings, note, reload.clone());
         host.environment = environment.clone();
         host.window = Some(id.to_string());
+        host.choices = choices.clone();
         let factory = crate::with_host(settings, root.clone(), self.data_dir.clone(), host);
         match windows.get_mut(id) {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
             window.environment = environment;
+            window.default = default;
         }
         Ok(json!({"ok": true, "pid": std::process::id()}))
     }
@@ -562,8 +613,16 @@ impl ConversationHost for DaemonHost {
             let waiting = self.left.lock().expect("left").remove(op["text"].as_str().unwrap_or_default()).unwrap_or_default();
             return Ok(json!({"messages": waiting}));
         }
+        if name == "choose" {
+            let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string() };
+            return self.choose(window, tab, choice);
+        }
+        if name == "choice_of" {
+            return Ok(json!({"choice": window.choices.lock().expect("choices").get(&tab)}));
+        }
         if name == "resume" {
             let session = op["text"].as_str().unwrap_or_default();
+            self.settle(window, tab, session);
             if let Some(reply) = Self::take_over(&mut windows, id, tab, session) {
                 self.wake.notify_all();
                 return Ok(reply);
@@ -571,7 +630,13 @@ impl ConversationHost for DaemonHost {
         } else if window.following.contains_key(&tab) {
             return Self::on_followed(&mut windows, id, tab, name, op);
         }
-        windows.get_mut(id).ok_or("this window is not open here")?.apply(name, op)
+        let window = windows.get_mut(id).ok_or("this window is not open here")?;
+        let reply = window.apply(name, op);
+        // A first message made it a conversation.
+        if let Some(session) = window.sessions.session_of(tab).map(str::to_string) {
+            self.settle(window, tab, &session);
+        }
+        reply
     }
 
     fn events(&self, id: &str, after: u64, wait: Duration) -> Vec<Value> {
@@ -805,6 +870,23 @@ impl SessionLink {
             SessionLink::Remote(r) => {
                 r.call("inbound", tab, json!({"label": label, "text": text}));
             }
+        }
+    }
+
+    /// This tab's conversation goes on on this adapter, and no other moves. With no daemon there is
+    /// no one to keep it: the tab takes the settings as they are now, like any tab started after.
+    pub fn choose(&mut self, tab: u64, provider: &str, model: &str) -> Result<bool, String> {
+        match self {
+            SessionLink::Local(s) => Ok(s.rebind(tab)),
+            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "choose", "tab": tab, "provider": provider, "model": model})).map(|reply| reply["ok"] == true),
+        }
+    }
+
+    /// What this tab's conversation runs on, if the daemon has settled it.
+    pub fn choice_of(&self, tab: u64) -> Option<crate::Choice> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "choice_of", "tab": tab})).ok().and_then(|reply| serde_json::from_value(reply["choice"].clone()).ok()),
         }
     }
 

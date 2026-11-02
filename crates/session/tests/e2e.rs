@@ -1270,7 +1270,7 @@ fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
         anthropic_turn(None, "From the other window."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let settings = settings(&url, "k");
@@ -1323,6 +1323,73 @@ fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
 
 /// A session in the daemon has its window's environment, not the daemon's: its key, what its tools
 /// and hooks see. What the window did not have is not there.
+/// CON-94: two conversations on two adapters. What is chosen for one moves nothing else, and it holds
+/// when the window comes back to it and when the default has changed since.
+#[test]
+fn a_conversation_keeps_its_own_adapter() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("own-adapter");
+    let data = temp_dir("own-adapter-data");
+    let (first_url, first_seen) = fake_endpoint(vec![anthropic_turn(None, "One."), anthropic_turn(None, "One again.")]);
+    let (second_url, second_seen) = fake_endpoint(vec![anthropic_turn(None, "Two."), anthropic_turn(None, "Two again.")]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let mut both = settings(&first_url, "k");
+    both.provider = "first".into();
+    let row = |url: &str| json!({"kind": "anthropic", "base_url": url});
+    both.providers.insert("first".into(), row(&first_url));
+    both.providers.insert("second".into(), row(&second_url));
+    for name in ["first", "second"] {
+        both.auth.insert(name.into(), json!({"env": "HARNESS_E2E_NO_SUCH_VAR", "key": "k"}));
+    }
+    let mut link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &both, Default::default()).unwrap());
+    let until_ended = |link: &SessionLink, tab: u64| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if link.drain().into_iter().any(|m| matches!(m, FromSession::Ended { tab: t, .. } if t == tab)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("tab {tab} did not end");
+    };
+    let told = |seen: &Arc<Mutex<Vec<String>>>| seen.lock().unwrap().join("\n");
+
+    link.prompt(1, "to the first".to_string());
+    until_ended(&link, 1);
+    assert_eq!(link.choice_of(1).unwrap().provider, "first", "settled on the default");
+    assert!(told(&first_seen).contains("to the first"));
+
+    link.choose(2, "second", "m").unwrap();
+    link.prompt(2, "to the second".to_string());
+    until_ended(&link, 2);
+    assert!(told(&second_seen).contains("to the second"));
+    assert!(!told(&first_seen).contains("to the second"));
+
+    link.prompt(1, "the first again".to_string());
+    until_ended(&link, 1);
+    assert!(told(&first_seen).contains("the first again"), "the other tab's choice moved nothing");
+    assert!(!told(&second_seen).contains("the first again"));
+
+    // A new default, as the settings save one, leaves both where they are.
+    let mut later = both.clone();
+    later.provider = "second".into();
+    let sessions = (link.session_of(1).unwrap().to_string(), link.session_of(2).unwrap().to_string());
+    let store = std::fs::read_to_string(std::path::Path::new(&data).join("daemon").join("conversations.json")).unwrap();
+    assert!(store.contains(&sessions.0) && store.contains(&sessions.1), "{store}");
+
+    // Another window, as after a reload, under the new default.
+    let mut again = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &later, Default::default()).unwrap());
+    again.resume(7, &sessions.0);
+    assert_eq!(again.choice_of(7).unwrap().provider, "first", "it comes back on its own adapter");
+    again.resume(8, &sessions.1);
+    assert_eq!(again.choice_of(8).unwrap().provider, "second");
+    drop((again, link));
+    drop(daemon);
+}
+
 #[test]
 fn a_session_in_the_daemon_has_its_windows_environment() {
     use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
@@ -1333,7 +1400,7 @@ fn a_session_in_the_daemon_has_its_windows_environment() {
         anthropic_turn(None, "Seen."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let mut s = settings(&url, "not-this-key");
@@ -1379,7 +1446,7 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
         anthropic_turn(None, "Going on here."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let s = settings(&url, "k");
@@ -1409,8 +1476,10 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
     wait_for(first, &mut after_first, "ask");
     let session = op(first, json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
 
-    // CON-79: its adapter does not change during a run.
-    let change = client.conversation_op(&json!({"window": first, "op": "open", "root": root, "settings": s}));
+    // CON-79, CON-94: the default may change, as another conversation's settings do, and this
+    // conversation's own adapter does not during its run.
+    assert!(client.conversation_op(&json!({"window": first, "op": "open", "root": root, "settings": s})).is_ok());
+    let change = client.conversation_op(&json!({"window": first, "op": "choose", "tab": 1, "provider": "anthropic", "model": "m"}));
     assert!(change.is_err_and(|e| e.contains("a run is on")));
     // Still there: refused, and nothing moves.
     assert_eq!(op(second, json!({"op": "resume", "tab": 7, "text": session}))["elsewhere"], true);
@@ -1446,7 +1515,7 @@ fn what_a_gone_window_queued_does_not_start() {
     let data = temp_dir("left-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("l1", "shell", json!({"command": "echo done"}))), "Running."), anthropic_turn(None, "End of the run."), anthropic_turn(None, "Must not come.")]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let op = |window: &str, op: serde_json::Value| {

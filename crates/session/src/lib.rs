@@ -334,6 +334,16 @@ pub fn real_factory(settings: Settings, root: String, data_dir: PathBuf) -> Fact
     with_host(settings, root, data_dir, Host::default())
 }
 
+/// What a conversation runs on (CON-94).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Choice {
+    pub provider: String,
+    pub model: String,
+}
+
+/// What a window's tabs run on, where it is not the default.
+pub type Choices = Arc<std::sync::Mutex<HashMap<u64, Choice>>>;
+
 /// What the running binary gives its sessions.
 #[derive(Clone)]
 pub struct Host {
@@ -347,16 +357,22 @@ pub struct Host {
     pub environment: Option<WindowEnv>,
     /// The daemon's window it runs for, if it runs in the daemon.
     pub window: Option<String>,
+    /// What a tab runs on, if not the settings' own choice.
+    pub choices: Choices,
 }
 
 impl Default for Host {
     fn default() -> Self {
-        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default(), environment: None, window: None }
+        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default(), environment: None, window: None, choices: Default::default() }
     }
 }
 
 pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host) -> Factory {
     Arc::new(move |tab| {
+        let settings = match host.choices.lock().ok().and_then(|choices| choices.get(&tab).cloned()) {
+            Some(choice) => Settings { provider: choice.provider, model: choice.model, ..settings.clone() },
+            None => settings.clone(),
+        };
         let data = data_dir.to_string_lossy().into_owned();
         let read = env_reader(host.environment.clone());
         let mut platform = harness_platform_native::platform(data_dir.clone());
@@ -685,6 +701,11 @@ impl Sessions {
     /// The stored sessions of the tabs that have one.
     pub fn open(&self) -> Vec<(u64, String)> {
         self.handles.iter().map(|(tab, handle)| (*tab, handle.session.clone())).collect()
+    }
+
+    /// A run of this tab is on.
+    pub fn running(&self, tab: u64) -> bool {
+        self.handles.get(&tab).is_some_and(|h| h.running.load(Ordering::SeqCst))
     }
 
     /// A run of this stored session is on.
