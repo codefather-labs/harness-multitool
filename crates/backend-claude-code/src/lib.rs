@@ -172,6 +172,8 @@ pub struct ClaudeCode {
     /// What it runs with instead of this process's environment (a window's, in the daemon).
     environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
     chrome: bool,
+    /// The harness's own tools, as an MCP configuration.
+    mcp: Option<String>,
     live: std::cell::RefCell<Option<Live>>,
 }
 
@@ -188,8 +190,15 @@ impl ClaudeCode {
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
             chrome: settings["chrome"] != false,
+            mcp: None,
             live: std::cell::RefCell::new(None),
         }
+    }
+
+    /// Gives it these MCP servers, on top of its own if it has its own environment.
+    pub fn with_mcp(mut self, config: String) -> Self {
+        self.mcp = Some(config);
+        self
     }
 
     /// Runs with this environment instead of this process's.
@@ -202,7 +211,10 @@ impl ClaudeCode {
     pub fn args(&self, request: &BackendRequest<'_>) -> Vec<String> {
         let mut args: Vec<String> = ["-p", "--input-format", "stream-json", "--replay-user-messages", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
         if !self.own_environment {
-            args.extend(["--setting-sources", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#].iter().map(|a| a.to_string()));
+            args.extend(["--setting-sources", "", "--strict-mcp-config"].iter().map(|a| a.to_string()));
+        }
+        if !self.own_environment || self.mcp.is_some() {
+            args.extend(["--mcp-config".to_string(), self.mcp.clone().unwrap_or_else(|| r#"{"mcpServers":{}}"#.to_string())]);
         }
         // Its own environment has the user's browser tools, as their own session does.
         if self.own_environment && self.chrome {
@@ -211,7 +223,7 @@ impl ClaudeCode {
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
         } else {
-            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), self.allowed_tools.clone()]);
+            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
         }
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);

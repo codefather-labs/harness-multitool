@@ -407,6 +407,7 @@ impl DaemonHost {
         let environment: Option<crate::WindowEnv> = serde_json::from_value(op["env"].clone()).ok().map(Arc::new);
         let mut host = (self.make_host)(&settings, note, reload.clone());
         host.environment = environment.clone();
+        host.window = Some(id.to_string());
         let factory = crate::with_host(settings, root.clone(), self.data_dir.clone(), host);
         match windows.get_mut(id) {
             Some(window) => window.sessions.set_factory(factory),
@@ -435,6 +436,12 @@ impl ConversationHost for DaemonHost {
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
         window.polled = Instant::now();
         let tab = op["tab"].as_u64().unwrap_or(0);
+        // An agent asks for the harness to be rebuilt: the window does it, and tells that tab.
+        if name == "reload" {
+            window.say(json!({"kind": "reload", "tab": tab}));
+            self.wake.notify_all();
+            return Ok(json!({"ok": true}));
+        }
         if name == "left" {
             let waiting = self.left.lock().expect("left").remove(op["text"].as_str().unwrap_or_default()).unwrap_or_default();
             return Ok(json!({"messages": waiting}));

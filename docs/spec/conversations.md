@@ -101,6 +101,10 @@ Reading a provider's form leaves things out, on purpose (CON-72):
 - **To Claude Code, with a form:** that same conversation goes on: what other providers said was appended to it, and it resumes by its own id.
 - **To Claude Code, with no form yet:** the log is written as a new transcript, and that one is the session's form from then on.
 
+### The harness's tools for a delegate
+
+A delegate gets the harness's own tools over MCP, whichever way its row runs: `multitool mcp` serves the journal, maps and flowcharts of the daemon, the Telegram channel and the reload (`mcp__harness__*`). So an agent needs nothing outside the harness to keep its records.
+
 ### Running inside a launcher
 
 `./run.sh --under "<launcher>"` runs the harness inside a program that starts `claude` from the PATH and gives it an identity and messages. The harness takes the place of `claude` there, and a delegate still finds the real one. What the launcher sets reaches sessions as a window's environment, and what it types reaches the composer as a paste:

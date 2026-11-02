@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 mod host_tools;
 mod wire;
 
+pub mod mcp;
+
 pub mod remote;
 
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
@@ -321,11 +323,13 @@ pub struct Host {
     pub reload: Arc<std::sync::atomic::AtomicBool>,
     /// The window's environment, when the session does not run in the window's own process.
     pub environment: Option<WindowEnv>,
+    /// The daemon's window it runs for, if it runs in the daemon.
+    pub window: Option<String>,
 }
 
 impl Default for Host {
     fn default() -> Self {
-        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default(), environment: None }
+        Host { note: Arc::new(|_| None), plugins: Arc::new(|| json!({})), reload: Default::default(), environment: None, window: None }
     }
 }
 
@@ -359,7 +363,9 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         }
         let mut parts = registry.resolve(&selection, platform).map_err(|e| e.to_string())?;
         if settings.runs_delegate() {
-            parts.backend = Some(delegate(&settings, &root, host.environment.clone())?);
+            // The harness's own tools go with it, whichever way the row runs.
+            let mcp = std::env::current_exe().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
+            parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp)?);
         }
         // A connected provider's form is kept in line whichever provider runs the session (INV-20).
         if settings.providers.values().any(|p| p["kind"] == "claude-code") {
@@ -371,9 +377,13 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
 
 /// Claude Code as a delegate, in a build that has it (ADR 0020).
 #[cfg(feature = "claude-code")]
-fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
     let code = harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row);
+    let code = match mcp {
+        Some(mcp) => code.with_mcp(mcp),
+        None => code,
+    };
     Ok(Rc::new(match environment {
         Some(environment) => code.with_environment(environment),
         None => code,
@@ -399,7 +409,7 @@ fn conversation_source_in(_name: &str, _env: &dyn Fn(&str) -> Option<String>) ->
 }
 
 #[cfg(not(feature = "claude-code"))]
-fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>) -> Result<Rc<dyn AgentBackend>, String> {
+fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, _mcp: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     Err("this build has no Claude Code delegate: build with --features claude-code".to_string())
 }
 

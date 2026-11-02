@@ -97,6 +97,16 @@ enum Command {
         #[command(subcommand)]
         action: JournalAction,
     },
+    /// The harness's tools over MCP, on standard input and output: an agent backend starts this.
+    #[command(hide = true)]
+    Mcp {
+        #[arg(long)]
+        root: String,
+        #[arg(long)]
+        window: Option<String>,
+        #[arg(long)]
+        tab: Option<u64>,
+    },
     /// Create what is missing of docs/ and .harness/, overwriting nothing.
     Init,
     /// The documentation: `check` compares the docs tree with itself and the journal.
@@ -238,6 +248,10 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Mcp { root, window, tab } => {
+            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab) };
+            harness_session::mcp::serve(&serving, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| anyhow!(e))
+        }
         Command::Init => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let created = init_project(&root).map_err(|e| anyhow!(e))?;
@@ -375,7 +389,7 @@ fn host_for(note: std::sync::Arc<dyn Fn(u64) -> Option<String> + Send + Sync>, r
         all["callback_handlers_standard"] = serde_json::json!(["notification", "journal", "flowstate_update"]);
         all
     });
-    harness_session::Host { note, plugins, reload, environment: None }
+    harness_session::Host { note, plugins, reload, environment: None, window: None }
 }
 
 fn selection_summary(s: &harness_session::Settings) -> serde_json::Value {

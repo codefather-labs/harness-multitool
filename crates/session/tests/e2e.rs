@@ -1264,7 +1264,7 @@ fn a_conversation_runs_in_the_daemon_and_its_window_is_a_client() {
         anthropic_turn(None, "From the other window."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let settings = settings(&url, "k");
@@ -1327,7 +1327,7 @@ fn a_session_in_the_daemon_has_its_windows_environment() {
         anthropic_turn(None, "Seen."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let mut s = settings(&url, "not-this-key");
@@ -1373,7 +1373,7 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
         anthropic_turn(None, "Going on here."),
     ]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let s = settings(&url, "k");
@@ -1440,7 +1440,7 @@ fn what_a_gone_window_queued_does_not_start() {
     let data = temp_dir("left-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("l1", "shell", json!({"command": "echo done"}))), "Running."), anthropic_turn(None, "End of the run."), anthropic_turn(None, "Must not come.")]);
     let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
-    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None });
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None });
     daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
     let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
     let op = |window: &str, op: serde_json::Value| {
