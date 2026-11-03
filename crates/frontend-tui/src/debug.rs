@@ -640,6 +640,8 @@ pub fn open_tab(w: &mut Workspace, title: &str) {
             _ => {}
         }
     }
+    // The adapter and model are the new conversation's, not the source tab's (CON-104).
+    view.status.fields.retain(|(key, _)| key != "ADAPTER" && key != "MODEL");
     w.tabs.push(Tab::new(title, TabIcon::Prompt, TabMark::None, view));
     w.active = w.tabs.len() - 1;
 }
@@ -688,6 +690,20 @@ mod tests {
                 assert!(w.outbox.is_empty());
             }
         }
+    }
+
+    /// CON-104: a new tab has no adapter or model of the tab it was opened from.
+    #[test]
+    fn new_tab_takes_no_adapter_or_model_from_its_source() {
+        let mut w = workspace();
+        crate::live::set_status(w.view_mut(), "ADAPTER", "anthropic-api");
+        crate::live::set_status(w.view_mut(), "MODEL", "claude-x");
+        open_tab(&mut w, "second");
+        let fields = &w.view().status.fields;
+        assert!(!fields.iter().any(|(k, _)| k == "ADAPTER" || k == "MODEL"), "{fields:?}");
+        // The source keeps its own.
+        w.active = 0;
+        assert!(w.view().status.fields.iter().any(|(k, v)| k == "ADAPTER" && v == "anthropic-api"));
     }
 
     #[test]
