@@ -87,10 +87,21 @@ pub fn path() -> Result<PathBuf> {
 pub fn load() -> Result<Config> {
     let p = path()?;
     match std::fs::read_to_string(&p) {
-        Ok(text) => toml::from_str(&text).with_context(|| format!("reading {}", p.display())),
+        Ok(text) => parse(&p, &text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
     }
+}
+
+/// The file's text as a configuration. An error names the path and the line and nothing of the text:
+/// a parse error quotes the line, and this file holds tokens (INV-6, journal#696).
+fn parse(p: &std::path::Path, text: &str) -> Result<Config> {
+    toml::from_str(text).map_err(|e| anyhow::anyhow!("{} is not valid TOML{}", p.display(), line_of(&e, text)))
+}
+
+/// Where a parse error is, as words to follow a sentence.
+fn line_of(e: &toml::de::Error, text: &str) -> String {
+    e.span().map(|s| format!(" (line {})", text[..s.start.min(text.len())].matches('\n').count() + 1)).unwrap_or_default()
 }
 
 /// The `map_max_nodes` setting, and a sentence when the file could not be read so the default is used instead
@@ -111,8 +122,7 @@ fn map_limit_from_text(p: &std::path::Path, text: &str) -> (u64, Option<String>)
         Ok(c) => (c.session.map_max_nodes, None),
         Err(e) => {
             let default = harness_session::Settings::default().map_max_nodes;
-            let line = e.span().map(|s| format!(" (line {})", text[..s.start.min(text.len())].matches('\n').count() + 1)).unwrap_or_default();
-            (default, Some(format!("{} is not valid TOML{line}; the default map node limit {default} is used.", p.display())))
+            (default, Some(format!("{} is not valid TOML{}; the default map node limit {default} is used.", p.display(), line_of(&e, text))))
         }
     }
 }
@@ -199,6 +209,10 @@ mod tests {
         assert!(message.contains("/x/config.toml") && message.contains("line 2"), "{message}");
         assert_eq!(map_limit_from_text(path, "[session]\nmap_max_nodes = 42\n"), (42, None));
         assert_eq!(map_limit_from_text(path, ""), (200, None));
+        // journal#696: so for every command that reads the file, cause chain included.
+        let error = format!("{:?}", parse(path, text).expect_err("an error"));
+        assert!(!error.contains("CANARY") && !error.contains("oops"), "{error}");
+        assert!(error.contains("/x/config.toml") && error.contains("line 2"), "{error}");
     }
 
     /// CON-114: the node limit is saved in `[session]`, read back, and 200 when the file says nothing.
