@@ -107,6 +107,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
         for name in crate::host_tools::DELEGATE_MODE_TOOLS.into_iter().chain(crate::host_tools::MODE_TOOLS) {
             out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
         }
+        out.push(Rc::new(crate::host_tools::PermissionAsk { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(crate::host_tools::AgentList { client: client.clone(), window: window.clone() }));
         out.push(Rc::new(crate::host_tools::AgentSend { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(SetNick { client: client.clone(), window: window.clone(), tab: *tab }));

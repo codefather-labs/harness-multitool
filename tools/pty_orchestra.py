@@ -128,6 +128,28 @@ assert "--dangerously-skip-permissions" in own and "--setting-sources" not in ow
 assert "--dangerously-skip-permissions" not in agent and "--setting-sources" in agent and "--strict-mcp-config" in agent, agent
 allowed = agent[agent.index("--allowedTools") + 1]; assert all(t in allowed for t in ["Edit(./**)", "Bash(cargo test:*)", "mcp__harness__*", "mcp__mode__*"]), allowed
 print("an agent runs isolated with its basics; the user's own row keeps its choice")
+# CON-108: what its program would ask a person goes to the master and waits for the master's answer.
+def program_asks(command):
+    n = len([a for a in answers() if a["tool"] == "permission_ask"])
+    text = "call mode permission_ask " + json.dumps({"tool_name": "Bash", "input": {"command": command}, "tool_use_id": "u1"})
+    sent = call("harness", "agent_send", {"to": "second", "text": text}); assert not sent["error"], sent
+    return n
+def program_answer(n):
+    until("the program has its answer", lambda: len([a for a in answers() if a["tool"] == "permission_ask"]) > n)
+    return json.loads([a for a in answers() if a["tool"] == "permission_ask"][-1]["text"])
+for command, answer, behavior in [("make once", "once", "allow"), ("make never", "deny", "deny"), ("make always", "always", "allow")]:
+    n = program_asks(command)
+    until("the master is asked", lambda: "asks your permission: Bash" in told() and command in told())
+    asked = [p for p in prompts() if "asks your permission: Bash" in p and command in p][-1]; assert "agent:second" in asked and "data from outside" in asked and "mode__agent_answer" in asked, asked
+    assert len([a for a in answers() if a["tool"] == "permission_ask"]) == n, "it did not wait"
+    done = call("mode", "agent_answer", {"nick": "second", "answer": answer}); assert not done["error"], done
+    got = program_answer(n); assert got["behavior"] == behavior, got
+    if behavior == "allow": assert got["updatedInput"] == {"command": command}, got
+    else: assert got["message"], got
+words = told().count("asks your permission: Bash"); n = program_asks("make always")
+got = program_answer(n); assert got["behavior"] == "allow", got; pump(0.5); assert told().count("asks your permission: Bash") == words, "always was asked again"
+stray = call("mode", "agent_answer", {"nick": "second", "answer": "once"}); assert stray["error"], stray
+print("the program's request reached the master; once, deny and always answered it; nothing stray")
 shot("orchestra-group.png")
 sent = call("harness", "agent_send", {"to": "first-agent", "text": "your task: talk to the other"}); assert not sent["error"], sent
 until("the master's word arrives as the user's", lambda: any(i.get("role") == "user" and "your task" in json.dumps(i, ensure_ascii=False) and "data from outside" not in json.dumps(i, ensure_ascii=False) for b in bodies for i in b["input"]))

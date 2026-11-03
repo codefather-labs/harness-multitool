@@ -214,6 +214,8 @@ pub struct ClaudeCode {
     /// What it runs with instead of this process's environment (a window's, in the daemon).
     environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
     chrome: bool,
+    /// An MCP tool that answers this program's permission prompts (CON-108), instead of nobody.
+    prompt_tool: Option<String>,
     /// The harness's own tools, as an MCP configuration.
     mcp: Option<String>,
     readable_dir: Option<String>,
@@ -233,6 +235,7 @@ impl ClaudeCode {
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
             chrome: settings["chrome"] != false,
+            prompt_tool: settings["permission_prompt_tool"].as_str().map(str::to_string),
             readable_dir: None,
             mcp: None,
             live: std::cell::RefCell::new(None),
@@ -273,7 +276,12 @@ impl ClaudeCode {
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
         } else {
-            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
+            match &self.prompt_tool {
+                // Asking and planning are the harness's there: the program's own would come as prompts.
+                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode".to_string()]),
+                None => args.extend(["--permission-prompts".to_string(), "none".to_string()]),
+            }
+            args.extend(["--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
         }
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);
@@ -687,6 +695,12 @@ mod tests {
         let with_tools = ClaudeCode::new("m1", "/r", &json!({})).with_mcp("{}".into()).args(&request(None, None, false, &never));
         let allowed = &with_tools[with_tools.iter().position(|a| a == "--allowedTools").expect("allowed") + 1];
         assert!(allowed.contains("mcp__harness__*") && allowed.contains("mcp__mode__*"), "{allowed}");
+        // A row with a prompt tool sends the prompts there, not to nobody (CON-108).
+        let asking = ClaudeCode::new("m1", "/r", &json!({"permission_prompt_tool": "mcp__mode__permission_ask"})).args(&request(None, None, false, &never));
+        let flag = |flag: &str| asking[asking.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag}: {asking:?}")) + 1].clone();
+        assert_eq!(flag("--permission-prompts"), "host");
+        assert_eq!(flag("--permission-prompt-tool"), "mcp__mode__permission_ask");
+        assert!(flag("--disallowedTools").contains("AskUserQuestion"));
         assert_eq!(args[at("--model") + 1], "m1");
         assert!(!args.iter().any(|a| a.contains("secret prompt") || a == "--resume" || a == "--bare" || a == "--permission-mode" || a == "--system-prompt"), "{args:?}");
 

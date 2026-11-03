@@ -383,6 +383,7 @@ fn isolate_slave(settings: &mut Settings) {
         row.remove("permissions");
         #[cfg(feature = "claude-code")]
         row.insert("allowed_tools".to_string(), json!(harness_backend_claude_code::SLAVE_TOOLS));
+        row.insert("permission_prompt_tool".to_string(), json!(host_tools::PROMPT_TOOL));
     }
 }
 
@@ -1145,6 +1146,7 @@ mod every_tool {
         for name in host_tools::MODE_TOOLS {
             tools.push(Rc::new(host_tools::ModeTool { name, client: client.clone(), window: String::new(), tab: 0 }));
         }
+        tools.push(Rc::new(host_tools::PermissionAsk { client: client.clone(), window: String::new(), tab: 0 }));
         for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
             tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name).unwrap()));
         }
@@ -1169,7 +1171,7 @@ mod every_tool {
         let modes: Vec<&ToolSpec> = specs.iter().filter(|s| s.name.starts_with("mode__")).collect();
         let mut names: Vec<&str> = modes.iter().map(|s| s.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["mode__agent_answer", "mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__plan_enter", "mode__plan_exit"]);
+        assert_eq!(names, ["mode__agent_answer", "mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__permission_ask", "mode__plan_enter", "mode__plan_exit"]);
         assert!(modes.iter().all(|s| s.description.starts_with("HARNESS MODE")), "an agent sees it is no utility");
         for old in ["plan_enter", "plan_exit", "debug_mode"] {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");

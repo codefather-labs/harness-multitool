@@ -111,6 +111,10 @@ struct Window {
     default: crate::Choice,
     /// Tabs of slaves waiting on their master for a permission.
     slave_asks: std::collections::HashSet<u64>,
+    /// What slaves' programs have asked and their masters not yet heard back on (CON-108).
+    program_asks: Vec<ProgramAsk>,
+    /// What a master allowed for good: tab, tool and target.
+    program_allowed: std::collections::HashSet<(u64, String)>,
     /// What it opened with: the rows an orchestra can choose from.
     settings: Settings,
     polled: Instant,
@@ -190,6 +194,21 @@ impl Window {
 }
 
 /// The daemon's side: every conversation of every window runs here, and its log is written here.
+/// One permission request of a slave's program.
+struct ProgramAsk {
+    id: u64,
+    tab: u64,
+    /// The tool and its target, for an answer of always.
+    key: String,
+    answer: Option<String>,
+}
+
+/// What an answer of always covers: this tool, on this command or file.
+fn ask_key(tool: &str, input: &Value) -> String {
+    let target = ["command", "file_path", "path", "url"].iter().find_map(|field| input[*field].as_str()).map_or_else(|| input.to_string(), str::to_string);
+    format!("{tool} {target}")
+}
+
 pub struct DaemonHost {
     windows: Mutex<HashMap<String, Window>>,
     /// Messages a window sent and went away from, by session: for whoever opens it next. Only in
@@ -197,6 +216,9 @@ pub struct DaemonHost {
     left: Mutex<HashMap<String, Vec<String>>>,
     /// The names sessions go by, by session: a log can be far too large to read them from.
     nicks: Mutex<HashMap<String, String>>,
+    /// Who is to be told of a slave's program asking: slave and word.
+    program_words: Mutex<Vec<(String, String)>>,
+    next_ask: std::sync::atomic::AtomicU64,
     /// What each conversation runs on, by session (CON-94). Kept, so a reload or a change of the
     /// default moves nothing that is already going.
     conversations: Mutex<HashMap<String, crate::Choice>>,
@@ -444,6 +466,18 @@ impl DaemonHost {
                 let slave = reply["answer_slave"].as_str().unwrap_or_default();
                 for window in windows.values_mut().filter(|w| !w.closed) {
                     if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == slave) {
+                        let answer = reply["answer"].as_str().unwrap_or("deny").to_string();
+                        // What a program that has stopped asked is no one's to answer now.
+                        if !window.sessions.running(their_tab) {
+                            window.program_asks.retain(|ask| ask.tab != their_tab);
+                        }
+                        if let Some(ask) = window.program_asks.iter_mut().find(|ask| ask.tab == their_tab && ask.answer.is_none()) {
+                            if answer == "always" {
+                                window.program_allowed.insert((their_tab, ask.key.clone()));
+                            }
+                            ask.answer = Some(answer);
+                            return Some(Ok(json!({"text": "Answered."})));
+                        }
                         if !window.slave_asks.remove(&their_tab) {
                             return Some(Err("it is not waiting on a permission".to_string()));
                         }
@@ -647,7 +681,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -755,6 +789,7 @@ impl DaemonHost {
         }
         // A closed window stays until its runs have finished: the log gets their end.
         windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
+        waiting_word.append(&mut self.program_words.lock().expect("words"));
         any |= self.tell_masters(&mut windows, waiting_word, ended_runs);
         if any {
             self.wake.notify_all();
@@ -910,7 +945,7 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
@@ -1053,6 +1088,30 @@ impl ConversationHost for DaemonHost {
             let reply = self.orchestra_op(&mut windows, id, tab, name, op).unwrap_or_else(|| Err(format!("no mode tool {name}")));
             self.wake.notify_all();
             return reply;
+        }
+        if name == "slave_ask" {
+            let session = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)).ok_or("only an agent of an orchestra asks its master")?;
+            let (tool, input) = (op["tool"].as_str().unwrap_or_default(), &op["input"]);
+            let key = ask_key(tool, input);
+            if window.program_allowed.contains(&(tab, key.clone())) {
+                return Ok(json!({"answer": "always"}));
+            }
+            let id = self.next_ask.fetch_add(1, Ordering::SeqCst);
+            window.program_asks.push(ProgramAsk { id, tab, key, answer: None });
+            self.program_words.lock().expect("words").push((session, format!("asks your permission: {tool} {}\nAnswer with mode__agent_answer: once, always or deny.", brief_input(input))));
+            self.wake.notify_all();
+            return Ok(json!({"id": id}));
+        }
+        if name == "slave_asked" {
+            let id = op["id"].as_u64().ok_or("id is required")?;
+            let Some(at) = window.program_asks.iter().position(|ask| ask.id == id) else { return Ok(json!({"answer": "deny"})) };
+            return Ok(match window.program_asks[at].answer.clone() {
+                Some(answer) => {
+                    window.program_asks.remove(at);
+                    json!({"answer": answer})
+                }
+                None => json!({"waiting": true}),
+            });
         }
         if name == "agent_list" {
             let asking = window.sessions.session_of(tab).map(str::to_string);

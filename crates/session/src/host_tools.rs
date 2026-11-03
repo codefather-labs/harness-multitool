@@ -200,6 +200,67 @@ pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "m
 /// The plan and debug modes over MCP: on a native loop the engine answers them itself.
 pub const DELEGATE_MODE_TOOLS: [&str; 3] = ["mode__plan_enter", "mode__plan_exit", "mode__debug"];
 
+/// How the program of a slave is told to reach [`PermissionAsk`], over the `mode` server.
+pub const PROMPT_TOOL: &str = "mcp__mode__permission_ask";
+
+/// How long a slave's program waits on its master before a request is denied (CON-108).
+const PERMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// A slave's program asks here what it would ask a person; its master answers (CON-108). The call
+/// waits for that, which is what the program wants of a permission prompt tool.
+pub struct PermissionAsk {
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for PermissionAsk {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "mode__permission_ask".into(),
+            description: "HARNESS MODE, for the program that runs you, not for you to call: it puts a permission request to your orchestrator and waits for the answer. Ask for what you need by doing it.".into(),
+            schema: json!({"type": "object", "properties": {"tool_name": {"type": "string"}, "input": {"type": "object"}, "tool_use_id": {"type": "string"}}, "required": ["tool_name", "input"]}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let verdict = wait_for_master(self, input);
+        let reply = match verdict {
+            Ok(()) => json!({"behavior": "allow", "updatedInput": input["input"]}),
+            Err(why) => json!({"behavior": "deny", "message": why}),
+        };
+        Box::pin(std::future::ready(ToolOutput::ok(reply.to_string())))
+    }
+}
+
+/// `Err` says why it is denied.
+fn wait_for_master(ask: &PermissionAsk, input: &Value) -> Result<(), String> {
+    let op = |name: &str, more: Value| {
+        let mut op = json!({"window": ask.window, "op": name, "tab": ask.tab});
+        op.as_object_mut().expect("an object").extend(more.as_object().cloned().unwrap_or_default());
+        ask.client.conversation_op(&op)
+    };
+    let asked = op("slave_ask", json!({"tool": input["tool_name"], "input": input["input"]}))?;
+    if asked["answer"].is_string() {
+        return Ok(());
+    }
+    let id = asked["id"].clone();
+    let end = std::time::Instant::now() + PERMISSION_WAIT;
+    while std::time::Instant::now() < end {
+        let state = op("slave_asked", json!({"id": id}))?;
+        match state["answer"].as_str() {
+            Some("deny") => return Err("Your orchestrator did not allow this. Do not try it another way; tell it with agent_send if your work needs it.".to_string()),
+            Some(_) => return Ok(()),
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    }
+    Err("Your orchestrator did not answer in time, so this is denied. Tell it with agent_send if your work needs it.".to_string())
+}
+
 pub struct ModeTool {
     pub name: &'static str,
     pub client: harness_daemon::client::Client,
