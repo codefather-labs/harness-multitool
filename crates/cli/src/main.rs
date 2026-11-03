@@ -2268,6 +2268,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 live.tick_first_start(w);
                 dirty |= live.tick_toast(w);
                 dirty |= live.tick_login(w);
+                w.new_tab_runs_on = Some((live.provider.clone(), live.model.clone()));
                 dirty |= live.tick_voice_download(w);
                 dirty |= live.tick_voice_test(w);
                 dirty |= live.tick_voice_devices(w);

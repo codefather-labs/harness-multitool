@@ -219,6 +219,9 @@ struct Orchestra {
     on: std::collections::HashSet<String>,
     /// Slave to master.
     slaves: HashMap<String, String>,
+    /// Conversations of a delegate in plan mode.
+    #[serde(default)]
+    planning: std::collections::HashSet<String>,
     /// Slaves that told their master themselves in this run: no notice of its end.
     #[serde(skip)]
     told: std::collections::HashSet<String>,
@@ -306,6 +309,58 @@ impl DaemonHost {
             return Err(format!("{name} is not one of your agents"));
         }
         Ok(slave)
+    }
+
+    /// The plan and debug modes of a delegate, whose own loop the harness does not run.
+    fn delegate_mode_op(&self, window: &mut Window, tab: u64, name: &str, op: &Value) -> Result<Value, String> {
+        let session = window.sessions.session_of(tab).ok_or("this tab has no conversation yet")?.to_string();
+        let data = self.data_dir.to_string_lossy().into_owned();
+        match name {
+            "mode__plan_enter" => {
+                {
+                    let mut orchestra = self.orchestra.lock().expect("orchestra");
+                    orchestra.planning.insert(session);
+                    self.save_orchestra(&orchestra);
+                }
+                window.sessions.plan(tab, true);
+                Ok(json!({"text": format!("Plan mode is on, and takes hold in your process from the next message. Until the plan is approved, write nothing but the journal, maps and docs.{}", harness_context_default::PLAN_RULES)}))
+            }
+            "mode__plan_exit" => {
+                if !self.orchestra.lock().expect("orchestra").planning.contains(&session) {
+                    return Err("plan mode is not on".to_string());
+                }
+                // What its run has said so far is not in the log until the run ends.
+                let mut log = crate::read_log(&data, &window.root, &session);
+                let seen = log.last().map_or(0, |entry| entry.seq);
+                log.extend(window.said.get(&tab).into_iter().flatten().filter_map(|said| harness_api::event::from_line(said["line"].as_str()?).ok()).filter(|entry| entry.seq > seen));
+                let last_user = log.iter().rev().find_map(|entry| if let harness_api::Event::UserMessage { text } = &entry.event { Some(text.clone()) } else { None }).unwrap_or_default();
+                let said = op["user_said"].as_str().map(str::trim).unwrap_or_default();
+                if said.chars().count() < 2 || !last_user.contains(said) {
+                    return Err("Only the user approves a plan, and here it is by their words. Show them the plan and ask; when they say to go, call this again with their words, exact, in user_said.".to_string());
+                }
+                let entered = log.iter().rposition(|entry| matches!(&entry.event, harness_api::Event::ToolRequested { call, .. } if call.name.ends_with("plan_enter"))).unwrap_or(0);
+                let called = |tool: &str| log[entered..].iter().any(|entry| matches!(&entry.event, harness_api::Event::ToolRequested { call, .. } if call.name.ends_with(tool)));
+                let missing: Vec<&str> = ["journal_add", "mindmap_new", "flowchart_new"].into_iter().filter(|tool| !called(tool)).collect();
+                if !missing.is_empty() {
+                    return Err(format!("The plan is what the journal and the maps hold, so the next session finds it, and this one has none of: {}. Record it with them, then call this again.", missing.join(", ")));
+                }
+                {
+                    let mut orchestra = self.orchestra.lock().expect("orchestra");
+                    orchestra.planning.remove(&session);
+                    self.save_orchestra(&orchestra);
+                }
+                window.sessions.plan(tab, false);
+                Ok(json!({"text": "The user approved the plan. Plan mode is off. A fix: call debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then debug it the same way."}))
+            }
+            _ => {
+                let on = op["on"] != false;
+                if on && self.orchestra.lock().expect("orchestra").planning.contains(&session) {
+                    return Err("You are in plan mode: debugging comes after the user approves the plan.".to_string());
+                }
+                window.sessions.step_debug(tab, on);
+                Ok(if on { json!({"text": format!("Debug mode is on.{}", harness_context_default::STEP_DEBUG_RULES)}) } else { json!({"text": "Debug mode is off."}) })
+            }
+        }
     }
 
     /// Orchestration mode's operations (CON-100). None if it is not one.
@@ -984,6 +1039,11 @@ impl ConversationHost for DaemonHost {
         }
         if name == "adopt" {
             let reply = self.adopt(window, op);
+            self.wake.notify_all();
+            return reply;
+        }
+        if matches!(name, "mode__plan_enter" | "mode__plan_exit" | "mode__debug") {
+            let reply = self.delegate_mode_op(window, tab, name, op);
             self.wake.notify_all();
             return reply;
         }

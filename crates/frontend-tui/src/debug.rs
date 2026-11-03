@@ -642,6 +642,10 @@ pub fn open_tab(w: &mut Workspace, title: &str) {
     }
     // The adapter and model are the new conversation's, not the source tab's (CON-104).
     view.status.fields.retain(|(key, _)| key != "ADAPTER" && key != "MODEL");
+    if let Some((adapter, model)) = &w.new_tab_runs_on {
+        view.status.fields.insert(1.min(view.status.fields.len()), ("MODEL".to_string(), model.clone()));
+        view.status.fields.insert(1.min(view.status.fields.len()), ("ADAPTER".to_string(), adapter.clone()));
+    }
     w.tabs.push(Tab::new(title, TabIcon::Prompt, TabMark::None, view));
     w.active = w.tabs.len() - 1;
 }
@@ -704,6 +708,11 @@ mod tests {
         // The source keeps its own.
         w.active = 0;
         assert!(w.view().status.fields.iter().any(|(k, v)| k == "ADAPTER" && v == "anthropic-api"));
+        // Told what a new conversation runs on, it shows that, whatever the source runs on.
+        w.new_tab_runs_on = Some(("chatgpt".into(), "gpt-x".into()));
+        open_tab(&mut w, "third");
+        assert!(w.view().status.fields.iter().any(|(k, v)| k == "ADAPTER" && v == "chatgpt"));
+        assert!(w.view().status.fields.iter().any(|(k, v)| k == "MODEL" && v == "gpt-x"));
     }
 
     #[test]

@@ -17,7 +17,7 @@ An agent has two sorts of thing to call:
 
 Before building anything that is not trivial, an agent enters plan mode, even if nobody said plan. After an approved plan, a fix goes on in debug mode; a feature is built, run, then debugged the same way ([ADR 0021](decisions/0021-agent-behaviour.md)).
 
-Plan and debug are offered on the harness's own loop. A program running as an agent backend, such as Claude Code, has a plan mode of its own, and `-p` cannot ask for a plan's approval, so they are not offered there yet. Orchestration is offered there over a second MCP server, `mode`, as `mcp__mode__orchestrate` and so on; its list is fixed at the start, so outside the mode those tools are refused rather than absent.
+On a program running as an agent backend, such as Claude Code, the modes come over a second MCP server, `mode`, as `mcp__mode__plan_enter` and so on. Its list is fixed at the start, so outside orchestration those tools are refused rather than absent. There `mode__plan_exit` shows no card: it takes the user's words, quoted, and refuses a plan with no journal entry, mind map or flowchart. The harness cannot refuse that program's own writes as it does on its own loop: plan mode holds from its next message.
 
 ## Code and commands
 

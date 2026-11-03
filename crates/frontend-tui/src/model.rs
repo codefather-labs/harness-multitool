@@ -40,6 +40,8 @@ pub enum Mode {
 /// keep running behind their tabs.
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
+    /// What a new tab runs on until told otherwise: the default adapter and model (CON-104).
+    pub new_tab_runs_on: Option<(String, String)>,
     pub tabs: Vec<Tab>,
     pub active: usize,
     /// A notification over the top right of the transcript (an inbound message that arrived
@@ -315,7 +317,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None }
     }
 
     pub fn view(&self) -> &SessionView {

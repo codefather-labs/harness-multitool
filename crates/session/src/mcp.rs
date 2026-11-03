@@ -85,10 +85,10 @@ impl Tool for SetNick {
 const MODE_PREFIX: &str = "mode__";
 
 /// What an agent on the modes' server reads before its tools.
-const MODE_INSTRUCTIONS: &str = "Modes of the harness, not utilities: entering one changes how you are run. orchestrate makes you the master of agents you start; the others here work only in that mode, and are refused otherwise.";
+const MODE_INSTRUCTIONS: &str = "Modes of the harness, not utilities: entering one changes how you are run. plan_enter and plan_exit for studying and planning before anything is built; debug for reproducing a fix and verifying it; orchestrate makes you the master of agents you start, and the agent_ tools here work only in that mode. Where the agent workflow specification says mode__x, on this server it is mcp__mode__x.";
 
 /// What an agent on this server reads before its tools (CON-96).
-const INSTRUCTIONS: &str = "The harness you run under: its project journal, maps and flowcharts, Telegram, your name, and rebuilding it. These are utilities: each does one thing and answers. Read the journal's agenda on a fresh context. The harness also has modes, plan and debug, which on its own loop are tools named mode__; a program running as an agent backend has its own plan mode instead, so they are not offered here yet. docs/tools.md in the harness's repository documents every tool and mode.";
+const INSTRUCTIONS: &str = "The harness you run under: its project journal, maps and flowcharts, Telegram, your name, other agents, and rebuilding it. These are utilities: each does one thing and answers. Read the journal's agenda on a fresh context. The harness's modes are on the server named mode. docs/tools.md in the harness's repository documents every tool and mode.";
 
 fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     let client = Client::find(&serving.data_dir);
@@ -104,7 +104,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     }
     out.push(Rc::new(crate::host_tools::TelegramSend { data_dir: serving.data_dir.clone(), from: serving.window.clone() }));
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
-        for name in crate::host_tools::MODE_TOOLS {
+        for name in crate::host_tools::DELEGATE_MODE_TOOLS.into_iter().chain(crate::host_tools::MODE_TOOLS) {
             out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
         }
         out.push(Rc::new(crate::host_tools::AgentList { client: client.clone(), window: window.clone() }));

@@ -39,6 +39,7 @@ servers = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": "sess-" + str(os.getpid()), "model": "fake-model"}}), flush=True)
 def tool(server, name, arguments):
     config = servers[server]
+    print(json.dumps({{"type": "assistant", "message": {{"id": "m" + name, "role": "assistant", "content": [{{"type": "tool_use", "id": "t" + name, "name": "mcp__" + server + "__" + name, "input": arguments}}]}}}}), flush=True)
     done = subprocess.run([config["command"]] + config["args"], input=json.dumps({{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"name": name, "arguments": arguments}}}}) + "\\n", capture_output=True, text=True)
     reply = json.loads(done.stdout.strip().split("\\n")[-1])
     reply = reply.get("result") or {{"isError": True, "content": [{{"text": json.dumps(reply)}}]}}
@@ -88,6 +89,19 @@ def shot(name):
     assert done.returncode == 0, done.stderr
 pump(1.5)
 typed("/nick boss\r"); typed("first\r"); until("the master runs", lambda: "first" in told()); pump(0.5)
+# Plan and debug on a delegate, by words and maps.
+assert call("mode", "plan_exit", {"plan": "p"})["error"], "not in plan mode"
+on = call("mode", "plan_enter", {}); assert not on["error"] and "PLAN MODE is on" in on["text"], on
+assert call("mode", "debug", {"on": True})["error"], "no debug while planning"
+no = call("mode", "plan_exit", {"plan": "p"}); assert no["error"] and "Only the user approves" in no["text"], no
+no = call("mode", "plan_exit", {"plan": "p", "user_said": "plan_exit"}); assert no["error"] and "journal_add" in no["text"] and "flowchart_new" in no["text"], no
+print("on a delegate plan_exit refused: no quote, then no maps")
+for server, tool, args in [("harness", "journal_add", {"body": "the plan is in this entry", "category": "decision", "tags": ["t"]}), ("harness", "mindmap_new", {"title": "m"}), ("harness", "flowchart_new", {"title": "f"})]:
+    assert not call(server, tool, args)["error"]
+yes = call("mode", "plan_exit", {"plan": "p", "user_said": "plan_exit"}); assert not yes["error"] and "approved the plan" in yes["text"], yes
+d = call("mode", "debug", {"on": True}); assert not d["error"] and "STEP-DEBUG MODE is on" in d["text"], d
+assert not call("mode", "debug", {"on": False})["error"]
+pump(0.5); print("with the user's words and the maps it left plan mode, and debug switches")
 out = call("mode", "agent_spawn", {"nick": "x", "adapter": "local", "model": "m"}); assert out["error"] and "only in orchestration mode" in out["text"], out
 print("outside the mode: refused")
 on = call("mode", "orchestrate", {"on": True}); assert not on["error"] and "Orchestration mode is on" in on["text"] and "mode__agent_spawn" in on["text"], on

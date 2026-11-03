@@ -197,6 +197,9 @@ impl Tool for AgentSend {
 /// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
 pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close"];
 
+/// The plan and debug modes over MCP: on a native loop the engine answers them itself.
+pub const DELEGATE_MODE_TOOLS: [&str; 3] = ["mode__plan_enter", "mode__plan_exit", "mode__debug"];
+
 pub struct ModeTool {
     pub name: &'static str,
     pub client: harness_daemon::client::Client,
@@ -206,6 +209,9 @@ pub struct ModeTool {
 
 impl Tool for ModeTool {
     fn spec(&self) -> ToolSpec {
+        if let Some(own) = harness_core::engine::own_tool_specs().into_iter().find(|spec| spec.name == self.name) {
+            return own;
+        }
         let (description, schema) = match self.name {
             "mode__orchestrate" => (
                 "HARNESS MODE, not a utility: on or off. Enter orchestration mode to start other agents and give them work: you become their master, your prompt gains the mode's rules, and the tools to start, read and close agents appear. Answers with those rules. Your agents stay when you leave the mode.",

@@ -581,7 +581,7 @@ pub fn session_tabs() -> AppState {
         ..Default::default()
     };
     let other = |title: &str, icon, mark| Tab::new(title, icon, mark, SessionView { status: status("0 / 200k", "$0.00", "$10.00"), ..Default::default() });
-    let w = Workspace {
+    let w = Workspace { new_tab_runs_on: None,
         tabs: vec![
             Tab::new("router", TabIcon::Prompt, TabMark::None, view),
             other("reviewer-2", TabIcon::Agent, TabMark::Busy),

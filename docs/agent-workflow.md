@@ -2,7 +2,7 @@
 
 How an agent works through this harness. It binds every agent on every adapter (CON-97). A situation brings the same action every time, and each row says what the session's log must show, so it can be checked by a program.
 
-Read this file before acting, and again after a compaction or a resume: the harness gives you its path then. Tools and modes are described in their own definitions.
+Read this file before acting, and again after a compaction or a resume: the harness gives you its path then. Tools and modes are described in their own definitions. Where a tool is named `mode__x`, on a program running as an agent backend it is `mcp__mode__x`.
 
 ## 1. What the user says
 
