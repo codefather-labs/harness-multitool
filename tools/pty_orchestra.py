@@ -81,6 +81,7 @@ def until(what, check, sec=20):
     end = time.time() + sec
     while time.time() < end and not check(): pump(0.05)
     assert check(), what + "\nprompts: " + told()[-700:] + "\nanswers: " + json.dumps(answers())[-700:] + "\nresponses: " + json.dumps(bodies[-1]["input"] if bodies else "")[-300:]
+def answers_of(tool): return [a for a in answers() if a["tool"] == tool]
 def call(server, name, arguments):
     n = len(answers()); typed(f"call {server} {name} {json.dumps(arguments)}\r")
     until(name + " answered", lambda: len(answers()) > n); pump(0.3)
@@ -149,6 +150,24 @@ own_entry = json.loads(on_second("journal_add", {"body": "its own question", "ca
 closed = on_second("journal_close", {"id": own_entry["id"], "resolution": "answered"}); assert not closed["error"], closed
 no = call("harness", "journal_close", {"id": second_task["id"], "resolution": "no evidence"}); assert no["error"], no
 print("an agent's task is its master's to close, and needs its evidence; its own entries are its own")
+# CON-111: an agent's plan holds its strategy, pointing at its task, and the logic of what it builds.
+def second_calls(server, tool, arguments):
+    n = len([a for a in answers() if a["tool"] == tool])
+    typed("call harness agent_send " + json.dumps({"to": "second", "text": f"call {server} {tool} " + json.dumps(arguments)}) + "\r")
+    until(tool + " on the agent", lambda: len([a for a in answers() if a["tool"] == tool]) > n)
+    return [a for a in answers() if a["tool"] == tool][-1]
+assert not second_calls("mode", "plan_enter", {})["error"]
+for tool, args in [("journal_add", {"body": "its plan", "category": "decision", "tags": ["t"]}), ("flowchart_new", {"title": "f"})]:
+    assert not second_calls("harness", tool, args)["error"]
+strategy = json.loads(second_calls("harness", "mindmap_new", {"title": "m"})["text"])
+chart = json.loads(answers_of("flowchart_new")[-1]["text"])
+go = {"plan": "p", "user_said": "plan_exit"}
+no = second_calls("mode", "plan_exit", go); assert no["error"] and f"journal#{second_task['id']}" in no["text"] and "flowchart_add" in no["text"], no
+assert not second_calls("harness", "mindmap_add", {"map": strategy["id"], "text": "the proof", "kind": "task", "refs": [second_task["id"]]})["error"]
+no = second_calls("mode", "plan_exit", go); assert no["error"] and "mindmap_add" not in no["text"] and "flowchart_add" in no["text"], no
+assert not second_calls("harness", "flowchart_add", {"map": chart["id"], "text": "the logic", "kind": "process", "after": chart["root"]})["error"]
+yes = second_calls("mode", "plan_exit", go); assert not yes["error"] and "approved the plan" in yes["text"], yes
+print("an agent's plan was refused until its map pointed at its task and its chart had blocks")
 # CON-108: what its program would ask a person goes to the master and waits for the master's answer.
 def program_asks(command):
     n = len([a for a in answers() if a["tool"] == "permission_ask"])

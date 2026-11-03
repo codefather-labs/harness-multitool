@@ -76,6 +76,27 @@ fn in_project(path: &str, root: &str) -> bool {
     inside && !path.split(['/', '\\']).any(|part| part == "..")
 }
 
+/// What a slave's plan still lacks of its contract (CON-111): a mind map pointing at its task, and
+/// a flowchart with something in it. Only that they exist: whether they are true is its master's to read.
+pub fn agent_plan_lacks<'a>(calls: impl Iterator<Item = (&'a str, &'a serde_json::Value)>, task: u64) -> Option<String> {
+    let (mut map, mut chart) = (false, false);
+    for (name, input) in calls {
+        match name.rsplit("__").next().unwrap_or(name) {
+            "mindmap_add" => map |= input["refs"].as_array().is_some_and(|refs| refs.iter().any(|r| r.as_u64() == Some(task))),
+            "flowchart_add" => chart = true,
+            _ => {}
+        }
+    }
+    let mut lacks = Vec::new();
+    if !map {
+        lacks.push(format!("a mind map of your strategy, the decisions, the work and the proofs you will produce, with mindmap_add nodes whose refs hold journal#{task}"));
+    }
+    if !chart {
+        lacks.push("a flowchart of the logic of what you build, with flowchart_add".to_string());
+    }
+    (!lacks.is_empty()).then(|| format!("An agent's plan holds its strategy and its logic, and this one has not: {}. Then call this again.", lacks.join("; and ")))
+}
+
 const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then mode__plan_exit.";
 
 /// The project's documentation, the one thing written while planning: a feature is described
@@ -276,6 +297,22 @@ impl Hook for WorkflowSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CON-111.
+    #[test]
+    fn a_slaves_plan_needs_a_map_at_its_task_and_a_chart_with_blocks() {
+        let refs = serde_json::json!({"refs": [575, 7]});
+        let other = serde_json::json!({"refs": [8]});
+        let none = serde_json::json!({});
+        let lacks = |calls: &[(&'static str, &serde_json::Value)]| agent_plan_lacks(calls.iter().copied(), 7);
+        let both = lacks(&[]).unwrap();
+        assert!(both.contains("journal#7") && both.contains("flowchart_add"), "{both}");
+        let chart = lacks(&[("mcp__harness__mindmap_add", &refs)]).unwrap();
+        assert!(!chart.contains("mindmap_add") && chart.contains("flowchart_add"), "{chart}");
+        assert!(lacks(&[("mindmap_add", &other), ("flowchart_add", &none)]).unwrap().contains("journal#7"), "a map at something else");
+        assert!(lacks(&[("mindmap_new", &none), ("flowchart_new", &none)]).is_some(), "an empty map and chart");
+        assert!(lacks(&[("mindmap_add", &refs), ("mcp__harness__flowchart_add", &none)]).is_none());
+    }
 
     #[test]
     fn only_single_known_reading_commands_pass() {

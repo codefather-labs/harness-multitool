@@ -409,6 +409,13 @@ impl DaemonHost {
                 if !missing.is_empty() {
                     return Err(format!("The plan is what the journal and the maps hold, so the next session finds it, and this one has none of: {}. Record it with them, then call this again.", missing.join(", ")));
                 }
+                // An agent's plan holds what its contract says (CON-111).
+                if let Some(task) = self.orchestra.lock().expect("orchestra").tasks.get(&session).copied() {
+                    let calls = log[entered..].iter().filter_map(|entry| if let harness_api::Event::ToolRequested { call, .. } = &entry.event { Some((call.name.as_str(), &call.input)) } else { None });
+                    if let Some(lacks) = harness_core::plan::agent_plan_lacks(calls, task) {
+                        return Err(lacks);
+                    }
+                }
                 {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
                     orchestra.planning.remove(&session);

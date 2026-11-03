@@ -72,6 +72,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | # | Situation | Do | The log shows |
 |---|---|---|---|
 | W-50 | You have just been started as an agent of an orchestrator, on a journal entry. | Read this file and the entry, and work on it now. Everything above holds. | `journal_get` of that entry, then its work. |
+| W-61 | You plan your task, in an orchestra. | `mindmap_add` your strategy: the decisions, the work and the proofs you will produce, with `refs` holding your task. `flowchart_add` the logic of what you build, with its branches and outcomes. | Both before `mode__plan_exit`, which refuses without them. |
 | W-57 | Your task's work is done and proved, in an orchestra. | `agent_send` your orchestrator asking to close the entry, naming the proofs. Do not close it: only it can. | That call; no `journal_close` of the entry. |
 | W-58 | Your orchestrator approved. | `agent_send` it asking to close your session, and stop. | That call last of all. |
 | W-51 | A user message in that tab. | Treat it as the user's: it stands for the user there. Everything above holds. | As above. |
@@ -79,7 +80,8 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-55 | You have a question, in an orchestra. | `ask_user`, as anywhere: it goes to your orchestrator, whose answer is your next message. | `ask_user`, then nothing until the answer. |
 | W-56 | Your plan is ready, in an orchestra. | `agent_send` your orchestrator the plan, and wait. When it says to go, W-3: `mode__plan_exit` with its words in `user_said`. | `agent_send` before `mode__plan_exit`. |
 | W-53 | You are the orchestrator, and there is work for an agent. | Write the entry, `mode__agent_spawn` with it as `task`; end your turn while it works. | The entry, the spawn, then no polling. |
-| W-59 | You are the orchestrator, and an agent asks to close its entry. | Check it (W-54). Good: `journal_close`, and tell it. Not good: tell it what is missing. When it then asks to close its session: `mode__agent_close`. | `mode__agent_read`, `journal_close`, `mode__agent_close`. |
+| W-59 | You are the orchestrator, and an agent asks to close its entry. | Check it (W-54, W-62). Good: `journal_close`, and tell it. Not good: W-62. When it then asks to close its session: `mode__agent_close`. | `mode__agent_read`, `journal_close`, `mode__agent_close`. |
+| W-62 | You are the orchestrator, checking an agent's change. Matching the specs is your duty: it may not keep track of them. | `journal_search` or `journal_list` what binds it and read the diff against that, not only its report. It broke a spec: do not close, do not fix it yourself; `agent_send` it back, naming the rule and what breaks it. A spec that has to change takes the user's word (W-22). | Those reads before `journal_close`; a message naming the rule when something was wrong. |
 | W-60 | You are the orchestrator, and the harness reminds you to check on an agent. | `mode__agent_read`. If it has stopped with no word, `agent_send` it to move on, or `mode__agent_close` if its work is over. | `mode__agent_read` after the reminder. |
 | W-54 | An orchestrator checking an agent's work. | `mode__agent_read`, against the rows of this file. | That call before a verdict. |
 
