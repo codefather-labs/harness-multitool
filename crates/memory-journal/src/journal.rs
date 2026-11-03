@@ -187,6 +187,10 @@ pub fn parse_refs(body: &str) -> Vec<(i64, &'static str)> {
             if lower[j..].starts_with("and ") {
                 j += 4;
             }
+            // The word `journal` may be repeated before `#41`: the run keeps its kind.
+            if lower[j..].starts_with(MARK) {
+                j += MARK.len() - 1;
+            }
             if j < bytes.len() && bytes[j] == b'#' && bytes.get(j + 1).is_some_and(u8::is_ascii_digit) {
                 i = j + 1;
             } else {
@@ -2616,6 +2620,21 @@ mod tests {
         assert_eq!(parse_refs("this replaces the old journal#5"), vec![(5, "replaces")]);
         assert_eq!(parse_refs("Implements journal#7. Verifies journal#8"), vec![(7, "implements"), (8, "verifies")]);
         assert_eq!(parse_refs("the unverified journal#9"), vec![(9, "cites")], "unverified is not verifies");
+    }
+
+    #[test]
+    fn parse_refs_run_repeating_the_word_journal_keeps_its_kind() {
+        assert_eq!(
+            parse_refs("Verifies journal#1, journal#2 and journal#3"),
+            vec![(1, "verifies"), (2, "verifies"), (3, "verifies")]
+        );
+        assert_eq!(
+            parse_refs("Verifies journal#638, journal#639, journal#640, journal#641"),
+            vec![(638, "verifies"), (639, "verifies"), (640, "verifies"), (641, "verifies")]
+        );
+        assert_eq!(parse_refs("Verifies journal#1 and journal#2"), vec![(1, "verifies"), (2, "verifies")]);
+        assert_eq!(parse_refs("Verifies journal#1, and cites journal#2"), vec![(1, "verifies"), (2, "cites")]);
+        assert_eq!(parse_refs("Fixes journal#4, journal#5"), vec![(4, "fixes"), (5, "fixes")]);
     }
 
     fn todo(c: &mut Connection, body: &str) -> i64 {

@@ -7,7 +7,12 @@ use std::rc::Rc;
 use harness_api::*;
 use serde_json::{Value, json};
 
+/// A list of strings. A model often gives one as a bare string: it counts as that one, not as nothing,
+/// or a proof or a flag would be lost with no word said (journal#683).
 fn strings(v: &Value) -> Vec<String> {
+    if let Some(one) = v.as_str() {
+        return if one.trim().is_empty() { Vec::new() } else { vec![one.to_string()] };
+    }
     v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
@@ -455,6 +460,15 @@ mod tests {
         assert_eq!(flags_with_category("principle", s(&["important"])), s(&["important", "principle"]));
         assert_eq!(flags_with_category("invariant", s(&["invariant"])), s(&["invariant"]), "already set, not twice");
         assert_eq!(flags_with_category("decision", vec![]), Vec::<String>::new());
+    }
+
+    /// A model gave `proof_file` as one string: the check held for nothing, and the proof was lost.
+    #[test]
+    fn a_bare_string_counts_as_one_item() {
+        assert_eq!(strings(&json!("one")), ["one"]);
+        assert_eq!(strings(&json!(["a", "b"])), ["a", "b"]);
+        assert!(strings(&json!("")).is_empty() && strings(&json!(null)).is_empty());
+        assert!(check_proofs(&json!({"proof_file": "missing/out.txt"}), "/nonexistent-root").is_err());
     }
 
     #[test]
