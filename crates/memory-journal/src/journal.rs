@@ -834,6 +834,28 @@ fn evidence_gap(conn: &Connection, e: i64) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// What proves a branch: a member flagged verified that is evidence, or else such an entry of another branch that
+/// `verifies` a member. An entry belongs to its nearest todo alone, but one verification may prove two pieces of work
+/// (journal#718); closing a todo still closes only its own members.
+fn branch_evidence(conn: &Connection, root: i64, members: &[i64]) -> Result<Option<i64>> {
+    let proves = |e: i64| -> Result<bool> { Ok(e != root && has_open_flag(conn, e, "verified")? && evidence_gap(conn, e)?.is_none()) };
+    for e in members {
+        if proves(*e)? {
+            return Ok(Some(*e));
+        }
+    }
+    let mut stmt = conn.prepare_cached("SELECT from_id FROM entry_links WHERE to_id = ?1 AND kind = 'verifies' ORDER BY from_id")?;
+    for m in members {
+        let from: Vec<i64> = stmt.query_map(params![m], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for e in from {
+            if proves(e)? {
+                return Ok(Some(e));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The entry that proves `id`: one that `verifies` it and is evidence by
 /// [`evidence_gap`]. `Err` explains what is missing.
 fn proof_of(conn: &Connection, id: i64) -> Result<std::result::Result<i64, String>> {
@@ -1003,12 +1025,7 @@ pub fn close_with(
         let branch = branch_ids(&tx, id)?;
         match mode {
             CloseMode::Checked => {
-                let verified = branch.iter().copied().find(|e| {
-                    *e != id
-                        && has_open_flag(&tx, *e, "verified").unwrap_or(false)
-                        && matches!(evidence_gap(&tx, *e), Ok(None))
-                });
-                let Some(v) = verified else {
+                let Some(v) = branch_evidence(&tx, id, &branch)? else {
                     bail!(
                         "todo {id} cannot close yet: its branch has no entry flagged --verified. \
                          Add one that cites the implementation (\"Verifies journal#<id>\") and carries the evidence \
@@ -1204,7 +1221,7 @@ pub fn branch(conn: &Connection, id: i64) -> Result<Option<Branch>> {
     let Some(root) = branch_root(conn, id)? else { return Ok(None) };
     let ids = branch_ids(conn, root)?;
     let mut entries = Vec::new();
-    let mut verified = None;
+    let verified = branch_evidence(conn, root, &ids)?;
     for e in &ids {
         let parent: Option<(i64, String)> = if *e == root {
             None
@@ -1219,9 +1236,6 @@ pub fn branch(conn: &Connection, id: i64) -> Result<Option<Branch>> {
             )
             .optional()?
         };
-        if *e != root && verified.is_none() && has_open_flag(conn, *e, "verified")? {
-            verified = Some(*e);
-        }
         if let Some(b) = brief(conn, *e)? {
             entries.push(BranchEntry { parent: parent.as_ref().map(|p| p.0), via: parent.map(|p| p.1), entry: b });
         }
@@ -3059,6 +3073,55 @@ mod tests {
         let r = related(&c, fresh, 3).unwrap();
         assert!(r.similar.is_empty());
         assert_eq!(r.linked[0].0, Link { kind: "fixes".into(), dir: "out", id: a });
+    }
+
+    /// journal#718: one verification of two pieces of work is evidence for both branches; each stays its own.
+    #[test]
+    fn one_verification_of_two_branches_lets_both_close() {
+        let (_d, mut c) = journal();
+        let todo = |c: &mut Connection, body: &str, at| {
+            let mut e = entry(body, "", &["x"]);
+            e.flags = vec!["todo".into()];
+            add(c, &e, at).unwrap().1
+        };
+        let flagged = |c: &mut Connection, body: String, flag: &str, at| {
+            let mut e = entry(&body, "update", &["x"]);
+            e.flags = vec![flag.into()];
+            add(c, &e, at).unwrap().1
+        };
+        let (far, near) = (todo(&mut c, "the far work", 1), todo(&mut c, "the near work", 2));
+        let i = flagged(&mut c, format!("Implements journal#{far}: the far work is done"), "unverified", 3);
+        let said = "ran the whole protocol once on this machine and it showed what it should";
+        let v = flagged(&mut c, format!("Verifies journal#{i}, journal#{near}: {said}"), "verified", 4);
+        let other = todo(&mut c, "work of nobody's verification", 5);
+        let citing = flagged(&mut c, format!("It cites journal#{other}: {said}"), "verified", 6);
+
+        let b = branch(&c, far).unwrap().unwrap();
+        assert_eq!((b.state, b.verified), ("verified", Some(v)), "the branch says what the close will find");
+        assert!(!b.entries.iter().any(|e| e.entry.id == v), "it stays a member of its nearest todo only");
+        close(&mut c, far, &[], Some("w"), None, 7).unwrap();
+        close(&mut c, near, &[], Some("w"), None, 8).unwrap();
+
+        // A citation is no evidence, whatever flag it carries.
+        assert!(close(&mut c, other, &[], Some("w"), None, 9).unwrap_err().to_string().contains("--verified"));
+        assert_eq!(branch(&c, other).unwrap().unwrap().verified, None);
+        assert!(has_open_flag(&c, citing, "verified").unwrap());
+    }
+
+    /// journal#718: a verification saying too little is still no evidence, through a link as in a branch.
+    #[test]
+    fn a_verification_saying_too_little_proves_no_branch_by_a_link() {
+        let (_d, mut c) = journal();
+        let mut e = entry("the far work", "", &["x"]);
+        e.flags = vec!["todo".into()];
+        let (_, far) = add(&mut c, &e, 1).unwrap();
+        e.body = "the near work".into();
+        let (_, near) = add(&mut c, &e, 2).unwrap();
+        let (_, i) = add(&mut c, &entry(&format!("Implements journal#{far}: done"), "update", &["x"]), 3).unwrap();
+        let mut v = entry(&format!("Verifies journal#{i}, journal#{near}: works"), "verification", &["x"]);
+        v.flags = vec!["verified".into()];
+        add(&mut c, &v, 4).unwrap();
+        assert!(close(&mut c, far, &[], Some("w"), None, 5).is_err());
     }
 
     #[test]
