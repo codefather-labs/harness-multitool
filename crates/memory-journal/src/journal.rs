@@ -244,7 +244,11 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 /// - Marks, removed with `unmark`: `specification` (how something must
 ///   behave: its behaviour, isolation boundaries, policies, invariants — the
 ///   spec a feature is built and checked against), `constraint` (a rule, a
-///   limit, a constant, an invariant to follow, not weigh), `important`,
+///   limit, a constant, an invariant to follow, not weigh), `invariant` (what
+///   must hold at all times, checked by a named test or review; mirrored to
+///   docs/spec/invariants.md, CON-115), `principle` (what the project optimises
+///   for, not weighed against a rule; mirrored to docs/spec/principles.md,
+///   CON-115), `important`,
 ///   `idea`, `concept`, `comment`, `verified` (a declaration that the check
 ///   passed — the entry carries it, its `--proof`s point at the evidence; what
 ///   lets its todo's branch close), `deprecated` (no longer true; ranked last
@@ -253,9 +257,10 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 /// Flags combine freely: one entry can be a specification and a constraint
 /// at once (operator, 2026-10-31).
 ///
-/// An open work item, a specification, a constraint or an important mark
-/// keeps its entry past retention; the other marks do not (salience decides).
-pub const FLAGS: [&str; 16] = [
+/// An open work item, a specification, a constraint, an invariant, a principle
+/// or an important mark keeps its entry past retention; the other marks do not
+/// (salience decides).
+pub const FLAGS: [&str; 18] = [
     "todo",
     "question",
     "problem",
@@ -266,6 +271,8 @@ pub const FLAGS: [&str; 16] = [
     "ai-feedback",
     "specification",
     "constraint",
+    "invariant",
+    "principle",
     "important",
     "idea",
     "concept",
@@ -274,8 +281,8 @@ pub const FLAGS: [&str; 16] = [
     "deprecated",
 ];
 
-const MARKS: [&str; 8] =
-    ["specification", "constraint", "important", "idea", "concept", "comment", "verified", "deprecated"];
+const MARKS: [&str; 10] =
+    ["specification", "constraint", "invariant", "principle", "important", "idea", "concept", "comment", "verified", "deprecated"];
 
 /// Marks that neither hold an entry past retention nor belong in the agenda:
 /// history, evidence, and notes kept for what they say.
@@ -2543,6 +2550,22 @@ mod tests {
         assert!(get(&c, rule).unwrap().is_some(), "a constraint is");
         let a = agenda(&c, 10).unwrap();
         assert_eq!(a.iter().map(|(f, _, _)| f.as_str()).collect::<Vec<_>>(), vec!["constraint"]);
+    }
+
+    #[test]
+    fn invariants_and_principles_are_marks_that_bind_like_specifications() {
+        let (_d, mut c) = journal();
+        assert_eq!(normalize_flags(&["Principle", "#invariant"]).unwrap(), vec!["invariant", "principle"]);
+        assert!(!closable("invariant") && !closable("principle"), "marks, not open work");
+        let mut e = entry("INV-99: every write is journaled", "", &["spec"]);
+        e.flags = vec!["invariant".into(), "principle".into()];
+        let (_, id) = add(&mut c, &e, 1).unwrap();
+        assert_eq!(get(&c, id).unwrap().unwrap().category, "invariant", "the first flag names an entry without a category");
+        let a = agenda(&c, 10).unwrap();
+        assert_eq!(a.iter().map(|(f, _, _)| f.as_str()).collect::<Vec<_>>(), vec!["invariant", "principle"]);
+        c.execute("UPDATE entries SET salience = 'low'", []).unwrap();
+        gc(&c, 1 + 400 * 86_400, false).unwrap();
+        assert!(get(&c, id).unwrap().is_some(), "an invariant keeps its entry past retention");
     }
 
     #[test]

@@ -120,6 +120,8 @@ fn reading_stage(stage: &str, root: &str) -> bool {
     match words.as_slice() {
         ["cd", dir] => in_project(dir, root),
         ["echo", ..] | ["cut", ..] | ["tr", ..] | ["true"] => true,
+        // With a file named it writes to the second one; from a pipe it only passes text on.
+        ["uniq", options @ ..] => options.iter().all(|o| o.starts_with('-')),
         ["sort", options @ ..] => !options.iter().any(|o| o.starts_with("-o") || o.starts_with("--output")),
         // Numbers and p: a script of sed could write or run anything.
         ["sed", "-n", script, files @ ..] => script.strip_suffix('p').is_some_and(|lines| !lines.is_empty() && lines.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '$')) && !files.iter().any(|f| f.starts_with('-')),
@@ -382,10 +384,10 @@ mod tests {
     #[test]
     fn a_slaves_chains_of_reading_and_cargo_ask_no_one() {
         let ok = |c: &str| slave_basics(&[Capability::Command(c.to_string())], "/p");
-        for good in ["cargo test -p x 2>&1 | tail -5", "cargo clippy --workspace --all-targets", "grep -E \"a|b\" f | head", "sed -n 1,9p f; ls", "sed -n '40,60p' f && echo ---", "cd /p && git status --short", "cd crates && ls", "timeout 580 cargo build --release 2>&1 | tail -3", "git diff --stat; git log --oneline -3", "ls x || echo none", "cat f | sort | cut -c1-40"] {
+        for good in ["cargo test -p x 2>&1 | tail -5", "cargo clippy --workspace --all-targets", "grep -E \"a|b\" f | head", "sed -n 1,9p f; ls", "sed -n '40,60p' f && echo ---", "cd /p && git status --short", "cd crates && ls", "timeout 580 cargo build --release 2>&1 | tail -3", "git diff --stat; git log --oneline -3", "ls x || echo none", "cat f | sort | cut -c1-40", "cargo test 2>&1 | grep -E \"a|^b\" | sort | uniq -c | head -40"] {
             assert!(ok(good), "{good}");
         }
-        for bad in ["cargo test > f", "ls; rm f", "cat $(x)", "cat `x`", "grep \"$HOME\" f", "sed -i s/a/b/ f", "sed -n 1w/tmp/x f", "sed -n '1,2p;w x' f", "sleep 1 &", "cargo test --target-dir x | tail", "python3 x.py", "echo a > f", "cat < f", "cd /etc && ls", "cd .. && ls", "sort -o f g", "git checkout -- f", "ls\nrm f", "'unclosed"] {
+        for bad in ["cargo test > f", "ls; rm f", "cat $(x)", "cat `x`", "grep \"$HOME\" f", "sed -i s/a/b/ f", "sed -n 1w/tmp/x f", "sed -n '1,2p;w x' f", "sleep 1 &", "cargo test --target-dir x | tail", "python3 x.py", "echo a > f", "cat < f", "cd /etc && ls", "cd .. && ls", "sort -o f g", "uniq a b", "git checkout -- f", "ls\nrm f", "'unclosed"] {
             assert!(!ok(bad), "{bad}");
         }
         assert!(reading_chain("grep x f | head; git status", "/p"));

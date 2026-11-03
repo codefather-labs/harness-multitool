@@ -135,7 +135,7 @@ impl Memory for JournalMemory {
 
     fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         let conn = self.conn.borrow();
-        let filter = journal::Filter { flags: vec!["specification".into(), "constraint".into()], ..Default::default() };
+        let filter = journal::Filter { flags: vec!["specification".into(), "constraint".into(), "invariant".into(), "principle".into()], ..Default::default() };
         let listed = journal::list(&conn, &filter, 0, limit.min(journal::MAX_PAGE_SIZE));
         let result = listed.map(|(_, entries)| entries.into_iter().filter(|e| !e.flags.iter().any(|f| f.flag == "deprecated")).map(record).collect());
         ready(result.map_err(fail))

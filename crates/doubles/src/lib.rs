@@ -206,7 +206,7 @@ impl Memory for InMemoryJournal {
     }
 
     fn journal_binding(&self, limit: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
-        let binding = |e: &&JournalRecord| e.flags.iter().any(|f| f == "specification" || f == "constraint") && !e.flags.iter().any(|f| f == "deprecated");
+        let binding = |e: &&JournalRecord| e.flags.iter().any(|f| matches!(f.as_str(), "specification" | "constraint" | "invariant" | "principle")) && !e.flags.iter().any(|f| f == "deprecated");
         ready(Ok(self.entries.borrow().iter().rev().filter(binding).take(limit).cloned().collect()))
     }
 

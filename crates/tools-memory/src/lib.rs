@@ -171,13 +171,22 @@ fn map_show<'a>(memory: &'a dyn Memory, input: &'a Value) -> BoxFuture<'a, Plugi
     })
 }
 
+/// A category that is itself a flag sets it: an entry of these kinds is open work (todo, question,
+/// problem) or binds the project (invariant, principle), and without its flag nothing would show it.
+fn flags_with_category(category: &str, mut flags: Vec<String>) -> Vec<String> {
+    if ["todo", "question", "problem", "invariant", "principle"].contains(&category) && !flags.iter().any(|f| f == category) {
+        flags.push(category.to_string());
+    }
+    flags
+}
+
 /// Every memory tool, by name. `map_max_nodes` is the most nodes a map may hold, 0 for none (CON-114).
 pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<MemoryTool> {
     let tool = |name, description, schema: fn() -> Value, action: Action| Some(MemoryTool { memory: memory.clone(), name, description, schema, action, map_max_nodes });
     match name {
         "journal_add" => tool(
             "journal_add",
-            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, problem, unverified, verified, specification, constraint, important, idea, concept, comment, deprecated.",
+            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, problem, unverified, verified, specification, constraint, invariant, principle, important, idea, concept, comment, deprecated. An invariant or principle entry is mirrored to docs/spec/invariants.md or docs/spec/principles.md and needs its doc id (INV- or P-).",
             || {
                 object(
                     json!({
@@ -196,11 +205,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<Me
             |memory, input| {
                 Box::pin(async move {
                     let category = require(input, "category")?.to_string();
-                    let mut flags = strings(&input["flags"]);
-                    // An entry of these kinds is open work: without its flag nothing would show it.
-                    if ["todo", "question", "problem"].contains(&category.as_str()) && !flags.contains(&category) {
-                        flags.push(category.clone());
-                    }
+                    let flags = flags_with_category(&category, strings(&input["flags"]));
                     let entry = JournalEntry {
                         body: require(input, "body")?.to_string(),
                         category,
@@ -311,7 +316,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<Me
         ),
         "journal_agenda" => tool(
             "journal_agenda",
-            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications and constraints that bind the work, each entry as its start: journal_get reads one whole. Read it on a fresh context. Those groups hold what can be worked on now; `blocked` is what waits for another entry, and `blocker_dropped` is what waited for something dropped instead of solved: re-read those, then lift the link with journal_mark.",
+            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications, constraints, invariants and principles that bind the work, each entry as its start: journal_get reads one whole. Read it on a fresh context. Those groups hold what can be worked on now; `blocked` is what waits for another entry, and `blocker_dropped` is what waited for something dropped instead of solved: re-read those, then lift the link with journal_mark.",
             || object(json!({"limit": {"type": "integer", "description": "entries per flag, 10 by default"}}), &[]),
             |memory, input| more(memory, Ok(MemoryOp::JournalAgenda { limit: input["limit"].as_u64().unwrap_or(10) as usize })),
         ),
@@ -441,6 +446,15 @@ mod tests {
             assert!(check_proofs(&json!({"flags": ["verified"], "proof": [words]}), "/nonexistent-root").is_ok(), "{words}");
         }
         assert!(check_proofs(&json!({"flags": ["verified"]}), "/nonexistent-root").is_ok(), "no file, no path");
+    }
+
+    #[test]
+    fn a_category_that_is_a_flag_sets_it() {
+        let s = |v: &[&str]| v.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        assert_eq!(flags_with_category("invariant", vec![]), s(&["invariant"]));
+        assert_eq!(flags_with_category("principle", s(&["important"])), s(&["important", "principle"]));
+        assert_eq!(flags_with_category("invariant", s(&["invariant"])), s(&["invariant"]), "already set, not twice");
+        assert_eq!(flags_with_category("decision", vec![]), Vec::<String>::new());
     }
 
     #[test]

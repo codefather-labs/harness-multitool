@@ -38,7 +38,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-21 | Before changing a feature. | Read its specification: `journal_list` by `specification` and `feature`. | `journal_list` before the first write. |
 | W-22 | A spec has to change. | A new entry saying "Replaces journal#N" and why; `journal_mark` the old one `deprecated`. | Both. |
 | W-23 | Code and spec disagree. | A finding; settle it before going on. | An entry. |
-| W-24 | A project with `docs/` holds a binding entry: `specification` or `constraint`. | Give the rule an id in its docs, such as a new `CON-` row in `docs/spec/constraints.md`, and name that id in the entry. Read the docs for the next free id; never name one they do not define. | The id in the entry, defined in `docs/`. |
+| W-24 | A project with `docs/` holds a binding entry: `specification`, `constraint`, `invariant` or `principle`. | Give the rule an id in its docs, such as a new `CON-` row in `docs/spec/constraints.md`, an `INV-` row in `docs/spec/invariants.md` or a `P-` row in `docs/spec/principles.md`, and name that id in the entry. Read the docs for the next free id; never name one they do not define. | The id in the entry, defined in `docs/`. |
 
 ## 4. In plan mode
 

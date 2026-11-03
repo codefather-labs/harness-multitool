@@ -166,7 +166,7 @@ impl Tree {
     /// The journal against the files.
     pub async fn check_journal(&self, memory: &dyn Memory) -> PluginResult<Vec<Finding>> {
         let list = |flags: &[&str], open: Option<bool>| JournalFilter { flags: flags.iter().map(|f| f.to_string()).collect(), open, limit: SCAN, ..Default::default() };
-        let binding = memory.journal_list(list(&["specification", "constraint"], None)).await?;
+        let binding = memory.journal_list(list(&["specification", "constraint", "invariant", "principle"], None)).await?;
         let open_questions = memory.journal_list(list(&["question"], Some(true))).await?;
         let closed_questions = memory.journal_list(list(&["question"], Some(false))).await?;
         let deprecated = memory.journal_list(list(&["deprecated"], None)).await?;
@@ -237,6 +237,8 @@ pub fn mirror_of(call: &ToolCall) -> Option<&'static str> {
         "mindmap_new" | "mindmap_add" => Some("docs/architecture/overview.md, if this is the architecture map"),
         "flowchart_new" | "flowchart_add" => Some("the chart's page in docs/, its diagram and SVG"),
         "journal_add" if flagged("deprecated") => Some("the file that states it: update it, or mark the item replaced"),
+        "journal_add" if flagged("invariant") => Some("docs/spec/invariants.md"),
+        "journal_add" if flagged("principle") => Some("docs/spec/principles.md"),
         "journal_add" if flagged("specification") => Some("docs/spec/interfaces.md"),
         "journal_add" if flagged("constraint") => Some("docs/spec/constraints.md"),
         "journal_add" if flagged("question") => Some("docs/spec/open-questions.md"),
@@ -414,12 +416,16 @@ mod tests {
         let missing = add(&m, "CON-7: never on weekends.", &["constraint"]);
         add(&m, "CON-8: an old rule.", &["constraint", "deprecated"]);
         let old = add(&m, "INV-1 no longer holds.", &["deprecated"]);
+        let inv_no_id = add(&m, "Every write is journaled.", &["invariant"]);
+        let inv_missing = add(&m, "INV-99: never on weekends.", &["invariant"]);
         let open = add(&m, "Q-2: reopened?", &["question"]);
         let settled = add(&m, "Q-1: which storage?", &["question"]);
         pollster::block_on(m.journal_close(settled.id, "sqlite")).unwrap();
         let found = check(&p.tree());
         assert!(found.contains(&format!("journal#{} binds but carries no doc id", no_id.id)), "{found}");
         assert!(found.contains(&format!("journal#{} states CON-7", missing.id)), "{found}");
+        assert!(found.contains(&format!("journal#{} binds but carries no doc id", inv_no_id.id)), "{found}");
+        assert!(found.contains(&format!("journal#{} states INV-99", inv_missing.id)), "{found}");
         assert!(!found.contains("CON-1") && !found.contains("CON-8 "), "{found}");
         assert!(found.contains(&format!("journal#{} is deprecated and nothing else states INV-1", old.id)), "{found}");
         assert!(found.contains(&format!("journal#{} keeps Q-2 open", open.id)), "{found}");
@@ -438,6 +444,9 @@ mod tests {
         assert_eq!(add("x", json!(["specification", "constraint"])), Some("docs/spec/interfaces.md"));
         assert_eq!(add("x", json!(["question"])), Some("docs/spec/open-questions.md"));
         assert_eq!(add("x", json!(["todo"])), Some("docs/spec/roadmap.md"));
+        assert_eq!(add("x", json!(["invariant"])), Some("docs/spec/invariants.md"));
+        assert_eq!(add("x", json!(["principle"])), Some("docs/spec/principles.md"));
+        assert_eq!(add("invariant", json!([])), Some("docs/spec/invariants.md"), "a category without its flag still names the file");
         for silent in ["update", "finding", "lesson", "verification"] {
             assert_eq!(add(silent, json!([])), None, "{silent}");
         }
