@@ -1084,7 +1084,7 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
         match message {
             FromSession::Entry { entry, .. } => entries.push(entry),
             FromSession::Ask { tab, .. } => {
-                sessions.prompt(tab, "kept".to_string());
+                sessions.prompt(tab, "queued-once-mark".to_string());
                 sessions.stop(tab);
                 sessions.answer(tab, Answer::AllowOnce);
             }
@@ -1099,9 +1099,9 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
         }
     }
     assert!(!pending, "the rebind went through in the end");
-    assert_eq!(user_texts(&entries), ["first", "kept"]);
+    assert_eq!(user_texts(&entries), ["first", "queued-once-mark"]);
     let requests = seen.lock().unwrap();
-    assert_eq!(requests.iter().filter(|r| r.contains("kept")).count(), 1, "once, by one thread");
+    assert_eq!(requests.iter().filter(|r| r.contains("queued-once-mark")).count(), 1, "once, by one thread");
 }
 
 #[test]

@@ -11,50 +11,21 @@ fn strings(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
-/// Whether a proof names a local file: no scheme, and either a separator or a dot-extension with a
-/// letter (`screenshot.png`, not `v1.2` or `cargo test output`). CON-101, journal#575.
-fn looks_like_path(proof: &str) -> bool {
-    if proof.contains("://") {
-        return false;
-    }
-    if proof.contains('/') || proof.contains('\\') {
-        return true;
-    }
-    match proof.rsplit_once('.') {
-        Some((stem, ext)) => {
-            !stem.is_empty()
-                && !proof.contains(char::is_whitespace)
-                && !ext.is_empty()
-                && ext.len() <= 8
-                && ext.chars().all(|c| c.is_ascii_alphanumeric())
-                && ext.chars().any(|c| c.is_ascii_alphabetic())
-        }
-        None => false,
-    }
-}
-
-/// The first proof that looks like a local path and names nothing: relative ones resolve against the
-/// project's root, `~/` against the home folder. Answers with a message naming it.
-fn missing_proof(proofs: &[String], root: &str) -> Option<String> {
-    proofs.iter().map(|p| p.trim()).filter(|p| looks_like_path(p)).find_map(|p| {
-        let path = match p.strip_prefix("~/") {
-            Some(rest) => std::env::var_os("HOME").map_or_else(|| PathBuf::from(p), |home| PathBuf::from(home).join(rest)),
-            None if Path::new(p).is_absolute() => PathBuf::from(p),
-            None => Path::new(root).join(p),
-        };
-        (!path.exists()).then(|| format!("proof `{p}` names no file: nothing at {}", path.display()))
-    })
-}
-
-/// Refuses a `verified` entry whose local proof does not exist (journal#575). Other entries pass.
+/// Each path in `proof_file` must name something: relative ones against the project's root, `~/`
+/// against the home folder. Nothing else is looked at: `proof` is words (journal#607).
 fn check_proofs(input: &Value, root: &str) -> PluginResult<()> {
-    if !strings(&input["flags"]).iter().any(|flag| flag == "verified") {
-        return Ok(());
+    for file in strings(&input["proof_file"]) {
+        let file = file.trim();
+        let path = match file.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME").map_or_else(|| PathBuf::from(file), |home| PathBuf::from(home).join(rest)),
+            None if Path::new(file).is_absolute() => PathBuf::from(file),
+            None => Path::new(root).join(file),
+        };
+        if !path.exists() {
+            return Err(PluginError::new(format!("proof_file `{file}` names no file: nothing at {}", path.display())));
+        }
     }
-    match missing_proof(&strings(&input["proof"]), root) {
-        Some(message) => Err(PluginError::new(message)),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 fn ids(v: &Value) -> Vec<u64> {
@@ -101,7 +72,7 @@ impl Tool for MemoryTool {
             if !cx.granted.contains(&Capability::Memory) {
                 return ToolOutput::error("not granted: Memory");
             }
-            // A verified entry's proof must exist before it is stored (journal#575).
+            // A proof named as a file must be there before the entry is stored (journal#607).
             if self.name == "journal_add" && let Err(e) = check_proofs(input, &cx.root) {
                 return ToolOutput::error(e.to_string());
             }
@@ -192,7 +163,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         "salience": {"type": "string", "enum": ["high", "medium", "low"]},
                         "feature": {"type": "string"},
                         "blocked_by": {"type": "integer", "description": BLOCKED_BY_RULE},
-                        "proof": {"type": "array", "items": {"type": "string"}, "description": "Where the evidence is, for an entry flagged verified: a file with a command's output, a log, a screenshot, or a URL. A todo closes only on an entry that has one."},
+                        "proof": {"type": "array", "items": {"type": "string"}, "description": "What shows it was checked, in words: a test's name, a command and its result, a commit, a URL. A todo closes only on a verified entry with this or proof_file."}, "proof_file": {"type": "array", "items": {"type": "string"}, "description": "Only if the proof is a file: its path, relative to the project, absolute or under ~/. Each must exist, or the entry is refused. Leave it out when no file is needed."},
                     }),
                     &["body", "category", "tags"],
                 )
@@ -213,7 +184,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
                         salience: input["salience"].as_str().map(str::to_string),
                         feature: input["feature"].as_str().map(str::to_string),
                         blocked_by: input["blocked_by"].as_u64(),
-                        proofs: strings(&input["proof"]),
+                        proofs: strings(&input["proof"]).into_iter().chain(strings(&input["proof_file"])).collect(),
                     };
                     let record = memory.journal_add(entry).await?;
                     Ok(serde_json::to_value(record).expect("an entry serialises"))
@@ -414,54 +385,41 @@ mod tests {
         dir
     }
 
-    fn verified(proofs: &[&str]) -> Value {
-        json!({"flags": ["verified"], "proof": proofs})
+    fn with_files(files: &[&str]) -> Value {
+        json!({"flags": ["verified"], "proof": ["any words"], "proof_file": files})
     }
 
     #[test]
-    fn a_missing_relative_proof_is_refused_naming_it() {
+    fn a_missing_proof_file_is_refused_naming_it() {
         let root = scratch("missing-relative");
-        let err = check_proofs(&verified(&["missing/out.txt"]), root.to_str().unwrap()).unwrap_err();
+        let err = check_proofs(&with_files(&["missing/out.txt"]), root.to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("missing/out.txt"), "{err}");
-    }
-
-    #[test]
-    fn a_missing_absolute_proof_is_refused_naming_it() {
-        let root = scratch("missing-absolute");
         let absolute = root.join("gone.png");
-        let err = check_proofs(&verified(&[absolute.to_str().unwrap()]), "/nonexistent-root").unwrap_err();
+        let err = check_proofs(&with_files(&[absolute.to_str().unwrap()]), "/nonexistent-root").unwrap_err();
         assert!(err.to_string().contains("gone.png"), "{err}");
     }
 
     #[test]
-    fn an_existing_relative_proof_is_accepted() {
-        let root = scratch("existing-relative");
+    fn an_existing_proof_file_is_accepted_relative_or_absolute() {
+        let root = scratch("existing");
         std::fs::create_dir_all(root.join("proofs")).unwrap();
         std::fs::write(root.join("proofs/out.txt"), "ok").unwrap();
-        assert!(check_proofs(&verified(&["proofs/out.txt"]), root.to_str().unwrap()).is_ok());
+        assert!(check_proofs(&with_files(&["proofs/out.txt"]), root.to_str().unwrap()).is_ok());
+        let file = root.join("proofs/out.txt");
+        assert!(check_proofs(&with_files(&[file.to_str().unwrap()]), "/nonexistent-root").is_ok());
+    }
+
+    /// The owner's rule: a proof with no file needs no path, and its words are not read as one.
+    #[test]
+    fn words_in_proof_are_never_taken_for_a_path() {
+        for words in ["cargo test -p x, crates/foo passes", "crates/a.rs::the_test", "crates/a.rs:120", "missing/out.txt", "https://example.com/x", "v1.2"] {
+            assert!(check_proofs(&json!({"flags": ["verified"], "proof": [words]}), "/nonexistent-root").is_ok(), "{words}");
+        }
+        assert!(check_proofs(&json!({"flags": ["verified"]}), "/nonexistent-root").is_ok(), "no file, no path");
     }
 
     #[test]
-    fn an_existing_absolute_proof_is_accepted() {
-        let root = scratch("existing-absolute");
-        let file = root.join("shot.png");
-        std::fs::write(&file, "png").unwrap();
-        assert!(check_proofs(&verified(&[file.to_str().unwrap()]), "/nonexistent-root").is_ok());
-    }
-
-    #[test]
-    fn a_url_is_accepted_as_it_is() {
-        assert!(check_proofs(&verified(&["https://example.com/missing/shot.png"]), "/nonexistent-root").is_ok());
-    }
-
-    #[test]
-    fn plain_words_and_versions_are_not_paths() {
-        assert!(check_proofs(&verified(&["cargo test output", "v1.2", "CON-101"]), "/nonexistent-root").is_ok());
-    }
-
-    #[test]
-    fn an_entry_without_the_verified_flag_is_not_checked() {
-        let input = json!({"flags": ["unverified"], "proof": ["missing/out.txt"]});
-        assert!(check_proofs(&input, "/nonexistent-root").is_ok());
+    fn any_entry_with_a_proof_file_is_checked() {
+        assert!(check_proofs(&json!({"flags": ["unverified"], "proof_file": ["missing/out.txt"]}), "/nonexistent-root").is_err());
     }
 }

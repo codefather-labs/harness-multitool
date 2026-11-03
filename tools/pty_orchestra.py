@@ -115,7 +115,8 @@ second_task = json.loads(call("harness", "journal_add", {"body": "the second age
 plain = json.loads(call("harness", "journal_add", {"body": "holds no work", "category": "finding", "tags": ["t"]})["text"])
 # journal#587: a verified entry is a mark, not work, so it is no task.
 open(root + "/proof.txt", "w").write("a verified entry's proof\n")
-verified = json.loads(call("harness", "journal_add", {"body": "verifies the orchestra", "category": "verification", "flags": ["verified"], "proof": ["proof.txt"], "tags": ["t"]})["text"])
+verified = json.loads(call("harness", "journal_add", {"body": "verifies the orchestra", "category": "verification", "flags": ["verified"], "proof": ["its output"], "proof_file": ["proof.txt"], "tags": ["t"]})["text"])
+gone = call("harness", "journal_add", {"body": "names a file that is not there", "category": "verification", "flags": ["verified"], "proof_file": ["no/such.txt"], "tags": ["t"]}); assert gone["error"] and "no/such.txt" in gone["text"], gone
 for args, why in [({}, "task is required"), ({"task": plain["id"]}, "no open work"), ({"task": verified["id"]}, "no open work"), ({"task": 999999}, "there is no journal")]:
     no = call("mode", "agent_spawn", {"nick": "x", "adapter": "local", "model": "m", **args}); assert no["error"] and why in no["text"], no
 print("no spawn without an open entry")
