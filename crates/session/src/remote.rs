@@ -555,6 +555,7 @@ impl DaemonHost {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
                     orchestra.slaves.remove(&slave);
                     orchestra.tasks.remove(&slave);
+                    orchestra.planning.remove(&slave);
                     self.save_orchestra(&orchestra);
                 }
                 for window in windows.values_mut().filter(|w| !w.closed) {
@@ -613,21 +614,38 @@ impl DaemonHost {
         let now = Instant::now();
         let mut due: Vec<(String, String)> = Vec::new();
         {
-            let orchestra = self.orchestra.lock().expect("orchestra");
+            let mut orchestra = self.orchestra.lock().expect("orchestra");
             let nicks = self.nicks.lock().expect("nicks");
             let mut checks = self.agent_checks.lock().expect("checks");
             checks.retain(|slave, _| orchestra.slaves.contains_key(slave));
+            let mut gone = Vec::new();
             for (slave, master) in &orchestra.slaves {
                 let last = checks.entry(slave.clone()).or_insert(now);
                 if now.duration_since(*last) < self.agent_check_every {
                     continue;
                 }
                 *last = now;
+                // Its window went, and its tab with it: there is nothing to check (journal#595).
+                if !windows.values().filter(|w| !w.closed).any(|w| w.sessions.open().into_iter().any(|(_, s)| s == *slave)) {
+                    let name = nicks.get(slave).map_or(slave.as_str(), String::as_str);
+                    let task = orchestra.tasks.get(slave).map_or_else(|| "no entry".to_string(), |task| format!("journal#{task}"));
+                    due.push((master.clone(), format!("{name} is gone: its window closed with its tab, and its work on {task} stopped where it was. What it wrote stays. Start another agent on that entry if the work goes on.")));
+                    gone.push(slave.clone());
+                    continue;
+                }
                 let running = windows.values().filter(|w| !w.closed).any(|w| w.sessions.open().into_iter().any(|(tab, s)| s == *slave && w.sessions.running(tab)));
                 let name = nicks.get(slave).map_or(slave.as_str(), String::as_str);
                 let task = orchestra.tasks.get(slave).map_or_else(|| "no entry".to_string(), |task| format!("journal#{task}"));
                 let state = if running { "running" } else { "not running" };
                 due.push((master.clone(), format!("Time to check on {name}, on {task}: it is {state}. See what it has done with mode__agent_read, and move it on or close it if it has stopped.")));
+            }
+            for slave in &gone {
+                orchestra.slaves.remove(slave);
+                orchestra.tasks.remove(slave);
+                orchestra.planning.remove(slave);
+            }
+            if !gone.is_empty() {
+                self.save_orchestra(&orchestra);
             }
         }
         let any = !due.is_empty();

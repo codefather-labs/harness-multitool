@@ -1074,6 +1074,8 @@ fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, 
     cv.grow(y + h);
     let limit = crate::maps::pan_limit((area.width, area.height), (layout_w, layout_h));
     let pan = (pan.0.min(limit.0), pan.1.min(limit.1));
+    // A turn can outgrow the canvas (MAX_H): what lies past its end is not drawn (journal#595).
+    let area = area.intersection(cv.buf.area);
     let (svg, hits) = match body {
         MapBody::Mind(m) => {
             let hits = crate::mindmap::draw_text(&mut cv.buf, area, m, t, bg, pan);
@@ -1091,10 +1093,10 @@ fn map(cv: &mut Canvas, (x, y, w): (u16, u16, u16), tool: MapTool, (id, change, 
     // Arrows where the map goes on beyond the area.
     let mid = area.y + area.height / 2;
     let mark = Style::default().fg(t.accent).bg(bg).add_modifier(Modifier::BOLD);
-    if pan.0 > 0 {
+    if pan.0 > 0 && !area.is_empty() {
         cv.buf[(area.x, mid)].set_symbol("◀").set_style(mark);
     }
-    if pan.0 < limit.0 {
+    if pan.0 < limit.0 && !area.is_empty() {
         cv.buf[(area.x + area.width - 1, mid)].set_symbol("▶").set_style(mark);
     }
     if limit != (0, 0) {
@@ -1404,6 +1406,27 @@ mod thinking_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// journal#595: maps of a turn that outgrew the canvas, wholly and partly past its end, with
+    /// every arrow on: this took the whole window down.
+    #[test]
+    fn a_map_past_the_end_of_the_canvas_draws_what_fits_and_does_not_panic() {
+        let t = Theme::builtin("dark").unwrap();
+        let journal = Vec::new();
+        let chart = crate::debug::sample_flow_gallery();
+        let mind = crate::debug::sample_mind_gallery();
+        for y in [380u16, 396, 399, 400, 407, 650] {
+            for width in [30u16, 188] {
+                for pan in [(0u16, 0u16), (3, 3), (500, 500)] {
+                    let mut cv = Canvas::new(width, &t, &journal);
+                    let flow = map(&mut cv, (0, y, width), MapTool::Flowchart, (1, "c", "d"), MapBody::Flow(&chart), (None, None, pan), Color::Reset);
+                    assert!(flow > 0 && cv.buf.area.height <= MAX_H);
+                    let mut cv = Canvas::new(width, &t, &journal);
+                    map(&mut cv, (0, y, width), MapTool::MindMap, (1, "c", "d"), MapBody::Mind(&mind), (None, None, pan), Color::Reset);
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore]

@@ -2177,6 +2177,13 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    // ratatui's own hook gives the terminal back, but knows nothing of these: after a panic the
+    // shell would be typed mouse reports at (journal#595).
+    let restores_terminal = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+        restores_terminal(info);
+    }));
     let mut ctrl_c_at = None;
     // Text that came as a paste and has no composer to go to yet (the start page, a prompt on
     // screen), with whether its Enter came too. An Enter right after a paste belongs to the paste:
