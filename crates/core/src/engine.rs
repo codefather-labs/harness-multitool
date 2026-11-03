@@ -99,6 +99,15 @@ pub fn without_empty_optionals(schema: &serde_json::Value, input: &serde_json::V
     serde_json::Value::Object(given.iter().filter(|(name, value)| required(name) || !empty(value)).map(|(name, value)| (name.clone(), value.clone())).collect())
 }
 
+/// What an agent is told if it closes the entry that is its task itself (CON-109).
+pub const TASK_IS_THE_MASTERS: &str = "This entry is your task, and only your orchestrator closes it. When it is done, with its proofs, ask it to with agent_send. When it approves, ask it the same way to close your session.";
+
+/// Whether a call would close the entry that is this agent's task.
+pub fn closes_task(tool: &str, input: &serde_json::Value, task: Option<u64>) -> bool {
+    let tool = tool.rsplit("__").next().unwrap_or(tool);
+    matches!(tool, "journal_close" | "journal_abandon") && task.is_some() && input["id"].as_u64() == task
+}
+
 /// What a call gave that its tool's schema does not name: it would be lost with no word said.
 pub fn unknown_arguments(schema: &serde_json::Value, input: &serde_json::Value) -> Vec<String> {
     let (Some(known), Some(given)) = (schema["properties"].as_object(), input.as_object()) else { return Vec::new() };
@@ -396,9 +405,13 @@ impl Engine {
     }
 
     /// This conversation's place in an orchestra.
-    pub async fn set_orchestra_role(&self, role: Option<String>, master: Option<String>) {
-        if self.state.borrow().orchestra_role != role || self.state.borrow().orchestra_master != master {
-            self.emit(Event::OrchestraRole { role, master });
+    pub async fn set_orchestra_role(&self, role: Option<String>, master: Option<String>, task: Option<u64>) {
+        let same = {
+            let state = self.state.borrow();
+            state.orchestra_role == role && state.orchestra_master == master && state.orchestra_task == task
+        };
+        if !same {
+            self.emit(Event::OrchestraRole { role, master, task });
             let _ = self.flush().await;
         }
     }
@@ -598,8 +611,15 @@ impl Engine {
             let stopped = || self.stop.take();
             // Calls it made and gave no result for, should it be cut off.
             let open_calls = std::cell::RefCell::new(Vec::new());
+            // A turn it began by itself has no prompt to carry what hooks said for the agent: it goes as a
+            // message of its own, or it would be cleared with this turn, unread (journal#572).
+            let unsaid = Cell::new((woken && !state.reminders.is_empty()).then(|| state.reminders.join(" ")));
             // A message that came during the run goes to it, and into the log as it goes.
             let next_message = || -> Option<String> {
+                if let Some(text) = unsaid.take() {
+                    self.emit(Event::Inbound { label: harness_api::event::HARNESS_LABEL.to_string(), text: text.clone() });
+                    return Some(format!("[from the harness] {text}"));
+                }
                 loop {
                     let text = self.inbox.lock().expect("inbox").pop_front()?;
                     let refused = {
@@ -984,6 +1004,11 @@ impl Engine {
         let tool = self.parts.tools.get(&call.name).cloned();
         let settled = tool.as_ref().map(|t| ToolCall { input: without_empty_optionals(&t.spec().schema, &call.input), ..call.clone() });
         let call = settled.as_ref().unwrap_or(call);
+        if closes_task(&call.name, &call.input, self.state.borrow().orchestra_task) {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            self.emit(Event::ToolResult { id: call.id.clone(), output: TASK_IS_THE_MASTERS.to_string(), is_error: true });
+            return;
+        }
         if let Some(tool) = &tool {
             let unknown = unknown_arguments(&tool.spec().schema, &call.input);
             if !unknown.is_empty() {
@@ -1030,7 +1055,7 @@ impl Engine {
         // The tools of the mode are there from its next turn on.
         if call.name == ORCHESTRATE_TOOL && !output.is_error {
             let role = (call.input["on"] != false).then(|| "master".to_string());
-            self.set_orchestra_role(role, None).await;
+            self.set_orchestra_role(role, None, None).await;
         }
         self.hooks(HookPoint::PostToolUse { call, output: &output }).await;
     }
@@ -1116,6 +1141,11 @@ mod empty_optionals {
         let schema = serde_json::json!({"properties": {"body": {}, "blocked_by": {}, "path": {}, "on": {}, "limit": {}}, "required": ["body", "count"]});
         let input = serde_json::json!({"body": "", "count": 0, "blocked_by": 0, "path": "", "on": false, "limit": 5, "note": null});
         assert_eq!(without_empty_optionals(&schema, &input), serde_json::json!({"body": "", "count": 0, "on": false, "limit": 5}));
+        assert!(closes_task("journal_close", &serde_json::json!({"id": 7}), Some(7)));
+        assert!(closes_task("mcp__harness__journal_abandon", &serde_json::json!({"id": 7}), Some(7)));
+        assert!(!closes_task("journal_close", &serde_json::json!({"id": 8}), Some(7)), "what it wrote itself is its own");
+        assert!(!closes_task("journal_close", &serde_json::json!({"id": 7}), None));
+        assert!(!closes_task("journal_get", &serde_json::json!({"id": 7}), Some(7)));
         let named = serde_json::json!({"properties": {"title": {"type": "string"}}});
         assert_eq!(unknown_arguments(&named, &serde_json::json!({"title": "t", "body": "lost"})), ["body"]);
         assert!(unknown_arguments(&named, &serde_json::json!({"title": "t"})).is_empty());

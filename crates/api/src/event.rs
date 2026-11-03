@@ -112,6 +112,9 @@ pub enum Event {
         role: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         master: Option<String>,
+        /// For a slave, the journal entry that is its task (CON-109).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<u64>,
     },
     /// An agent backend compacted its conversation by itself: what it knew of the session is gone.
     BackendCompacted,

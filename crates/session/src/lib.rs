@@ -526,7 +526,7 @@ fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromSession {
     /// The daemon's word to a window: open a tab for this master's new agent.
-    Spawn { tab: u64, nick: String, provider: String, model: String },
+    Spawn { tab: u64, nick: String, provider: String, model: String, task: u64 },
     /// The daemon's word to a window: this tab's agent has been closed.
     CloseTab { tab: u64 },
     Entry { tab: u64, entry: LogEntry },
@@ -555,7 +555,7 @@ enum Input {
     /// For the user to read; no run.
     Notice { label: String, text: String },
     /// Its place in an orchestra.
-    Role { role: Option<String>, master: Option<String> },
+    Role { role: Option<String>, master: Option<String>, task: Option<u64> },
 }
 
 struct Handle {
@@ -953,12 +953,12 @@ impl Sessions {
     }
 
     /// Its place in an orchestra (CON-100).
-    pub fn role(&mut self, tab: u64, role: Option<String>, master: Option<String>) {
+    pub fn role(&mut self, tab: u64, role: Option<String>, master: Option<String>, task: Option<u64>) {
         if !self.handles.contains_key(&tab) {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            let _ = handle.prompts.send(Input::Role { role, master });
+            let _ = handle.prompts.send(Input::Role { role, master, task });
         }
     }
 
@@ -1066,9 +1066,9 @@ impl Sessions {
                     pollster::block_on(engine.set_step_debug(on, "user"));
                     continue;
                 }
-                if let Input::Role { role, master } = &input {
+                if let Input::Role { role, master, task } = &input {
                     if !retired_here.load(Ordering::SeqCst) {
-                        pollster::block_on(engine.set_orchestra_role(role.clone(), master.clone()));
+                        pollster::block_on(engine.set_orchestra_role(role.clone(), master.clone(), *task));
                     }
                     continue;
                 }

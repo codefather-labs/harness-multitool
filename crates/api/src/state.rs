@@ -74,6 +74,8 @@ pub struct SessionState {
     pub orchestra_role: Option<String>,
     /// Who a slave answers to.
     pub orchestra_master: Option<String>,
+    /// The journal entry that is a slave's task (CON-109).
+    pub orchestra_task: Option<u64>,
     /// Step-debug mode (ADR 0013).
     pub step_debug: bool,
     /// Plan mode (ADR 0016).
@@ -175,9 +177,10 @@ impl SessionState {
                 self.forms.insert(source.clone(), FormLink { id: id.clone(), cursor: cursor.clone(), holds: holds.unwrap_or(self.messages.len()) });
             }
             Event::AgentName { name, .. } => self.agent_name = Some(name.clone()),
-            Event::OrchestraRole { role, master } => {
+            Event::OrchestraRole { role, master, task } => {
                 self.orchestra_role.clone_from(role);
                 self.orchestra_master.clone_from(master);
+                self.orchestra_task = *task;
             }
             Event::PlanMode { on, .. } => self.plan_mode = *on,
             Event::StepDebug { on, .. } => self.step_debug = *on,

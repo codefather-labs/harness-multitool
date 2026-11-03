@@ -50,6 +50,7 @@ fn record(e: journal::Entry) -> JournalRecord {
         blocked_by: e.blocked_by.iter().map(|id| *id as u64).collect(),
         blocker_dropped: e.blocker_dropped.iter().map(|id| *id as u64).collect(),
         proofs: Vec::new(),
+        open: e.flags.iter().any(|f| f.open),
     }
 }
 

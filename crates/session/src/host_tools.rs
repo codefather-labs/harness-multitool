@@ -283,8 +283,8 @@ impl Tool for ModeTool {
                 json!({"type": "object", "properties": {}}),
             ),
             "mode__agent_spawn" => (
-                "HARNESS MODE, orchestration only. Start an agent in a new tab of your group, on this authorized adapter and model, in this same project and git, with no history. It sends you word when it is ready; give it work then with agent_send. At most 8. Answers that its tab is opening.",
-                json!({"type": "object", "properties": {"nick": {"type": "string", "description": "What it goes by; unique among the open."}, "adapter": {"type": "string"}, "model": {"type": "string"}}, "required": ["nick", "adapter", "model"]}),
+                "HARNESS MODE, orchestration only. Start an agent in a new tab of your group, on this authorized adapter and model, in this same project and git, with no history, on the open journal entry `task`, which it starts on at once. It asks you to close the entry when it is done, and then to close its session. At most 8. Answers that its tab is opening.",
+                json!({"type": "object", "properties": {"nick": {"type": "string", "description": "What it goes by; unique among the open."}, "adapter": {"type": "string"}, "model": {"type": "string"}, "task": {"type": "integer", "description": "The id of the open journal entry that is its work. Write it first with journal_add."}}, "required": ["nick", "adapter", "model", "task"]}),
             ),
             "mode__agent_answer" => (
                 "HARNESS MODE, orchestration only. Answer one of your agents' permission requests: once, always (for this tool and target in that session) or deny. The user has left these to you, so it runs on the user's machine on your word: read what it asks, and allow only what its work needs. Answers that it was answered.",

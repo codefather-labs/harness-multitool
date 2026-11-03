@@ -1248,7 +1248,7 @@ fn a_slave_needs_no_word_for_its_basics_and_asks_for_the_rest() {
     let mut quiet = settings(&url, "k");
     quiet.plan_first = Some("off".to_string());
     let mut slave = Sessions::new(real_factory(quiet.clone(), root.clone(), data.clone().into()), root.clone());
-    slave.role(1, Some("slave".to_string()), Some("boss".to_string()));
+    slave.role(1, Some("slave".to_string()), Some("boss".to_string()), None);
     let (_, _, asked) = drive(&mut slave, &["work"], Answer::Deny);
     assert_eq!(asked, 1, "only touch asks");
     assert_eq!(std::fs::read_to_string(format!("{root}/made.txt")).unwrap(), "hello");
@@ -1278,7 +1278,7 @@ fn a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it() {
     let mut quiet = settings(&url, "k");
     quiet.plan_first = Some("off".to_string());
     let mut sessions = Sessions::new(real_factory(quiet, root.clone(), data.clone().into()), root.clone());
-    sessions.role(1, Some("slave".to_string()), Some("boss".to_string()));
+    sessions.role(1, Some("slave".to_string()), Some("boss".to_string()), None);
     let (entries, _, asks) = drive(&mut sessions, &["plan it", "go ahead"], Answer::Deny);
     assert_eq!(asks, 0, "no card for the user");
     let results: Vec<(&String, bool)> = entries.iter().filter_map(|e| if let Event::ToolResult { output, is_error, .. } = &e.event { Some((output, *is_error)) } else { None }).collect();

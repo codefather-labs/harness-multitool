@@ -142,6 +142,16 @@ fn answer(message: &Value, tools: &[Rc<dyn Tool>], serving: &Serving) -> Option<
             };
             let input = if params["arguments"].is_object() { params["arguments"].clone() } else { json!({}) };
             // What the program itself sends is its own to shape.
+            // An agent's task is its master's to close (CON-109). A daemon that cannot say refuses nothing here.
+            if name == "journal_close" || name == "journal_abandon" {
+                let task = serving.window.as_ref().and_then(|(window, tab)| {
+                    let client = Client::find(&serving.data_dir)?;
+                    client.conversation_op(&json!({"window": window, "op": "slave_task", "tab": tab})).ok()?["task"].as_u64()
+                });
+                if harness_core::engine::closes_task(name, &input, task) {
+                    return Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": harness_core::engine::TASK_IS_THE_MASTERS}], "isError": true}}));
+                }
+            }
             let unknown = harness_core::engine::unknown_arguments(&tool.spec().schema, &input);
             if !unknown.is_empty() && name != "permission_ask" {
                 let text = format!("invalid arguments: {name} has no argument {}", unknown.join(", "));

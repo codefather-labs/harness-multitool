@@ -1768,7 +1768,7 @@ impl Live {
         for message in messages {
             let window = self.context_window;
             match message {
-                FromSession::Spawn { tab: master, nick, provider, model } => {
+                FromSession::Spawn { tab: master, nick, provider, model, task } => {
                     // A tab of the master's group, beside it; the user stays where they are.
                     let was = w.tabs[w.active].id;
                     frontend_tui::debug::open_tab(w, &nick);
@@ -1786,7 +1786,7 @@ impl Live {
                     }
                     w.tabs.insert(at, opened);
                     w.active = w.tabs.iter().position(|t| t.id == was).unwrap_or(0);
-                    if let Err(why) = self.sessions.adopt(id, master, &nick, &provider, &model) {
+                    if let Err(why) = self.sessions.adopt(id, master, &nick, &provider, &model, task) {
                         w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "ORCHESTRA".into(), lines: vec![why] });
                     }
                 }

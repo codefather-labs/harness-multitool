@@ -17,7 +17,7 @@ class H(http.server.BaseHTTPRequestHandler):
         last = body["input"][-1]; text = json.dumps(body["input"], ensure_ascii=False)
         if last.get("type") == "function_call_output":
             emit({"type": "response.output_text.delta", "delta": "Done with that."})
-        elif "you are ready to take work" in json.dumps(last, ensure_ascii=False):
+        elif "Your task is journal#" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "agent_send", "arguments": json.dumps({"to": "boss", "text": "ready for work"}), "call_id": "r1"}})
         elif "run the first command" in json.dumps(last, ensure_ascii=False):
             emit({"type": "response.output_item.done", "item": {"type": "function_call", "name": "shell", "arguments": json.dumps({"command": "touch allowed-marker"}), "call_id": "s1"}})
@@ -51,7 +51,7 @@ for line in sys.stdin:
         if said.startswith("call "):
             server, name, arguments = said[5:].split(" ", 2)
             tool(server, name, json.loads(arguments))
-    if "you are ready to take work" in prompt: tool("harness", "agent_send", {{"to": "boss", "text": "second is ready"}})
+    if "Your task is journal#" in prompt: tool("harness", "agent_send", {{"to": "boss", "text": "second is ready"}})
     print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "Heard"}}}}}}), flush=True)
     print(json.dumps({{"type": "result", "is_error": False, "stop_reason": "end_turn", "total_cost_usd": 0.0, "usage": {{}}}}), flush=True)
 ''')
@@ -59,6 +59,7 @@ os.chmod(fake, 0o755)
 open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovider="claude-code"\nmodel="m"\nplan_first="off"\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\nenvironment="user"\npermissions="skip"\n\n[session.providers.local]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.local]\nnone=true\n')
 build = f"cp {sys.argv[1]!r} {bin_ + '.new'!r} && mv {bin_ + '.new'!r} {bin_!r}"
 env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", MULTITOOL_RELOAD_BUILD=build)
+env["MULTITOOL_AGENT_CHECK_SECS"] = "12"
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "welcome"])
@@ -107,27 +108,47 @@ print("outside the mode: refused")
 on = call("mode", "orchestrate", {"on": True}); assert not on["error"] and "Orchestration mode is on" in on["text"] and "mode__agent_spawn" in on["text"], on
 print("entering it answers with its rules")
 models = json.loads(call("mode", "agent_models", {})["text"])["adapters"]; names = [m["adapter"] for m in models]; assert "local" in names and "claude-code" in names, models
-bad = call("mode", "agent_spawn", {"nick": "x", "adapter": "chatgpt", "model": "m"}); assert bad["error"] and "not authorized" in bad["text"], bad
+# CON-109: an agent starts on an open entry.
+task = json.loads(call("harness", "journal_add", {"body": "the first agent's work", "category": "todo", "tags": ["t"]})["text"]); assert "todo" in task["flags"], task
+second_task = json.loads(call("harness", "journal_add", {"body": "the second agent's work", "category": "bug", "flags": ["todo"], "tags": ["t"]})["text"])
+plain = json.loads(call("harness", "journal_add", {"body": "holds no work", "category": "finding", "tags": ["t"]})["text"])
+for args, why in [({}, "task is required"), ({"task": plain["id"]}, "no open work"), ({"task": 999999}, "there is no journal")]:
+    no = call("mode", "agent_spawn", {"nick": "x", "adapter": "local", "model": "m", **args}); assert no["error"] and why in no["text"], no
+print("no spawn without an open entry")
+bad = call("mode", "agent_spawn", {"nick": "x", "adapter": "chatgpt", "model": "m", "task": task["id"]}); assert bad["error"] and "not authorized" in bad["text"], bad
 print("agent_models:", names, "; an adapter not authorized is refused")
-sp = call("mode", "agent_spawn", {"nick": "first-agent", "adapter": "local", "model": "gpt-x"}); assert not sp["error"], sp
+sp = call("mode", "agent_spawn", {"nick": "first-agent", "adapter": "local", "model": "gpt-x", "task": task["id"]}); assert not sp["error"], sp
 until("the slave's first request", lambda: bodies, 10)
 system = bodies[0]["instructions"]; assert "only technical terms" in system and "no role of servitude" in system and "boss" in system, system[-500:]
 assert "agent-workflow.md" in system, "and the workflow specification"
+assert f"Your task is journal#{task['id']}" in system, system[-500:]
 assert bodies[0]["model"] == "gpt-x", bodies[0]["model"]
 assert [i.get("role") for i in bodies[0]["input"]].count("user") == 1, "no history"
 print("the slave started on the chosen adapter and model, told what it is, in plain words")
 until("it told its master it is ready", lambda: "ready for work" in told())
 got = [p for p in prompts() if "ready for work" in p][0]; assert "agent:first-agent" in got and "data from outside" in got, got
 print("its readiness reached the master as data:", got[:80])
-call("mode", "agent_spawn", {"nick": "second", "adapter": "claude-code", "model": "m"})
+call("mode", "agent_spawn", {"nick": "second", "adapter": "claude-code", "model": "m", "task": second_task["id"]})
 until("the second is ready", lambda: "second is ready" in told()); pump(0.8)
 # CON-108: on a row with the user's environment and no prompts, the user's own conversation keeps them; an agent runs isolated.
 runs = [json.loads(line) for line in open(log)]
-agent = [r for r in runs if "you are ready to take work" in r["prompt"]][-1]["args"]; own = [r for r in runs if "you are ready to take work" not in r["prompt"]][0]["args"]
+agent = [r for r in runs if "Your task is journal#" in r["prompt"]][-1]["args"]; own = [r for r in runs if "Your task is journal#" not in r["prompt"]][0]["args"]
 assert "--dangerously-skip-permissions" in own and "--setting-sources" not in own, own
 assert "--dangerously-skip-permissions" not in agent and "--setting-sources" in agent and "--strict-mcp-config" in agent, agent
 allowed = agent[agent.index("--allowedTools") + 1]; assert all(t in allowed for t in ["Edit(./**)", "Bash(cargo test:*)", "mcp__harness__*", "mcp__mode__*"]), allowed
 print("an agent runs isolated with its basics; the user's own row keeps its choice")
+# CON-109: its task is its master's to close; what it wrote itself is its own.
+def on_second(tool, arguments):
+    n = len([a for a in answers() if a["tool"] == tool])
+    typed("call harness agent_send " + json.dumps({"to": "second", "text": f"call harness {tool} " + json.dumps(arguments)}) + "\r")
+    until(tool + " on the agent", lambda: len([a for a in answers() if a["tool"] == tool]) > n)
+    return [a for a in answers() if a["tool"] == tool][-1]
+refused = on_second("journal_close", {"id": second_task["id"], "resolution": "done"}); assert refused["error"] and "only your orchestrator closes it" in refused["text"], refused
+refused = on_second("journal_abandon", {"id": second_task["id"], "resolution": "dropped"}); assert refused["error"] and "only your orchestrator closes it" in refused["text"], refused
+own_entry = json.loads(on_second("journal_add", {"body": "its own question", "category": "question", "tags": ["t"]})["text"])
+closed = on_second("journal_close", {"id": own_entry["id"], "resolution": "answered"}); assert not closed["error"], closed
+no = call("harness", "journal_close", {"id": second_task["id"], "resolution": "no evidence"}); assert no["error"], no
+print("an agent's task is its master's to close, and needs its evidence; its own entries are its own")
 # CON-108: what its program would ask a person goes to the master and waits for the master's answer.
 def program_asks(command):
     n = len([a for a in answers() if a["tool"] == "permission_ask"])
@@ -190,8 +211,15 @@ sent = call("harness", "agent_send", {"to": "first-agent", "text": "after the re
 until("still on its adapter, still a slave", lambda: len(bodies) > before and "after the reload" in json.dumps(bodies[-1]["input"], ensure_ascii=False))
 assert "no role of servitude" in bodies[-1]["instructions"], "the role is kept"
 print("after a reload: same adapter, same role")
+# CON-110: while an agent lives its master is reminded to check it, as the harness's own word.
+until("the master is reminded", lambda: "check on second" in told() and f"journal#{second_task['id']}" in told(), 30)
+reminder = [p for p in prompts() if "check on second" in p][-1]; assert "mode__agent_read" in reminder and "agent:second" not in reminder, reminder
+print("the master was reminded of its agent:", reminder[-120:])
 closed = call("mode", "agent_close", {"nick": "second"}); assert not closed["error"], closed
 pump(1); listed = json.loads(call("harness", "agent_list", {})["text"])["agents"]; assert "second" not in [a["nick"] for a in listed], listed
+first_gone = call("mode", "agent_close", {"nick": "first-agent"}); assert not first_gone["error"], first_gone
+pump(1); before = told().count("check on "); pump(14); assert told().count("check on ") == before, "reminded of a closed agent"
+print("no reminder after the agent's session closed")
 shot("orchestra-closed.png"); print("closed: gone from the list")
 off = call("mode", "orchestrate", {"on": False}); assert not off["error"], off
 assert call("mode", "agent_read", {"nick": "first-agent"})["error"], "off, the tools are refused again"

@@ -299,6 +299,9 @@ pub struct JournalRecord {
     /// Of what it was blocked by, what was dropped instead of solved: to be re-read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocker_dropped: Vec<u64>,
+    /// It holds work not yet closed: a todo, question, problem and the like.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
     /// Where its evidence is kept, answered when one entry is read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proofs: Vec<String>,

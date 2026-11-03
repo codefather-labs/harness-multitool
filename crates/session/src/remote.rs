@@ -48,7 +48,7 @@ fn end_from_json(value: &Value) -> RunEnd {
 
 fn to_wire(message: &FromSession) -> Value {
     match message {
-        FromSession::Spawn { tab, nick, provider, model } => json!({"kind": "spawn", "tab": tab, "nick": nick, "provider": provider, "model": model}),
+        FromSession::Spawn { tab, nick, provider, model, task } => json!({"kind": "spawn", "tab": tab, "nick": nick, "provider": provider, "model": model, "task": task}),
         FromSession::CloseTab { tab } => json!({"kind": "close_tab", "tab": tab}),
         FromSession::Entry { tab, entry } => json!({"kind": "entry", "tab": tab, "line": harness_api::event::to_line(entry)}),
         FromSession::Ask { tab, call, capabilities } => json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}),
@@ -61,7 +61,7 @@ fn to_wire(message: &FromSession) -> Value {
 fn from_wire(value: &Value) -> Option<FromSession> {
     let tab = value["tab"].as_u64()?;
     match value["kind"].as_str()? {
-        "spawn" => Some(FromSession::Spawn { tab, nick: value["nick"].as_str()?.to_string(), provider: value["provider"].as_str()?.to_string(), model: value["model"].as_str()?.to_string() }),
+        "spawn" => Some(FromSession::Spawn { tab, nick: value["nick"].as_str()?.to_string(), provider: value["provider"].as_str()?.to_string(), model: value["model"].as_str()?.to_string(), task: value["task"].as_u64()? }),
         "close_tab" => Some(FromSession::CloseTab { tab }),
         "entry" => Some(FromSession::Entry { tab, entry: harness_api::event::from_line(value["line"].as_str()?).ok()? }),
         "ask" => Some(FromSession::Ask { tab, call: serde_json::from_value(value["call"].clone()).ok()?, capabilities: serde_json::from_value(value["capabilities"].clone()).ok()? }),
@@ -249,6 +249,9 @@ pub struct DaemonHost {
     nicks: Mutex<HashMap<String, String>>,
     /// Who is to be told of a slave's program asking: slave and word.
     program_words: Mutex<Vec<(String, String)>>,
+    /// When each live agent's master was last reminded of it, or it was first seen (CON-110).
+    agent_checks: Mutex<HashMap<String, Instant>>,
+    agent_check_every: Duration,
     next_ask: std::sync::atomic::AtomicU64,
     /// What each conversation runs on, by session (CON-94). Kept, so a reload or a change of the
     /// default moves nothing that is already going.
@@ -275,12 +278,21 @@ struct Orchestra {
     /// Conversations of a delegate in plan mode.
     #[serde(default)]
     planning: std::collections::HashSet<String>,
+    /// Slave to the journal entry that is its task (CON-109).
+    #[serde(default)]
+    tasks: HashMap<String, u64>,
     /// Slaves that told their master themselves in this run: no notice of its end.
     #[serde(skip)]
     told: std::collections::HashSet<String>,
 }
 
 const MAX_SLAVES: usize = 8;
+/// How often a master is reminded of each agent it has (CON-110).
+const AGENT_CHECK_SECS: u64 = 600;
+
+fn agent_check_every(env: Option<String>) -> Duration {
+    Duration::from_secs(env.and_then(|secs| secs.parse().ok()).unwrap_or(AGENT_CHECK_SECS))
+}
 const ASKS_YOU: &str = "asks you: ";
 
 fn read_orchestra(data_dir: &Path) -> Orchestra {
@@ -450,10 +462,18 @@ impl DaemonHost {
                     if self.resolve_agent(windows, nick).is_ok() {
                         return Err(format!("{nick} is taken: choose another nick"));
                     }
+                    // An agent's contract is an open entry (CON-109).
+                    let task = op["task"].as_u64().ok_or("task is required: the id of an open journal entry that is this agent's work. Write it first with journal_add.")?;
+                    let memory = crate::project_memory(&self.data_dir.to_string_lossy(), &window.root)?;
+                    match pollster::block_on(memory.journal_get(task)).map_err(|e| e.to_string())? {
+                        Some(entry) if entry.open => {}
+                        Some(_) => return Err(format!("journal#{task} holds no open work: an agent's task is an open entry")),
+                        None => return Err(format!("there is no journal#{task}")),
+                    }
                     if !authorized_adapters(&window.settings, &self.data_dir).iter().any(|row| row["adapter"] == adapter) {
                         return Err(format!("{adapter} is not authorized here: mode__agent_models lists what is. The user signs in, in the settings; never through an agent."));
                     }
-                    Ok(json!({"spawn": {"nick": nick, "provider": adapter, "model": model}}))
+                    Ok(json!({"spawn": {"nick": nick, "provider": adapter, "model": model, "task": task}}))
                 }
                 "mode__agent_read" => {
                     let master = self.master_of_tab(window, tab)?;
@@ -486,14 +506,14 @@ impl DaemonHost {
         if let (Ok(answer), Some(window)) = (&reply, windows.get_mut(id))
             && (answer.get("role_on").is_some() || answer.get("role_off").is_some())
         {
-            window.sessions.role(tab, answer.get("role_on").map(|_| "master".to_string()), None);
+            window.sessions.role(tab, answer.get("role_on").map(|_| "master".to_string()), None, None);
         }
         Some(match reply {
             Ok(reply) if reply.get("spawn").is_some() => {
                 let spawn = &reply["spawn"];
                 let window = windows.get_mut(id)?;
-                window.say(json!({"kind": "spawn", "tab": tab, "nick": spawn["nick"], "provider": spawn["provider"], "model": spawn["model"]}));
-                Ok(json!({"text": format!("Its tab is opening. It will send you word when it is ready: {}", spawn["nick"])}))
+                window.say(json!({"kind": "spawn", "tab": tab, "nick": spawn["nick"], "provider": spawn["provider"], "model": spawn["model"], "task": spawn["task"]}));
+                Ok(json!({"text": format!("Its tab is opening, and it starts on journal#{} at once. It asks you when it is done: {}", spawn["task"], spawn["nick"])}))
             }
             Ok(reply) if reply.get("answer_slave").is_some() => {
                 let slave = reply["answer_slave"].as_str().unwrap_or_default();
@@ -525,6 +545,7 @@ impl DaemonHost {
                 {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
                     orchestra.slaves.remove(&slave);
+                    orchestra.tasks.remove(&slave);
                     self.save_orchestra(&orchestra);
                 }
                 for window in windows.values_mut().filter(|w| !w.closed) {
@@ -577,6 +598,40 @@ impl DaemonHost {
         any
     }
 
+    /// Each live agent's master, once a period, in case the agent has gone to sleep (CON-110). The
+    /// harness keeps this, so it starts with the agent and ends with its session by itself.
+    fn remind_masters(&self, windows: &mut HashMap<String, Window>) -> bool {
+        let now = Instant::now();
+        let mut due: Vec<(String, String)> = Vec::new();
+        {
+            let orchestra = self.orchestra.lock().expect("orchestra");
+            let nicks = self.nicks.lock().expect("nicks");
+            let mut checks = self.agent_checks.lock().expect("checks");
+            checks.retain(|slave, _| orchestra.slaves.contains_key(slave));
+            for (slave, master) in &orchestra.slaves {
+                let last = checks.entry(slave.clone()).or_insert(now);
+                if now.duration_since(*last) < self.agent_check_every {
+                    continue;
+                }
+                *last = now;
+                let running = windows.values().filter(|w| !w.closed).any(|w| w.sessions.open().into_iter().any(|(tab, s)| s == *slave && w.sessions.running(tab)));
+                let name = nicks.get(slave).map_or(slave.as_str(), String::as_str);
+                let task = orchestra.tasks.get(slave).map_or_else(|| "no entry".to_string(), |task| format!("journal#{task}"));
+                let state = if running { "running" } else { "not running" };
+                due.push((master.clone(), format!("Time to check on {name}, on {task}: it is {state}. See what it has done with mode__agent_read, and move it on or close it if it has stopped.")));
+            }
+        }
+        let any = !due.is_empty();
+        for (master, what) in due {
+            for window in windows.values_mut().filter(|w| !w.closed) {
+                if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == master) {
+                    window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), what.clone());
+                }
+            }
+        }
+        any
+    }
+
     /// A window has opened the tab of a new agent: it starts here, and is told what it is.
     fn adopt(&self, window: &mut Window, op: &Value) -> Result<Value, String> {
         let tab = op["tab"].as_u64().ok_or("tab is required")?;
@@ -587,16 +642,18 @@ impl DaemonHost {
         let master_name = self.name_of(window, &master);
         window.choices.lock().expect("choices").insert(tab, choice);
         window.sessions.nick(tab, nick.clone());
+        let task = op["task"].as_u64().ok_or("task is required")?;
         let session = window.sessions.session_of(tab).ok_or("it did not start")?.to_string();
         self.settle(window, tab, &session);
         self.remember_nick(&session, &nick);
         {
             let mut orchestra = self.orchestra.lock().expect("orchestra");
+            orchestra.tasks.insert(session.clone(), task);
             orchestra.slaves.insert(session, master);
             self.save_orchestra(&orchestra);
         }
-        window.sessions.role(tab, Some("slave".to_string()), Some(master_name.clone()));
-        window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("You have just been started as an agent working for the orchestrator {master_name}. Read the agent workflow specification, then send {master_name} a short reply with agent_send that you are ready to take work, and wait for it."));
+        window.sessions.role(tab, Some("slave".to_string()), Some(master_name.clone()), Some(task));
+        window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("You have just been started as an agent working for the orchestrator {master_name}. Your task is journal#{task}. Read the agent workflow specification, read the entry with journal_get, and work on it now."));
         Ok(json!({"ok": true}))
     }
 
@@ -714,7 +771,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { agent_checks: Mutex::new(HashMap::new()), agent_check_every: agent_check_every(std::env::var("MULTITOOL_AGENT_CHECK_SECS").ok()), program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -824,6 +881,7 @@ impl DaemonHost {
         windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
         waiting_word.append(&mut self.program_words.lock().expect("words"));
         any |= self.tell_masters(&mut windows, waiting_word, ended_runs);
+        any |= self.remind_masters(&mut windows);
         if any {
             self.wake.notify_all();
         }
@@ -839,7 +897,7 @@ impl DaemonHost {
             FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
             FromSession::Unavailable { message, .. } => FromSession::Unavailable { tab, message },
             FromSession::Synced { error, .. } => FromSession::Synced { tab, error },
-            FromSession::Spawn { nick, provider, model, .. } => FromSession::Spawn { tab, nick, provider, model },
+            FromSession::Spawn { nick, provider, model, task, .. } => FromSession::Spawn { tab, nick, provider, model, task },
             FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
         };
         let mut said = false;
@@ -1121,6 +1179,10 @@ impl ConversationHost for DaemonHost {
             let reply = self.orchestra_op(&mut windows, id, tab, name, op).unwrap_or_else(|| Err(format!("no mode tool {name}")));
             self.wake.notify_all();
             return reply;
+        }
+        if name == "slave_task" {
+            let task = window.sessions.session_of(tab).and_then(|session| self.orchestra.lock().expect("orchestra").tasks.get(session).copied());
+            return Ok(json!({"task": task}));
         }
         if name == "slave_ask" {
             let session = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)).ok_or("only an agent of an orchestra asks its master")?;
@@ -1419,10 +1481,10 @@ impl SessionLink {
     }
 
     /// A window has opened a new agent's tab.
-    pub fn adopt(&mut self, tab: u64, master_tab: u64, nick: &str, provider: &str, model: &str) -> Result<(), String> {
+    pub fn adopt(&mut self, tab: u64, master_tab: u64, nick: &str, provider: &str, model: &str, task: u64) -> Result<(), String> {
         match self {
             SessionLink::Local(_) => Err("an orchestra needs the daemon".to_string()),
-            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "adopt", "tab": tab, "master_tab": master_tab, "nick": nick, "provider": provider, "model": model})).map(|_| ()),
+            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "adopt", "tab": tab, "master_tab": master_tab, "nick": nick, "provider": provider, "model": model, "task": task})).map(|_| ()),
         }
     }
 
@@ -1640,6 +1702,13 @@ fn last_words(data_dir: &str, root: &str, session: &str) -> String {
 #[cfg(test)]
 mod read_agent_tests {
     use super::*;
+
+    #[test]
+    fn a_master_is_reminded_every_ten_minutes_unless_told_otherwise_for_a_test() {
+        assert_eq!(agent_check_every(None), Duration::from_secs(600));
+        assert_eq!(agent_check_every(Some("12".into())), Duration::from_secs(12));
+        assert_eq!(agent_check_every(Some("soon".into())), Duration::from_secs(600));
+    }
 
     /// CON-108: what the harness answers of a slave's program by itself, and what goes to its master.
     #[test]

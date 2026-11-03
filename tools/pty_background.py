@@ -34,6 +34,7 @@ for line in sys.stdin:
     if "start task" in prompt:
         say(type="system", subtype="background_tasks_changed", tasks=[dict(task_id="t1", description="a long job", task_type="local_bash")])
         threading.Thread(target=by_itself, daemon=True).start()
+        say(type="system", subtype="compact_boundary", compact_metadata=dict(trigger="auto"))
     text("Heard: " + prompt)
     result()
 ''')
@@ -79,6 +80,9 @@ until("the panel on the screen", lambda: "in background" in drawn and "a long jo
 print("the task reached the log and the panel:", drawn[drawn.index("in background") - 4:][:40].replace("\n", " "))
 until("the turn it began by itself, with nothing typed", lambda: "I noticed by myself" in said())
 print("the turn it began by itself was read")
+# journal#572: what a hook said for the agent reaches it in a turn it began itself, before anything is typed.
+until("the hook's words reach a turn it began", lambda: open(log).read().count("[from the harness] The agent workflow specification") >= 2)
+print("a hook's words reached the agent in a turn it began by itself")
 until("the task's end", lambda: any("Background command finished" in json.dumps(e) for e in events()))
 pump(1.5)
 typed("second message\r")
