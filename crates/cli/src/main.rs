@@ -1522,7 +1522,13 @@ impl Live {
                 feed.replayed(view);
             }
             self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
-            view.composer.text.push_str(&left.join("\n\n"));
+            let typed: Vec<&str> = left.iter().filter_map(|m| if let harness_api::PendingMessage::User { text } = m { Some(text.as_str()) } else { None }).collect();
+            view.composer.text.push_str(&typed.join("\n\n"));
+            for message in &left {
+                if let harness_api::PendingMessage::Inbound { label, text } = message {
+                    self.sessions.inbound(tab, label.clone(), text.clone());
+                }
+            }
             // What the next message goes through, not what the last one went through.
             let choice = self.sessions.choice_of(tab);
             frontend_tui::live::set_status(view, "ADAPTER", choice.as_ref().map_or(&self.provider, |c| &c.provider));
@@ -1823,6 +1829,11 @@ impl Live {
                         w.active = w.tabs.iter().position(|t| t.id == was).unwrap_or(at.min(w.tabs.len() - 1));
                     }
                 }
+                FromSession::Queued { tab, message } => {
+                    if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.view.queued.push(message);
+                    }
+                }
                 FromSession::Entry { tab, entry } => {
                     if self.shown_up_to.get(&tab).is_some_and(|seq| entry.seq <= *seq) {
                         continue;
@@ -2107,7 +2118,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             }
             FromSession::Synced { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
-            FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
         }
     }
 }

@@ -258,13 +258,13 @@ pub fn activity(f: &mut Frame, status: Rect, t: &Theme, a: &crate::model::Activi
 /// How many queued messages show, the rest said in a line.
 const QUEUE_ROWS: usize = 4;
 
-pub fn queue_height(queued: &[String]) -> u16 {
+pub fn queue_height(queued: &[harness_api::PendingMessage]) -> u16 {
     queued.len().min(QUEUE_ROWS + 1) as u16
 }
 
 /// Messages waiting for the agent, dim, above the composer, newest last: it sees them at its next
 /// step. The rows are one line each, whatever a message's length.
-pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[String]) {
+pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[harness_api::PendingMessage]) {
     if queued.is_empty() {
         return;
     }
@@ -275,10 +275,14 @@ pub fn queue(f: &mut Frame, area: Rect, t: &Theme, queued: &[String]) {
     if skipped > 0 {
         lines.push(Line::from(Span::styled(format!("   … {skipped} more before these"), muted)));
     }
-    for (i, text) in queued[skipped..].iter().enumerate() {
-        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (i, message) in queued[skipped..].iter().enumerate() {
+        let shown_text = match message {
+            harness_api::PendingMessage::User { text } => text.clone(),
+            harness_api::PendingMessage::Inbound { label, text } => format!("[{label}] {text}"),
+        };
+        let flat = shown_text.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut spans = vec![Span::styled(" ⧗ ", Style::default().fg(t.accent)), Span::styled(flat, muted)];
-        if skipped + i + 1 == queued.len() {
+        if skipped + i + 1 == queued.len() && matches!(message, harness_api::PendingMessage::User { .. }) {
             spans.push(Span::styled("  ·  ↑ to change", muted.add_modifier(Modifier::DIM)));
         }
         lines.push(Line::from(spans));

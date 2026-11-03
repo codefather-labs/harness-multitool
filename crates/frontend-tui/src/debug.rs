@@ -72,7 +72,7 @@ pub fn submit(w: &mut Workspace) -> Sent {
         let tab = w.tabs[w.active].id;
         // During a run it waits, in sight, for the next step boundary.
         if w.view().generating && w.view().task.is_none() {
-            w.view_mut().queued.push(text.clone());
+            w.view_mut().queued.push(text.clone().into());
         }
         match w.view_mut().task.take() {
             Some(steps) => w.outbox.push(Outgoing::Task { tab, text, steps }),

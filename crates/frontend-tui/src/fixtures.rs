@@ -128,7 +128,7 @@ pub fn question_options() -> AppState {
 pub fn queued_messages() -> AppState {
     let mut state = main_session();
     if let Mode::Session(w) = &mut state.mode {
-        w.view_mut().queued = vec!["stop before you touch the router".into(), "and add a test for the fallback".into()];
+        w.view_mut().queued = vec!["stop before you touch the router".to_string().into(), "and add a test for the fallback".to_string().into()];
     }
     state
 }

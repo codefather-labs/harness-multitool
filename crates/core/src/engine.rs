@@ -42,7 +42,7 @@ const UNCHECKED_SCAN: usize = 500;
 pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>);
 
 /// What the user sent and the agent has not seen yet, shared with the thread that takes input.
-pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
+pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<harness_api::PendingMessage>>>;
 
 /// A mode changed from outside a run that is going on (journal#603).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,12 +264,14 @@ impl Engine {
     async fn take_queued(&self) -> bool {
         let mut any = false;
         loop {
-            let Some(text) = self.inbox.lock().expect("inbox").pop_front() else { return any };
-            if let Some((hook, reason)) = self.hooks(HookPoint::UserPromptSubmit { text: &text }).await {
+            let Some(message) = self.inbox.lock().expect("inbox").pop_front() else { return any };
+            if let harness_api::PendingMessage::User { text } = &message
+                && let Some((hook, reason)) = self.hooks(HookPoint::UserPromptSubmit { text }).await
+            {
                 self.emit(Event::Error { source: hook, message: reason });
                 continue;
             }
-            self.emit(Event::UserMessage { text });
+            self.emit(message.event());
             any = true;
         }
     }
@@ -654,22 +656,22 @@ impl Engine {
                     return Some(format!("[from the harness] {text}"));
                 }
                 loop {
-                    let text = self.inbox.lock().expect("inbox").pop_front()?;
-                    let refused = {
-                        let mut hooks = std::pin::pin!(self.hooks(HookPoint::UserPromptSubmit { text: &text }));
+                    let message = self.inbox.lock().expect("inbox").pop_front()?;
+                    let refused = if let harness_api::PendingMessage::User { text } = &message {
+                        let mut hooks = std::pin::pin!(self.hooks(HookPoint::UserPromptSubmit { text }));
                         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
                         loop {
                             if let std::task::Poll::Ready(value) = hooks.as_mut().poll(&mut cx) {
                                 break value;
                             }
                         }
-                    };
+                    } else { None };
                     if let Some((hook, reason)) = refused {
                         self.emit(Event::Error { source: hook, message: reason });
                         continue;
                     }
-                    self.emit(Event::UserMessage { text: text.clone() });
-                    return Some(text);
+                    self.emit(message.event());
+                    return Some(message.model_text());
                 }
             };
             // A live process read its system prompt when it started: what is for this turn goes with

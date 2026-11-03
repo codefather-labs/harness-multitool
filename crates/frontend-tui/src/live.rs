@@ -66,8 +66,13 @@ impl Feed {
             _ => {}
         }
         // It has reached the agent: its card takes over from the queue.
-        if let Event::UserMessage { text } = &entry.event
-            && let Some(at) = v.queued.iter().position(|q| q == text)
+        let pending = match &entry.event {
+            Event::UserMessage { text } => Some(harness_api::PendingMessage::User { text: text.clone() }),
+            Event::Inbound { label, text } => Some(harness_api::PendingMessage::Inbound { label: label.clone(), text: text.clone() }),
+            _ => None,
+        };
+        if let Some(message) = pending
+            && let Some(at) = v.queued.iter().position(|q| q == &message)
         {
             v.queued.remove(at);
         }

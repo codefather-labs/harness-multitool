@@ -92,6 +92,7 @@ fn drive(sessions: &mut Sessions, prompts: &[&str], answer: Answer) -> (Vec<LogE
                 }
                 FromSession::Unavailable { message, .. } => panic!("{message}"),
                 FromSession::Synced { .. } => {}
+                FromSession::Queued { .. } => {}
                 FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
             }
         }
@@ -567,6 +568,7 @@ fn drive_task(sessions: &mut Sessions, text: &str, steps: &[&str]) -> (Vec<LogEn
             FromSession::Ended { end, .. } => return (entries, format!("{end:?}")),
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
@@ -1004,6 +1006,7 @@ fn drive_acting(sessions: &mut Sessions, first: &str, answer: Answer, at_prompt:
             Some(FromSession::Ended { end, .. }) => ends.push(format!("{end:?}")),
             Some(FromSession::Unavailable { message, .. }) => panic!("{message}"),
             Some(FromSession::Synced { .. }) => {}
+            Some(FromSession::Queued { .. }) => {}
             None => return (entries, ends),
             Some(FromSession::Spawn { .. } | FromSession::CloseTab { .. }) => {}
         }
@@ -1012,6 +1015,32 @@ fn drive_acting(sessions: &mut Sessions, first: &str, answer: Answer, at_prompt:
 
 fn user_texts(entries: &[LogEntry]) -> Vec<String> {
     entries.iter().filter_map(|e| if let Event::UserMessage { text } = &e.event { Some(text.clone()) } else { None }).collect()
+}
+
+#[test]
+fn inbound_during_run_shares_the_typed_fifo_before_run_end() {
+    let root = temp_dir("inbound-fifo");
+    let data = temp_dir("inbound-fifo-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("i1", "shell", json!({"command": "cargo --version"}))), "Running."),
+        anthropic_turn(None, "Seen."),
+    ]);
+    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.into()), root);
+    let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.inbound(1, "telegram".into(), "outside-one".into());
+        s.prompt(1, "typed-middle".into());
+        s.inbound(1, "agent:orchid".into(), "outside-two".into());
+        assert!(!s.unqueue(1, "outside-one"));
+    });
+    let messages: Vec<&str> = entries.iter().filter_map(|e| match &e.event {
+        Event::UserMessage { text } | Event::Inbound { text, .. } => Some(text.as_str()),
+        _ => None,
+    }).collect();
+    assert_eq!(messages, ["first", "outside-one", "typed-middle", "outside-two"]);
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 2, "one continuation, no extra run");
+    assert!(requests[1].contains("outside-one") && requests[1].contains("outside-two"));
+    assert_eq!(user_texts(&entries), ["first", "typed-middle"]);
 }
 
 #[test]
@@ -1095,6 +1124,7 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
             }
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
@@ -1123,6 +1153,7 @@ fn two_tabs_have_their_own_queues() {
             FromSession::Ended { .. } => {}
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
@@ -1156,6 +1187,7 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
             FromSession::Ended { .. } => ends += 1,
             FromSession::Unavailable { message, .. } => panic!("{message}"),
             FromSession::Synced { .. } => {}
+            FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
@@ -1624,6 +1656,6 @@ fn what_a_gone_window_queued_does_not_start() {
     assert_eq!(seen.lock().unwrap().len(), 2, "the queued message started nothing");
     assert_eq!(user_texts(&read_log(&data, &root, &session)), ["start"]);
     op(next, json!({"op": "open", "root": root, "settings": s}));
-    assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!(["queued, then gone"]));
+    assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([{"kind": "user", "text": "queued, then gone"}]));
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([]), "once");
 }

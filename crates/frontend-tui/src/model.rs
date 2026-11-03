@@ -500,7 +500,7 @@ pub struct SessionView {
     /// What the agent asked and the user has not answered, with the option under the cursor.
     pub question: Option<(harness_api::question::Question, usize)>,
     /// Messages sent during the run that the agent has not seen yet.
-    pub queued: Vec<String>,
+    pub queued: Vec<harness_api::PendingMessage>,
     /// What the agent has running in the background.
     pub background: Vec<BackgroundView>,
     /// The clock of the last tick while any is on.

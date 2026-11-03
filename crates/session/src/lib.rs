@@ -535,6 +535,8 @@ pub enum FromSession {
     /// The daemon's word to a window: this tab's agent has been closed.
     CloseTab { tab: u64 },
     Entry { tab: u64, entry: LogEntry },
+    /// Outside message waiting in the same FIFO as typed messages.
+    Queued { tab: u64, message: PendingMessage },
     /// `Policy` asked; the session waits for `Sessions::answer`.
     Ask { tab: u64, call: ToolCall, capabilities: Vec<Capability> },
     /// One message's run ended.
@@ -556,7 +558,6 @@ enum Input {
     Plan(bool),
     StepDebug(bool),
     Nick(String),
-    Inbound { label: String, text: String },
     /// For the user to read; no run.
     Notice { label: String, text: String },
     /// Its place in an orchestra.
@@ -803,7 +804,7 @@ impl Sessions {
 
     /// This tab's run goes on, and starts nothing after it: what waited for it is returned, for
     /// whoever takes the conversation over. Its prompts and its stop still work here.
-    pub fn hand_over(&mut self, tab: u64) -> Vec<String> {
+    pub fn hand_over(&mut self, tab: u64) -> Vec<PendingMessage> {
         let Some(handle) = self.handles.get(&tab) else { return Vec::new() };
         let inbox = self.inboxes.entry(tab).or_default();
         let mut inbox = inbox.lock().expect("inbox");
@@ -813,7 +814,7 @@ impl Sessions {
 
     /// Every tab's waiting messages taken back, and no new run starts: whoever sent them has gone.
     /// Runs already on go to their end. Returns (session, messages) where any were waiting.
-    pub fn stop_starting(&mut self) -> Vec<(String, Vec<String>)> {
+    pub fn stop_starting(&mut self) -> Vec<(String, Vec<PendingMessage>)> {
         let tabs: Vec<u64> = self.handles.keys().copied().collect();
         let mut out = Vec::new();
         for tab in tabs {
@@ -881,8 +882,16 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            self.inboxes.entry(tab).or_default().lock().expect("inbox").push_back(text);
+            self.inboxes.entry(tab).or_default().lock().expect("inbox").push_back(text.into());
             let _ = handle.prompts.send(Input::Next);
+        }
+    }
+
+    /// Requeues a message without losing its source (window hand-over).
+    pub fn pending(&mut self, tab: u64, message: PendingMessage) {
+        match message {
+            PendingMessage::User { text } => self.prompt(tab, text),
+            PendingMessage::Inbound { label, text } => self.inbound(tab, label, text),
         }
     }
 
@@ -890,7 +899,7 @@ impl Sessions {
     pub fn unqueue(&mut self, tab: u64, text: &str) -> bool {
         let Some(inbox) = self.inboxes.get(&tab) else { return false };
         let mut inbox = inbox.lock().expect("inbox");
-        match inbox.iter().position(|t| t == text) {
+        match inbox.iter().position(|t| matches!(t, PendingMessage::User { text: queued } if queued == text)) {
             Some(at) => inbox.remove(at).is_some(),
             None => false,
         }
@@ -951,7 +960,13 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            let _ = handle.prompts.send(Input::Inbound { label, text });
+            let message = PendingMessage::Inbound { label, text };
+            let mut inbox = self.inboxes.entry(tab).or_default().lock().expect("inbox");
+            inbox.push_back(message.clone());
+            // Publish before the engine can consume it, so the pending row precedes its card.
+            let _ = self.to_frontend.send(FromSession::Queued { tab, message });
+            drop(inbox);
+            let _ = handle.prompts.send(Input::Next);
         }
     }
 
@@ -1110,18 +1125,17 @@ impl Sessions {
                         };
                         // Nothing to do when a run took it or it was taken back; that run's own
                         // end has told the frontend, and an `Ended` here could cut a later run.
-                        let Some(text) = next else { continue };
-                        pollster::block_on(engine.run(&text, None))
+                        let Some(message) = next else { continue };
+                        match message {
+                            PendingMessage::User { text } => pollster::block_on(engine.run(&text, None)),
+                            PendingMessage::Inbound { label, text } => pollster::block_on(engine.run_inbound(&label, &text)),
+                        }
                     }
                     // Handed over: the next run is the new owner's, or two would write this log.
-                    Input::Task { .. } | Input::Inbound { .. } if retired_here.load(Ordering::SeqCst) => break,
+                    Input::Task { .. } if retired_here.load(Ordering::SeqCst) => break,
                     Input::Task { text, protocol } => {
                         running_here.store(true, Ordering::SeqCst);
                         pollster::block_on(engine.run(&text, Some(&protocol)))
-                    }
-                    Input::Inbound { label, text } => {
-                        running_here.store(true, Ordering::SeqCst);
-                        pollster::block_on(engine.run_inbound(&label, &text))
                     }
                 };
                 running_here.store(false, Ordering::SeqCst);

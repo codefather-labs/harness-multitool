@@ -136,9 +136,11 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                 }
                 Key::Esc => w.toast = None,
                 // The last queued message comes back to be changed, or dropped.
-                Key::Up if w.view().composer.text.is_empty() && !w.view().queued.is_empty() => {
+                Key::Up if w.view().composer.text.is_empty() && w.view().queued.iter().any(|q| matches!(q, harness_api::PendingMessage::User { .. })) => {
                     let tab = w.tabs[w.active].id;
-                    if let Some(text) = w.view_mut().queued.pop() {
+                    if let Some(at) = w.view().queued.iter().rposition(|q| matches!(q, harness_api::PendingMessage::User { .. }))
+                        && let harness_api::PendingMessage::User { text } = w.view_mut().queued.remove(at)
+                    {
                         w.view_mut().composer.text = text.clone();
                         w.outbox.push(crate::model::Outgoing::Unqueue { tab, text });
                     }

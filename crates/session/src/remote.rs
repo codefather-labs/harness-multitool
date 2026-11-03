@@ -50,6 +50,7 @@ fn to_wire(message: &FromSession) -> Value {
     match message {
         FromSession::Spawn { tab, nick, provider, model, task } => json!({"kind": "spawn", "tab": tab, "nick": nick, "provider": provider, "model": model, "task": task}),
         FromSession::CloseTab { tab } => json!({"kind": "close_tab", "tab": tab}),
+        FromSession::Queued { tab, message } => json!({"kind": "queued", "tab": tab, "message": message}),
         FromSession::Entry { tab, entry } => json!({"kind": "entry", "tab": tab, "line": harness_api::event::to_line(entry)}),
         FromSession::Ask { tab, call, capabilities } => json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}),
         FromSession::Ended { tab, end } => json!({"kind": "ended", "tab": tab, "end": end_to_json(end)}),
@@ -61,6 +62,7 @@ fn to_wire(message: &FromSession) -> Value {
 fn from_wire(value: &Value) -> Option<FromSession> {
     let tab = value["tab"].as_u64()?;
     match value["kind"].as_str()? {
+        "queued" => Some(FromSession::Queued { tab, message: serde_json::from_value(value["message"].clone()).ok()? }),
         "spawn" => Some(FromSession::Spawn { tab, nick: value["nick"].as_str()?.to_string(), provider: value["provider"].as_str()?.to_string(), model: value["model"].as_str()?.to_string(), task: value["task"].as_u64()? }),
         "close_tab" => Some(FromSession::CloseTab { tab }),
         "entry" => Some(FromSession::Entry { tab, entry: harness_api::event::from_line(value["line"].as_str()?).ok()? }),
@@ -74,6 +76,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
 
 fn tab_of(message: &FromSession) -> u64 {
     match message {
+        FromSession::Queued { tab, .. } => *tab,
         FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } => *tab,
         FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } => *tab,
     }
@@ -244,7 +247,7 @@ pub struct DaemonHost {
     windows: Mutex<HashMap<String, Window>>,
     /// Messages a window sent and went away from, by session: for whoever opens it next. Only in
     /// memory: a message that never reached the log is not the conversation yet.
-    left: Mutex<HashMap<String, Vec<String>>>,
+    left: Mutex<HashMap<String, Vec<PendingMessage>>>,
     /// The names sessions go by, by session: a log can be far too large to read them from.
     nicks: Mutex<HashMap<String, String>>,
     /// Who is to be told of a slave's program asking: slave and word.
@@ -873,6 +876,7 @@ impl DaemonHost {
                             ended_runs.push((session.to_string(), window.root.clone()));
                         }
                     }
+                    FromSession::Queued { .. } => {},
                     FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
                 }
             }
@@ -919,6 +923,7 @@ impl DaemonHost {
     fn bring(windows: &mut HashMap<String, Window>, from: &str, from_tab: u64, to: &str, tab: u64, message: FromSession) -> bool {
         let ended = matches!(message, FromSession::Ended { .. });
         let retabbed = match message {
+            FromSession::Queued { message, .. } => FromSession::Queued { tab, message },
             FromSession::Entry { entry, .. } => FromSession::Entry { tab, entry },
             FromSession::Ask { call, capabilities, .. } => FromSession::Ask { tab, call, capabilities },
             FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
@@ -993,7 +998,10 @@ impl DaemonHost {
         source.handed.insert(other_tab, (id.to_string(), tab));
         let window = windows.get_mut(id)?;
         window.sessions.forget(tab);
-        let pending = waiting.into_iter().map(|text| json!({"op": "prompt", "tab": tab, "text": text})).collect();
+        let pending = waiting.into_iter().map(|message| match message {
+            PendingMessage::User { text } => json!({"op": "prompt", "tab": tab, "text": text}),
+            PendingMessage::Inbound { label, text } => json!({"op": "inbound", "tab": tab, "label": label, "text": text}),
+        }).collect();
         window.following.insert(tab, Follow { window: other, tab: other_tab, session: session.to_string(), pending });
         // First what was said so far: the log may not have the turn in progress yet.
         for mut entry in said {
@@ -1459,7 +1467,7 @@ impl SessionLink {
     }
 
     /// What was sent to this session from a window that went away before it could go in.
-    pub fn left_waiting(&self, tab: u64, session: &str) -> Vec<String> {
+    pub fn left_waiting(&self, tab: u64, session: &str) -> Vec<PendingMessage> {
         match self {
             SessionLink::Local(_) => Vec::new(),
             SessionLink::Remote(r) => r.call("left", tab, json!({"text": session})).map_or(Vec::new(), |reply| serde_json::from_value(reply["messages"].clone()).unwrap_or_default()),
