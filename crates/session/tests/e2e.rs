@@ -688,6 +688,8 @@ fn plan_mode_refuses_changes_and_only_the_user_ends_it() {
         anthropic_turn(Some(("p3", "shell", json!({"command": "cargo --version > b.txt"}))), "Shell."),
         anthropic_turn(Some(("p4", "read", json!({"path": "a.txt"}))), "Reading."),
         anthropic_turn(Some(("p5", "journal_add", json!({"body": "Change a.txt.", "category": "decision", "tags": ["plan"]}))), "Noting."),
+        anthropic_turn(Some(("p6m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""),
+        anthropic_turn(Some(("p6c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""),
         anthropic_turn(Some(("p6", "mode__plan_exit", json!({"plan": "Change a.txt."}))), "Asking."),
         anthropic_turn(None, "Waiting for you."),
     ]);
@@ -723,6 +725,8 @@ fn a_refused_plan_stays_on_and_a_resume_restores_the_mode() {
     let (url, _) = fake_endpoint(vec![
         anthropic_turn(Some(("q1", "mode__plan_exit", json!({"plan": "too early"}))), "Leaving."),
         anthropic_turn(Some(("q2", "mode__plan_enter", json!({}))), "Entering."),
+        anthropic_turn(Some(("q3m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""),
+        anthropic_turn(Some(("q3c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""),
         anthropic_turn(Some(("q3", "mode__plan_exit", json!({"plan": "my plan"}))), "Asking."),
         anthropic_turn(Some(("q4", "mode__plan_exit", json!({}))), "Empty."),
         anthropic_turn(None, "Asking what to change."),
@@ -978,7 +982,7 @@ fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
     let root = temp_dir("rules2");
     let data = temp_dir("rules2-data");
     std::fs::write(format!("{root}/a.txt"), "a").unwrap();
-    let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "mode__plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("j", "journal_add", json!({"body": "Change a.", "category": "decision", "tags": ["a"]}))), "J."), anthropic_turn(Some(("m", "mindmap_new", json!({"title": "a"}))), "M."), anthropic_turn(Some(("f", "flowchart_new", json!({"title": "a"}))), "F."), anthropic_turn(Some(("e3", "mode__plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
+    let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "mode__plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("j", "journal_add", json!({"body": "Change a.", "category": "decision", "tags": ["a"]}))), "J."), anthropic_turn(Some(("m", "mindmap_new", json!({"title": "a"}))), "M."), anthropic_turn(Some(("f", "flowchart_new", json!({"title": "a"}))), "F."), anthropic_turn(Some(("e2m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""), anthropic_turn(Some(("e2c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""), anthropic_turn(Some(("e3", "mode__plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
     let mut s = settings(&url, "k");
     s.plan_first = Some("enforce".into());
     let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
@@ -1170,6 +1174,8 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
     let (url, seen) = fake_endpoint(vec![
         anthropic_turn(Some(("g1", "mode__plan_enter", json!({}))), ""),
         anthropic_turn(Some(("g2", "mode__plan_exit", json!({"plan": "do it"}))), ""),
+        anthropic_turn(Some(("g3m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""),
+        anthropic_turn(Some(("g3c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""),
         anthropic_turn(Some(("g3", "mode__plan_exit", json!({"plan": "do it"}))), ""),
         anthropic_turn(None, "Built."),
         anthropic_turn(None, "Now I would debug."),
@@ -1198,11 +1204,11 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
     });
     assert!(back.is_some_and(|o| o.contains("flowchart_new")), "sent back naming what is missing");
     let requests = seen.lock().unwrap();
-    assert_eq!(requests.len(), 5, "the stop after approval went on once, and only once");
+    assert_eq!(requests.len(), 7, "the stop after approval went on once, and only once");
     assert!(requests[0].contains("starts with mode__plan_enter"), "said at the first message");
     assert!(requests[1].contains("first ask the user"), "said on entering plan mode");
-    assert!(requests[3].contains("the plan is approved"), "said on approval");
-    assert!(requests[4].contains("otherwise go on"), "said at the stop");
+    assert!(requests[5].contains("the plan is approved"), "said on approval");
+    assert!(requests[6].contains("otherwise go on"), "said at the stop");
     assert!(!requests[2].contains("first ask the user"), "one turn each, not for ever");
 }
 
@@ -1302,6 +1308,8 @@ fn a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it() {
     let data = temp_dir("slave-plan-data");
     let (url, _) = fake_endpoint(vec![
         anthropic_turn(Some(("p1", "mode__plan_enter", json!({}))), "Planning."),
+        anthropic_turn(Some(("p2m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""),
+        anthropic_turn(Some(("p2c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""),
         anthropic_turn(Some(("p2", "mode__plan_exit", json!({"plan": "the plan"}))), "Asking."),
         anthropic_turn(None, "I sent it the plan."),
         anthropic_turn(Some(("p3", "mode__plan_exit", json!({"plan": "the plan", "user_said": "go ahead"}))), "Going."),

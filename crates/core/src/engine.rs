@@ -733,13 +733,12 @@ impl Engine {
         }
     }
 
-    /// What this slave's plan lacks, of the calls since it entered plan mode.
-    fn agent_plan_lacks(&self) -> Option<String> {
+    /// What this plan lacks, of the calls since plan mode was entered (CON-117).
+    fn plan_lacks(&self) -> Option<String> {
         let state = self.state.borrow();
-        let task = state.orchestra_task?;
         let calls: Vec<(&str, &serde_json::Value)> = state.messages.iter().flat_map(|m| &m.content).filter_map(|c| if let Content::ToolUse { name, input, .. } = c { Some((name.as_str(), input)) } else { None }).collect();
         let from = calls.iter().rposition(|(name, _)| *name == plan::ENTER_TOOL).unwrap_or(0);
-        plan::agent_plan_lacks(calls[from..].iter().copied(), task)
+        plan::plan_lacks(calls[from..].iter().copied(), state.orchestra_task)
     }
 
     /// The two tools the engine itself answers: the mode is its own state.
@@ -760,8 +759,8 @@ impl Engine {
         if let Some((_, reason)) = self.hooks(HookPoint::PreToolUse { call }).await {
             return result(reason, true);
         }
-        // An agent's plan holds what its contract says (CON-111).
-        if let Some(lacks) = self.agent_plan_lacks() {
+        // Every plan holds its strategy and its logic (CON-117).
+        if let Some(lacks) = self.plan_lacks() {
             return result(lacks, true);
         }
         // Always the user's call: nothing is remembered, and an "always" counts this once.

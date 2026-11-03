@@ -47,8 +47,8 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-30 | Study; what only the user can decide, `ask_user`. | Reads, `ask_user`. |
 | W-31 | Journal every decision, finding, assumption and open question. | Entries. |
 | W-32 | Each work item a `todo` carrying its test protocol: what to test, regressions named; how; under which conditions; what evidence proves it. | `todo` entries with a protocol. |
-| W-33 | `mindmap_new` for what is known about the task. | A mind map. |
-| W-34 | `flowchart_new` for each flow the plan changes or adds. | A flowchart. |
+| W-33 | `mindmap_new`, then `mindmap_add` your strategy: the decisions, the work and the proofs you will produce, with `refs` holding a journal entry; in an orchestra, your task. | A mind map; `mode__plan_exit` refuses without it. |
+| W-34 | `flowchart_new`, then `flowchart_add` the logic branches of the planned behaviour, with its outcomes. | A flowchart; `mode__plan_exit` refuses without it. |
 | W-35 | If the project has `docs/`, describe the feature there. | Writes under `docs/`. |
 | W-36 | Only then `mode__plan_exit`. Nothing is built before it is approved. | Entries and maps before `mode__plan_exit`; no other write. |
 
@@ -72,7 +72,6 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | # | Situation | Do | The log shows |
 |---|---|---|---|
 | W-50 | You have just been started as an agent of an orchestrator, on a journal entry. | Read this file and the entry, and work on it now. Everything above holds. | `journal_get` of that entry, then its work. |
-| W-61 | You plan your task, in an orchestra. | `mindmap_add` your strategy: the decisions, the work and the proofs you will produce, with `refs` holding your task. `flowchart_add` the logic of what you build, with its branches and outcomes. | Both before `mode__plan_exit`, which refuses without them. |
 | W-57 | Your task's work is done and proved, in an orchestra. | `agent_send` your orchestrator asking to close the entry, naming the proofs. Do not close it: only it can. | That call; no `journal_close` of the entry. |
 | W-58 | Your orchestrator approved. | `agent_send` it asking to close your session, and stop. | That call last of all. |
 | W-51 | A user message in that tab. | Treat it as the user's: it stands for the user there. Everything above holds. | As above. |

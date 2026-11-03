@@ -245,6 +245,9 @@ fn wait_for_master(ask: &PermissionAsk, input: &Value) -> Result<(), String> {
         ask.client.conversation_op(&op)
     };
     let asked = op("slave_ask", json!({"tool": input["tool_name"], "input": input["input"]}))?;
+    if let Some(why) = asked["refused"].as_str() {
+        return Err(why.to_string());
+    }
     if asked["answer"].is_string() {
         return Ok(());
     }

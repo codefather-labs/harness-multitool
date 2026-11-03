@@ -76,3 +76,20 @@ impl std::fmt::Display for PluginError {
 impl std::error::Error for PluginError {}
 
 pub type PluginResult<T> = Result<T, PluginError>;
+
+/// What every plan's mind map is (CON-117), the one wording of it for prompts and refusals; rows
+/// W-33 and W-34 of the workflow file say the same to whoever reads that.
+#[macro_export]
+macro_rules! plan_map {
+    () => {
+        "a mind map of your strategy: the decisions, the work and the proofs you will produce, with mindmap_add nodes whose refs hold a journal entry"
+    };
+}
+
+/// What every plan's flowchart is (CON-117).
+#[macro_export]
+macro_rules! plan_chart {
+    () => {
+        "a flowchart of the logic branches of the planned behaviour, with flowchart_add"
+    };
+}

@@ -100,6 +100,12 @@ no = call("mode", "plan_exit", {"plan": "p", "user_said": "plan_exit"}); assert 
 print("on a delegate plan_exit refused: no quote, then no maps")
 for server, tool, args in [("harness", "journal_add", {"body": "the plan is in this entry", "category": "decision", "tags": ["t"]}), ("harness", "mindmap_new", {"title": "m"}), ("harness", "flowchart_new", {"title": "f"})]:
     assert not call(server, tool, args)["error"]
+# CON-117: every plan's map and chart hold something, and the map points at an entry.
+empty = call("mode", "plan_exit", {"plan": "p", "user_said": "plan_exit"}); assert empty["error"] and "mindmap_add" in empty["text"] and "flowchart_add" in empty["text"], empty
+own = json.loads(answers_of("mindmap_new")[-1]["text"]); own_chart = json.loads(answers_of("flowchart_new")[-1]["text"])
+plan_entry = json.loads(answers_of("journal_add")[-1]["text"])["id"]
+assert not call("harness", "mindmap_add", {"map": own["id"], "text": "the work", "kind": "task", "refs": [plan_entry]})["error"]
+assert not call("harness", "flowchart_add", {"map": own_chart["id"], "text": "a branch", "kind": "decision", "after": own_chart["root"]})["error"]
 yes = call("mode", "plan_exit", {"plan": "p", "user_said": "plan_exit"}); assert not yes["error"] and "approved the plan" in yes["text"], yes
 d = call("mode", "debug", {"on": True}); assert not d["error"] and "STEP-DEBUG MODE is on" in d["text"], d
 assert not call("mode", "debug", {"on": False})["error"]

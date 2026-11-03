@@ -414,12 +414,11 @@ impl DaemonHost {
                 if !missing.is_empty() {
                     return Err(format!("The plan is what the journal and the maps hold, so the next session finds it, and this one has none of: {}. Record it with them, then call this again.", missing.join(", ")));
                 }
-                // An agent's plan holds what its contract says (CON-111).
-                if let Some(task) = self.orchestra.lock().expect("orchestra").tasks.get(&session).copied() {
-                    let calls = log[entered..].iter().filter_map(|entry| if let harness_api::Event::ToolRequested { call, .. } = &entry.event { Some((call.name.as_str(), &call.input)) } else { None });
-                    if let Some(lacks) = harness_core::plan::agent_plan_lacks(calls, task) {
-                        return Err(lacks);
-                    }
+                // Every plan holds its strategy and its logic (CON-117).
+                let task = self.orchestra.lock().expect("orchestra").tasks.get(&session).copied();
+                let calls = log[entered..].iter().filter_map(|entry| if let harness_api::Event::ToolRequested { call, .. } = &entry.event { Some((call.name.as_str(), &call.input)) } else { None });
+                if let Some(lacks) = harness_core::plan::plan_lacks(calls, task) {
+                    return Err(lacks);
                 }
                 {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
@@ -597,7 +596,7 @@ impl DaemonHost {
                 if orchestra.told.remove(&slave) {
                     continue;
                 }
-                words.push((master, name(&slave), format!("its run ended, without a message to you. Its last words: {}", last_words(&data, &root, &slave))));
+                words.push((master, name(&slave), run_end_word(&read_agent(&data, &root, &slave, &[]))));
             }
         }
         let any = !words.is_empty();
@@ -683,7 +682,7 @@ impl DaemonHost {
             self.save_orchestra(&orchestra);
         }
         window.sessions.role(tab, Some("slave".to_string()), Some(master_name.clone()), Some(task));
-        window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("You have just been started as an agent working for the orchestrator {master_name}. Your task is journal#{task}. Read the agent workflow specification, read the entry with journal_get, and work on it now."));
+        window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), format!("You have just been started as an agent working for the orchestrator {master_name}. Your task is journal#{task}. Read the agent workflow specification, {}, read the entry with journal_get, and work on it now.", crate::agent_workflow_file(&self.data_dir.to_string_lossy())));
         Ok(json!({"ok": true}))
     }
 
@@ -1223,6 +1222,12 @@ impl ConversationHost for DaemonHost {
             let session = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)).ok_or("only an agent of an orchestra asks its master")?;
             let (tool, input) = (op["tool"].as_str().unwrap_or_default(), &op["input"]);
             let planning = self.orchestra.lock().expect("orchestra").planning.contains(&session);
+            // An edit by script is answered here: the file tools do it with no one asked (journal#674).
+            if tool == "Bash"
+                && let harness_core::plan::ScriptEdit::Refused(why) = harness_core::plan::script_edit(input["command"].as_str().unwrap_or_default())
+            {
+                return Ok(json!({"refused": why}));
+            }
             let key = ask_key(tool, input);
             if program_may(tool, input, &window.root, planning) || window.program_allowed.contains(&(tab, key.clone())) {
                 return Ok(json!({"answer": "always"}));
@@ -1721,6 +1726,7 @@ fn read_agent(data_dir: &str, root: &str, session: &str, live: &[Value]) -> Vec<
                 lines.push(format!("call {}: {}", call.name, brief_input(&call.input)));
             }
             harness_api::Event::ToolResult { output, is_error: true, .. } => lines.push(format!("failed: {}", short(output))),
+            harness_api::Event::Error { source, message } => lines.push(format!("{RUN_ERROR}{source}: {}", short(message))),
             _ => {}
         }
     }
@@ -1729,9 +1735,16 @@ fn read_agent(data_dir: &str, root: &str, session: &str, live: &[Value]) -> Vec<
     lines.split_off(skip)
 }
 
-/// What an agent said last.
-fn last_words(data_dir: &str, root: &str, session: &str) -> String {
-    read_agent(data_dir, root, session, &[]).iter().rev().find_map(|line| line.strip_prefix("said: ").map(str::to_string)).unwrap_or_default()
+const RUN_ERROR: &str = "error ";
+
+/// What a master is told of an agent's run that ended with no word to it. An error it ended on comes
+/// first: its last words may be long past (journal#671).
+fn run_end_word(lines: &[String]) -> String {
+    let words = lines.iter().rev().find_map(|line| line.strip_prefix("said: ")).unwrap_or_default();
+    match lines.last().and_then(|line| line.strip_prefix(RUN_ERROR)) {
+        Some(error) => format!("its run ended on an error, {error}. Read what stands with mode__agent_read; if it cannot go on, close it and start another on its entry. Its last words: {words}"),
+        None => format!("its run ended, without a message to you. Its last words: {words}"),
+    }
 }
 
 #[cfg(test)]
@@ -1743,6 +1756,15 @@ mod read_agent_tests {
         assert_eq!(agent_check_every(None), Duration::from_secs(600));
         assert_eq!(agent_check_every(Some("12".into())), Duration::from_secs(12));
         assert_eq!(agent_check_every(Some("soon".into())), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn a_master_is_told_the_error_a_run_ended_on() {
+        let lines = ["said: my plan is sent".to_string(), "error chatgpt: the plan's usage limit is reached".to_string()];
+        let word = run_end_word(&lines);
+        assert!(word.contains("ended on an error") && word.contains("usage limit") && word.contains("my plan is sent"), "{word}");
+        let plain = run_end_word(&lines[..1]);
+        assert!(plain.contains("without a message") && !plain.contains("error"), "{plain}");
     }
 
     /// CON-108: what the harness answers of a slave's program by itself, and what goes to its master.

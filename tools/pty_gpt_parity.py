@@ -30,6 +30,9 @@ class H(http.server.BaseHTTPRequestHandler):
             emit({"type": "response.output_text.delta", "delta": "After the tool."})
         elif "use agenda" in said: call("journal_agenda", {"limit": 1}, "c1")
         elif "enter plan" in said: call("mode__plan_enter", {}, "c5")
+        elif "draw maps" in said:
+            call("mindmap_add", {"map": 1, "text": "the work", "refs": [1]}, "c8")
+            call("flowchart_add", {"map": 2, "text": "a branch", "kind": "process"}, "c9")
         elif "теперь давай реализуем" in said: call("mode__plan_exit", {"plan": "the plan", "user_said": "теперь давай реализуем"}, "c6")
         elif "false quote" in said: call("mode__plan_exit", {"plan": "the plan", "user_said": "the user never wrote this"}, "c7")
         elif "long command" in said: call("shell", {"command": f"sleep {MARK}; echo never"}, "c2")
@@ -106,6 +109,7 @@ assert os.path.exists(spec) and "W-3" in open(spec).read(), "the specification i
 assert spec in bodies[0]["instructions"], "the first request names the specification: " + bodies[0]["instructions"][-300:]
 assert spec not in bodies[1]["instructions"], "for one turn, not every turn"
 print("the first turn was given the specification's path")
+pump(0.5); n = len(bodies); typed("draw maps\r"); until("the plan's maps", lambda: len(bodies) > n + 1); pump(0.5)
 pump(0.5); seen = b""; n = len(bodies); typed("false quote\r"); pump(1.5)
 assert b"leave plan mode" in seen, "words the user did not say get no approval: the user is asked"
 os.write(fd, b"3"); pump(0.8)

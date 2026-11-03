@@ -24,7 +24,7 @@ Whether a task needs a plan stays the model's judgment under these rules: the ha
 The owner tried the cycle on a small local model. It entered plan mode unprompted, then asked nothing, recorded nothing and retried refused writes. A long system prompt does not carry a small model through a long run, so `mode-guide` says each step when it is the step at hand (CON-66):
 
 - at every user message, and on entering plan mode, leaving it, and entering debug mode, the one step that is due, for one turn;
-- a `mode__plan_exit` with no journal entry, map or flowchart made while planning goes back once, naming what is missing, and the user is not asked yet; under `enforce`, until they exist;
+- a `mode__plan_exit` with no journal entry, map or flowchart made while planning goes back once, naming what is missing, and the user is not asked yet; under `enforce`, until they exist; what a map and chart hold is CON-117, which refuses always;
 - stopping after an approved plan, or in debug mode, makes the run go on once per message, with that step said again.
 
 While planning, `docs/` may be written, because a feature is described before it is built; everything else stays refused (CON-65). `plan_first = off` turns all of this off.

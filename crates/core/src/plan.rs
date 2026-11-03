@@ -61,9 +61,9 @@ pub fn slave_basics(capabilities: &[Capability], root: &str) -> bool {
 
 /// A command's stages, joined by `;`, `&&`, `||` or `|`, with what is quoted reduced to one word.
 /// `None` if anything else outside quotes could redirect, substitute or run in the background: it
-/// fails closed. `2>&1` is the one redirection let through: it writes nowhere new.
+/// fails closed. `2>&1` and `2>/dev/null` are the redirections let through: they write nowhere new.
 fn stages(command: &str) -> Option<Vec<String>> {
-    let command = command.replace("2>&1", "");
+    let command = command.replace("2>&1", "").replace("2>/dev/null", "");
     let (mut out, mut stage) = (Vec::new(), String::new());
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
@@ -158,25 +158,55 @@ fn in_project(path: &str, root: &str) -> bool {
     inside && !path.split(['/', '\\']).any(|part| part == "..")
 }
 
-/// What a slave's plan still lacks of its contract (CON-111): a mind map pointing at its task, and
-/// a flowchart with something in it. Only that they exist: whether they are true is its master's to read.
-pub fn agent_plan_lacks<'a>(calls: impl Iterator<Item = (&'a str, &'a serde_json::Value)>, task: u64) -> Option<String> {
+/// What a plan still lacks of what every plan holds (CON-117): a mind map pointing at a journal
+/// entry, at its task for a slave (CON-111), and a flowchart with something in it. Only that they
+/// exist: whether they are true is for whoever reads them.
+pub fn plan_lacks<'a>(calls: impl Iterator<Item = (&'a str, &'a serde_json::Value)>, task: Option<u64>) -> Option<String> {
     let (mut map, mut chart) = (false, false);
     for (name, input) in calls {
         match name.rsplit("__").next().unwrap_or(name) {
-            "mindmap_add" => map |= input["refs"].as_array().is_some_and(|refs| refs.iter().any(|r| r.as_u64() == Some(task))),
+            "mindmap_add" => {
+                map |= input["refs"].as_array().is_some_and(|refs| match task {
+                    Some(task) => refs.iter().any(|r| r.as_u64() == Some(task)),
+                    None => !refs.is_empty(),
+                });
+            }
             "flowchart_add" => chart = true,
             _ => {}
         }
     }
     let mut lacks = Vec::new();
     if !map {
-        lacks.push(format!("a mind map of your strategy, the decisions, the work and the proofs you will produce, with mindmap_add nodes whose refs hold journal#{task}"));
+        lacks.push(match task {
+            Some(task) => format!("{} (yours: journal#{task})", harness_api::plan_map!()),
+            None => harness_api::plan_map!().to_string(),
+        });
     }
     if !chart {
-        lacks.push("a flowchart of the logic of what you build, with flowchart_add".to_string());
+        lacks.push(harness_api::plan_chart!().to_string());
     }
-    (!lacks.is_empty()).then(|| format!("An agent's plan holds its strategy and its logic, and this one has not: {}. Then call this again.", lacks.join("; and ")))
+    (!lacks.is_empty()).then(|| format!("A plan holds its strategy and its logic, and this one has not: {}. Then call this again.", lacks.join("; and ")))
+}
+
+/// How the harness answers a slave's program's request (CON-103).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptEdit {
+    /// Not an edit by script.
+    No,
+    /// It is: refused with these words, so the program learns and the master is not asked.
+    Refused(&'static str),
+}
+
+/// A shell command that edits files by a script its own text holds. It could do anything, and the
+/// file tools do the same with no one asked (journal#674).
+pub fn script_edit(command: &str) -> ScriptEdit {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let in_place = words.windows(2).any(|w| w[0] == "sed" && (w[1].starts_with("-i") || w[1] == "--in-place"));
+    if in_place || command.contains("<<") {
+        ScriptEdit::Refused("Edit files with your Edit and Write tools, which need no one's word. A script is not edited in by shell: if you do need one, save it under .harness/ and run it, and your orchestrator is asked.")
+    } else {
+        ScriptEdit::No
+    }
 }
 
 const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then mode__plan_exit.";
@@ -212,7 +242,7 @@ const WHY: &str = "This changes the project and no plan has been made in this se
 /// The agent behaviour specification (ADR 0021), each step of it said when it is the step at hand:
 /// a small model does not carry a long system prompt through a long run (CON-66).
 const REMIND_START: &str = "Agent behaviour spec: an app, a feature, a fix or any change that is not trivial starts with mode__plan_enter, before anything is written.";
-const REMIND_PLAN: &str = "Agent behaviour spec, planning: first ask the user what only they can decide, with ask_user. Then journal_add each decision, journal_add a todo with its test protocol for each work item, mindmap_new and mindmap_add what is known, flowchart_new and flowchart_add each flow, describe it under docs/ if the project has docs/. Then mode__plan_exit.";
+const REMIND_PLAN: &str = concat!("Agent behaviour spec, planning: first ask the user what only they can decide, with ask_user. Then journal_add each decision, journal_add a todo with its test protocol for each work item; make ", harness_api::plan_map!(), "; and ", harness_api::plan_chart!(), "; describe it under docs/ if the project has docs/. Then mode__plan_exit.");
 const REMIND_BUILD: &str = "Agent behaviour spec, the plan is approved. Nothing you tried to write while planning exists yet: build what the plan says with edit, old_text empty to create a file; leave the user's data as it is, run it and read the result. Then call mode__debug with on true and debug it.";
 const REMIND_DEBUG: &str = "Agent behaviour spec, debug mode: run each test protocol of the plan and compare what you get with what it should show. Fix what is wrong and run it again. Journal the evidence with journal_add: what ran and what it showed. Then call mode__debug with on false.";
 const REMIND_DONE: &str = "Agent behaviour spec: a new feature or fix starts again with mode__plan_enter. Work ends with evidence in the journal, not a claim.";
@@ -395,20 +425,37 @@ mod tests {
         assert!(!read_only_command("ls | head"), "a user's own plan mode stays as it was (CON-53)");
     }
 
-    /// CON-111.
+    /// CON-117: every plan; CON-111: a slave's map at its task.
     #[test]
-    fn a_slaves_plan_needs_a_map_at_its_task_and_a_chart_with_blocks() {
-        let refs = serde_json::json!({"refs": [575, 7]});
+    fn a_plan_needs_a_map_with_refs_and_a_chart_with_blocks() {
+        let at_seven = serde_json::json!({"refs": [575, 7]});
         let other = serde_json::json!({"refs": [8]});
         let none = serde_json::json!({});
-        let lacks = |calls: &[(&'static str, &serde_json::Value)]| agent_plan_lacks(calls.iter().copied(), 7);
-        let both = lacks(&[]).unwrap();
+        let lacks = |calls: &[(&'static str, &serde_json::Value)], task| plan_lacks(calls.iter().copied(), task);
+        let both = lacks(&[], Some(7)).unwrap();
         assert!(both.contains("journal#7") && both.contains("flowchart_add"), "{both}");
-        let chart = lacks(&[("mcp__harness__mindmap_add", &refs)]).unwrap();
+        let chart = lacks(&[("mcp__harness__mindmap_add", &at_seven)], Some(7)).unwrap();
         assert!(!chart.contains("mindmap_add") && chart.contains("flowchart_add"), "{chart}");
-        assert!(lacks(&[("mindmap_add", &other), ("flowchart_add", &none)]).unwrap().contains("journal#7"), "a map at something else");
-        assert!(lacks(&[("mindmap_new", &none), ("flowchart_new", &none)]).is_some(), "an empty map and chart");
-        assert!(lacks(&[("mindmap_add", &refs), ("mcp__harness__flowchart_add", &none)]).is_none());
+        assert!(lacks(&[("mindmap_add", &other), ("flowchart_add", &none)], Some(7)).unwrap().contains("journal#7"), "a map at something else");
+        assert!(lacks(&[("mindmap_new", &none), ("flowchart_new", &none)], None).is_some(), "an empty map and chart");
+        assert!(lacks(&[("mindmap_add", &none), ("flowchart_add", &none)], None).unwrap().contains("mindmap_add"), "a map with no refs");
+        assert!(lacks(&[("mindmap_add", &other), ("mcp__harness__flowchart_add", &none)], None).is_none(), "any entry, with no task");
+        assert!(lacks(&[("mindmap_add", &at_seven), ("flowchart_add", &none)], Some(7)).is_none());
+    }
+
+    /// journal#674: the wording is one, and a script's edit is answered with no master.
+    #[test]
+    fn the_plan_rules_say_one_thing_and_scripts_are_refused() {
+        assert!(REMIND_PLAN.contains(harness_api::plan_map!()) && REMIND_PLAN.contains(harness_api::plan_chart!()));
+        for edit in ["sed -i s/a/b/ f", "sed --in-place s/a/b/ f", "python3 - <<'E'\nprint(1)\nE", "cat >> f <<EOF\nx\nEOF"] {
+            assert!(matches!(script_edit(edit), ScriptEdit::Refused(_)), "{edit}");
+        }
+        for not in ["python3 .harness/x.py", "cargo test", "sed -n 1,9p f", "grep -n a f"] {
+            assert_eq!(script_edit(not), ScriptEdit::No, "{not}");
+        }
+        let ok = |c: &str| slave_basics(&[Capability::Command(c.to_string())], "/p");
+        assert!(ok("ls x 2>/dev/null | head"));
+        assert!(!ok("ls x >/dev/null"), "only the error stream, by name");
     }
 
     #[test]
