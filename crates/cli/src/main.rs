@@ -2181,6 +2181,16 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     // shell would be typed mouse reports at (journal#595).
     let restores_terminal = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // A panic while drawing is caught, and the window goes on: the terminal stays as it is,
+        // and its words go to a file, for they would spoil the screen (CON-113).
+        if frontend_tui::transcript::in_guarded_draw() {
+            if let Ok(dir) = config::data_dir()
+                && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("draw-errors.log"))
+            {
+                let _ = std::io::Write::write_fmt(&mut file, format_args!("{} {info}\n", chrono::Utc::now().to_rfc3339()));
+            }
+            return;
+        }
         let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         restores_terminal(info);
     }));

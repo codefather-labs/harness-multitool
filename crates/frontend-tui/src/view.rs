@@ -83,6 +83,19 @@ impl Drawn {
 /// Draws the state. Cells under a placement hold a text fallback, so a terminal without graphics
 /// still shows something sensible.
 pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
+    // Whatever else breaks in a frame, the session goes on behind it (CON-113).
+    match crate::transcript::guarded(|| draw_all(f, s, t)) {
+        Some(drawn) => drawn,
+        None => {
+            let area = f.area();
+            widgets::fill(f, area, t.background);
+            f.render_widget(ratatui::widgets::Paragraph::new("This frame could not be drawn; the error is in draw-errors.log in the harness's data folder. The session goes on."), area);
+            Drawn::default()
+        }
+    }
+}
+
+fn draw_all(f: &mut Frame, s: &AppState, t: &Theme) -> Drawn {
     let area = f.area();
     widgets::fill(f, area, t.background);
     let mut out = Drawn::default();
@@ -135,7 +148,7 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     ])
     .areas(body);
     let tr = inset(transcript);
-    let want = (v.scroll as u16).min(5000);
+    let want = (v.scroll as u16).min(60_000);
     let (drawn, whole) = crate::transcript::visible(&v.transcript, tr.width, t, &w.journal, v.agent_name.as_deref().unwrap_or(crate::transcript::ASSISTANT), tr.height.saturating_add(want));
     let total = crate::transcript::total_height(&drawn);
     // Scrolling stops at the first item; while older items exist beyond the stack, the stack

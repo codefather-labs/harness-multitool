@@ -190,3 +190,5 @@ Two separate tools ([ADR 0011](decisions/0011-mind-maps-and-flowcharts.md)): a m
 ## Hooks
 
 A HOOK card shows the loop event the hooks ran on (SessionStart, PostCompact, PreToolUse with the call it saw, PostToolUse, Stop, UserPromptSubmit, ...) and one row per script: ✓ ok, ✓ with the lines it added to the context, ⊘ blocked with the reason (a veto, IF-6), ✗ failed with the exit code and stderr tail, ◷ timed out, ◌ running, and how long it took. The frame takes the colour of the worst outcome: warning for a veto or a timeout, error for a failure.
+
+Drawing never takes a session down (CON-113): a card that cannot be drawn shows a line saying so, and its error goes to `draw-errors.log` in the data folder. One item takes at most 4000 rows, and its last row says how many more were not drawn.

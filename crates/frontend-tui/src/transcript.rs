@@ -34,8 +34,27 @@ const CX: u16 = 3;
 /// Rows between two items: none; every item ends with a half-row separator instead (see
 /// `separate`), so cards sit as close as the mockups draw them.
 pub const GAP: u16 = 0;
-/// The tallest an item may draw.
-const MAX_H: u16 = 400;
+/// The tallest an item may draw. A frame redraws every visible item, so its cost grows with this:
+/// 4000 rows of a turn take a usable time (CON-113). What is past it is said on its last row.
+const MAX_H: u16 = 4000;
+
+thread_local! {
+    static GUARDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether drawing is going on under a guard: a panic now is caught, and must not give the terminal
+/// back as a panic that ends the program does.
+pub fn in_guarded_draw() -> bool {
+    GUARDED.get()
+}
+
+/// Runs a piece of drawing; a panic in it is `None`, and what panicked goes on (CON-113).
+pub fn guarded<R>(draw: impl FnOnce() -> R) -> Option<R> {
+    let outer = GUARDED.replace(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(draw));
+    GUARDED.set(outer);
+    result.ok()
+}
 
 /// An item drawn on its own: its cells, its pictures and its clickable map parts (relative to
 /// the buffer's origin), and which transcript item it is.
@@ -206,14 +225,16 @@ impl<'a> Canvas<'a> {
     fn finish(mut self, height: u16) -> Drawn {
         let h = height.clamp(1, MAX_H);
         self.grow(h);
-        let mut buf = Buffer::empty(Rect::new(0, 0, self.width, h));
-        for y in 0..h {
-            for x in 0..self.width {
-                buf[(x, y)] = self.buf[(x, y)].clone();
-            }
+        if height > MAX_H {
+            let (t, y) = (self.t, MAX_H - 1);
+            let text = format!("… {} more rows of this are not drawn: past the {MAX_H} rows one item may take", height - MAX_H);
+            self.fill(Rect::new(0, y, self.width, 1), t.surface_raised);
+            self.line(CX, y, self.width.saturating_sub(CX), vec![Span::styled(text, bold(t.warning))], t.surface_raised);
         }
+        // The rows it took, kept where they are: a tall turn is not copied in every frame.
+        self.buf.resize(Rect::new(0, 0, self.width, h));
         Drawn {
-            buf,
+            buf: self.buf,
             placements: self.placements.into_iter().filter(|p| p.rect.y + p.rect.height <= h).collect(),
             hits: self.hits.into_iter().filter(|(r, _, _)| r.y < h).collect(),
             item: None,
@@ -1201,7 +1222,8 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ag
             whole = false;
             break;
         }
-        let mut d = named_item(it, width, t, known, agent);
+        // One card that cannot be drawn is one line, not the whole window (CON-113).
+        let mut d = guarded(|| named_item(it, width, t, known, agent)).unwrap_or_else(|| undrawable(width, t));
         d.item = Some(i);
         acc = acc.saturating_add(d.buf.area.height + 1);
         drawn.push(d);
@@ -1218,6 +1240,14 @@ pub fn visible(items: &[Item], width: u16, t: &Theme, known: &[JournalEvent], ag
         out.push(spacer(above, None, width, t));
     }
     (out, whole)
+}
+
+/// What stands for a card that could not be drawn.
+fn undrawable(width: u16, t: &Theme) -> Drawn {
+    let mut cv = Canvas::new(width, t, &[]);
+    cv.fill(Rect::new(0, 0, width, 1), t.surface_raised);
+    cv.line(CX, 0, width.saturating_sub(CX), vec![Span::styled("This card could not be drawn; the error is in draw-errors.log in the harness's data folder.", bold(t.warning))], t.surface_raised);
+    cv.finish(1)
 }
 
 /// Every item drawn at `width` (tests and tools; the view draws only what is visible).
@@ -1415,7 +1445,7 @@ mod tests {
         let journal = Vec::new();
         let chart = crate::debug::sample_flow_gallery();
         let mind = crate::debug::sample_mind_gallery();
-        for y in [380u16, 396, 399, 400, 407, 650] {
+        for y in [3980u16, 3996, 3999, 4000, 4007, 6500] {
             for width in [30u16, 188] {
                 for pan in [(0u16, 0u16), (3, 3), (500, 500)] {
                     let mut cv = Canvas::new(width, &t, &journal);
@@ -1426,6 +1456,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// CON-113: a card that cannot be drawn does not take the others with it.
+    #[test]
+    fn a_panic_in_one_piece_of_drawing_is_caught() {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        assert!(guarded(|| -> () { panic!("a card") }).is_none());
+        std::panic::set_hook(previous);
+        assert!(!in_guarded_draw(), "the guard ends with it");
+        assert_eq!(guarded(in_guarded_draw), Some(true));
+        let t = Theme::builtin("dark").unwrap();
+        let line = undrawable(60, &t);
+        assert!((0..60).map(|x| line.buf[(x, 0)].symbol().to_string()).collect::<String>().contains("could not be drawn"));
+    }
+
+    /// CON-113: a big map in a long turn is seen, and what still does not fit is said.
+    #[test]
+    fn a_long_turn_shows_its_map_and_says_what_it_cannot() {
+        let t = Theme::builtin("dark").unwrap();
+        let row = |d: &Drawn, y: u16| (0..120).map(|x| d.buf[(x, y)].symbol().to_string()).collect::<String>();
+        let long = item(&tall_turn(1000), 120, &t, &[]);
+        assert!(long.buf.area.height > 1000, "{}", long.buf.area.height);
+        assert!((1000..long.buf.area.height).any(|y| row(&long, y).contains("flowchart") || row(&long, y).contains("FLOWCHART")), "the map past row 400 is drawn");
+        let past = item(&tall_turn(5000), 120, &t, &[]);
+        assert_eq!(past.buf.area.height, MAX_H);
+        assert!(row(&past, MAX_H - 1).contains("more rows of this are not drawn"), "{}", row(&past, MAX_H - 1));
+        assert!(!row(&long, long.buf.area.height - 1).contains("not drawn"));
+    }
+
+    /// CON-113's metric: one turn thousands of rows tall, with maps in it.
+    fn tall_turn(rows: usize) -> Item {
+        let chart = crate::debug::sample_flow_gallery();
+        let lines = (0..rows).map(|i| format!("row {i}")).collect();
+        let attached = vec![Item::Flowchart(FlowchartEvent { id: 1, change: "c".into(), date: "d".into(), chart, open: None, focus: None, pan: (0, 0) })];
+        Item::Turn { role: Role::Assistant, time: "t".into(), lines, attached }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_tall_turn() {
+        let t = Theme::builtin("dark").unwrap();
+        let turn = tall_turn(3000);
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            std::hint::black_box(item(&turn, 186, &t, &[]));
+        }
+        eprintln!("tall turn: frame {:?}, height {}", start.elapsed() / 10, item(&turn, 186, &t, &[]).buf.area.height);
     }
 
     #[test]
