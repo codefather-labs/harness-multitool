@@ -259,7 +259,10 @@ fn main() -> Result<()> {
         }
         Command::Mcp { root, window, tab, namespace } => {
             // Each server reads the config file as it starts: the limit it holds is the one saved then (CON-114).
-            let map_max_nodes = config::load().map_or(harness_session::Settings::default().map_max_nodes, |c| c.session.map_max_nodes);
+            let (map_max_nodes, broken) = config::map_limit();
+            if let Some(broken) = broken {
+                eprintln!("{broken}");
+            }
             let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace, map_max_nodes };
             harness_session::mcp::serve(&serving, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| anyhow!(e))
         }
@@ -1092,8 +1095,8 @@ impl Live {
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
-        let map_max_nodes = config::load().map_or(harness_session::Settings::default().map_max_nodes, |c| c.session.map_max_nodes);
-        frontend_tui::model::MemoryPage { map_max_nodes, ..Default::default() }
+        let (map_max_nodes, broken) = config::map_limit();
+        frontend_tui::model::MemoryPage { map_max_nodes, status: broken.unwrap_or_default(), ..Default::default() }
     }
 
     fn telegram_page(&self) -> frontend_tui::model::TelegramPage {

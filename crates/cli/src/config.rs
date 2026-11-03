@@ -93,6 +93,30 @@ pub fn load() -> Result<Config> {
     }
 }
 
+/// The `map_max_nodes` setting, and a sentence when the file could not be read so the default is used instead
+/// (journal#631). The sentence holds the path and a line number only: a parse error quotes the line, and the
+/// file holds tokens (INV-6).
+pub fn map_limit() -> (u64, Option<String>) {
+    let default = harness_session::Settings::default().map_max_nodes;
+    let Ok(p) = path() else { return (default, None) };
+    match std::fs::read_to_string(&p) {
+        Ok(text) => map_limit_from_text(&p, &text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (default, None),
+        Err(_) => (default, Some(format!("{} cannot be read; the default map node limit {default} is used.", p.display()))),
+    }
+}
+
+fn map_limit_from_text(p: &std::path::Path, text: &str) -> (u64, Option<String>) {
+    match toml::from_str::<Config>(text) {
+        Ok(c) => (c.session.map_max_nodes, None),
+        Err(e) => {
+            let default = harness_session::Settings::default().map_max_nodes;
+            let line = e.span().map(|s| format!(" (line {})", text[..s.start.min(text.len())].matches('\n').count() + 1)).unwrap_or_default();
+            (default, Some(format!("{} is not valid TOML{line}; the default map node limit {default} is used.", p.display())))
+        }
+    }
+}
+
 /// Where sessions keep their logs: the OS's data directory.
 pub fn data_dir() -> Result<PathBuf> {
     let dir = dirs::data_dir().ok_or_else(|| anyhow!("this OS reports no data directory"))?;
@@ -160,6 +184,21 @@ mod tests {
         let text = toml::to_string_pretty(&c).unwrap();
         assert!(text.contains("graphics = \"sixel\""), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap().terminal.graphics, Graphics::Sixel);
+    }
+
+    /// journal#631, INV-6: a broken file is told by its path and line, never by the error text, which quotes the
+    /// line and so a token in it; the default limit is used.
+    #[test]
+    fn a_broken_config_is_told_without_quoting_its_text() {
+        let path = std::path::Path::new("/x/config.toml");
+        let text = "[telegram]\ntoken = \"CANARY-SECRET-123\" oops\n";
+        let (limit, message) = map_limit_from_text(path, text);
+        let message = message.expect("a message");
+        assert_eq!(limit, 200);
+        assert!(!message.contains("CANARY") && !message.contains("oops"), "{message}");
+        assert!(message.contains("/x/config.toml") && message.contains("line 2"), "{message}");
+        assert_eq!(map_limit_from_text(path, "[session]\nmap_max_nodes = 42\n"), (42, None));
+        assert_eq!(map_limit_from_text(path, ""), (200, None));
     }
 
     /// CON-114: the node limit is saved in `[session]`, read back, and 200 when the file says nothing.
