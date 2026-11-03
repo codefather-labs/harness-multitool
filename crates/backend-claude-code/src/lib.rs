@@ -18,6 +18,13 @@ pub const NAME: &str = "claude-code";
 /// What may run with nobody to ask, until the harness answers prompts itself (journal#209).
 const READ_ONLY_TOOLS: &str = "Read,Glob,Grep";
 
+/// What an agent of an orchestra may do with no one asked (CON-103), in this program's own terms:
+/// inside the folder it works in, reading commands (CON-53), and building and testing with cargo.
+pub const SLAVE_TOOLS: &str = "Read,Glob,Grep,Edit(./**),Write(./**),\
+Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(pwd),Bash(stat:*),Bash(du:*),Bash(df:*),\
+Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git blame:*),\
+Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*)";
+
 /// What one line of the stream comes to.
 #[derive(Debug, PartialEq)]
 pub enum Mapped {
@@ -266,7 +273,7 @@ impl ClaudeCode {
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
         } else {
-            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
+            args.extend(["--permission-prompts".to_string(), "none".to_string(), "--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
         }
         if !self.model.is_empty() {
             args.extend(["--model".to_string(), self.model.clone()]);
@@ -676,6 +683,10 @@ mod tests {
         assert!(args.contains(&"--strict-mcp-config".to_string()));
         assert_eq!(args[at("--permission-prompts") + 1], "none");
         assert_eq!(args[at("--allowedTools") + 1], "Read,Glob,Grep");
+        // The modes are allowed wherever the harness's own tools are (journal#541).
+        let with_tools = ClaudeCode::new("m1", "/r", &json!({})).with_mcp("{}".into()).args(&request(None, None, false, &never));
+        let allowed = &with_tools[with_tools.iter().position(|a| a == "--allowedTools").expect("allowed") + 1];
+        assert!(allowed.contains("mcp__harness__*") && allowed.contains("mcp__mode__*"), "{allowed}");
         assert_eq!(args[at("--model") + 1], "m1");
         assert!(!args.iter().any(|a| a.contains("secret prompt") || a == "--resume" || a == "--bare" || a == "--permission-mode" || a == "--system-prompt"), "{args:?}");
 

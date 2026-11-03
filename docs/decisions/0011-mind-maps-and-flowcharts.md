@@ -26,7 +26,7 @@ A flowchart forced into a mind map loses its direction and its symbols' meaning;
 
 ## Context
 
-The memory backend carried over has flowcharts as a `--type` of its mind maps (`claudebase mindmap new --type flowchart`, ISO 5807 symbols and gates, direction down or right). The harness keeps that model's content and splits the interface; the backend adapter maps the two tools onto it until the backend splits too.
+The memory backend carried over has flowcharts as a `--type` of its mind maps (a `--type flowchart` on its command for a new map, ISO 5807 symbols and gates, direction down or right). The harness keeps that model's content and splits the interface; the backend adapter maps the two tools onto it until the backend splits too.
 
 ## Rejected
 

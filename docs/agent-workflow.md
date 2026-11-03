@@ -2,7 +2,7 @@
 
 How an agent works through this harness. It binds every agent on every adapter (CON-97). A situation brings the same action every time, and each row says what the session's log must show, so it can be checked by a program.
 
-Read this file before acting, and again after a compaction or a resume: the harness gives you its path then. Tools and modes are described in their own definitions. Where a tool is named `mode__x`, on a program running as an agent backend it is `mcp__mode__x`.
+Read this file before acting, and again after a compaction or a resume: the harness gives you its path then. Tools and modes are described in their own definitions. Where a tool is named `mode__x`, on a program running as an agent backend it is `mcp__mode__x`; `journal_x`, `mindmap_x`, `flowchart_x`, `map_x` and `agent_x` are `mcp__harness__x` there, such as `mcp__harness__journal_agenda`. These tools are this project's only journal and maps: a command-line journal or other instructions that name one reach a different store, and do not count.
 
 ## 1. What the user says
 
@@ -58,7 +58,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 |---|---|---|---|
 | W-40 | Implemented. | `journal_add`, `update`, flag `unverified`: "Implements journal#T", with the verification protocol. | That entry. |
 | W-41 | After a planned fix or a built feature. | `mode__debug` on. A fix: reproduce before changing, a failing test for a small bug. Verify after, then off. | `mode__debug` on, the failing run, the change, the passing run, off. |
-| W-42 | Checked. | `journal_add`, `verification`, flag `verified`: "Verifies journal#I", what was run and what it showed, with `proof` naming where the evidence is kept: a file with the command's output, a log, a screenshot, a URL. Never without having run it. A close refuses a verification with no proof. | That entry, with a proof, after the runs. |
+| W-42 | Checked. | `journal_add`, `verification`, flag `verified`: "Verifies journal#I", what was run and what it showed, with `proof` naming where the evidence is kept: a file with the command's output, a log, a screenshot, in `.harness/` of the project or another place that lasts, not a temporary folder; or a URL. Never without having run it. A close refuses a verification with no proof. | That entry, with a proof, after the runs. |
 | W-49 | Saying a thing works. | Check it as the user will meet it, in the program they run, not only in a build of your own or a preview; if that is not possible here, say so, and do not say "done". If what you changed is the harness you run under, it needs `plugins_reload` before anyone can see it: ask whoever may, an orchestrator if you have one. | A proof from the running program, or the limit said in words. |
 | W-43 | Then close. | `journal_close` the todo. A close refused means it lacks evidence or waits for something: settle that, do not work round it. | `journal_close` after the evidence. |
 | W-44 | A bug found. | `journal_add`, `bug`, flag `todo`, at once. The fix: "Fixes journal#B" `unverified`, proved the same way. | Entries in that order. |

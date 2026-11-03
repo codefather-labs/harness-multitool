@@ -299,6 +299,9 @@ pub struct JournalRecord {
     /// Of what it was blocked by, what was dropped instead of solved: to be re-read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocker_dropped: Vec<u64>,
+    /// Where its evidence is kept, answered when one entry is read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proofs: Vec<String>,
 }
 
 /// The two map tools (ADR 0011).

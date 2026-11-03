@@ -515,7 +515,7 @@ impl DaemonHost {
         let tab = op["tab"].as_u64().ok_or("tab is required")?;
         let master_tab = op["master_tab"].as_u64().ok_or("master_tab is required")?;
         let nick = op["nick"].as_str().ok_or("nick is required")?.to_string();
-        let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string() };
+        let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string(), slave: true };
         let master = window.sessions.session_of(master_tab).ok_or("its master is gone")?.to_string();
         let master_name = self.name_of(window, &master);
         window.choices.lock().expect("choices").insert(tab, choice);
@@ -892,7 +892,7 @@ impl DaemonHost {
     fn open(&self, windows: &mut HashMap<String, Window>, id: &str, op: &Value) -> Result<Value, String> {
         let root = op["root"].as_str().ok_or("root is required")?.to_string();
         let settings: Settings = serde_json::from_value(op["settings"].clone()).map_err(|e| format!("settings: {e}"))?;
-        let default = crate::Choice { provider: settings.provider.clone(), model: settings.model.clone() };
+        let default = crate::Choice { provider: settings.provider.clone(), model: settings.model.clone(), slave: false };
         let for_window = settings.clone();
         let (reload, notes, choices) = match windows.get(id) {
             Some(w) => (w.reload.clone(), w.notes.clone(), w.choices.clone()),
@@ -1031,7 +1031,9 @@ impl ConversationHost for DaemonHost {
             return Ok(json!({"messages": waiting}));
         }
         if name == "choose" {
-            let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string() };
+            // An agent stays one whatever it is moved to (CON-108).
+            let slave = window.choices.lock().expect("choices").get(&tab).is_some_and(|choice| choice.slave);
+            let choice = crate::Choice { provider: op["provider"].as_str().ok_or("provider is required")?.to_string(), model: op["model"].as_str().ok_or("model is required")?.to_string(), slave };
             return self.choose(window, tab, choice);
         }
         if name == "choice_of" {
@@ -1480,6 +1482,21 @@ fn authorized_adapters(settings: &Settings, data_dir: &Path) -> Vec<Value> {
     rows
 }
 
+/// A call's arguments with each long text cut and none dropped: the master checks the short ones
+/// that come after a long one, such as `user_said` and `proof` (W-3, W-42).
+fn brief_input(input: &Value) -> String {
+    const FIELD: usize = 200;
+    fn cut(value: &Value) -> Value {
+        match value {
+            Value::String(text) if text.chars().count() > FIELD => Value::String(text.chars().take(FIELD).collect::<String>() + "…"),
+            Value::Array(items) => Value::Array(items.iter().map(cut).collect()),
+            Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), cut(value))).collect()),
+            other => other.clone(),
+        }
+    }
+    cut(input).to_string().replace('\n', " ")
+}
+
 /// What an agent has done, line by line, for its master to check it by.
 fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
     const LIMIT: usize = 300;
@@ -1508,7 +1525,7 @@ fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
             }
             harness_api::Event::ToolRequested { call, .. } => {
                 flush(&mut said, &mut lines);
-                lines.push(format!("call {}: {}", call.name, short(&call.input.to_string())));
+                lines.push(format!("call {}: {}", call.name, brief_input(&call.input)));
             }
             harness_api::Event::ToolResult { output, is_error: true, .. } => lines.push(format!("failed: {}", short(output))),
             _ => {}
@@ -1522,4 +1539,17 @@ fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
 /// What an agent said last.
 fn last_words(data_dir: &str, root: &str, session: &str) -> String {
     read_agent(data_dir, root, session).iter().rev().find_map(|line| line.strip_prefix("said: ").map(str::to_string)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod read_agent_tests {
+    use super::*;
+
+    /// W-3, W-42: what comes after a long field still shows, so a master can check it.
+    #[test]
+    fn a_long_field_does_not_hide_the_short_ones_after_it() {
+        let brief = brief_input(&json!({"plan": "x".repeat(5000), "user_said": "теперь давай реализуем", "proof": [".harness/run.log"]}));
+        assert!(brief.contains("теперь давай реализуем") && brief.contains(".harness/run.log"), "{brief}");
+        assert!(brief.chars().count() < 400, "{}", brief.chars().count());
+    }
 }

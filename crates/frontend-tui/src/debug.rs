@@ -38,6 +38,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/hooks", "every hook outcome"),
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
+    ("/tabs", "list the open tabs with their adapters and models"),
     ("/clear", "empty the transcript"),
     ("/exit, /quit", "close the harness (also Ctrl+C twice)"),
 ];
@@ -613,6 +614,20 @@ fn command(w: &mut Workspace, cmd: &str) {
             let title = or(arg, &format!("session-{}", w.tabs.len() + 1)).to_string();
             open_tab(w, &title);
         }
+        "tabs" => {
+            // CON-107: one row per tab, in order, from the tab's own ADAPTER and MODEL; read only.
+            let rows: Vec<String> = w
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, tab)| {
+                    let field = |key: &str| tab.view.status.fields.iter().find(|(k, _)| k == key).map(|(_, value)| value.clone()).unwrap_or_else(|| "-".into());
+                    let mark = if i == w.active { "*" } else { " " };
+                    format!("{mark} {:>2}  {:<24} {:<16} {}", i + 1, tab.title, field("ADAPTER"), field("MODEL"))
+                })
+                .collect();
+            w.view_mut().transcript.push(Item::Tips { label: "TABS".into(), lines: rows });
+        }
         "clear" => v.transcript.clear(),
         _ => v.transcript.push(Item::Tips { label: "UNKNOWN COMMAND".into(), lines: vec![format!("/{name} - /help lists the commands")] }),
     }
@@ -760,7 +775,7 @@ mod tests {
     #[test]
     fn every_debug_command_publishes_its_item() {
         let mut w = workspace();
-        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/mindmap-new", "/flowchart-new", "/mindmap", "/flowchart", "/flowchart down", "/hook", "/hooks", "/help"] {
+        for cmd in ["/agent", "/tg", "/voice", "/a2a", "/callback", "/reminder", "/journal", "/mindmap-new", "/flowchart-new", "/mindmap", "/flowchart", "/flowchart down", "/hook", "/hooks", "/tabs", "/help"] {
             let before = w.view().transcript.len();
             let attached_before: usize = w.view().transcript.iter().map(|i| if let Item::Turn { attached, .. } = i { attached.len() } else { 0 }).sum();
             send(&mut w, cmd);
@@ -782,6 +797,34 @@ mod tests {
         }
         w.view_mut().composer.text = String::new();
         assert_eq!(submit(&mut w), Sent::Nothing);
+    }
+
+    /// CON-107: /tabs lists each tab in order with its own adapter and model, marks the active
+    /// one, shows a dash where none is set, and changes no tab.
+    #[test]
+    fn tabs_card_lists_each_tab_with_its_own_adapter() {
+        let mut w = workspace();
+        crate::live::set_status(w.view_mut(), "ADAPTER", "anthropic-api");
+        crate::live::set_status(w.view_mut(), "MODEL", "claude-x");
+        open_tab(&mut w, "second");
+        open_tab(&mut w, "third");
+        crate::live::set_status(w.view_mut(), "ADAPTER", "chatgpt");
+        crate::live::set_status(w.view_mut(), "MODEL", "gpt-x");
+        w.active = 1;
+        send(&mut w, "/tabs");
+        let lines = match w.view().transcript.last() {
+            Some(Item::Tips { label, lines }) if label == "TABS" => lines.clone(),
+            other => panic!("no TABS card: {other:?}"),
+        };
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with(' ') && lines[0].contains("anthropic-api") && lines[0].contains("claude-x"), "{}", lines[0]);
+        assert!(lines[1].starts_with('*') && lines[1].contains("second") && lines[1].contains(" - "), "{}", lines[1]);
+        assert!(lines[2].contains("chatgpt") && lines[2].contains("gpt-x"), "{}", lines[2]);
+        // The tabs themselves are unchanged: the source keeps its adapter, the new tab has none.
+        w.active = 0;
+        assert!(w.view().status.fields.iter().any(|(k, v)| k == "ADAPTER" && v == "anthropic-api"));
+        w.active = 1;
+        assert!(!w.view().status.fields.iter().any(|(k, _)| k == "ADAPTER"));
     }
 
     #[test]

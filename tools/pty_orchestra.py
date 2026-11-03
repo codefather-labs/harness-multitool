@@ -46,7 +46,7 @@ def tool(server, name, arguments):
     open({results!r}, "a").write(json.dumps({{"tool": name, "error": reply["isError"], "text": reply["content"][0]["text"]}}) + "\\n")
 for line in sys.stdin:
     prompt = json.loads(line)["message"]["content"][0]["text"]
-    open({log!r}, "a").write(json.dumps({{"pid": os.getpid(), "prompt": prompt}}) + "\\n")
+    open({log!r}, "a").write(json.dumps({{"pid": os.getpid(), "prompt": prompt, "args": args}}) + "\\n")
     for said in prompt.split("\\n"):
         if said.startswith("call "):
             server, name, arguments = said[5:].split(" ", 2)
@@ -56,7 +56,7 @@ for line in sys.stdin:
     print(json.dumps({{"type": "result", "is_error": False, "stop_reason": "end_turn", "total_cost_usd": 0.0, "usage": {{}}}}), flush=True)
 ''')
 os.chmod(fake, 0o755)
-open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovider="claude-code"\nmodel="m"\nplan_first="off"\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\n\n[session.providers.local]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.local]\nnone=true\n')
+open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovider="claude-code"\nmodel="m"\nplan_first="off"\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\nenvironment="user"\npermissions="skip"\n\n[session.providers.local]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.local]\nnone=true\n')
 build = f"cp {sys.argv[1]!r} {bin_ + '.new'!r} && mv {bin_ + '.new'!r} {bin_!r}"
 env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", MULTITOOL_RELOAD_BUILD=build)
 pid, fd = pty.fork()
@@ -121,6 +121,13 @@ got = [p for p in prompts() if "ready for work" in p][0]; assert "agent:first-ag
 print("its readiness reached the master as data:", got[:80])
 call("mode", "agent_spawn", {"nick": "second", "adapter": "claude-code", "model": "m"})
 until("the second is ready", lambda: "second is ready" in told()); pump(0.8)
+# CON-108: on a row with the user's environment and no prompts, the user's own conversation keeps them; an agent runs isolated.
+runs = [json.loads(line) for line in open(log)]
+agent = [r for r in runs if "you are ready to take work" in r["prompt"]][-1]["args"]; own = [r for r in runs if "you are ready to take work" not in r["prompt"]][0]["args"]
+assert "--dangerously-skip-permissions" in own and "--setting-sources" not in own, own
+assert "--dangerously-skip-permissions" not in agent and "--setting-sources" in agent and "--strict-mcp-config" in agent, agent
+allowed = agent[agent.index("--allowedTools") + 1]; assert all(t in allowed for t in ["Edit(./**)", "Bash(cargo test:*)", "mcp__harness__*", "mcp__mode__*"]), allowed
+print("an agent runs isolated with its basics; the user's own row keeps its choice")
 shot("orchestra-group.png")
 sent = call("harness", "agent_send", {"to": "first-agent", "text": "your task: talk to the other"}); assert not sent["error"], sent
 until("the master's word arrives as the user's", lambda: any(i.get("role") == "user" and "your task" in json.dumps(i, ensure_ascii=False) and "data from outside" not in json.dumps(i, ensure_ascii=False) for b in bodies for i in b["input"]))

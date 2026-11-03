@@ -49,6 +49,7 @@ fn record(e: journal::Entry) -> JournalRecord {
         flags: e.flags.iter().map(|f| f.flag.clone()).collect(),
         blocked_by: e.blocked_by.iter().map(|id| *id as u64).collect(),
         blocker_dropped: e.blocker_dropped.iter().map(|id| *id as u64).collect(),
+        proofs: Vec::new(),
     }
 }
 
@@ -113,7 +114,16 @@ impl Memory for JournalMemory {
     }
 
     fn journal_get(&self, id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>> {
-        ready(journal::get(&self.conn.borrow(), id as i64).map(|e| e.map(record)).map_err(fail))
+        let conn = self.conn.borrow();
+        let found = journal::get(&conn, id as i64).and_then(|entry| {
+            entry
+                .map(|entry| {
+                    let proofs = journal::proofs_of(&conn, entry.id)?;
+                    Ok(JournalRecord { proofs, ..record(entry) })
+                })
+                .transpose()
+        });
+        ready(found.map_err(fail))
     }
 
     fn journal_close(&self, id: u64, resolution: &str) -> BoxFuture<'_, PluginResult<()>> {
@@ -250,6 +260,16 @@ impl JournalMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A master checks W-42 by reading the entry.
+    #[test]
+    fn one_entry_read_answers_its_proofs() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
+        let entry = JournalEntry { blocked_by: None, proofs: vec![".harness/run.log".into()], body: "Verifies the run, what it showed".into(), category: "verification".into(), tags: vec!["t".into()], flags: vec!["verified".into()], feature: None, salience: None };
+        let added = pollster_free(m.journal_add(entry)).unwrap();
+        assert_eq!(pollster_free(m.journal_get(added.id)).unwrap().unwrap().proofs, [".harness/run.log"]);
+    }
 
     #[test]
     fn the_store_answers_through_the_interface() {

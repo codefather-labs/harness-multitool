@@ -366,6 +366,24 @@ pub fn real_factory(settings: Settings, root: String, data_dir: PathBuf) -> Fact
 pub struct Choice {
     pub provider: String,
     pub model: String,
+    /// It is an agent of an orchestra: on an agent backend it runs isolated (CON-108).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slave: bool,
+}
+
+/// A slave runs on the harness alone: none of the user's own settings, hooks and rules, never with
+/// permissions skip, and with its basics as the program's allowed tools (CON-108, CON-103).
+fn isolate_slave(settings: &mut Settings) {
+    let Some(row) = settings.providers.get_mut(&settings.provider) else { return };
+    if row["kind"] != "claude-code" {
+        return;
+    }
+    if let Some(row) = row.as_object_mut() {
+        row.remove("environment");
+        row.remove("permissions");
+        #[cfg(feature = "claude-code")]
+        row.insert("allowed_tools".to_string(), json!(harness_backend_claude_code::SLAVE_TOOLS));
+    }
 }
 
 /// What a window's tabs run on, where it is not the default.
@@ -397,7 +415,13 @@ impl Default for Host {
 pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host) -> Factory {
     Arc::new(move |tab| {
         let settings = match host.choices.lock().ok().and_then(|choices| choices.get(&tab).cloned()) {
-            Some(choice) => Settings { provider: choice.provider, model: choice.model, ..settings.clone() },
+            Some(choice) => {
+                let mut chosen = Settings { provider: choice.provider, model: choice.model, ..settings.clone() };
+                if choice.slave {
+                    isolate_slave(&mut chosen);
+                }
+                chosen
+            }
             None => settings.clone(),
         };
         let data = data_dir.to_string_lossy().into_owned();

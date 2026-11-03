@@ -1521,7 +1521,7 @@ fn attach_tags(conn: &Connection, entries: &mut [Entry]) -> Result<()> {
     Ok(())
 }
 
-fn proofs_of(conn: &Connection, id: i64) -> Result<Vec<String>> {
+pub fn proofs_of(conn: &Connection, id: i64) -> Result<Vec<String>> {
     let mut stmt = conn.prepare_cached("SELECT proof FROM entry_proofs WHERE entry_id = ?1 ORDER BY rowid")?;
     let rows = stmt.query_map(params![id], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
