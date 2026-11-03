@@ -8,6 +8,9 @@ use harness_api::*;
 /// How many binding entries go into the system prompt, and how long each may be.
 const BINDING_ENTRIES: usize = 40;
 const BINDING_CHARS: usize = 400;
+/// The newest open work a prompt names, each by its start (W-10).
+const OPEN_ENTRIES: usize = 12;
+const OPEN_CHARS: usize = 110;
 /// How much of the asks a cut left out the note repeats.
 const ASK_CHARS: usize = 160;
 const LAST_ASK_CHARS: usize = 4000;
@@ -119,6 +122,14 @@ impl JournalAware {
             system.push_str("\n\nSpecifications and constraints of this project, from its journal. They bind your work; search the journal for more:");
             for entry in binding {
                 let body: String = entry.body.chars().take(BINDING_CHARS).collect();
+                system.push_str(&format!("\n- #{}: {}", entry.id, body.replace('\n', " ")));
+            }
+        }
+        let open = memory.journal_list(JournalFilter { category: None, flags: vec!["todo".to_string(), "question".to_string(), "problem".to_string()], open: Some(true), limit: OPEN_ENTRIES }).await.unwrap_or_default();
+        if !open.is_empty() {
+            system.push_str("\n\nThe newest open work of this project; journal_get reads one, journal_agenda shows the rest:");
+            for entry in open {
+                let body: String = entry.body.chars().take(OPEN_CHARS).collect();
                 system.push_str(&format!("\n- #{}: {}", entry.id, body.replace('\n', " ")));
             }
         }

@@ -278,7 +278,7 @@ impl ClaudeCode {
         } else {
             match &self.prompt_tool {
                 // Asking and planning are the harness's there: the program's own would come as prompts.
-                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode".to_string()]),
+                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode,mcp__harness__telegram_send".to_string(), "--settings".to_string(), r#"{"useAutoModeDuringPlan":false}"#.to_string()]),
                 None => args.extend(["--permission-prompts".to_string(), "none".to_string()]),
             }
             args.extend(["--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
@@ -700,7 +700,8 @@ mod tests {
         let flag = |flag: &str| asking[asking.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag}: {asking:?}")) + 1].clone();
         assert_eq!(flag("--permission-prompts"), "host");
         assert_eq!(flag("--permission-prompt-tool"), "mcp__mode__permission_ask");
-        assert!(flag("--disallowedTools").contains("AskUserQuestion"));
+        assert!(flag("--disallowedTools").contains("AskUserQuestion") && flag("--disallowedTools").contains("telegram_send"));
+        assert!(flag("--settings").contains("useAutoModeDuringPlan"), "its classifier must not answer for the master");
         assert_eq!(args[at("--model") + 1], "m1");
         assert!(!args.iter().any(|a| a.contains("secret prompt") || a == "--resume" || a == "--bare" || a == "--permission-mode" || a == "--system-prompt"), "{args:?}");
 

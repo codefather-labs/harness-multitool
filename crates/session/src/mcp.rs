@@ -141,6 +141,12 @@ fn answer(message: &Value, tools: &[Rc<dyn Tool>], serving: &Serving) -> Option<
                 return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("no tool {name}")}}));
             };
             let input = if params["arguments"].is_object() { params["arguments"].clone() } else { json!({}) };
+            // What the program itself sends is its own to shape.
+            let unknown = harness_core::engine::unknown_arguments(&tool.spec().schema, &input);
+            if !unknown.is_empty() && name != "permission_ask" {
+                let text = format!("invalid arguments: {name} has no argument {}", unknown.join(", "));
+                return Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": text}], "isError": true}}));
+            }
             // What it may do was the agent's own permissions to settle.
             let cx = ToolContext { platform: harness_platform_native::platform(serving.data_dir.clone()), granted: tool.capabilities(&input).unwrap_or_default(), root: serving.root.clone() };
             let output = pollster::block_on(tool.execute(&input, &cx));

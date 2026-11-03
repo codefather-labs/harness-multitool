@@ -203,6 +203,37 @@ struct ProgramAsk {
     answer: Option<String>,
 }
 
+/// What the harness itself answers of a slave's program, whose mode lags its own: its own tools; the
+/// basics (CON-103); while planning, reading, and writing only docs and debug notes (CON-108).
+fn program_may(tool: &str, input: &Value, root: &str, planning: bool) -> bool {
+    use harness_api::Capability;
+    if tool.starts_with("mcp__harness__") || tool.starts_with("mcp__mode__") {
+        return true;
+    }
+    let text = |field: &str| input[field].as_str().unwrap_or_default().to_string();
+    let capability = match tool {
+        "Read" => Capability::ReadPath(text("file_path")),
+        "Glob" | "Grep" => Capability::ReadPath(input["path"].as_str().unwrap_or(root).to_string()),
+        "Edit" | "Write" | "NotebookEdit" => Capability::WritePath(text("file_path")),
+        "Bash" => Capability::Command(text("command")),
+        _ => return false,
+    };
+    if !harness_core::plan::slave_basics(std::slice::from_ref(&capability), root) {
+        return false;
+    }
+    if !planning {
+        return true;
+    }
+    match &capability {
+        Capability::Command(command) => harness_core::plan::read_only_command(command),
+        Capability::WritePath(path) => {
+            let inside = path.strip_prefix(root).unwrap_or(path).trim_start_matches(['/', '\\']);
+            inside.starts_with("docs/") || inside.starts_with(".harness/")
+        }
+        _ => true,
+    }
+}
+
 /// What an answer of always covers: this tool, on this command or file.
 fn ask_key(tool: &str, input: &Value) -> String {
     let target = ["command", "file_path", "path", "url"].iter().find_map(|field| input[*field].as_str()).map_or_else(|| input.to_string(), str::to_string);
@@ -427,7 +458,9 @@ impl DaemonHost {
                 "mode__agent_read" => {
                     let master = self.master_of_tab(window, tab)?;
                     let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
-                    Ok(json!({"log": read_agent(&self.data_dir.to_string_lossy(), &window.root, &slave)}))
+                    // Its run so far is not in the log until the run ends.
+                    let live = windows.values().find_map(|w| w.sessions.open().into_iter().find(|(_, s)| *s == slave).and_then(|(their_tab, _)| w.said.get(&their_tab).cloned())).unwrap_or_default();
+                    Ok(json!({"log": read_agent(&self.data_dir.to_string_lossy(), &window.root, &slave, &live)}))
                 }
                 "mode__agent_answer" => {
                     let master = self.master_of_tab(window, tab)?;
@@ -1092,8 +1125,9 @@ impl ConversationHost for DaemonHost {
         if name == "slave_ask" {
             let session = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)).ok_or("only an agent of an orchestra asks its master")?;
             let (tool, input) = (op["tool"].as_str().unwrap_or_default(), &op["input"]);
+            let planning = self.orchestra.lock().expect("orchestra").planning.contains(&session);
             let key = ask_key(tool, input);
-            if window.program_allowed.contains(&(tab, key.clone())) {
+            if program_may(tool, input, &window.root, planning) || window.program_allowed.contains(&(tab, key.clone())) {
                 return Ok(json!({"answer": "always"}));
             }
             let id = self.next_ask.fetch_add(1, Ordering::SeqCst);
@@ -1557,7 +1591,7 @@ fn brief_input(input: &Value) -> String {
 }
 
 /// What an agent has done, line by line, for its master to check it by.
-fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
+fn read_agent(data_dir: &str, root: &str, session: &str, live: &[Value]) -> Vec<String> {
     const LIMIT: usize = 300;
     let short = |text: &str| {
         let text: String = text.chars().take(300).collect();
@@ -1571,7 +1605,10 @@ fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
         }
         said.clear();
     };
-    for entry in crate::read_log(data_dir, root, session) {
+    let mut log = crate::read_log(data_dir, root, session);
+    let seen = log.last().map_or(0, |entry| entry.seq);
+    log.extend(live.iter().filter_map(|said| harness_api::event::from_line(said["line"].as_str()?).ok()).filter(|entry| entry.seq > seen));
+    for entry in &log {
         match &entry.event {
             harness_api::Event::TextDelta { text } => said.push_str(text),
             harness_api::Event::UserMessage { text } => {
@@ -1597,12 +1634,33 @@ fn read_agent(data_dir: &str, root: &str, session: &str) -> Vec<String> {
 
 /// What an agent said last.
 fn last_words(data_dir: &str, root: &str, session: &str) -> String {
-    read_agent(data_dir, root, session).iter().rev().find_map(|line| line.strip_prefix("said: ").map(str::to_string)).unwrap_or_default()
+    read_agent(data_dir, root, session, &[]).iter().rev().find_map(|line| line.strip_prefix("said: ").map(str::to_string)).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod read_agent_tests {
     use super::*;
+
+    /// CON-108: what the harness answers of a slave's program by itself, and what goes to its master.
+    #[test]
+    fn a_slaves_program_asks_its_master_only_beyond_the_basics() {
+        let root = "/p";
+        let may = |tool: &str, input: Value, planning: bool| program_may(tool, &input, root, planning);
+        assert!(may("mcp__harness__journal_add", json!({}), true));
+        assert!(may("mcp__mode__plan_exit", json!({}), true));
+        assert!(may("Edit", json!({"file_path": "/p/src/a.rs"}), false));
+        assert!(!may("Edit", json!({"file_path": "/p/src/a.rs"}), true), "plan mode writes no code");
+        assert!(may("Write", json!({"file_path": "/p/docs/a.md"}), true));
+        assert!(may("Write", json!({"file_path": "/p/.harness/debug/a.py"}), true));
+        assert!(!may("Edit", json!({"file_path": "/etc/passwd"}), false));
+        assert!(!may("Write", json!({"file_path": "/p/../etc/a"}), false));
+        assert!(may("Bash", json!({"command": "cargo test -p x"}), false));
+        assert!(!may("Bash", json!({"command": "cargo test -p x"}), true), "not a reading command");
+        assert!(may("Bash", json!({"command": "git status"}), true));
+        assert!(!may("Bash", json!({"command": "python3 x.py"}), false));
+        assert!(!may("Bash", json!({"command": "cargo test | tail"}), false));
+        assert!(!may("WebFetch", json!({"url": "https://x"}), false));
+    }
 
     /// W-3, W-42: what comes after a long field still shows, so a master can check it.
     #[test]

@@ -272,9 +272,15 @@ fn main() -> Result<()> {
         Command::Debug { action: DebugAction::Screenshot { out } } => {
             let path = std::env::current_dir()?.join(out.unwrap_or_else(|| std::env::temp_dir().join(format!("multitool-screen-{}.png", std::process::id()))));
             // The window writes the file into this folder; if it is missing, no picture can come, so say that now.
-            if !path.parent().is_some_and(|dir| dir.is_dir()) {
+            let Some(dir) = path.parent().filter(|dir| dir.is_dir()) else {
                 bail!("the folder of {} does not exist", path.display());
+            };
+            // A folder the window cannot write into would only show as a 10 s timeout (journal#554): probe it now.
+            let probe = dir.join(format!(".multitool-probe-{}", std::process::id()));
+            if let Err(e) = std::fs::File::create_new(&probe) {
+                bail!("cannot write the picture to {}: {e}", dir.display());
             }
+            let _ = std::fs::remove_file(&probe);
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("the daemon is not running, so no window is open"))?;
             let _ = std::fs::remove_file(&path);
             client.conversation_op(&serde_json::json!({"window": "-", "op": "screenshot", "text": path})).map_err(|e| anyhow!(e))?;

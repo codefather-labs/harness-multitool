@@ -99,6 +99,12 @@ pub fn without_empty_optionals(schema: &serde_json::Value, input: &serde_json::V
     serde_json::Value::Object(given.iter().filter(|(name, value)| required(name) || !empty(value)).map(|(name, value)| (name.clone(), value.clone())).collect())
 }
 
+/// What a call gave that its tool's schema does not name: it would be lost with no word said.
+pub fn unknown_arguments(schema: &serde_json::Value, input: &serde_json::Value) -> Vec<String> {
+    let (Some(known), Some(given)) = (schema["properties"].as_object(), input.as_object()) else { return Vec::new() };
+    given.keys().filter(|name| !known.contains_key(*name)).cloned().collect()
+}
+
 /// How a run of the loop ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -978,6 +984,14 @@ impl Engine {
         let tool = self.parts.tools.get(&call.name).cloned();
         let settled = tool.as_ref().map(|t| ToolCall { input: without_empty_optionals(&t.spec().schema, &call.input), ..call.clone() });
         let call = settled.as_ref().unwrap_or(call);
+        if let Some(tool) = &tool {
+            let unknown = unknown_arguments(&tool.spec().schema, &call.input);
+            if !unknown.is_empty() {
+                self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+                self.emit(Event::ToolResult { id: call.id.clone(), output: format!("invalid arguments: {} has no argument {}", call.name, unknown.join(", ")), is_error: true });
+                return;
+            }
+        }
         let capabilities = match tool.as_ref().map(|t| t.capabilities(&call.input)) {
             Some(Ok(capabilities)) => capabilities,
             Some(Err(reason)) => {
@@ -1102,6 +1116,10 @@ mod empty_optionals {
         let schema = serde_json::json!({"properties": {"body": {}, "blocked_by": {}, "path": {}, "on": {}, "limit": {}}, "required": ["body", "count"]});
         let input = serde_json::json!({"body": "", "count": 0, "blocked_by": 0, "path": "", "on": false, "limit": 5, "note": null});
         assert_eq!(without_empty_optionals(&schema, &input), serde_json::json!({"body": "", "count": 0, "on": false, "limit": 5}));
+        let named = serde_json::json!({"properties": {"title": {"type": "string"}}});
+        assert_eq!(unknown_arguments(&named, &serde_json::json!({"title": "t", "body": "lost"})), ["body"]);
+        assert!(unknown_arguments(&named, &serde_json::json!({"title": "t"})).is_empty());
+        assert!(unknown_arguments(&serde_json::json!({}), &serde_json::json!({"any": 1})).is_empty());
     }
 }
 

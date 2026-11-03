@@ -148,11 +148,17 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
             },
             |memory, input| {
                 Box::pin(async move {
+                    let category = require(input, "category")?.to_string();
+                    let mut flags = strings(&input["flags"]);
+                    // An entry of these kinds is open work: without its flag nothing would show it.
+                    if ["todo", "question", "problem"].contains(&category.as_str()) && !flags.contains(&category) {
+                        flags.push(category.clone());
+                    }
                     let entry = JournalEntry {
                         body: require(input, "body")?.to_string(),
-                        category: require(input, "category")?.to_string(),
+                        category,
                         tags: strings(&input["tags"]),
-                        flags: strings(&input["flags"]),
+                        flags,
                         salience: input["salience"].as_str().map(str::to_string),
                         feature: input["feature"].as_str().map(str::to_string),
                         blocked_by: input["blocked_by"].as_u64(),

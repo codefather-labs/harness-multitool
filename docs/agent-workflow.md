@@ -21,7 +21,7 @@ Read this file before acting, and again after a compaction or a resume: the harn
 
 | # | Situation | Do | The log shows |
 |---|---|---|---|
-| W-10 | A fresh context: start, resume, compaction. | Read this file, then `journal_agenda`. Read what bears on the task with `journal_search` and `journal_get`. | `journal_agenda` before the first write. |
+| W-10 | A fresh context: start, resume, compaction. | Read this file. Your prompt already holds the binding entries, the maps and the newest open work. Read what bears on the task with `journal_search` and `journal_get`, and `journal_agenda` for the rest. | One of those before the first write. |
 | W-11 | Before a decision that is not trivial. | `journal_search` for an earlier one. | `journal_search` before the entry that records it. |
 | W-12 | You decide something, or the user does. | `journal_add`, category `decision`: who, what, why, what was rejected. One entry each, when it happens. | An entry per decision. |
 | W-13 | You learn something not obvious, or an assumption falls. | `journal_add`, `finding` or `assumption-falsified`, naming the file and line. | An entry per finding. |
