@@ -724,6 +724,8 @@ pub fn protocol_for(data_dir: Option<&str>, root: &str, mut steps: Vec<String>) 
 pub struct Sessions {
     /// Each tab's messages not yet seen by its agent; it outlives the tab's thread.
     inboxes: HashMap<u64, harness_core::Inbox>,
+    /// Mode changes for a run that is going on, by tab (journal#603).
+    modes: HashMap<u64, harness_core::Modes>,
     factory: Factory,
     root: String,
     data_dir: Option<String>,
@@ -755,7 +757,7 @@ impl Sessions {
     pub fn new(factory: Factory, root: String) -> Self {
         let (to_frontend, from_sessions) = channel();
         let started_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        Sessions { inboxes: HashMap::new(), factory, root, data_dir: None, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
+        Sessions { modes: HashMap::new(), inboxes: HashMap::new(), factory, root, data_dir: None, handles: HashMap::new(), to_frontend, from_sessions, started_ms }
     }
 
     /// Where approvals are kept; without it a project's checks never run.
@@ -919,6 +921,9 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
+            if handle.running.load(Ordering::SeqCst) {
+                self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::StepDebug(on));
+            }
             let _ = handle.prompts.send(Input::StepDebug(on));
         }
     }
@@ -929,6 +934,9 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
+            if handle.running.load(Ordering::SeqCst) {
+                self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::Plan(on));
+            }
             let _ = handle.prompts.send(Input::Plan(on));
         }
     }
@@ -999,6 +1007,8 @@ impl Sessions {
         let stored_name = session.clone();
         let inbox = self.inboxes.entry(tab).or_default().clone();
         let inbox_for_thread = inbox.clone();
+        let modes = self.modes.entry(tab).or_default().clone();
+        let modes_here = modes.clone();
         let (running, retired) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (running_here, retired_here) = (running.clone(), retired.clone());
         let thread = std::thread::spawn(move || {
@@ -1018,7 +1028,7 @@ impl Sessions {
                 }
             };
             let frontend = Rc::new(ChannelFrontend { tab, to_frontend: to_frontend.clone(), answers: answer_rx });
-            let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag).with_inbox(inbox_for_thread);
+            let engine = Engine::new(parts, frontend, session, root).with_stop_flag(flag).with_inbox(inbox_for_thread).with_modes(modes_here);
             if resuming {
                 match pollster::block_on(engine.load_log()) {
                     Ok(entries) => {
@@ -1056,6 +1066,8 @@ impl Sessions {
                     }
                 };
                 if let Input::Plan(on) = input {
+                    // Between runs this is the last word: what a run left unread is older.
+                    modes.lock().expect("modes").clear();
                     pollster::block_on(engine.set_plan_mode(on, "user"));
                     continue;
                 }
@@ -1064,6 +1076,7 @@ impl Sessions {
                     continue;
                 }
                 if let Input::StepDebug(on) = input {
+                    modes.lock().expect("modes").clear();
                     pollster::block_on(engine.set_step_debug(on, "user"));
                     continue;
                 }

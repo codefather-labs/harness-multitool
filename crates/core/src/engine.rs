@@ -44,6 +44,16 @@ pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>);
 /// What the user sent and the agent has not seen yet, shared with the thread that takes input.
 pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
 
+/// A mode changed from outside a run that is going on (journal#603).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeChange {
+    Plan(bool),
+    StepDebug(bool),
+}
+
+/// Mode changes waiting for the run to read them.
+pub type Modes = Arc<std::sync::Mutex<std::collections::VecDeque<ModeChange>>>;
+
 impl StopFlag {
     pub fn stop(&self) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -136,6 +146,7 @@ pub struct Engine {
     /// A `Stop` hook asked the run to go on.
     go_on: std::cell::Cell<bool>,
     inbox: Inbox,
+    modes: Modes,
     parts: Parts,
     frontend: Rc<dyn Frontend>,
     session: String,
@@ -161,6 +172,7 @@ impl Engine {
             failures: RefCell::default(),
             go_on: std::cell::Cell::new(false),
             inbox: Inbox::default(),
+            modes: Modes::default(),
             parts,
             frontend,
             session: session.into(),
@@ -237,6 +249,12 @@ impl Engine {
     }
 
     /// Messages the user sent while a run lasts: woven in at the next step boundary.
+    /// Where mode changes made during a run wait for it to read them.
+    pub fn with_modes(mut self, modes: Modes) -> Self {
+        self.modes = modes;
+        self
+    }
+
     pub fn with_inbox(mut self, inbox: Inbox) -> Self {
         self.inbox = inbox;
         self
@@ -453,6 +471,13 @@ impl Engine {
         let _ = self.flush().await;
     }
 
+    async fn set_mode(&self, change: ModeChange) {
+        match change {
+            ModeChange::Plan(on) => self.set_plan_mode(on, "user").await,
+            ModeChange::StepDebug(on) => self.set_step_debug(on, "user").await,
+        }
+    }
+
     /// Switches plan mode (ADR 0016). `by` is who did it, for the log.
     pub async fn set_plan_mode(&self, on: bool, by: &str) {
         if self.state.borrow().plan_mode == on {
@@ -616,6 +641,14 @@ impl Engine {
             let unsaid = Cell::new((woken && !state.reminders.is_empty()).then(|| state.reminders.join(" ")));
             // A message that came during the run goes to it, and into the log as it goes.
             let next_message = || -> Option<String> {
+                // A mode changed over MCP during the run is said now, not when the run ends: what
+                // the window shows and the log follow it (journal#603).
+                let changes: Vec<ModeChange> = self.modes.lock().expect("modes").drain(..).collect();
+                for change in changes {
+                    let mut set = std::pin::pin!(self.set_mode(change));
+                    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                    while set.as_mut().poll(&mut cx).is_pending() {}
+                }
                 if let Some(text) = unsaid.take() {
                     self.emit(Event::Inbound { label: harness_api::event::HARNESS_LABEL.to_string(), text: text.clone() });
                     return Some(format!("[from the harness] {text}"));

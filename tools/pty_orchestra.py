@@ -2,7 +2,7 @@
 """Debug: orchestration mode (CON-100), in a real TUI. The master is a fake Claude Code; a slave runs on a fake Responses
 server, another on the fake Claude Code. Reads no screen, so it needs no pyte. Needs --features claude-code.
 Usage: tools/pty_orchestra.py <absolute path to multitool> [a directory to keep the pictures in]"""
-import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
+import glob, sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import fcntl, http.server, json, pty, select, shutil, struct, subprocess, tempfile, termios, threading, time
 
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-or-root")); home = tempfile.mkdtemp(prefix="mt-or-home"); os.makedirs(home + "/cfg/harness-multitool"); os.makedirs(home + "/here")
@@ -113,7 +113,10 @@ models = json.loads(call("mode", "agent_models", {})["text"])["adapters"]; names
 task = json.loads(call("harness", "journal_add", {"body": "the first agent's work", "category": "todo", "tags": ["t"]})["text"]); assert "todo" in task["flags"], task
 second_task = json.loads(call("harness", "journal_add", {"body": "the second agent's work", "category": "bug", "flags": ["todo"], "tags": ["t"]})["text"])
 plain = json.loads(call("harness", "journal_add", {"body": "holds no work", "category": "finding", "tags": ["t"]})["text"])
-for args, why in [({}, "task is required"), ({"task": plain["id"]}, "no open work"), ({"task": 999999}, "there is no journal")]:
+# journal#587: a verified entry is a mark, not work, so it is no task.
+open(root + "/proof.txt", "w").write("a verified entry's proof\n")
+verified = json.loads(call("harness", "journal_add", {"body": "verifies the orchestra", "category": "verification", "flags": ["verified"], "proof": ["proof.txt"], "tags": ["t"]})["text"])
+for args, why in [({}, "task is required"), ({"task": plain["id"]}, "no open work"), ({"task": verified["id"]}, "no open work"), ({"task": 999999}, "there is no journal")]:
     no = call("mode", "agent_spawn", {"nick": "x", "adapter": "local", "model": "m", **args}); assert no["error"] and why in no["text"], no
 print("no spawn without an open entry")
 bad = call("mode", "agent_spawn", {"nick": "x", "adapter": "chatgpt", "model": "m", "task": task["id"]}); assert bad["error"] and "not authorized" in bad["text"], bad
@@ -182,6 +185,13 @@ n = len(answers_of("permission_ask")); words = told().count("asks your permissio
 until("code passes once it left", lambda: len(answers_of("permission_ask")) > n); assert json.loads(answers_of("permission_ask")[-1]["text"])["behavior"] == "allow" and told().count("asks your permission: Edit") == words
 assert not any("--permission-mode" in json.loads(line)["args"] for line in open(log) if "Your task is journal#" in json.loads(line)["prompt"] or "plan_enter" in json.loads(line)["prompt"]), "its program never plans by itself"
 print("while it planned its code went to the master, after that with no one asked, in its program's default mode")
+# journal#603: the mode shows when it changes, not when the run ends.
+second_log = [f for f in glob.glob(home + "/data/harness-multitool/sessions/*/*.jsonl") if f"Your task is journal#{second_task['id']}" in open(f).read()][0]
+events = [json.loads(line) for line in open(second_log)]
+entered = next(i for i, e in enumerate(events) if e.get("event") == "tool_requested" and e["call"]["name"].endswith("plan_enter"))
+shown = next(i for i, e in enumerate(events) if i > entered and e.get("event") == "plan_mode")
+assert not any(e.get("event") == "turn_finished" for e in events[entered:shown]), [e.get("event") for e in events[entered:shown]]
+print("the plan mode was in the log before its run ended")
 # CON-108: what its program would ask a person goes to the master and waits for the master's answer.
 def program_asks(command):
     n = len([a for a in answers() if a["tool"] == "permission_ask"])

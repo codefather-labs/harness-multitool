@@ -50,7 +50,8 @@ fn record(e: journal::Entry) -> JournalRecord {
         blocked_by: e.blocked_by.iter().map(|id| *id as u64).collect(),
         blocker_dropped: e.blocker_dropped.iter().map(|id| *id as u64).collect(),
         proofs: Vec::new(),
-        open: e.flags.iter().any(|f| f.open),
+        // Only work items are open tasks: a mark (verified, specification, ...) never is (journal#587).
+        open: e.flags.iter().any(|f| f.open && journal::closable(&f.flag)),
     }
 }
 
@@ -270,6 +271,27 @@ mod tests {
         let entry = JournalEntry { blocked_by: None, proofs: vec![".harness/run.log".into()], body: "Verifies the run, what it showed".into(), category: "verification".into(), tags: vec!["t".into()], flags: vec!["verified".into()], feature: None, salience: None };
         let added = pollster_free(m.journal_add(entry)).unwrap();
         assert_eq!(pollster_free(m.journal_get(added.id)).unwrap().unwrap().proofs, [".harness/run.log"]);
+    }
+
+    /// journal#587: `open` on a record counts work flags only. A verified or a specification
+    /// entry is no open task (CON-109), and a closed todo is no open task either.
+    #[test]
+    fn open_counts_only_work_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
+        let entry = |body: &str, flags: &[&str]| JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "finding".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None };
+        let verified = JournalEntry { proofs: vec![".harness/run.log".into()], ..entry("verifies the run", &["verified"]) };
+        let verified = pollster_free(m.journal_add(verified)).unwrap().id;
+        let spec = pollster_free(m.journal_add(entry("the rule", &["specification", "constraint"]))).unwrap().id;
+        let todo = pollster_free(m.journal_add(entry("open work", &["todo"]))).unwrap().id;
+        let closed = pollster_free(m.journal_add(entry("dropped work", &["todo"]))).unwrap().id;
+        pollster_free(m.more(MemoryOp::JournalAbandon { id: closed, resolution: "dropped".into() })).unwrap();
+
+        let open = |id| pollster_free(m.journal_get(id)).unwrap().unwrap().open;
+        assert!(!open(verified), "a verified entry is no open task");
+        assert!(!open(spec), "a specification entry is no open task");
+        assert!(open(todo), "an open todo is an open task");
+        assert!(!open(closed), "a closed todo is no open task");
     }
 
     #[test]
