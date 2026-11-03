@@ -257,6 +257,8 @@ pub enum MemoryOp {
     /// Closes a todo whose work was dropped: no evidence is needed, the resolution says why.
     JournalAbandon { id: u64, resolution: String },
     JournalBranch { id: u64 },
+    /// The entries linked to `ids`, as id, title and link, a page of them (CON-118). `limit` 0 is one whole page.
+    JournalGraph { ids: Vec<u64>, depth: u64, offset: usize, limit: usize },
     JournalLink { from: u64, to: u64, kind: String },
     JournalTags { category: Option<String> },
     MapEdit { map: u64, node: u64, text: Option<String>, kind: Option<String> },

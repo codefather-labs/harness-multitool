@@ -401,7 +401,10 @@ fn memory_words(tool: &str, output: &str) -> Option<ToolBody> {
         "journal_search" | "journal_list" => {
             let entries: Vec<&Value> = answer["entries"].as_array()?.iter().collect();
             let total = answer["total"].as_u64().map_or(entries.len(), |t| t as usize);
-            listed(entries, total)
+            match (listed(entries, total), answer["linked_total"].as_u64()) {
+                (ToolBody::Output { lines, numbered, more, .. }, Some(linked)) if linked > 0 => ToolBody::Output { label: Some(format!("{linked} linked")), lines, numbered, more },
+                (body, _) => body,
+            }
         }
         "journal_branch" => {
             let entries: Vec<&Value> = answer["entries"].as_array()?.iter().map(|e| &e["entry"]).collect();
@@ -1265,6 +1268,8 @@ mod inbound_tests {
         let Some(ToolBody::Output { lines, more, .. }) = m("journal_list", json!({"total": 40, "entries": many})) else { panic!() };
         assert_eq!((lines.len(), more), (5, 35));
         assert_eq!(note(m("journal_search", json!({"entries": []}))), "Nothing found.");
+        let Some(ToolBody::Output { label, .. }) = m("journal_search", json!({"entries": [entry(1, "x")], "linked_total": 7})) else { panic!() };
+        assert_eq!(label.as_deref(), Some("7 linked"), "CON-118: the card counts the neighbours");
         assert_eq!(note(m("mcp__harness__journal_agenda", json!({"agenda": [{"flag": "todo", "total": 3}, {"flag": "question", "total": 1}]}))), "todo 3  ·  question 1");
         assert_eq!(note(m("mcp__harness__journal_close", json!({"closed": 7}))), "closed: 7");
         let Some(ToolBody::Output { label, lines, .. }) = m("mcp__harness__journal_branch", json!({"state": "open", "entries": [{"entry": entry(4, "the work")}]})) else { panic!() };

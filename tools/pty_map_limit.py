@@ -90,5 +90,27 @@ assert f"holds {LIMIT} nodes" in last_text and f"limit is {LIMIT}" in last_text,
 assert "nothing was added" in last_text and "the user's to change" in last_text, last_text
 print(f"ok: adds under the limit pass; the add at {LIMIT} is refused naming {LIMIT}")
 
+# CON-118: the second row saves the page of linked entries, and search answers neighbours by it, over MCP.
+press("\x1b[B", "\r")                      # the row below, Enter edits: what is typed starts as 100
+for _ in range(3): press("\x7f")
+press("2", "\x13")
+end = time.time() + 10
+while time.time() < end and "search_max_linked = 2" not in open(config).read(): pump(0.1)
+assert "search_max_linked = 2" in open(config).read(), open(config).read()
+print("typed 2 in the second row and saved it")
+adds = [call(100, "journal_add", {"body": "Graph root entry.", "category": "finding", "tags": ["g"]})]
+adds += [call(101 + n, "journal_add", {"body": f"Graph leaf {n}. Cites journal#1 and says more.", "category": "finding", "tags": ["g"]}) for n in range(3)]
+search = lambda i, offset: call(i, "journal_search", {"query": "root", "offset": offset})
+run = subprocess.run([bin_, "mcp", "--root", root], input="\n".join([init, notify] + adds + [search(110, 0), search(111, 2)]) + "\n", env=env, cwd=root, capture_output=True, text=True, timeout=60)
+replies = {r["id"]: r for r in (json.loads(l) for l in run.stdout.splitlines() if l.strip())}
+first = json.loads(replies[110]["result"]["content"][0]["text"]); second = json.loads(replies[111]["result"]["content"][0]["text"])
+print("page 1:", first["linked"], first["linked_total"], first["linked_left"], first.get("next_offset"))
+print("page 2:", second["linked"], second["linked_total"], second["linked_left"], second.get("next_offset"))
+assert first["entries"][0]["body"] == "Graph root entry.", first
+assert [n["id"] for n in first["linked"]] == [2, 3] and first["linked_total"] == 3 and first["linked_left"] == 1 and first["next_offset"] == 2, first
+assert set(first["linked"][0]) == {"id", "title", "via"} and first["linked"][0]["title"] == "Graph leaf 0" and first["linked"][0]["via"] == "#2 cites #1", first
+assert [n["id"] for n in second["linked"]] == [4] and "next_offset" not in second, second
+print("ok: neighbours as id, title and link, a page of the saved size, the rest by next_offset")
+
 os.write(fd, b"\x03"); pump(0.3); os.write(fd, b"\x03"); pump(0.3)
 print("ok")

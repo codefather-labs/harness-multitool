@@ -228,6 +228,10 @@ impl JournalMemory {
                     json!({"id": id, "abandoned": abandoned, "released": released, "note": "These waited for what was just dropped, so what they needed is still not there: re-read each, then lift the link with journal_mark remove, or block it on something else."})
                 }
             }
+            MemoryOp::JournalGraph { ids, depth, offset, limit } => {
+                let seeds: Vec<i64> = ids.iter().map(|id| *id as i64).collect();
+                serde_json::to_value(journal::graph(&conn, &seeds, depth, offset, limit)?)?
+            }
             MemoryOp::JournalReleased { id } => json!({"released": journal::released_by(&conn, id as i64)?}),
             MemoryOp::JournalBranch { id } => match journal::branch(&conn, id as i64)? {
                 Some(branch) => serde_json::to_value(branch)?,

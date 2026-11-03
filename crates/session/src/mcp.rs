@@ -21,6 +21,8 @@ pub struct Serving {
     pub namespace: Option<String>,
     /// The `map_max_nodes` setting as the config file holds it when this server starts (CON-114).
     pub map_max_nodes: u64,
+    /// The `search_max_linked` setting, the same way (CON-118).
+    pub search_max_linked: u64,
 }
 
 /// Asks the window to rebuild and swap the harness, through the daemon.
@@ -100,7 +102,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     };
     let mut out: Vec<Rc<dyn Tool>> = Vec::new();
     for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
-        if let Some(tool) = harness_tools_memory::tool(memory.clone(), name, serving.map_max_nodes) {
+        if let Some(tool) = harness_tools_memory::tool(memory.clone(), name, serving.map_max_nodes, serving.search_max_linked) {
             out.push(Rc::new(tool));
         }
     }
@@ -203,7 +205,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-mcp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root")).unwrap();
-        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 200 };
+        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 200, search_max_linked: 100 };
         let messages = [
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}),
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -233,7 +235,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-mcp-limit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root")).unwrap();
-        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 2 };
+        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 2, search_max_linked: 100 };
         let call = |id: u64, name: &str, arguments: Value| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments}});
         let messages = [
             call(1, "mindmap_new", json!({"title": "limited"})),

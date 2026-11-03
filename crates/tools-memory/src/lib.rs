@@ -52,6 +52,11 @@ fn number(input: &Value, name: &str) -> PluginResult<u64> {
     input[name].as_u64().ok_or_else(|| PluginError::new(format!("{name} must be a number")))
 }
 
+/// A number that may be left out; anything else there is refused.
+fn optional_number(input: &Value, name: &str, default: u64) -> PluginResult<u64> {
+    if input[name].is_null() { Ok(default) } else { number(input, name) }
+}
+
 /// What a memory tool does with its input.
 type Action = for<'a> fn(&'a dyn Memory, &'a Value) -> BoxFuture<'a, PluginResult<Value>>;
 
@@ -63,9 +68,30 @@ pub struct MemoryTool {
     action: Action,
     /// The most nodes a map may hold before a node is refused: the `map_max_nodes` setting, 0 for none (CON-114).
     map_max_nodes: u64,
+    /// The most linked entries an answer holds: the `search_max_linked` setting, 0 for no paging (CON-118).
+    search_max_linked: u64,
 }
 
+/// How far a graph is followed when nobody says (CON-118).
+const GRAPH_DEPTH: u64 = 2;
+
 impl MemoryTool {
+    /// Adds to a found entry's answer what is linked to it (CON-118). The entries stand whatever this says: a
+    /// memory that keeps no links adds nothing.
+    async fn add_graph(&self, answer: &mut Value, input: &Value) -> PluginResult<()> {
+        let ids: Vec<u64> = match self.name {
+            "journal_search" => answer["entries"].as_array().map_or(Vec::new(), |entries| entries.iter().filter_map(|e| e["id"].as_u64()).collect()),
+            _ => answer["id"].as_u64().into_iter().collect(),
+        };
+        let depth = optional_number(input, "depth", GRAPH_DEPTH)?;
+        let offset = optional_number(input, "offset", 0)? as usize;
+        let op = MemoryOp::JournalGraph { ids, depth, offset, limit: self.search_max_linked as usize };
+        if let (Ok(Value::Object(page)), Some(whole)) = (self.memory.more(op).await, answer.as_object_mut()) {
+            whole.extend(page);
+        }
+        Ok(())
+    }
+
     /// Refuses a node past the limit, counting the map's nodes root included (CON-114). Nothing is
     /// added when it refuses. A map that cannot be read is left to the add, which says what is wrong.
     async fn check_node_limit(&self, input: &Value) -> PluginResult<()> {
@@ -106,7 +132,11 @@ impl Tool for MemoryTool {
             if matches!(self.name, "mindmap_add" | "flowchart_add") && let Err(e) = self.check_node_limit(input).await {
                 return ToolOutput::error(e.to_string());
             }
-            output((self.action)(self.memory.as_ref(), input).await)
+            let mut answer = (self.action)(self.memory.as_ref(), input).await;
+            if matches!(self.name, "journal_search" | "journal_get") && let Ok(found) = &mut answer && let Err(e) = self.add_graph(found, input).await {
+                return ToolOutput::error(e.to_string());
+            }
+            output(answer)
         })
     }
 }
@@ -185,9 +215,10 @@ fn flags_with_category(category: &str, mut flags: Vec<String>) -> Vec<String> {
     flags
 }
 
-/// Every memory tool, by name. `map_max_nodes` is the most nodes a map may hold, 0 for none (CON-114).
-pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<MemoryTool> {
-    let tool = |name, description, schema: fn() -> Value, action: Action| Some(MemoryTool { memory: memory.clone(), name, description, schema, action, map_max_nodes });
+/// Every memory tool, by name. `map_max_nodes` is the most nodes a map may hold, 0 for none (CON-114);
+/// `search_max_linked` the most linked entries an answer holds, 0 for no paging (CON-118).
+pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_linked: u64) -> Option<MemoryTool> {
+    let tool = |name, description, schema: fn() -> Value, action: Action| Some(MemoryTool { memory: memory.clone(), name, description, schema, action, map_max_nodes, search_max_linked });
     match name {
         "journal_add" => tool(
             "journal_add",
@@ -228,8 +259,8 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<Me
         ),
         "journal_search" => tool(
             "journal_search",
-            "Search the project's journal by words for earlier decisions and findings, before deciding something or redoing work. Answers with the closest entries whole. Trust a replaced or deprecated entry only as history.",
-            || object(json!({"query": {"type": "string"}}), &["query"]),
+            "Search the project's journal by words for earlier decisions and findings, before deciding something or redoing work. Answers with the closest entries whole, and `linked`: what links reach from them, each only as id, title and link, nearest first. `depth` says how many hops, 2 by default; when `next_offset` is there, the same call with `offset` gives the next page. Trust a replaced or deprecated entry only as history.",
+            || object(json!({"query": {"type": "string"}, "depth": {"type": "integer"}, "offset": {"type": "integer"}}), &["query"]),
             |memory, input| {
                 Box::pin(async move {
                     let found = memory.journal_search(require(input, "query")?).await?;
@@ -239,8 +270,8 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<Me
         ),
         "journal_get" => tool(
             "journal_get",
-            "Read one journal entry in full, with its flags, tags and what blocks it, by id. Use it on what journal_agenda or journal_list show only the start of, and before relying on an entry.",
-            || object(json!({"id": {"type": "integer"}}), &["id"]),
+            "Read one journal entry in full, with its flags, tags and what blocks it, by id, and `linked`: what links reach from it, each only as id, title and link. `depth` and `offset` as in journal_search. Use it on what journal_agenda or journal_list show only the start of, and before relying on an entry.",
+            || object(json!({"id": {"type": "integer"}, "depth": {"type": "integer"}, "offset": {"type": "integer"}}), &["id"]),
             |memory, input| {
                 Box::pin(async move {
                     let id = number(input, "id")?;
@@ -538,6 +569,76 @@ mod tests {
         }
     }
 
+    /// CON-118: what the tool asks of the store, and what it answers, without one.
+    #[derive(Default)]
+    struct Graphs {
+        asked: std::cell::RefCell<Vec<MemoryOp>>,
+    }
+    impl Memory for Graphs {
+        fn journal_add(&self, _: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>> {
+            unused()
+        }
+        fn journal_search(&self, _: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            Box::pin(std::future::ready(Ok(vec![JournalRecord { id: 7, body: "whole".into(), ..Default::default() }])))
+        }
+        fn journal_get(&self, id: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>> {
+            Box::pin(std::future::ready(Ok(Some(JournalRecord { id, body: "whole".into(), ..Default::default() }))))
+        }
+        fn journal_close(&self, _: u64, _: &str) -> BoxFuture<'_, PluginResult<()>> {
+            unused()
+        }
+        fn journal_binding(&self, _: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            unused()
+        }
+        fn journal_list(&self, _: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            unused()
+        }
+        fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
+            unused()
+        }
+        fn map_new(&self, _: MapKind, _: &str, _: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
+            unused()
+        }
+        fn map_add(&self, _: u64, _: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>> {
+            unused()
+        }
+        fn map_read(&self, _: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>> {
+            unused()
+        }
+        fn more(&self, op: MemoryOp) -> BoxFuture<'_, PluginResult<Value>> {
+            self.asked.borrow_mut().push(op);
+            Box::pin(std::future::ready(Ok(json!({"linked": [{"id": 8, "title": "t", "via": "#8 cites #7"}], "linked_total": 1, "linked_left": 0}))))
+        }
+    }
+
+    fn answer_of(found: &MemoryTool, input: &Value) -> PluginResult<Value> {
+        now(Box::pin(async {
+            let mut answer = (found.action)(found.memory.as_ref(), input).await?;
+            found.add_graph(&mut answer, input).await?;
+            Ok(answer)
+        }))
+    }
+
+    #[test]
+    fn search_and_get_answer_their_graph_and_pass_depth_offset_and_page() {
+        let memory = Rc::new(Graphs::default());
+        for (name, input) in [("journal_search", json!({"query": "q"})), ("journal_get", json!({"id": 7}))] {
+            let text = answer_of(&tool(memory.clone(), name, 200, 100).unwrap(), &input).unwrap().to_string();
+            assert!(text.contains("#8 cites #7") && text.contains("whole"), "{text}");
+        }
+        answer_of(&tool(memory.clone(), "journal_get", 200, 5).unwrap(), &json!({"id": 7, "depth": 3, "offset": 10})).unwrap();
+        let asked = memory.asked.borrow();
+        assert!(matches!(&asked[0], MemoryOp::JournalGraph { ids, depth: 2, offset: 0, limit: 100 } if ids == &vec![7]), "{:?}", asked[0]);
+        assert!(matches!(&asked[2], MemoryOp::JournalGraph { depth: 3, offset: 10, limit: 5, .. }), "{:?}", asked[2]);
+    }
+
+    #[test]
+    fn a_depth_that_is_no_number_is_refused() {
+        let found = tool(Rc::new(Graphs::default()), "journal_search", 200, 100).unwrap();
+        let error = answer_of(&found, &json!({"query": "q", "depth": "all"})).unwrap_err().to_string();
+        assert!(error.contains("depth must be a number"), "{error}");
+    }
+
     fn memory_with_map() -> Rc<MapsOnly> {
         let memory = Rc::new(MapsOnly::default());
         now(memory.map_new(MapKind::MindMap, "t", None)).unwrap();
@@ -552,7 +653,7 @@ mod tests {
     #[test]
     fn a_node_past_the_limit_is_refused_naming_the_count() {
         let memory = memory_with_map();
-        let limited = tool(memory.clone(), "mindmap_add", 2).unwrap();
+        let limited = tool(memory.clone(), "mindmap_add", 2, 100).unwrap();
         // The map holds its root: one node. Under the limit of 2, one more passes.
         assert!(now(Box::pin(async { limited.check_node_limit(&add_input(1)).await })).is_ok());
         now(memory.map_add(1, NewMapNode { text: "first".into(), kind: "note".into(), ..Default::default() })).unwrap();
@@ -573,9 +674,9 @@ mod tests {
         for _ in 0..5 {
             now(memory.map_add(1, NewMapNode { text: "n".into(), kind: "note".into(), ..Default::default() })).unwrap();
         }
-        let none = tool(memory.clone(), "mindmap_add", 0).unwrap();
+        let none = tool(memory.clone(), "mindmap_add", 0, 100).unwrap();
         assert!(now(Box::pin(async { none.check_node_limit(&add_input(1)).await })).is_ok(), "0 is no limit");
-        let limited = tool(memory.clone(), "flowchart_add", 3).unwrap();
+        let limited = tool(memory.clone(), "flowchart_add", 3, 100).unwrap();
         assert!(now(Box::pin(async { limited.check_node_limit(&add_input(1)).await })).is_err(), "flowchart_add refused too, 6 held");
     }
 
@@ -583,7 +684,7 @@ mod tests {
     #[test]
     fn an_unknown_map_is_left_to_the_add() {
         let memory = memory_with_map();
-        let limited = tool(memory, "mindmap_add", 1).unwrap();
+        let limited = tool(memory, "mindmap_add", 1, 100).unwrap();
         assert!(now(Box::pin(async { limited.check_node_limit(&add_input(99)).await })).is_ok());
     }
 }

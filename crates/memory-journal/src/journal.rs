@@ -48,6 +48,8 @@ pub const DEDUP_WINDOW_SECS: i64 = 30 * 86_400;
 /// Longest accepted entry. A journal entry is a note, not a document.
 pub const MAX_BODY_CHARS: usize = 20_000;
 pub const MAX_TOP_K: usize = 50;
+/// Longest title of an entry shown as a neighbour (CON-118).
+pub const TITLE_CHARS: usize = 80;
 pub const MAX_PAGE_SIZE: usize = 100;
 const RRF_K: f64 = 60.0;
 const SNIPPET_CHARS: usize = 200;
@@ -1573,6 +1575,71 @@ pub fn excerpt(body: &str) -> String {
     if flat.chars().count() > 160 { format!("{}…", flat.chars().take(160).collect::<String>()) } else { flat }
 }
 
+/// What an entry is about, in a line: its first sentence, at most [`TITLE_CHARS`] characters.
+pub fn title(body: &str) -> String {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let sentence = flat.find(". ").map_or(flat.as_str(), |end| &flat[..end]);
+    if sentence.chars().count() > TITLE_CHARS { format!("{}…", sentence.chars().take(TITLE_CHARS).collect::<String>()) } else { sentence.to_string() }
+}
+
+/// An entry reached from another by links: only enough to see what it is about (CON-118).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Neighbour {
+    pub id: i64,
+    pub title: String,
+    /// The link that reached it, read in its own direction: `#12 replaces #40`.
+    pub via: String,
+}
+
+/// A page of what is linked to some entries.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GraphPage {
+    pub linked: Vec<Neighbour>,
+    pub linked_total: usize,
+    /// How many remain after this page, and where the next one starts.
+    pub linked_left: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
+}
+
+/// What is linked to `seeds`, out to `depth` hops, nearest first and then by id, each entry once (CON-118).
+/// A seed shows too when another seed links to it, once, so a hit replaced by a hit is not missed. `limit` 0 is no paging.
+pub fn graph(conn: &Connection, seeds: &[i64], depth: u64, offset: usize, limit: usize) -> Result<GraphPage> {
+    let place = |id: i64| seeds.iter().position(|s| *s == id);
+    let mut told: HashSet<i64> = HashSet::new();
+    let mut found: Vec<(i64, String)> = Vec::new();
+    let mut frontier: Vec<i64> = seeds.to_vec();
+    let mut exists = conn.prepare_cached("SELECT 1 FROM entries WHERE id = ?1")?;
+    let mut hop = 0;
+    while hop < depth && !frontier.is_empty() {
+        let mut layer: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+        for &at in &frontier {
+            for link in links_of(conn, at)? {
+                let other = link.id;
+                let earlier_seed = place(other).is_some_and(|there| hop > 0 || place(at).is_none_or(|here| there < here));
+                if other == at || told.contains(&other) || earlier_seed || !exists.exists(params![other])? {
+                    continue;
+                }
+                let via = if link.dir == "out" { format!("#{at} {} #{other}", link.kind) } else { format!("#{other} {} #{at}", link.kind) };
+                layer.entry(other).or_insert(via);
+            }
+        }
+        frontier = layer.keys().copied().filter(|id| place(*id).is_none()).collect();
+        told.extend(layer.keys().copied());
+        found.extend(layer);
+        hop += 1;
+    }
+    let total = found.len();
+    let start = offset.min(total);
+    let end = if limit == 0 { total } else { start.saturating_add(limit).min(total) };
+    let mut linked = Vec::with_capacity(end - start);
+    for (id, via) in &found[start..end] {
+        let body: String = conn.query_row("SELECT body FROM entries WHERE id = ?1", params![id], |r| r.get(0))?;
+        linked.push(Neighbour { id: *id, title: title(&body), via: via.clone() });
+    }
+    Ok(GraphPage { linked, linked_total: total, linked_left: total - end, next_offset: (end < total).then_some(end) })
+}
+
 /// What entry `id` intersects: its links, the `similar` entries closest to it
 /// by meaning, and those from the same source. Similarity needs the entry's
 /// vector; until the daemon has embedded it, `similar` is empty.
@@ -2429,6 +2496,65 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry.category, "decision");
         assert!(search(&c, "...", None, SearchMode::Lexical, &Filter::default(), 5).unwrap().1.is_empty());
+    }
+
+    /// CON-118: a chain 1 <- 2 <- 3 <- 4, by text links; 2 replaces 1.
+    fn chain(c: &mut Connection) -> [i64; 4] {
+        let (_, a) = add(c, &entry("The first. It says more than its title shows.", "decision", &["x"]), 1).unwrap();
+        let (_, b) = add(c, &entry(&format!("Replaces journal#{a}: the second"), "decision", &["x"]), 2).unwrap();
+        let (_, d) = add(c, &entry(&format!("Cites journal#{b}: the third"), "finding", &["x"]), 3).unwrap();
+        let (_, e) = add(c, &entry(&format!("Cites journal#{d}: the fourth"), "finding", &["x"]), 4).unwrap();
+        [a, b, d, e]
+    }
+
+    #[test]
+    fn a_graph_follows_links_to_its_depth_nearest_first_each_once() {
+        let (_d, mut c) = journal();
+        let [a, b, d, e] = chain(&mut c);
+        assert!(graph(&c, &[a], 0, 0, 0).unwrap().linked.is_empty(), "depth 0 follows nothing");
+        let one = graph(&c, &[a], 1, 0, 0).unwrap();
+        assert_eq!(one.linked, vec![Neighbour { id: b, title: format!("Replaces journal#{a}: the second"), via: format!("#{b} replaces #{a}") }]);
+        let all = graph(&c, &[b], 9, 0, 0).unwrap();
+        assert_eq!(all.linked.iter().map(|n| n.id).collect::<Vec<_>>(), vec![a, d, e], "nearest first, then by id; the walk ends though depth goes on");
+        assert_eq!((all.linked_total, all.linked_left, all.next_offset), (3, 0, None));
+        assert_eq!(all.linked[1].via, format!("#{d} cites #{b}"), "a link reads in its own direction");
+        // A link both ways is a cycle: the walk ends, and nothing shows twice.
+        link(&mut c, a, e, "cites").unwrap();
+        let round = graph(&c, &[a], 9, 0, 0).unwrap();
+        assert_eq!(round.linked.iter().map(|n| n.id).collect::<Vec<_>>(), vec![b, e, d]);
+    }
+
+    #[test]
+    fn a_graph_pages_and_says_what_is_left() {
+        let (_d, mut c) = journal();
+        let [a, b, d, e] = chain(&mut c);
+        let first = graph(&c, &[a], 9, 0, 2).unwrap();
+        assert_eq!(first.linked.iter().map(|n| n.id).collect::<Vec<_>>(), vec![b, d]);
+        assert_eq!((first.linked_total, first.linked_left, first.next_offset), (3, 1, Some(2)));
+        let next = graph(&c, &[a], 9, 2, 2).unwrap();
+        assert_eq!(next.linked.iter().map(|n| n.id).collect::<Vec<_>>(), vec![e]);
+        assert_eq!((next.linked_left, next.next_offset), (0, None), "the last page has no next");
+        let past = graph(&c, &[a], 9, 50, 2).unwrap();
+        assert_eq!((past.linked.len(), past.linked_total, past.next_offset), (0, 3, None), "past the end: empty, with the total");
+    }
+
+    #[test]
+    fn hits_linked_to_each_other_show_once_and_a_shared_neighbour_once() {
+        let (_d, mut c) = journal();
+        let [a, b, d, _] = chain(&mut c);
+        let page = graph(&c, &[a, b], 1, 0, 0).unwrap();
+        assert_eq!(page.linked.iter().map(|n| n.id).collect::<Vec<_>>(), vec![b, d], "the hit replaced by a hit is seen, once");
+        let (_, f) = add(&mut c, &entry(&format!("Cites journal#{a} and journal#{b}"), "finding", &["x"]), 5).unwrap();
+        let page = graph(&c, &[a, b], 1, 0, 0).unwrap();
+        assert_eq!(page.linked.iter().filter(|n| n.id == f).count(), 1);
+    }
+
+    #[test]
+    fn a_title_is_the_first_sentence_within_eighty_characters() {
+        assert_eq!(title("Short one. Then more."), "Short one");
+        assert_eq!(title("line\n  two"), "line two");
+        assert_eq!(title("v0.1.2 is out"), "v0.1.2 is out", "a dot inside a word ends nothing");
+        assert_eq!(title(&"я".repeat(200)).chars().count(), 81, "whole characters and the mark");
     }
 
     #[test]

@@ -47,8 +47,8 @@ Decisions, findings and work items of the project, kept across sessions.
 | Tool | For | Answers |
 |---|---|---|
 | `journal_add` | One decision, finding or update, with the why. `blocked_by` says it cannot close until another entry has; `proof` says in words what shows it was checked; `proof_file`, only if the proof is kept in a file, gives its path, which must exist. | The stored entry. |
-| `journal_search` | Earlier decisions and findings by words, before deciding or redoing something. | The closest entries whole. |
-| `journal_get` | One entry in full, before relying on it. | The entry, with its flags and what blocks it. |
+| `journal_search` | Earlier decisions and findings by words, before deciding or redoing something. `depth` says how many hops of links to follow, 2 by default; `offset` asks for the next page of them. | The closest entries whole, with their linked entries as id, title and link (CON-118), how many remain and `next_offset`. |
+| `journal_get` | One entry in full, before relying on it. `depth` and `offset` as in `journal_search`. | The entry, with its flags, what blocks it and a page of its linked entries as id, title and link (CON-118). |
 | `journal_list` | Entries newest first, by category, tags, flags, feature, open or closed. | A page and the total. |
 | `journal_agenda` | What is open, on a fresh context. Work groups hold what can be taken now; `blocked` waits for another entry; `blocker_dropped` waited for something dropped. | Each entry in brief. |
 | `journal_tags` | The tag vocabulary and categories, before tagging. | Tags, most used first. |

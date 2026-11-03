@@ -117,6 +117,11 @@ pub fn map_limit() -> (u64, Option<String>) {
     }
 }
 
+/// The `search_max_linked` setting; the default when the file cannot be read, which `map_limit` tells (CON-118).
+pub fn search_page() -> u64 {
+    load().map_or(harness_session::Settings::default().search_max_linked, |c| c.session.search_max_linked)
+}
+
 fn map_limit_from_text(p: &std::path::Path, text: &str) -> (u64, Option<String>) {
     match toml::from_str::<Config>(text) {
         Ok(c) => (c.session.map_max_nodes, None),

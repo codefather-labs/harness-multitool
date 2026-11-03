@@ -263,7 +263,7 @@ fn main() -> Result<()> {
             if let Some(broken) = broken {
                 eprintln!("{broken}");
             }
-            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace, map_max_nodes };
+            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace, map_max_nodes, search_max_linked: config::search_page() };
             harness_session::mcp::serve(&serving, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| anyhow!(e))
         }
         Command::Init => {
@@ -1096,7 +1096,7 @@ impl Live {
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
         let (map_max_nodes, broken) = config::map_limit();
-        frontend_tui::model::MemoryPage { map_max_nodes, status: broken.unwrap_or_default(), ..Default::default() }
+        frontend_tui::model::MemoryPage { map_max_nodes, search_max_linked: config::search_page(), status: broken.unwrap_or_default(), ..Default::default() }
     }
 
     fn telegram_page(&self) -> frontend_tui::model::TelegramPage {
@@ -1683,6 +1683,16 @@ impl Live {
                 Outgoing::SaveMapLimit { limit } => {
                     let saved = config::load().and_then(|mut c| {
                         c.session.map_max_nodes = limit;
+                        config::save(&c)
+                    });
+                    if let Err(error) = saved && let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.memory.status = format!("Could not save: {error}");
+                    }
+                    w.memory = Some(self.memory_page());
+                }
+                Outgoing::SaveSearchPage { limit } => {
+                    let saved = config::load().and_then(|mut c| {
+                        c.session.search_max_linked = limit;
                         config::save(&c)
                     });
                     if let Err(error) = saved && let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {

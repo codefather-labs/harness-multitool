@@ -87,6 +87,8 @@ pub enum Outgoing {
     SaveTelegram { token: Option<String>, users: Vec<i64> },
     /// The Memory page saved: the most nodes a map may hold, 0 for none (CON-114).
     SaveMapLimit { limit: u64 },
+    /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
+    SaveSearchPage { limit: u64 },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -1005,11 +1007,15 @@ impl VoicePage {
     }
 }
 
-/// The settings' Memory page: the most nodes a map may hold (CON-114).
+/// The settings' Memory page: the most nodes a map may hold (CON-114), the page of linked entries (CON-118).
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct MemoryPage {
     /// As saved in the config file; 200 when none is set.
     pub map_max_nodes: u64,
+    /// As saved in the config file; 100 when none is set.
+    pub search_max_linked: u64,
+    /// The row under the cursor: 0 the map limit, 1 the page of linked entries.
+    pub cursor: usize,
     pub editing: bool,
     /// What is typed while editing; the saved value is shown otherwise.
     pub typed: String,
@@ -1018,7 +1024,7 @@ pub struct MemoryPage {
 
 impl std::fmt::Debug for MemoryPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryPage").field("map_max_nodes", &self.map_max_nodes).field("editing", &self.editing).finish()
+        f.debug_struct("MemoryPage").field("map_max_nodes", &self.map_max_nodes).field("search_max_linked", &self.search_max_linked).field("editing", &self.editing).finish()
     }
 }
 

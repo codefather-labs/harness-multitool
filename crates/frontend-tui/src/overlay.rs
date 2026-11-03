@@ -133,7 +133,7 @@ pub fn sample_settings() -> SettingsView {
         callbacks: CallbacksPage::default(),
         telegram: Default::default(),
         voice: Default::default(),
-        memory: MemoryPage { map_max_nodes: 200, ..Default::default() },
+        memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
         auth: AuthPage::default(),
         editing_model: false,
         model_menu: None,
@@ -408,20 +408,24 @@ fn memory_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let focus = s.focus == SettingsPane::Page;
     let muted = Style::default().fg(t.text_muted);
     let strong = Style::default().fg(t.text);
-    let shown = if p.editing { p.typed.clone() } else { p.map_max_nodes.to_string() };
-    let cursor = if focus && p.editing { "█" } else { "" };
-    let row_bg = if focus { t.surface_raised } else { bg };
-    text(f, r.x, r.y + 1, r.width, vec![Span::styled(" Map node limit  ", muted), Span::styled(shown, strong), Span::styled(cursor.to_string(), Style::default().fg(t.accent_line))], row_bg);
+    for (row, (label, saved)) in [(" Map node limit      ", p.map_max_nodes), (" Linked entries page ", p.search_max_linked)].into_iter().enumerate() {
+        let under = focus && p.cursor == row;
+        let shown = if under && p.editing { p.typed.clone() } else { saved.to_string() };
+        let cursor = if under && p.editing { "█" } else { "" };
+        text(f, r.x, r.y + 1 + row as u16, r.width, vec![Span::styled(label, muted), Span::styled(shown, strong), Span::styled(cursor.to_string(), Style::default().fg(t.accent_line))], if under { t.surface_raised } else { bg });
+    }
     let notes = [
         p.status.as_str(),
         "",
-        "Most nodes a mind map or flowchart holds. A node past it is refused.",
+        "Map node limit: most nodes a mind map or flowchart holds. A node past it is refused.",
         "0 for none. The default is 200.",
-        "A session already running keeps its limit until it restarts.",
-        "Enter to edit, Ctrl+S saves.",
+        "Linked entries page: most linked entries a journal search or read answers at once.",
+        "The rest comes by next_offset. 0 for no paging. The default is 100.",
+        "A session already running keeps these until it restarts.",
+        "Up and Down choose, Enter edits, Ctrl+S saves.",
     ];
     for (i, note) in notes.iter().enumerate() {
-        text(f, r.x, r.y + 3 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+        text(f, r.x, r.y + 4 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
     }
 }
 
@@ -1247,8 +1251,10 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 Key::Tab | Key::Left | Key::Right if !p.editing => s.focus = SettingsPane::Sections,
                 Key::Enter | Key::Char('e') if !p.editing => {
                     p.editing = true;
-                    p.typed = p.map_max_nodes.to_string();
+                    p.typed = if p.cursor == 0 { p.map_max_nodes } else { p.search_max_linked }.to_string();
                 }
+                Key::Up if !p.editing => p.cursor = 0,
+                Key::Down if !p.editing => p.cursor = 1,
                 Key::Enter if p.editing => p.editing = false,
                 Key::Backspace if p.editing => {
                     p.typed.pop();
@@ -1256,13 +1262,18 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 Key::Char(c) if p.editing && c.is_ascii_digit() && p.typed.len() < 9 => p.typed.push(c),
                 Key::Ctrl('s') => match p.typed.trim().parse::<u64>() {
                     Ok(limit) if p.editing => {
-                        p.map_max_nodes = limit;
                         p.editing = false;
                         p.status = "Saved. A session already running keeps its limit until it restarts.".to_string();
-                        w.outbox.push(Outgoing::SaveMapLimit { limit });
+                        if p.cursor == 0 {
+                            p.map_max_nodes = limit;
+                            w.outbox.push(Outgoing::SaveMapLimit { limit });
+                        } else {
+                            p.search_max_linked = limit;
+                            w.outbox.push(Outgoing::SaveSearchPage { limit });
+                        }
                     }
                     Ok(_) => {}
-                    Err(_) => p.status = format!("\"{}\" is not a number of nodes: 0 is no limit.", p.typed),
+                    Err(_) => p.status = format!("\"{}\" is not a number: 0 is no limit.", p.typed),
                 },
                 _ => {}
             }
@@ -2126,6 +2137,20 @@ mod tests {
         assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { limit: 205 })));
         assert_eq!((memory_of(&w).map_max_nodes, memory_of(&w).editing), (205, false));
         assert!(memory_of(&w).status.contains("keeps its limit until it restarts"));
+    }
+
+    /// CON-118: the second row saves its own setting and leaves the first.
+    #[test]
+    fn the_memory_page_saves_the_page_of_linked_entries() {
+        let mut w = Workspace::one(Default::default(), "t");
+        memory_settings(&mut w);
+        assert_eq!(memory_of(&w).search_max_linked, 100, "the default shows");
+        for k in [Key::Down, Key::Enter, Key::Backspace, Key::Backspace, Key::Ctrl('s')] {
+            key(&mut w, k);
+        }
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveSearchPage { limit: 1 })));
+        assert!(!w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { .. })));
+        assert_eq!((memory_of(&w).search_max_linked, memory_of(&w).map_max_nodes), (1, 200));
     }
 
     #[test]
