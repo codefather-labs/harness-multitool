@@ -66,7 +66,7 @@ Mind maps hold where a long task stands; flowcharts draw how something flows.
 | Tool | For | Answers |
 |---|---|---|
 | `mindmap_new`, `flowchart_new` | Starting a map or a chart. | It and its id. |
-| `mindmap_add`, `flowchart_add` | Adding a node, or a symbol with an arrow. | The map as it stands. |
+| `mindmap_add`, `flowchart_add` | Adding a node, or a symbol with an arrow. A map holds at most `map_max_nodes` nodes (CON-114, 200 by default): past that the add is refused, naming the count and the limit. | The map as it stands, or the refusal. |
 | `mindmap_show`, `flowchart_show` | Reading one back. | It as an outline. |
 | `map_edit` | A node's text or kind. | The map. |
 | `map_node_state` | A node done, dropped, or open again. | The map. |

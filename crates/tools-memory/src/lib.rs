@@ -56,6 +56,28 @@ pub struct MemoryTool {
     description: &'static str,
     schema: fn() -> Value,
     action: Action,
+    /// The most nodes a map may hold before a node is refused: the `map_max_nodes` setting, 0 for none (CON-114).
+    map_max_nodes: u64,
+}
+
+impl MemoryTool {
+    /// Refuses a node past the limit, counting the map's nodes root included (CON-114). Nothing is
+    /// added when it refuses. A map that cannot be read is left to the add, which says what is wrong.
+    async fn check_node_limit(&self, input: &Value) -> PluginResult<()> {
+        if self.map_max_nodes == 0 {
+            return Ok(());
+        }
+        let id = number(input, "map")?;
+        let Some(map) = self.memory.map_read(id).await? else { return Ok(()) };
+        let held = map.nodes.len() as u64;
+        if held < self.map_max_nodes {
+            return Ok(());
+        }
+        Err(PluginError::new(format!(
+            "map #{id} holds {held} nodes, and the limit is {} (map_max_nodes): nothing was added. The limit is the user's to change in the settings, Memory.",
+            self.map_max_nodes
+        )))
+    }
 }
 
 impl Tool for MemoryTool {
@@ -74,6 +96,9 @@ impl Tool for MemoryTool {
             }
             // A proof named as a file must be there before the entry is stored (journal#607).
             if self.name == "journal_add" && let Err(e) = check_proofs(input, &cx.root) {
+                return ToolOutput::error(e.to_string());
+            }
+            if matches!(self.name, "mindmap_add" | "flowchart_add") && let Err(e) = self.check_node_limit(input).await {
                 return ToolOutput::error(e.to_string());
             }
             output((self.action)(self.memory.as_ref(), input).await)
@@ -146,9 +171,9 @@ fn map_show<'a>(memory: &'a dyn Memory, input: &'a Value) -> BoxFuture<'a, Plugi
     })
 }
 
-/// Every memory tool, by name.
-pub fn tool(memory: Rc<dyn Memory>, name: &str) -> Option<MemoryTool> {
-    let tool = |name, description, schema: fn() -> Value, action: Action| Some(MemoryTool { memory: memory.clone(), name, description, schema, action });
+/// Every memory tool, by name. `map_max_nodes` is the most nodes a map may hold, 0 for none (CON-114).
+pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64) -> Option<MemoryTool> {
+    let tool = |name, description, schema: fn() -> Value, action: Action| Some(MemoryTool { memory: memory.clone(), name, description, schema, action, map_max_nodes });
     match name {
         "journal_add" => tool(
             "journal_add",
@@ -421,5 +446,116 @@ mod tests {
     #[test]
     fn any_entry_with_a_proof_file_is_checked() {
         assert!(check_proofs(&json!({"flags": ["unverified"], "proof_file": ["missing/out.txt"]}), "/nonexistent-root").is_err());
+    }
+
+    /// Runs a future the in-memory double answers at once.
+    fn now<T>(future: BoxFuture<'_, PluginResult<T>>) -> PluginResult<T> {
+        let mut future = future;
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => value,
+            std::task::Poll::Pending => panic!("the double answers at once"),
+        }
+    }
+
+    /// Maps in memory: the three the limit needs. The journal is not used by these tests.
+    #[derive(Default)]
+    struct MapsOnly {
+        maps: std::cell::RefCell<Vec<MapData>>,
+    }
+
+    fn unused<'a, T: 'a>() -> BoxFuture<'a, PluginResult<T>> {
+        Box::pin(std::future::ready(Err(PluginError::new("not used by these tests"))))
+    }
+
+    impl Memory for MapsOnly {
+        fn journal_add(&self, _: JournalEntry) -> BoxFuture<'_, PluginResult<JournalRecord>> {
+            unused()
+        }
+        fn journal_search(&self, _: &str) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            unused()
+        }
+        fn journal_get(&self, _: u64) -> BoxFuture<'_, PluginResult<Option<JournalRecord>>> {
+            unused()
+        }
+        fn journal_close(&self, _: u64, _: &str) -> BoxFuture<'_, PluginResult<()>> {
+            unused()
+        }
+        fn journal_binding(&self, _: usize) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            unused()
+        }
+        fn journal_list(&self, _: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
+            unused()
+        }
+        fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
+            unused()
+        }
+        fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
+            let root = MapNode { id: 1, parent: None, kind: "topic".into(), text: title.into(), state: "open".into(), refs: vec![] };
+            let map = MapData { id: self.maps.borrow().len() as u64 + 1, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![] };
+            self.maps.borrow_mut().push(map.clone());
+            Box::pin(std::future::ready(Ok(map)))
+        }
+        fn map_add(&self, map: u64, node: NewMapNode) -> BoxFuture<'_, PluginResult<MapData>> {
+            let mut maps = self.maps.borrow_mut();
+            let found = maps.iter_mut().find(|m| m.id == map).map(|m| {
+                let id = m.nodes.len() as u64 + 1;
+                m.nodes.push(MapNode { id, parent: node.parent.or(Some(m.root)), kind: node.kind.clone(), text: node.text.clone(), state: "open".into(), refs: node.refs.clone() });
+                m.clone()
+            });
+            Box::pin(std::future::ready(found.ok_or_else(|| PluginError::new(format!("no map #{map}")))))
+        }
+        fn map_read(&self, map: u64) -> BoxFuture<'_, PluginResult<Option<MapData>>> {
+            Box::pin(std::future::ready(Ok(self.maps.borrow().iter().find(|m| m.id == map).cloned())))
+        }
+    }
+
+    fn memory_with_map() -> Rc<MapsOnly> {
+        let memory = Rc::new(MapsOnly::default());
+        now(memory.map_new(MapKind::MindMap, "t", None)).unwrap();
+        memory
+    }
+
+    fn add_input(map: u64) -> Value {
+        json!({"map": map, "text": "a node", "kind": "note"})
+    }
+
+    /// CON-114: at the limit a node is refused, naming the count and the limit; under it, it passes.
+    #[test]
+    fn a_node_past_the_limit_is_refused_naming_the_count() {
+        let memory = memory_with_map();
+        let limited = tool(memory.clone(), "mindmap_add", 2).unwrap();
+        // The map holds its root: one node. Under the limit of 2, one more passes.
+        assert!(now(Box::pin(async { limited.check_node_limit(&add_input(1)).await })).is_ok());
+        now(memory.map_add(1, NewMapNode { text: "first".into(), kind: "note".into(), ..Default::default() })).unwrap();
+        // Two nodes now: the limit is reached, so the next is refused.
+        let err = now(Box::pin(async { limited.check_node_limit(&add_input(1)).await })).unwrap_err().to_string();
+        assert!(err.contains("holds 2 nodes"), "{err}");
+        assert!(err.contains("limit is 2"), "{err}");
+        assert!(err.contains("nothing was added"), "{err}");
+        assert!(err.contains("the user's to change"), "{err}");
+        // Nothing was added by the refusal: the map still holds two.
+        assert_eq!(now(memory.map_read(1)).unwrap().unwrap().nodes.len(), 2);
+    }
+
+    /// CON-114: 0 never refuses, and the check applies to the two adds alone.
+    #[test]
+    fn zero_never_refuses_and_only_the_adds_are_checked() {
+        let memory = memory_with_map();
+        for _ in 0..5 {
+            now(memory.map_add(1, NewMapNode { text: "n".into(), kind: "note".into(), ..Default::default() })).unwrap();
+        }
+        let none = tool(memory.clone(), "mindmap_add", 0).unwrap();
+        assert!(now(Box::pin(async { none.check_node_limit(&add_input(1)).await })).is_ok(), "0 is no limit");
+        let limited = tool(memory.clone(), "flowchart_add", 3).unwrap();
+        assert!(now(Box::pin(async { limited.check_node_limit(&add_input(1)).await })).is_err(), "flowchart_add refused too, 6 held");
+    }
+
+    /// The limit is checked on the map the node is added to, and an unknown map is left to the add.
+    #[test]
+    fn an_unknown_map_is_left_to_the_add() {
+        let memory = memory_with_map();
+        let limited = tool(memory, "mindmap_add", 1).unwrap();
+        assert!(now(Box::pin(async { limited.check_node_limit(&add_input(99)).await })).is_ok());
     }
 }

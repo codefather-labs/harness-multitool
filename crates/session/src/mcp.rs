@@ -19,6 +19,8 @@ pub struct Serving {
     /// `mode`: this server offers the harness's modes alone, under their short names, so a program
     /// sees them apart as `mcp__mode__*` (CON-96). Otherwise the utilities alone.
     pub namespace: Option<String>,
+    /// The `map_max_nodes` setting as the config file holds it when this server starts (CON-114).
+    pub map_max_nodes: u64,
 }
 
 /// Asks the window to rebuild and swap the harness, through the daemon.
@@ -98,7 +100,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     };
     let mut out: Vec<Rc<dyn Tool>> = Vec::new();
     for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
-        if let Some(tool) = harness_tools_memory::tool(memory.clone(), name) {
+        if let Some(tool) = harness_tools_memory::tool(memory.clone(), name, serving.map_max_nodes) {
             out.push(Rc::new(tool));
         }
     }
@@ -201,7 +203,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-mcp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root")).unwrap();
-        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None };
+        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 200 };
         let messages = [
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}),
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -223,5 +225,30 @@ mod tests {
         assert!(replies[3]["result"]["content"][0]["text"].as_str().unwrap().contains("written over mcp"), "{}", replies[3]);
         assert_eq!(replies[4]["error"]["code"], -32602);
         assert_eq!(replies[5]["error"]["code"], -32601);
+    }
+
+    /// CON-114 over MCP: the server's own limit refuses the add past it, and the map keeps its nodes.
+    #[test]
+    fn the_mcp_server_refuses_a_node_past_its_limit() {
+        let dir = std::env::temp_dir().join(format!("mt-mcp-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        let serving = Serving { data_dir: dir.clone(), root: dir.join("root").to_string_lossy().into_owned(), window: None, namespace: None, map_max_nodes: 2 };
+        let call = |id: u64, name: &str, arguments: Value| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments}});
+        let messages = [
+            call(1, "mindmap_new", json!({"title": "limited"})),
+            call(2, "mindmap_add", json!({"map": 1, "text": "first", "kind": "note"})),
+            call(3, "mindmap_add", json!({"map": 1, "text": "second", "kind": "note"})),
+        ];
+        let input: String = messages.iter().map(|m| format!("{m}\n")).collect();
+        let mut out = Vec::new();
+        serve(&serving, input.as_bytes(), &mut out).unwrap();
+        let replies: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["result"]["isError"], false, "{}", replies[0]);
+        assert_eq!(replies[1]["result"]["isError"], false, "under the limit a node passes: {}", replies[1]);
+        assert_eq!(replies[2]["result"]["isError"], true, "{}", replies[2]);
+        let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("holds 2 nodes") && text.contains("limit is 2"), "{text}");
     }
 }

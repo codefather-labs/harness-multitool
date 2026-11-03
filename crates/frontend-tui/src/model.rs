@@ -62,6 +62,7 @@ pub struct Workspace {
     pub callbacks: Option<CallbacksPage>,
     pub telegram: Option<TelegramPage>,
     pub voice: Option<VoicePage>,
+    pub memory: Option<MemoryPage>,
     /// The sign-in state as the running harness knows it.
     pub auth: Option<AuthPage>,
 }
@@ -84,6 +85,8 @@ pub enum Outgoing {
     StopVoiceTest,
     /// The Telegram page saved: a new token if one was typed, and who may speak.
     SaveTelegram { token: Option<String>, users: Vec<i64> },
+    /// The Memory page saved: the most nodes a map may hold, 0 for none (CON-114).
+    SaveMapLimit { limit: u64 },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -183,6 +186,7 @@ pub struct SettingsView {
     pub callbacks: CallbacksPage,
     pub telegram: TelegramPage,
     pub voice: VoicePage,
+    pub memory: MemoryPage,
     pub auth: AuthPage,
     /// The model name is being typed.
     pub editing_model: bool,
@@ -317,7 +321,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -998,6 +1002,23 @@ impl VoicePage {
             let first = of_engine.iter().find(|m| m.there).or(of_engine.first());
             self.model = first.map_or(String::new(), |m| m.name.clone());
         }
+    }
+}
+
+/// The settings' Memory page: the most nodes a map may hold (CON-114).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct MemoryPage {
+    /// As saved in the config file; 200 when none is set.
+    pub map_max_nodes: u64,
+    pub editing: bool,
+    /// What is typed while editing; the saved value is shown otherwise.
+    pub typed: String,
+    pub status: String,
+}
+
+impl std::fmt::Debug for MemoryPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryPage").field("map_max_nodes", &self.map_max_nodes).field("editing", &self.editing).finish()
     }
 }
 

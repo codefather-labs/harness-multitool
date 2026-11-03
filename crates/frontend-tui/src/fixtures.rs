@@ -598,6 +598,7 @@ pub fn session_tabs() -> AppState {
         callbacks: None,
         telegram: None,
         voice: None,
+        memory: None,
         auth: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }

@@ -43,6 +43,8 @@ pub struct Settings {
     pub plan_first: Option<String>,
     /// Compact the conversation above this many tokens; 70% of the context window by default.
     pub compact_at_tokens: Option<u64>,
+    /// The most nodes a mind map or flowchart may hold before a node is refused; 0 for none (CON-114).
+    pub map_max_nodes: u64,
     pub tools: Vec<String>,
     /// Shell hooks, in the order they run.
     pub hooks: Vec<HookSetting>,
@@ -61,6 +63,7 @@ impl Default for Settings {
             max_turns: None,
             max_cost_usd: None,
             compact_at_tokens: None,
+            map_max_nodes: 200,
             plan_first: None,
             tools: ["read", "edit", "shell", "search", "fetch"].into_iter().chain(harness_tools_memory::NAMES).map(String::from).collect(),
             hooks: Vec::new(),
@@ -184,10 +187,11 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
         .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget, mode_rules: !delegate_session })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
         .verifier("protocol", move |cx| Ok(Rc::new(harness_verifier_protocol::ProtocolRunner::new(cx.platform.process.clone(), &root_c))));
+    let map_max_nodes = settings.map_max_nodes;
     for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
         r.tool(name, move |cx| {
             let memory = cx.memory.clone().ok_or("the tool was built before Memory")?;
-            let tool = harness_tools_memory::tool(memory, name).ok_or("no such memory tool")?;
+            let tool = harness_tools_memory::tool(memory, name, map_max_nodes).ok_or("no such memory tool")?;
             Ok(Rc::new(tool))
         });
     }
@@ -1162,7 +1166,7 @@ mod every_tool {
         }
         tools.push(Rc::new(host_tools::PermissionAsk { client: client.clone(), window: String::new(), tab: 0 }));
         for name in harness_tools_memory::NAMES.into_iter().chain(harness_tools_memory::MORE) {
-            tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name).unwrap()));
+            tools.push(Rc::new(harness_tools_memory::tool(memory.clone(), name, 0).unwrap()));
         }
         let specs = tools.iter().map(|t| t.spec()).chain(harness_core::engine::own_tool_specs()).collect();
         let _ = std::fs::remove_dir_all(&dir);

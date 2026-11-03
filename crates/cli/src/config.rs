@@ -161,4 +161,16 @@ mod tests {
         assert!(text.contains("graphics = \"sixel\""), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap().terminal.graphics, Graphics::Sixel);
     }
+
+    /// CON-114: the node limit is saved in `[session]`, read back, and 200 when the file says nothing.
+    #[test]
+    fn the_map_node_limit_round_trips_and_defaults_to_200() {
+        assert_eq!(toml::from_str::<Config>("").unwrap().session.map_max_nodes, 200);
+        let mut c = Config::default();
+        c.session.map_max_nodes = 0;
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(text.contains("map_max_nodes = 0"), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().session.map_max_nodes, 0);
+        assert_eq!(toml::from_str::<Config>("[session]\nmap_max_nodes = 42\n").unwrap().session.map_max_nodes, 42);
+    }
 }

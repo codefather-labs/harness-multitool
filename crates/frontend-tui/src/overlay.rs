@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
-use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, ModelChoice, PLAN_PROVIDER, Toast};
+use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, Toast};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -46,6 +46,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     }
     if let Some(page) = &w.voice {
         s.voice = page.clone();
+    }
+    if let Some(page) = &w.memory {
+        s.memory = page.clone();
     }
     if let Some(page) = &w.auth {
         s.auth = page.clone();
@@ -130,6 +133,7 @@ pub fn sample_settings() -> SettingsView {
         callbacks: CallbacksPage::default(),
         telegram: Default::default(),
         voice: Default::default(),
+        memory: MemoryPage { map_max_nodes: 200, ..Default::default() },
         auth: AuthPage::default(),
         editing_model: false,
         model_menu: None,
@@ -395,6 +399,29 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
             outbox.push(Outgoing::SaveVoice { engine: p.engine.clone(), model: p.model.clone(), device: p.device.clone() });
         }
         _ => {}
+    }
+}
+
+/// The most nodes a map may hold: one row, edited as text, saved with Ctrl+S (CON-114).
+fn memory_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.memory;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let shown = if p.editing { p.typed.clone() } else { p.map_max_nodes.to_string() };
+    let cursor = if focus && p.editing { "█" } else { "" };
+    let row_bg = if focus { t.surface_raised } else { bg };
+    text(f, r.x, r.y + 1, r.width, vec![Span::styled(" Map node limit  ", muted), Span::styled(shown, strong), Span::styled(cursor.to_string(), Style::default().fg(t.accent_line))], row_bg);
+    let notes = [
+        p.status.as_str(),
+        "",
+        "Most nodes a mind map or flowchart holds. A node past it is refused.",
+        "0 for none. The default is 200.",
+        "A session already running keeps its limit until it restarts.",
+        "Enter to edit, Ctrl+S saves.",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 3 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
     }
 }
 
@@ -759,6 +786,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         voice_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == "Telegram" {
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == "Memory" {
+        memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if s.section != 0 {
         text(f, px, body_y + 1, pw, vec![Span::styled(format!("{name} settings come with their stage."), Style::default().fg(t.text_muted))], bg);
     } else {
@@ -1208,6 +1237,32 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                         w.outbox.push(Outgoing::SaveTelegram { token, users });
                     }
                     Err(bad) => p.status = format!("\"{bad}\" is not a user id: ids are numbers."),
+                },
+                _ => {}
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Memory") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.memory;
+            match k {
+                Key::Tab | Key::Left | Key::Right if !p.editing => s.focus = SettingsPane::Sections,
+                Key::Enter | Key::Char('e') if !p.editing => {
+                    p.editing = true;
+                    p.typed = p.map_max_nodes.to_string();
+                }
+                Key::Enter if p.editing => p.editing = false,
+                Key::Backspace if p.editing => {
+                    p.typed.pop();
+                }
+                Key::Char(c) if p.editing && c.is_ascii_digit() && p.typed.len() < 9 => p.typed.push(c),
+                Key::Ctrl('s') => match p.typed.trim().parse::<u64>() {
+                    Ok(limit) if p.editing => {
+                        p.map_max_nodes = limit;
+                        p.editing = false;
+                        p.status = "Saved. A session already running keeps its limit until it restarts.".to_string();
+                        w.outbox.push(Outgoing::SaveMapLimit { limit });
+                    }
+                    Ok(_) => {}
+                    Err(_) => p.status = format!("\"{}\" is not a number of nodes: 0 is no limit.", p.typed),
                 },
                 _ => {}
             }
@@ -2041,5 +2096,58 @@ mod tests {
         let heard = draw_page(VoiceTest::Heard("привет как дела".into()));
         assert!(heard.contains("привет как дела") && heard.contains("┌") | heard.contains("╭"), "{heard}");
         assert!(draw_page(VoiceTest::Heard(String::new())).contains("No words heard"));
+    }
+
+    /// CON-114: the Memory page edits the node limit as text and sends the typed number on Ctrl+S.
+    fn memory_settings(w: &mut Workspace) {
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == "Memory").unwrap();
+        s.focus = SettingsPane::Page;
+        w.overlay = Some(Overlay::Settings(s));
+    }
+
+    fn memory_of(w: &Workspace) -> crate::model::MemoryPage {
+        match &w.overlay {
+            Some(Overlay::Settings(s)) => s.memory.clone(),
+            _ => panic!("no settings"),
+        }
+    }
+
+    #[test]
+    fn the_memory_page_saves_the_typed_limit() {
+        let mut w = Workspace::one(Default::default(), "t");
+        memory_settings(&mut w);
+        assert_eq!(memory_of(&w).map_max_nodes, 200, "the default shows");
+        for k in [Key::Enter, Key::Backspace, Key::Char('5')] {
+            key(&mut w, k);
+        }
+        assert_eq!(memory_of(&w).typed, "205");
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { limit: 205 })));
+        assert_eq!((memory_of(&w).map_max_nodes, memory_of(&w).editing), (205, false));
+        assert!(memory_of(&w).status.contains("keeps its limit until it restarts"));
+    }
+
+    #[test]
+    fn zero_is_no_limit_and_a_blank_is_not_sent() {
+        let mut w = Workspace::one(Default::default(), "t");
+        memory_settings(&mut w);
+        key(&mut w, Key::Enter);
+        for _ in 0..3 {
+            key(&mut w, Key::Backspace);
+        }
+        key(&mut w, Key::Ctrl('s'));
+        assert!(!w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { .. })), "a blank is no number");
+        assert!(memory_of(&w).status.contains("not a number"), "{}", memory_of(&w).status);
+        key(&mut w, Key::Char('0'));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { limit: 0 })));
+    }
+
+    #[test]
+    fn the_memory_page_shows_what_the_config_holds() {
+        let mut w = Workspace::one(Default::default(), "t");
+        w.memory = Some(crate::model::MemoryPage { map_max_nodes: 7, ..Default::default() });
+        assert_eq!(settings_for(&w).memory.map_max_nodes, 7);
     }
 }

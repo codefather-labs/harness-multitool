@@ -258,7 +258,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Mcp { root, window, tab, namespace } => {
-            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace };
+            // Each server reads the config file as it starts: the limit it holds is the one saved then (CON-114).
+            let map_max_nodes = config::load().map_or(harness_session::Settings::default().map_max_nodes, |c| c.session.map_max_nodes);
+            let serving = harness_session::mcp::Serving { data_dir: config::data_dir()?, root, window: window.zip(tab), namespace, map_max_nodes };
             harness_session::mcp::serve(&serving, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| anyhow!(e))
         }
         Command::Init => {
@@ -632,6 +634,7 @@ impl Live {
             w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
+            w.memory = Some(self.memory_page());
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
         }
@@ -724,6 +727,7 @@ impl Live {
         w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
+            w.memory = Some(self.memory_page());
         state
     }
 
@@ -941,6 +945,7 @@ impl Live {
             w.callbacks = Some(self.callbacks_page());
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
+            w.memory = Some(self.memory_page());
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
             }
@@ -1084,6 +1089,11 @@ impl Live {
             let result = harness_speech::transcribe_samples(&data, model, &samples);
             *heard.lock().expect("heard") = Some(result);
         });
+    }
+
+    fn memory_page(&self) -> frontend_tui::model::MemoryPage {
+        let map_max_nodes = config::load().map_or(harness_session::Settings::default().map_max_nodes, |c| c.session.map_max_nodes);
+        frontend_tui::model::MemoryPage { map_max_nodes, ..Default::default() }
     }
 
     fn telegram_page(&self) -> frontend_tui::model::TelegramPage {
@@ -1659,6 +1669,17 @@ impl Live {
                     }
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
+                    w.memory = Some(self.memory_page());
+                }
+                Outgoing::SaveMapLimit { limit } => {
+                    let saved = config::load().and_then(|mut c| {
+                        c.session.map_max_nodes = limit;
+                        config::save(&c)
+                    });
+                    if let Err(error) = saved && let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.memory.status = format!("Could not save: {error}");
+                    }
+                    w.memory = Some(self.memory_page());
                 }
                 Outgoing::DownloadVoiceModel { model } => {
                     let progress: std::sync::Arc<std::sync::Mutex<VoiceDownload>> = Default::default();
@@ -1700,6 +1721,7 @@ impl Live {
                         s.voice.status = format!("Could not save: {error}");
                     }
                     w.voice = Some(self.voice_page());
+                    w.memory = Some(self.memory_page());
                 }
                 Outgoing::StartVoiceTest { model, device } => {
                     let started = harness_speech::model(&model).ok_or_else(|| format!("no model {model}")).and_then(|model| Ok((model, harness_speech::Recording::start(device.as_deref())?)));
@@ -1723,6 +1745,7 @@ impl Live {
                     w.callbacks = Some(self.callbacks_page());
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
+                    w.memory = Some(self.memory_page());
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::Reload => {
@@ -2355,7 +2378,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     match &mut state.mode {
                         frontend_tui::model::Mode::Session(w) if w.overlay.is_none() => w.view_mut().composer.insert(&text),
                         // A field being typed in takes it, line breaks aside.
-                        frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.telegram.editing || s.auth.entry.is_some()) => {
+                        frontend_tui::model::Mode::Session(w) if matches!(&w.overlay, Some(frontend_tui::model::Overlay::Settings(s)) if s.editing_model || s.telegram.editing || s.memory.editing || s.auth.entry.is_some()) => {
                             pasted_at = None;
                             for c in text.chars().filter(|c| !c.is_control()) {
                                 input::key(&mut state, Key::Char(c));
