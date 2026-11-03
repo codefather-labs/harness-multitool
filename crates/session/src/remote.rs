@@ -225,7 +225,7 @@ fn program_may(tool: &str, input: &Value, root: &str, planning: bool) -> bool {
         return true;
     }
     match &capability {
-        Capability::Command(command) => harness_core::plan::read_only_command(command),
+        Capability::Command(command) => harness_core::plan::reading_chain(command, root),
         Capability::WritePath(path) => {
             let inside = path.strip_prefix(root).unwrap_or(path).trim_start_matches(['/', '\\']);
             inside.starts_with("docs/") || inside.starts_with(".harness/")
@@ -1754,7 +1754,9 @@ mod read_agent_tests {
         assert!(!may("Bash", json!({"command": "cargo test -p x"}), true), "not a reading command");
         assert!(may("Bash", json!({"command": "git status"}), true));
         assert!(!may("Bash", json!({"command": "python3 x.py"}), false));
-        assert!(!may("Bash", json!({"command": "cargo test | tail"}), false));
+        assert!(may("Bash", json!({"command": "cargo test | tail"}), false));
+        assert!(!may("Bash", json!({"command": "cargo test | tail"}), true));
+        assert!(!may("Bash", json!({"command": "cargo test > f"}), false));
         assert!(!may("WebFetch", json!({"url": "https://x"}), false));
     }
 

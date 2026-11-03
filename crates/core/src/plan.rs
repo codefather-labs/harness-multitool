@@ -42,7 +42,7 @@ pub fn refusal(capabilities: &[Capability], root: &str) -> Option<String> {
     })
 }
 
-/// What a slave needs to prove its work, standing alone with no operators.
+/// What a slave needs to prove its work.
 const SLAVE_CARGO: [&str; 5] = ["build", "test", "check", "clippy", "fmt"];
 /// Options of cargo that reach outside the project or run something else.
 const SLAVE_CARGO_REFUSED: [&str; 4] = ["--config", "--target-dir", "--manifest-path", "-Z"];
@@ -54,15 +54,95 @@ pub fn slave_basics(capabilities: &[Capability], root: &str) -> bool {
         && capabilities.iter().all(|c| match c {
             Capability::Memory => true,
             Capability::ReadPath(path) | Capability::WritePath(path) => in_project(path, root),
-            Capability::Command(command) => read_only_command(command) || slave_cargo(command),
+            Capability::Command(command) => slave_chain(command, root),
             Capability::Host(_) => false,
         })
 }
 
-fn slave_cargo(command: &str) -> bool {
-    if command.contains(SHELL_OPERATORS) {
-        return false;
+/// A command's stages, joined by `;`, `&&`, `||` or `|`, with what is quoted reduced to one word.
+/// `None` if anything else outside quotes could redirect, substitute or run in the background: it
+/// fails closed. `2>&1` is the one redirection let through: it writes nowhere new.
+fn stages(command: &str) -> Option<Vec<String>> {
+    let command = command.replace("2>&1", "");
+    let (mut out, mut stage) = (Vec::new(), String::new());
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' => {
+                let mut quoted = String::new();
+                loop {
+                    let inner = chars.next()?;
+                    if inner == c {
+                        break;
+                    }
+                    if c == '"' && matches!(inner, '$' | '`' | '\\') {
+                        return None;
+                    }
+                    quoted.push(inner);
+                }
+                // A plain word stays what it is; anything else is just an argument.
+                let plain = !quoted.is_empty() && quoted.chars().all(|q| q.is_ascii_alphanumeric() || ",./_-".contains(q));
+                stage.push_str(if plain { &quoted } else { "quoted" });
+            }
+            ';' | '|' => {
+                if c == '|' && chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                out.push(std::mem::take(&mut stage));
+            }
+            '&' => {
+                if chars.next() != Some('&') {
+                    return None;
+                }
+                out.push(std::mem::take(&mut stage));
+            }
+            '<' | '>' | '$' | '`' | '(' | ')' | '\n' | '\r' | '\\' => return None,
+            other => stage.push(other),
+        }
     }
+    out.push(stage);
+    let out: Vec<String> = out.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    (!out.is_empty()).then_some(out)
+}
+
+/// `timeout 60 cargo test` is `cargo test`.
+fn without_timeout(stage: &str) -> String {
+    let words: Vec<&str> = stage.split_whitespace().collect();
+    match words.as_slice() {
+        ["timeout", secs, rest @ ..] if secs.trim_end_matches('s').parse::<u32>().is_ok() => rest.join(" "),
+        _ => stage.to_string(),
+    }
+}
+
+/// A stage that only reads, of a slave's chain: CON-53's commands, and a few that only pass text on.
+fn reading_stage(stage: &str, root: &str) -> bool {
+    let words: Vec<&str> = stage.split_whitespace().collect();
+    match words.as_slice() {
+        ["cd", dir] => in_project(dir, root),
+        ["echo", ..] | ["cut", ..] | ["tr", ..] | ["true"] => true,
+        ["sort", options @ ..] => !options.iter().any(|o| o.starts_with("-o") || o.starts_with("--output")),
+        // Numbers and p: a script of sed could write or run anything.
+        ["sed", "-n", script, files @ ..] => script.strip_suffix('p').is_some_and(|lines| !lines.is_empty() && lines.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '$')) && !files.iter().any(|f| f.starts_with('-')),
+        _ => read_only_command(stage),
+    }
+}
+
+/// A slave's chain that only reads (CON-103): what it may run while it plans.
+pub fn reading_chain(command: &str, root: &str) -> bool {
+    stages(command).is_some_and(|stages| stages.iter().all(|stage| reading_stage(&without_timeout(stage), root)))
+}
+
+/// A slave's chain of reading and of building and testing (CON-103).
+fn slave_chain(command: &str, root: &str) -> bool {
+    stages(command).is_some_and(|stages| {
+        stages.iter().all(|stage| {
+            let stage = without_timeout(stage);
+            reading_stage(&stage, root) || slave_cargo(&stage)
+        })
+    })
+}
+
+fn slave_cargo(command: &str) -> bool {
     let mut words = command.split_whitespace();
     words.next() == Some("cargo")
         && words.next().is_some_and(|sub| SLAVE_CARGO.contains(&sub))
@@ -297,6 +377,21 @@ impl Hook for WorkflowSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CON-103: chains of reading and of cargo pass, and anything else still goes to the master.
+    #[test]
+    fn a_slaves_chains_of_reading_and_cargo_ask_no_one() {
+        let ok = |c: &str| slave_basics(&[Capability::Command(c.to_string())], "/p");
+        for good in ["cargo test -p x 2>&1 | tail -5", "cargo clippy --workspace --all-targets", "grep -E \"a|b\" f | head", "sed -n 1,9p f; ls", "sed -n '40,60p' f && echo ---", "cd /p && git status --short", "cd crates && ls", "timeout 580 cargo build --release 2>&1 | tail -3", "git diff --stat; git log --oneline -3", "ls x || echo none", "cat f | sort | cut -c1-40"] {
+            assert!(ok(good), "{good}");
+        }
+        for bad in ["cargo test > f", "ls; rm f", "cat $(x)", "cat `x`", "grep \"$HOME\" f", "sed -i s/a/b/ f", "sed -n 1w/tmp/x f", "sed -n '1,2p;w x' f", "sleep 1 &", "cargo test --target-dir x | tail", "python3 x.py", "echo a > f", "cat < f", "cd /etc && ls", "cd .. && ls", "sort -o f g", "git checkout -- f", "ls\nrm f", "'unclosed"] {
+            assert!(!ok(bad), "{bad}");
+        }
+        assert!(reading_chain("grep x f | head; git status", "/p"));
+        assert!(!reading_chain("cargo test | tail", "/p"), "while planning, nothing is built");
+        assert!(!read_only_command("ls | head"), "a user's own plan mode stays as it was (CON-53)");
+    }
 
     /// CON-111.
     #[test]
