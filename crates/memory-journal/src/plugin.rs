@@ -27,7 +27,7 @@ fn agenda_entry(e: &journal::Entry) -> serde_json::Value {
     let mut short = serde_json::json!({
         "id": e.id,
         "category": e.category,
-        "open": e.flags.iter().filter(|f| f.open).map(|f| f.flag.as_str()).collect::<Vec<_>>(),
+        "open": e.flags.iter().filter(|f| f.open && journal::closable(&f.flag)).map(|f| f.flag.as_str()).collect::<Vec<_>>(),
         "excerpt": journal::excerpt(&e.body),
     });
     if !e.blocked_by.is_empty() {
@@ -292,6 +292,18 @@ mod tests {
         assert!(!open(spec), "a specification entry is no open task");
         assert!(open(todo), "an open todo is an open task");
         assert!(!open(closed), "a closed todo is no open task");
+    }
+
+    /// journal#594: the agenda's `open` array lists work flags only, as `record().open` does.
+    #[test]
+    fn agenda_open_lists_only_work_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
+        let entry = JournalEntry { blocked_by: None, proofs: Vec::new(), body: "a rule still to build".into(), category: "todo".into(), tags: vec!["t".into()], flags: vec!["todo".into(), "specification".into(), "important".into()], salience: None, feature: None };
+        pollster_free(m.journal_add(entry)).unwrap();
+        let agenda = pollster_free(m.more(MemoryOp::JournalAgenda { limit: 5 })).unwrap();
+        let short = &agenda["agenda"][0]["entries"][0];
+        assert_eq!(short["open"], serde_json::json!(["todo"]), "marks are no open work: {short}");
     }
 
     #[test]
