@@ -18,12 +18,9 @@ pub const NAME: &str = "claude-code";
 /// What may run with nobody to ask, until the harness answers prompts itself (journal#209).
 const READ_ONLY_TOOLS: &str = "Read,Glob,Grep";
 
-/// What an agent of an orchestra may do with no one asked (CON-103), in this program's own terms:
-/// inside the folder it works in, reading commands (CON-53), and building and testing with cargo.
-pub const SLAVE_TOOLS: &str = "Read,Glob,Grep,Edit(./**),Write(./**),\
-Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(pwd),Bash(stat:*),Bash(du:*),Bash(df:*),\
-Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git blame:*),\
-Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*)";
+/// What a slave's program is told it may do by itself: reading inside the folder. All else comes to
+/// its prompt tool, where the harness decides by its own rules and its own plan mode (CON-108).
+pub const SLAVE_TOOLS: &str = "Read(./**)";
 
 /// What one line of the stream comes to.
 #[derive(Debug, PartialEq)]
@@ -216,6 +213,8 @@ pub struct ClaudeCode {
     chrome: bool,
     /// An MCP tool that answers this program's permission prompts (CON-108), instead of nobody.
     prompt_tool: Option<String>,
+    /// The harness holds plan mode for it: the program's own has instructions that win over ours.
+    harness_plans: bool,
     /// The harness's own tools, as an MCP configuration.
     mcp: Option<String>,
     readable_dir: Option<String>,
@@ -236,6 +235,7 @@ impl ClaudeCode {
             environment: None,
             chrome: settings["chrome"] != false,
             prompt_tool: settings["permission_prompt_tool"].as_str().map(str::to_string),
+            harness_plans: settings["harness_plans"] == true,
             readable_dir: None,
             mcp: None,
             live: std::cell::RefCell::new(None),
@@ -260,6 +260,11 @@ impl ClaudeCode {
         self
     }
 
+    /// Whether this run goes under the program's own plan mode.
+    fn program_plans(&self, request: &BackendRequest<'_>) -> bool {
+        request.plan_mode && !self.harness_plans
+    }
+
     /// The arguments of one run. The user's own hooks and servers stay out of it (CON-61).
     pub fn args(&self, request: &BackendRequest<'_>) -> Vec<String> {
         let mut args: Vec<String> = ["-p", "--input-format", "stream-json", "--replay-user-messages", "--output-format", "stream-json", "--verbose", "--include-partial-messages"].iter().map(|a| a.to_string()).collect();
@@ -278,7 +283,7 @@ impl ClaudeCode {
         } else {
             match &self.prompt_tool {
                 // Asking and planning are the harness's there: the program's own would come as prompts.
-                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode,mcp__harness__telegram_send".to_string(), "--settings".to_string(), r#"{"useAutoModeDuringPlan":false}"#.to_string()]),
+                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode,mcp__harness__telegram_send".to_string()]),
                 None => args.extend(["--permission-prompts".to_string(), "none".to_string()]),
             }
             args.extend(["--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
@@ -295,7 +300,7 @@ impl ClaudeCode {
         if let Some(system) = request.system.filter(|s| !s.is_empty()) {
             args.extend(["--append-system-prompt".to_string(), system.to_string()]);
         }
-        if request.plan_mode {
+        if self.program_plans(request) {
             args.extend(["--permission-mode".to_string(), "plan".to_string()]);
         }
         if let Some(dir) = &self.readable_dir {
@@ -346,7 +351,7 @@ impl ClaudeCode {
             let _ = stderr.read_to_string(&mut text);
             text
         });
-        Ok(Live { child, stdin, lines, errors: Some(errors), session: request.session.map(str::to_string), plan_mode: request.plan_mode, prompt_seen: false, echoes: false, peeked: Default::default() })
+        Ok(Live { child, stdin, lines, errors: Some(errors), session: request.session.map(str::to_string), plan_mode: self.program_plans(request), prompt_seen: false, echoes: false, peeked: Default::default() })
     }
 
     fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
@@ -358,7 +363,7 @@ impl ClaudeCode {
             return self.run_rest(slot, request, sink, mapper, None);
         }
         let goes_on = slot.as_mut().is_some_and(|live| {
-            matches!(live.child.try_wait(), Ok(None)) && live.plan_mode == request.plan_mode && !request.fork && (request.session.is_none() || live.session.as_deref() == request.session)
+            matches!(live.child.try_wait(), Ok(None)) && live.plan_mode == self.program_plans(request) && !request.fork && (request.session.is_none() || live.session.as_deref() == request.session)
         });
         if !goes_on {
             *slot = Some(self.start(request)?);
@@ -701,7 +706,11 @@ mod tests {
         assert_eq!(flag("--permission-prompts"), "host");
         assert_eq!(flag("--permission-prompt-tool"), "mcp__mode__permission_ask");
         assert!(flag("--disallowedTools").contains("AskUserQuestion") && flag("--disallowedTools").contains("telegram_send"));
-        assert!(flag("--settings").contains("useAutoModeDuringPlan"), "its classifier must not answer for the master");
+        // A slave's plan mode is the harness's: the program's own has instructions that win over ours.
+        let held = ClaudeCode::new("m1", "/r", &json!({"harness_plans": true})).args(&request(None, None, true, &never));
+        assert!(!held.iter().any(|a| a == "--permission-mode"), "{held:?}");
+        let own = ClaudeCode::new("m1", "/r", &json!({})).args(&request(None, None, true, &never));
+        assert!(own.iter().any(|a| a == "--permission-mode"), "a user's own conversation keeps it: {own:?}");
         assert_eq!(args[at("--model") + 1], "m1");
         assert!(!args.iter().any(|a| a.contains("secret prompt") || a == "--resume" || a == "--bare" || a == "--permission-mode" || a == "--system-prompt"), "{args:?}");
 

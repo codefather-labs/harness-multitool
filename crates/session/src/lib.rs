@@ -384,6 +384,7 @@ fn isolate_slave(settings: &mut Settings) {
         #[cfg(feature = "claude-code")]
         row.insert("allowed_tools".to_string(), json!(harness_backend_claude_code::SLAVE_TOOLS));
         row.insert("permission_prompt_tool".to_string(), json!(host_tools::PROMPT_TOOL));
+        row.insert("harness_plans".to_string(), json!(true));
     }
 }
 

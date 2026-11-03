@@ -136,7 +136,7 @@ runs = [json.loads(line) for line in open(log)]
 agent = [r for r in runs if "Your task is journal#" in r["prompt"]][-1]["args"]; own = [r for r in runs if "Your task is journal#" not in r["prompt"]][0]["args"]
 assert "--dangerously-skip-permissions" in own and "--setting-sources" not in own, own
 assert "--dangerously-skip-permissions" not in agent and "--setting-sources" in agent and "--strict-mcp-config" in agent, agent
-allowed = agent[agent.index("--allowedTools") + 1]; assert all(t in allowed for t in ["Edit(./**)", "Bash(cargo test:*)", "mcp__harness__*", "mcp__mode__*"]), allowed
+allowed = agent[agent.index("--allowedTools") + 1]; assert all(t in allowed for t in ["Read(./**)", "mcp__harness__*", "mcp__mode__*"]) and "Edit" not in allowed and "Bash" not in allowed, allowed
 print("an agent runs isolated with its basics; the user's own row keeps its choice")
 # CON-109: its task is its master's to close; what it wrote itself is its own.
 def on_second(tool, arguments):
@@ -157,6 +157,16 @@ def second_calls(server, tool, arguments):
     until(tool + " on the agent", lambda: len([a for a in answers() if a["tool"] == tool]) > n)
     return [a for a in answers() if a["tool"] == tool][-1]
 assert not second_calls("mode", "plan_enter", {})["error"]
+# While it plans the harness holds its program: code goes to the master, docs do not; off at once on leaving.
+def program_asked(tool_input):
+    return "call mode permission_ask " + json.dumps({"tool_name": "Edit", "input": tool_input, "tool_use_id": "u"})
+code_edit = {"file_path": root + "/src/a.rs", "old_string": "a", "new_string": "b"}
+n = len(answers_of("permission_ask")); typed("call harness agent_send " + json.dumps({"to": "second", "text": program_asked({"file_path": root + "/docs/a.md", "old_string": "a", "new_string": "b"})}) + "\r")
+until("docs need no word while planning", lambda: len(answers_of("permission_ask")) > n); assert json.loads(answers_of("permission_ask")[-1]["text"])["behavior"] == "allow"
+n = len(answers_of("permission_ask")); typed("call harness agent_send " + json.dumps({"to": "second", "text": program_asked(code_edit)}) + "\r")
+until("code while planning goes to the master", lambda: "asks your permission: Edit" in told())
+denied = call("mode", "agent_answer", {"nick": "second", "answer": "deny"}); assert not denied["error"], denied
+until("its answer", lambda: len(answers_of("permission_ask")) > n); assert json.loads(answers_of("permission_ask")[-1]["text"])["behavior"] == "deny"
 for tool, args in [("journal_add", {"body": "its plan", "category": "decision", "tags": ["t"]}), ("flowchart_new", {"title": "f"})]:
     assert not second_calls("harness", tool, args)["error"]
 strategy = json.loads(second_calls("harness", "mindmap_new", {"title": "m"})["text"])
@@ -168,6 +178,10 @@ no = second_calls("mode", "plan_exit", go); assert no["error"] and "mindmap_add"
 assert not second_calls("harness", "flowchart_add", {"map": chart["id"], "text": "the logic", "kind": "process", "after": chart["root"]})["error"]
 yes = second_calls("mode", "plan_exit", go); assert not yes["error"] and "approved the plan" in yes["text"], yes
 print("an agent's plan was refused until its map pointed at its task and its chart had blocks")
+n = len(answers_of("permission_ask")); words = told().count("asks your permission: Edit"); typed("call harness agent_send " + json.dumps({"to": "second", "text": program_asked(code_edit)}) + "\r")
+until("code passes once it left", lambda: len(answers_of("permission_ask")) > n); assert json.loads(answers_of("permission_ask")[-1]["text"])["behavior"] == "allow" and told().count("asks your permission: Edit") == words
+assert not any("--permission-mode" in json.loads(line)["args"] for line in open(log) if "Your task is journal#" in json.loads(line)["prompt"] or "plan_enter" in json.loads(line)["prompt"]), "its program never plans by itself"
+print("while it planned its code went to the master, after that with no one asked, in its program's default mode")
 # CON-108: what its program would ask a person goes to the master and waits for the master's answer.
 def program_asks(command):
     n = len([a for a in answers() if a["tool"] == "permission_ask"])

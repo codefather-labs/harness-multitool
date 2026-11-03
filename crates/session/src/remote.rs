@@ -382,13 +382,15 @@ impl DaemonHost {
         let data = self.data_dir.to_string_lossy().into_owned();
         match name {
             "mode__plan_enter" => {
-                {
+                let when = {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
+                    let slave = orchestra.slaves.contains_key(&session);
                     orchestra.planning.insert(session);
                     self.save_orchestra(&orchestra);
-                }
+                    if slave { "Plan mode is on." } else { "Plan mode is on, and takes hold in your process from the next message." }
+                };
                 window.sessions.plan(tab, true);
-                Ok(json!({"text": format!("Plan mode is on, and takes hold in your process from the next message. Until the plan is approved, write nothing but the journal, maps and docs.{}", harness_context_default::PLAN_RULES)}))
+                Ok(json!({"text": format!("{when} Until the plan is approved, write nothing but the journal, maps and docs.{}", harness_context_default::PLAN_RULES)}))
             }
             "mode__plan_exit" => {
                 if !self.orchestra.lock().expect("orchestra").planning.contains(&session) {
