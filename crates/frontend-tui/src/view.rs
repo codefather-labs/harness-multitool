@@ -223,7 +223,7 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
         let mark = match tab.mark {
             TabMark::None => String::new(),
             TabMark::Busy => " ◌".into(),
-            TabMark::Unread(n) => format!(" ●{n}"),
+            TabMark::Unread(n) => format!(" ● {n}"),
             TabMark::Attention => " !".into(),
         };
         let lead = if pictures { "    ".to_string() } else { format!(" {glyph} ") };

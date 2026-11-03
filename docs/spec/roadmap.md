@@ -25,6 +25,10 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Concepts, not yet on a milestone:** reliability-monitoring mode — signals accumulate, conditions wake the agent with one message per batch, per-project response policies in `.harness/policies/` (IF-15, INV-14, CON-26; [ADR 0014](../decisions/0014-reliability-monitoring-mode.md)).
 
+## TUI /version (CON-102)
+
+`/version` prints a local VERSION card in the current transcript with `harness-multitool <package version>`; it is listed in `/help` and never sends a model request. Specification journal#515 replaces journal#504 to repair its documentation identity without changing behaviour. Work journal#505; implementation journal#507; verification journal#509. Checked: frontend-tui 104 passed, 0 failed, 1 ignored; CLI build; real PTY preview `/version` displayed VERSION and harness-multitool 0.1.0-dev, exit 0. Live dispatch/outbox preservation checked by unit test; interactive smoke used preview, not a live provider.
+
 ## Hot reload of plugins (M6; ADR 0015, CON-50)
 
 Plugins stay crates linked into the binary; a reload swaps the binary in the same terminal without restarting sessions:

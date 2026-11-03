@@ -103,6 +103,7 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 
 | Command | Publishes |
 |---|---|
+| `/version` | the harness package version in a VERSION card (local; no model request) |
 | `/agent [text]` | an assistant reply |
 | `/busy` | toggles `generating…` on the newest assistant turn |
 | `/tg [text]` | a Telegram message and its notification toast |

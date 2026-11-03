@@ -42,6 +42,40 @@ pub fn refusal(capabilities: &[Capability], root: &str) -> Option<String> {
     })
 }
 
+/// What a slave needs to prove its work, standing alone with no operators.
+const SLAVE_CARGO: [&str; 5] = ["build", "test", "check", "clippy", "fmt"];
+/// Options of cargo that reach outside the project or run something else.
+const SLAVE_CARGO_REFUSED: [&str; 4] = ["--config", "--target-dir", "--manifest-path", "-Z"];
+
+/// What a slave of an orchestra may do without asking its master (CON-103): files inside the folder
+/// it works in, reading commands, and building and testing. Unknown means ask: the list fails closed.
+pub fn slave_basics(capabilities: &[Capability], root: &str) -> bool {
+    !capabilities.is_empty()
+        && capabilities.iter().all(|c| match c {
+            Capability::Memory => true,
+            Capability::ReadPath(path) | Capability::WritePath(path) => in_project(path, root),
+            Capability::Command(command) => read_only_command(command) || slave_cargo(command),
+            Capability::Host(_) => false,
+        })
+}
+
+fn slave_cargo(command: &str) -> bool {
+    if command.contains(SHELL_OPERATORS) {
+        return false;
+    }
+    let mut words = command.split_whitespace();
+    words.next() == Some("cargo")
+        && words.next().is_some_and(|sub| SLAVE_CARGO.contains(&sub))
+        && !words.any(|w| SLAVE_CARGO_REFUSED.iter().any(|o| w.starts_with(o)))
+}
+
+/// Inside this folder: relative, or under it, and never climbing out.
+fn in_project(path: &str, root: &str) -> bool {
+    let root = root.trim_end_matches(['/', '\\']);
+    let inside = !path.starts_with(['/', '\\']) && !path.contains(':') || path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with(['/', '\\']));
+    inside && !path.split(['/', '\\']).any(|part| part == "..")
+}
+
 const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then mode__plan_exit.";
 
 /// The project's documentation, the one thing written while planning: a feature is described
@@ -379,5 +413,27 @@ mod tests {
         }
         assert_eq!(says(HookPoint::Stop), HookOutcome::Ok);
         assert_eq!(says(HookPoint::UserPromptSubmit { text: "x" }), HookOutcome::Ok);
+    }
+
+    #[test]
+    fn a_slave_needs_no_word_for_its_folder_its_reading_and_its_tests_only() {
+        let root = "/work/app";
+        let ok = |c: Capability| slave_basics(&[c], root);
+        for path in ["src/a.rs", "/work/app/src/a.rs", "/work/app", "docs/x.md"] {
+            assert!(ok(Capability::WritePath(path.into())), "{path}");
+            assert!(ok(Capability::ReadPath(path.into())), "{path}");
+        }
+        for path in ["/work/application/a", "/etc/passwd", "../other", "src/../../other", "/work/app/../secret", "C:\\x"] {
+            assert!(!ok(Capability::WritePath(path.into())), "{path}");
+        }
+        for command in ["cargo test -p x", "cargo build --release", "cargo clippy", "ls docs", "git status", "git log -3"] {
+            assert!(ok(Capability::Command(command.into())), "{command}");
+        }
+        for command in ["cargo install x", "cargo test; rm -rf /", "cargo test && curl x", "cargo build --target-dir /tmp", "cargo test --config x", "rm a", "git push", "git commit -m x", "python3 x.py", "cargo"] {
+            assert!(!ok(Capability::Command(command.into())), "{command}");
+        }
+        assert!(!ok(Capability::Host("example.com".into())), "the network asks");
+        assert!(slave_basics(&[Capability::Memory], root));
+        assert!(!slave_basics(&[Capability::Memory, Capability::Command("rm a".into())], root), "all of them, or ask");
     }
 }

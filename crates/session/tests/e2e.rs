@@ -1233,6 +1233,36 @@ fn a_journal_entry_stores_though_the_model_filled_its_optionals_with_nothing() {
     drop(seen);
 }
 
+/// A slave has its basics; the rest still asks, and a non-slave asks as ever (CON-103).
+#[test]
+fn a_slave_needs_no_word_for_its_basics_and_asks_for_the_rest() {
+    let root = temp_dir("slave-basics");
+    let data = temp_dir("slave-basics-data");
+    let turns = || vec![
+        anthropic_turn(Some(("b1", "edit", json!({"path": "made.txt", "old_text": "", "new_text": "hello"}))), "Writing."),
+        anthropic_turn(Some(("b2", "shell", json!({"command": "ls"}))), "Listing."),
+        anthropic_turn(Some(("b3", "shell", json!({"command": "touch other.txt"}))), "Something else."),
+        anthropic_turn(None, "Done."),
+    ];
+    let (url, _) = fake_endpoint(turns());
+    let mut quiet = settings(&url, "k");
+    quiet.plan_first = Some("off".to_string());
+    let mut slave = Sessions::new(real_factory(quiet.clone(), root.clone(), data.clone().into()), root.clone());
+    slave.role(1, Some("slave".to_string()), Some("boss".to_string()));
+    let (_, _, asked) = drive(&mut slave, &["work"], Answer::Deny);
+    assert_eq!(asked, 1, "only touch asks");
+    assert_eq!(std::fs::read_to_string(format!("{root}/made.txt")).unwrap(), "hello");
+    assert!(!std::path::Path::new(&format!("{root}/other.txt")).exists());
+
+    let (root_b, data_b) = (temp_dir("not-slave"), temp_dir("not-slave-data"));
+    let (url, _) = fake_endpoint(turns());
+    let mut plain = settings(&url, "k");
+    plain.plan_first = Some("off".to_string());
+    let mut sessions = Sessions::new(real_factory(plain, root_b.clone(), data_b.into()), root_b.clone());
+    let (_, _, asked) = drive(&mut sessions, &["work"], Answer::Deny);
+    assert_eq!(asked, 3, "everyone else asks as before");
+}
+
 /// A slave's plan is its orchestrator's to approve: it gets no card for the user (CON-100).
 #[test]
 fn a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it() {

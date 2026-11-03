@@ -1023,6 +1023,11 @@ impl Engine {
 
     async fn approve(&self, call: &ToolCall, capabilities: &[Capability]) -> Result<(), String> {
         let decided = |allowed: bool, by: DecidedBy, reason: Option<String>| self.emit(Event::ToolDecision { id: call.id.clone(), allowed, by, reason });
+        // A slave has its basics from the start, so its master is asked only what matters (CON-103).
+        if self.state.borrow().orchestra_role.as_deref() == Some("slave") && plan::slave_basics(capabilities, &self.root) {
+            decided(true, DecidedBy::Policy, Some("what an agent of an orchestra may do by default".to_string()));
+            return Ok(());
+        }
         match self.parts.policy.decide(call, capabilities) {
             Decision::Allow => {
                 decided(true, DecidedBy::Policy, None);
