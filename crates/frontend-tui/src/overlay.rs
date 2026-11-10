@@ -469,24 +469,19 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             text(f, r.x, y + 1, r.width, vec![Span::styled(" Claude Code is signed out first. Conversations stay.", muted)], bg);
             text(f, r.x, y + 2, r.width, vec![Span::styled(" Enter or y deletes, Esc keeps it.", muted)], bg);
         }
-        ProfilesMode::Editing => {
+        // The card of the line under the cursor, always: its folder and the one Claude Code button
+        // that applies, Sign in or Sign out (journal#785).
+        ProfilesMode::List | ProfilesMode::Editing => {
             if let Some(row) = p.rows.get(p.cursor) {
                 text(f, r.x, y, r.width, vec![Span::styled(format!(" {}: {} {}", row.name, row.provider, row.model), strong)], bg);
                 text(f, r.x, y + 1, r.width, vec![Span::styled(format!(" {}", row.folder), muted)], bg);
-                for (i, label) in ["Sign in Claude Code", "Sign out Claude Code"].iter().enumerate() {
-                    let x = r.x + 1 + i as u16 * 26;
-                    let under = focus && p.button == i;
-                    let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
-                    text(f, x, y + 2, 24, vec![Span::styled(format!("[ {label} ]"), style)], bg);
-                    out.hits.push(Hit { rect: Rect::new(x, y + 2, 24, 1), target: Target::ProfileButton(10 + i) });
-                }
-                text(f, r.x, y + 3, r.width, vec![Span::styled(" Adapter, model, ChatGPT: Use it, then the Provider page.", muted)], bg);
+                let label = if row.claude == Some(true) { "Sign out Claude Code" } else { "Sign in Claude Code" };
+                let under = focus && p.mode == ProfilesMode::Editing;
+                let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
+                text(f, r.x + 1, y + 2, 24, vec![Span::styled(format!("[ {label} ]"), style)], bg);
+                out.hits.push(Hit { rect: Rect::new(r.x + 1, y + 2, 24, 1), target: Target::ProfileButton(10) });
             }
-        }
-        ProfilesMode::List => {
-            text(f, r.x, y, r.width, vec![Span::styled(" ● this window. a add, e edit, d delete, u use.", muted)], bg);
-            text(f, r.x, y + 1, r.width, vec![Span::styled(" New tabs run on the profile in use;", muted)], bg);
-            text(f, r.x, y + 2, r.width, vec![Span::styled(" a tab already started keeps its own.", muted)], bg);
+            text(f, r.x, y + 3, r.width, vec![Span::styled(" ● this window. Enter uses the line; Down to the button.", muted)], bg);
         }
     }
     if !p.status.is_empty() {
@@ -524,7 +519,7 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
                 outbox.push(Outgoing::ProfileAdd { name });
             }
         }
-        (ProfilesMode::Naming(_) | ProfilesMode::Deleting | ProfilesMode::Editing, Key::Esc) => p.mode = ProfilesMode::List,
+        (ProfilesMode::Naming(_) | ProfilesMode::Deleting | ProfilesMode::Editing, Key::Esc) | (ProfilesMode::Editing, Key::Up) => p.mode = ProfilesMode::List,
         (ProfilesMode::Deleting, Key::Enter | Key::Char('y')) => {
             p.mode = ProfilesMode::List;
             if let Some(name) = selected {
@@ -533,26 +528,31 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
             }
         }
         (ProfilesMode::Deleting, _) => p.mode = ProfilesMode::List,
-        (ProfilesMode::Editing, Key::Left | Key::Right | Key::Tab) => p.button = 1 - p.button.min(1),
+        // The button does what applies: a profile signed in signs out, one not signed in signs in.
         (ProfilesMode::Editing, Key::Enter | Key::Char(' ')) => {
+            let signed_in = p.rows.get(p.cursor).and_then(|r| r.claude) == Some(true);
             if let Some(name) = selected {
-                outbox.push(Outgoing::ProfileClaude { name, login: p.button == 0 });
+                outbox.push(Outgoing::ProfileClaude { name, login: !signed_in });
             }
         }
-        (ProfilesMode::List | ProfilesMode::Editing, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
-        (ProfilesMode::List | ProfilesMode::Editing, Key::Down) => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
-        (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
-        (ProfilesMode::List, Key::Char('e') | Key::Enter) if selected.is_some() => {
-            p.mode = ProfilesMode::Editing;
-            p.button = 0;
+        (ProfilesMode::List, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
+        // Down past the last line goes onto the card's button.
+        (ProfilesMode::List, Key::Down) if p.cursor + 1 >= p.rows.len() => {
+            if selected.is_some() {
+                p.mode = ProfilesMode::Editing;
+            }
         }
+        (ProfilesMode::List, Key::Down) => p.cursor += 1,
+        (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
+        (ProfilesMode::List, Key::Char('e')) if selected.is_some() => p.mode = ProfilesMode::Editing,
         (ProfilesMode::List, Key::Char('d')) => match p.rows.get(p.cursor) {
             Some(row) if row.name == "default" => p.status = "default is always there and cannot be deleted.".to_string(),
             Some(row) if row.current => p.status = format!("This window runs on {}: Use another first.", row.name),
             Some(_) => p.mode = ProfilesMode::Deleting,
             None => {}
         },
-        (ProfilesMode::List, Key::Char('u')) => match p.rows.get(p.cursor) {
+        // Enter chooses the line for this window, as Use does (journal#784).
+        (ProfilesMode::List, Key::Char('u') | Key::Enter) => match p.rows.get(p.cursor) {
             Some(row) if row.current => p.status = format!("This window already runs on {}.", row.name),
             Some(row) => {
                 p.status = format!("Moving this window onto {}...", row.name);
@@ -1631,7 +1631,6 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             let p = &mut s.profiles;
             if i >= 10 {
                 p.mode = ProfilesMode::Editing;
-                p.button = i - 10;
                 profiles_key(p, Key::Enter, &mut w.outbox);
             } else {
                 p.mode = ProfilesMode::List;
@@ -2359,9 +2358,29 @@ mod tests {
         key(&mut w, Key::Char('e'));
         key(&mut w, Key::Enter);
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"));
-        key(&mut w, Key::Right);
+    }
+
+    /// journal#784, journal#785: Enter on a line chooses it for the window (Use) and never signs in;
+    /// the card's one button is Sign out on a profile signed in and Sign in on one not, reached by Down.
+    #[test]
+    fn enter_uses_a_profile_and_the_button_is_the_one_that_applies() {
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        key(&mut w, Key::Down);
         key(&mut w, Key::Enter);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"), "Enter uses the line");
+        assert!(w.outbox.is_empty() && profiles_of(&w).mode == ProfilesMode::List);
+        key(&mut w, Key::Down);
+        assert_eq!(profiles_of(&w).mode, ProfilesMode::Editing, "Down past the last line is the button");
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"), "not signed in: Sign in");
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.profiles.rows[1].claude = Some(true);
+        }
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"), "signed in: only Sign out");
+        key(&mut w, Key::Up);
+        assert_eq!(profiles_of(&w).mode, ProfilesMode::List);
     }
 
     /// CON-125: the list in one field on the left, the four buttons on the right, at 80 columns.
@@ -2380,7 +2399,9 @@ mod tests {
         for want in ["● default", "max", "[ Add    ]", "[ Edit   ]", "[ Delete ]", "[ Use    ]", "┌", "└"] {
             assert!(screen.contains(want), "{want:?} missing:\n{screen}");
         }
-        assert_eq!(drawn.hits.iter().filter(|h| matches!(h.target, Target::ProfileButton(_))).count(), 4);
+        assert_eq!(drawn.hits.iter().filter(|h| matches!(h.target, Target::ProfileButton(i) if i < 4)).count(), 4);
+        // The card of default, signed in: only its Sign out shows (journal#785).
+        assert!(screen.contains("[ Sign out Claude Code ]") && !screen.contains("Sign in Claude Code"), "{screen}");
         w.overlay = None;
         let _ = &mut w;
     }

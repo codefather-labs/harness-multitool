@@ -1061,7 +1061,7 @@ pub enum ProfilesMode {
     Naming(String),
     /// Delete asked; Enter or y confirms.
     Deleting,
-    /// Edit: the selected profile's folder, adapter and sign-ins, with its sign-in buttons.
+    /// The keyboard is on the card's Claude Code button, below the list (journal#785).
     Editing,
 }
 
@@ -1071,8 +1071,6 @@ pub struct ProfilesPage {
     pub rows: Vec<ProfileRow>,
     pub cursor: usize,
     pub mode: ProfilesMode,
-    /// The button under the keyboard in Edit: 0 sign Claude Code in, 1 sign it out.
-    pub button: usize,
     pub status: String,
 }
 

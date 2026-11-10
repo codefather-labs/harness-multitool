@@ -67,6 +67,17 @@ fn anthropic_turn(tool: Option<(&str, &str, serde_json::Value)>, text: &str) -> 
     sse(&events)
 }
 
+/// The real factory, with this process's environment less what a harness running these tests sets for
+/// its own profile: a test reads no one's real sign-in (journal#786).
+fn hermetic_factory(settings: Settings, root: String, data_dir: std::path::PathBuf) -> harness_session::Factory {
+    let mut env = harness_session::this_environment();
+    for name in [harness_session::CHATGPT_DIR_VAR, "CLAUDE_CONFIG_DIR", "MULTITOOL_HOME"] {
+        env.remove(name);
+    }
+    let host = harness_session::Host { environment: Some(std::sync::Arc::new(env)), ..Default::default() };
+    harness_session::with_host(settings, root, data_dir, host)
+}
+
 fn temp_dir(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!("harness-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -122,7 +133,7 @@ fn a_coding_turn_runs_end_to_end_on_the_real_plugins() {
         anthropic_turn(None, "It says hello harness."),
     ]);
     let canary = "sk-canary-0123456789";
-    let mut sessions = Sessions::new(real_factory(settings(&url, canary), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, canary), root.clone(), data.clone().into()), root.clone());
     let (entries, ends, asked) = drive(&mut sessions, &["change it"], Answer::AllowOnce);
 
     assert_eq!(ends, vec!["AwaitingInput"]);
@@ -182,7 +193,7 @@ fn a_denied_write_does_not_happen_and_the_model_hears_it() {
         anthropic_turn(Some(("t1", "edit", json!({"path": "a.txt", "old_text": "keep", "new_text": "gone"}))), "Editing."),
         anthropic_turn(None, "Fine."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.into()), root.clone());
     let (entries, _, asked) = drive(&mut sessions, &["try"], Answer::Deny);
     assert_eq!(asked, 1);
     assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "keep\n");
@@ -205,7 +216,7 @@ fn an_openai_compatible_endpoint_runs_a_turn_with_a_tool() {
     let mut s = Settings { provider: "local".into(), model: "qwen".into(), ..Default::default() };
     s.providers.insert("local".into(), json!({"kind": "openai", "base_url": format!("{url}/v1")}));
     s.auth.insert("local".into(), json!({"none": true}));
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.into()), root);
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.into()), root);
     let (entries, ends, _) = drive(&mut sessions, &["go"], Answer::Deny);
     assert_eq!(ends, vec!["AwaitingInput"]);
     assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { output, .. } if output == "local\n")));
@@ -221,7 +232,7 @@ fn a_missing_key_is_a_clear_message_and_the_session_goes_on_failing_softly() {
     let data = temp_dir("nokey-data");
     let mut s = Settings::default();
     s.auth.insert("anthropic".into(), json!({"env": "HARNESS_E2E_NO_SUCH_VAR"}));
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.into()), root);
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.into()), root);
     let (entries, ends, _) = drive(&mut sessions, &["hi"], Answer::Deny);
     assert!(ends[0].contains("no API key for anthropic"), "{ends:?}");
     assert!(entries.iter().any(|e| matches!(&e.event, Event::Error { message, .. } if message.contains("HARNESS_E2E_NO_SUCH_VAR"))));
@@ -267,7 +278,7 @@ fn a_session_resumes_from_its_log() {
     let root = temp_dir("resume");
     let data = temp_dir("resume-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "First answer."), anthropic_turn(None, "Second answer.")]);
-    let factory = real_factory(settings(&url, "k"), root.clone(), data.clone().into());
+    let factory = hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into());
 
     let mut first = Sessions::new(factory.clone(), root.clone());
     let (before, _, _) = drive(&mut first, &["first question\nwith a second line"], Answer::Deny);
@@ -301,7 +312,7 @@ fn a_log_cut_off_mid_tool_resumes_with_an_interrupted_result() {
     let root = temp_dir("cut");
     let data = temp_dir("cut-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Picking up.")]);
-    let factory = real_factory(settings(&url, "k"), root.clone(), data.clone().into());
+    let factory = hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into());
     let call = ToolCall { id: "t9".into(), name: "shell".into(), input: json!({"command": "sleep 100"}) };
     let log = [
         LogEntry { seq: 0, at_ms: 1, event: Event::UserMessage { text: "go".into() } },
@@ -349,7 +360,7 @@ fn shell_hooks_add_context_veto_and_fail() {
         }),
         hook("PostToolUse", "exit 7"),
     ];
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.into()), root.clone());
     let (entries, ends, asked) = drive(&mut sessions, &["go"], Answer::AllowOnce);
     assert_eq!(ends, vec!["AwaitingInput"]);
     assert_eq!(asked, 0, "the veto came before the permission prompt");
@@ -399,7 +410,7 @@ fn memory_tools_write_a_real_journal_shared_by_every_checkout() {
         anthropic_turn(Some(("t5", "flowchart_show", json!({"map": 1}))), "Showing."),
         anthropic_turn(None, "Found it."),
     ]);
-    let mut first = Sessions::new(real_factory(settings(&url, "k"), a.clone(), data.clone().into()), a);
+    let mut first = Sessions::new(hermetic_factory(settings(&url, "k"), a.clone(), data.clone().into()), a);
     let (entries, _, asked) = drive(&mut first, &["note it"], Answer::Deny);
     assert_eq!(asked, 0, "memory writes need no prompt");
     let outputs = |entries: &[LogEntry]| -> Vec<serde_json::Value> {
@@ -418,7 +429,7 @@ fn memory_tools_write_a_real_journal_shared_by_every_checkout() {
     assert_eq!(results[2]["edges"][0]["label"], "go");
 
     // Another checkout of the same repository, another process's worth of state.
-    let mut second = Sessions::new(real_factory(settings(&url, "k"), b.clone(), data.clone().into()), b);
+    let mut second = Sessions::new(hermetic_factory(settings(&url, "k"), b.clone(), data.clone().into()), b);
     let (entries, _, _) = drive(&mut second, &["find it"], Answer::Deny);
     let results = outputs(&entries);
     assert_eq!(results[0]["entries"][0]["body"], "Chose SQLite because readers block.");
@@ -437,7 +448,7 @@ fn the_wire_log_shows_bodies_and_never_keys() {
     unsafe { std::env::set_var("MULTITOOL_WIRE_LOG", &log) };
     let (url, _) = fake_endpoint(vec![anthropic_turn(None, "Visible answer.")]);
     let canary = "sk-wire-canary-987";
-    let mut sessions = Sessions::new(real_factory(settings(&url, canary), root.clone(), data.into()), root);
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, canary), root.clone(), data.into()), root);
     drive(&mut sessions, &["visible question"], Answer::Deny);
     unsafe { std::env::remove_var("MULTITOOL_WIRE_LOG") };
     let text = std::fs::read_to_string(log).unwrap();
@@ -493,7 +504,7 @@ fn context_comes_from_memory_and_survives_compaction() {
     let mut s = settings(&url, "k");
     s.compact_at_tokens = Some(1500);
     s.hooks = vec![HookSetting { event: Some("PostCompact".into()), command: "echo Re-read the specifications.".into(), name: Some("after-compact".into()) }];
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let mut prompts: Vec<String> = vec!["remember these".to_string()];
     prompts.extend((0..6).map(|i| format!("ask number {i}")));
     let prompts_ref: Vec<&str> = prompts.iter().map(String::as_str).collect();
@@ -547,7 +558,7 @@ fn a_sessions_memory_goes_through_a_running_daemon() {
         anthropic_turn(Some(("s1", "journal_add", json!({"body": "Owned by the daemon.", "category": "decision", "tags": ["own"]}))), "Noting."),
         anthropic_turn(None, "Done."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (_, ends, _) = drive(&mut sessions, &["note it"], Answer::Deny);
     assert_eq!(ends, ["AwaitingInput"]);
     let ops = client.stats().unwrap()["memory_ops"].as_u64().unwrap();
@@ -597,7 +608,7 @@ fn a_task_is_done_through_its_checks_and_leaves_evidence() {
     std::fs::write(format!("{root}/.harness/acceptance.toml"), format!("[[check]]\nspec = {}\ncommand = \"cargo --version\"\n", checked.id)).unwrap();
 
     let (url, _) = fake_endpoint(vec![anthropic_turn(None, "All done, trust me.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone()).with_data_dir(&data);
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone()).with_data_dir(&data);
     let Err(TaskRefused::NotApproved { text, .. }) = sessions.task(1, "fix the prices".into(), vec![]) else { panic!("the first run asks") };
     sessions.approve_acceptance(&text).unwrap();
     let (entries, end) = drive_task(&mut sessions, "fix the prices", &["cargo --version"]);
@@ -624,7 +635,7 @@ fn a_failing_check_goes_back_to_the_model_and_is_never_done() {
     let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Done, I promise."), anthropic_turn(None, "Done again."), anthropic_turn(None, "Done a third time.")]);
     let mut s = settings(&url, "k");
     s.max_turns = Some(2);
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, end) = drive_task(&mut sessions, "make it pass", &["cargo --no-such-flag"]);
     assert_ne!(end, "Done", "{end}");
     assert!(entries.iter().any(|e| matches!(e.event, Event::Verification { pass: false, .. })));
@@ -696,7 +707,7 @@ fn plan_mode_refuses_changes_and_only_the_user_ends_it() {
     let mut s = settings(&url, "k");
     s.plan_first = Some("off".into());
     s.hooks = vec![HookSetting { event: Some("PlanEnter".into()), command: "echo planning".into(), name: Some("on-plan".into()) }];
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     // Everything is answered yes: the refusals cannot be approved, and mode__plan_exit can.
     let (entries, _, asked) = drive(&mut sessions, &["plan the change"], Answer::AlwaysAllow);
     assert_eq!(std::fs::read_to_string(format!("{root}/a.txt")).unwrap(), "before");
@@ -733,7 +744,7 @@ fn a_refused_plan_stays_on_and_a_resume_restores_the_mode() {
     ]);
     let mut s = settings(&url, "k");
     s.plan_first = Some("off".into());
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, _, asked) = drive(&mut sessions, &["plan it"], Answer::Deny);
     assert_eq!(asked, 1);
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
@@ -753,7 +764,7 @@ fn the_user_switches_plan_mode_and_a_task_does_not_finish_in_it() {
     let (url, _) = fake_endpoint(vec![anthropic_turn(None, "Done, I say."), anthropic_turn(None, "Now done.")]);
     let mut s = settings(&url, "k");
     s.plan_first = Some("off".into());
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     sessions.plan(1, true);
     let (entries, end) = drive_task(&mut sessions, "do it", &["cargo --version"]);
     assert_eq!(end, "AwaitingInput", "no verification in plan mode");
@@ -777,7 +788,7 @@ fn the_docs_mirror_prompts_for_one_turn_and_blocks_nothing() {
         anthropic_turn(None, "On the next message."),
         anthropic_turn(None, "And the one after."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, ends, _) = drive(&mut sessions, &["note it", "next", "after"], Answer::Deny);
     assert!(ends.iter().all(|e| e == "AwaitingInput"), "{ends:?}");
     let system = |i: usize| -> String {
@@ -822,7 +833,7 @@ fn step_debug_is_switched_logged_and_replayed() {
     let mut s = settings(&url, "k");
     s.plan_first = Some("off".into());
     s.hooks = vec![HookSetting { event: Some("StepDebugEnter".into()), command: "echo debugging".into(), name: Some("on-debug".into()) }];
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["debug the pipeline"], Answer::AllowOnce);
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
     assert!(result("d2").0.contains("/debug/approve"), "{:?}", result("d2"));
@@ -861,7 +872,7 @@ fn a_provider_on_a_plan_uses_the_sign_in_and_logs_no_token() {
     let mut s = Settings { provider: "chatgpt".into(), model: "some-model".into(), ..Default::default() };
     s.providers.insert("chatgpt".into(), json!({"kind": "openai-responses", "base_url": url}));
     s.auth.insert("chatgpt".into(), json!({"oauth": "chatgpt"}));
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, ends, _) = drive(&mut sessions, &["hi"], Answer::Deny);
     assert_eq!(ends, ["AwaitingInput"], "{entries:?}");
     let request = seen.lock().unwrap()[0].clone();
@@ -881,7 +892,7 @@ fn the_claude_subscription_adapter_refuses_before_any_request() {
     let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "must not run")]);
     let mut s = settings(&url, "k");
     s.auth.insert("anthropic".into(), json!({"oauth": "claude-subscription", "key": "ignored"}));
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, ends, _) = drive(&mut sessions, &["hi"], Answer::Deny);
     assert!(ends[0].contains("forbidden by Anthropic") || format!("{entries:?}").contains("forbidden by Anthropic"), "{ends:?} {entries:?}");
     assert!(seen.lock().unwrap().is_empty(), "no request left");
@@ -900,7 +911,7 @@ fn search_takes_a_file_a_folder_and_says_when_neither() {
         anthropic_turn(Some(("s3", "search", json!({"text": "needle", "path": "no/such"}))), "Neither."),
         anthropic_turn(None, "Done."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["find it"], Answer::AllowOnce);
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
     assert!(result("s1").0.contains("sub/a.txt:2: the needle here") && !result("s1").1, "{:?}", result("s1"));
@@ -920,7 +931,7 @@ fn the_agents_name_is_set_by_the_tool_or_the_user_and_replayed() {
         anthropic_turn(None, "Done."),
         anthropic_turn(None, "Fine."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _, asked) = drive(&mut sessions, &["pick a name"], Answer::Deny);
     assert_eq!(asked, 0, "no prompt for a name");
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
@@ -949,7 +960,7 @@ fn a_build_without_the_delegate_says_so() {
     let data = temp_dir("nodelegate-data");
     let mut s = Settings { provider: "claude-code".into(), ..Default::default() };
     s.providers.insert("claude-code".into(), json!({"kind": "claude-code"}));
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     sessions.prompt(1, "hi".to_string());
     let message = loop {
         match sessions.next(Duration::from_secs(10)).expect("the session answers") {
@@ -969,7 +980,7 @@ fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
     std::fs::write(format!("{root}/a.txt"), "a").unwrap();
     let edit = |id: &'static str| anthropic_turn(Some((id, "edit", json!({"path": "a.txt", "old_text": "a", "new_text": "b"}))), "Editing.");
     let (url, seen) = fake_endpoint(vec![edit("r1"), anthropic_turn(None, "Done.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
     let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
     assert!(requests[0]["system"].as_str().unwrap().contains("call mode__plan_enter first"));
@@ -985,7 +996,7 @@ fn the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed() {
     let (url, _) = fake_endpoint(vec![edit("e1"), anthropic_turn(Some(("e2", "mode__plan_enter", json!({}))), "Planning."), anthropic_turn(Some(("j", "journal_add", json!({"body": "Change a.", "category": "decision", "tags": ["a"]}))), "J."), anthropic_turn(Some(("m", "mindmap_new", json!({"title": "a"}))), "M."), anthropic_turn(Some(("f", "flowchart_new", json!({"title": "a"}))), "F."), anthropic_turn(Some(("e2m", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""), anthropic_turn(Some(("e2c", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""), anthropic_turn(Some(("e3", "mode__plan_exit", json!({"plan": "edit a.txt"}))), "Asking."), edit("e4"), anthropic_turn(None, "Done.")]);
     let mut s = settings(&url, "k");
     s.plan_first = Some("enforce".into());
-    let mut sessions = Sessions::new(real_factory(s, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
     let result = |id: &str| entries.iter().find_map(|e| if let Event::ToolResult { id: i, output, is_error } = &e.event { (i == id).then(|| (output.clone(), *is_error)) } else { None }).unwrap();
     assert!(result("e1").1 && result("e1").0.contains("mode__plan_enter"), "{:?}", result("e1"));
@@ -1029,7 +1040,7 @@ fn inbound_during_run_shares_the_typed_fifo_before_run_end() {
         anthropic_turn(Some(("i1", "shell", json!({"command": "cargo --version"}))), "Running."),
         anthropic_turn(None, "Seen."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.into()), root);
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.into()), root);
     let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
         s.inbound(1, "telegram".into(), "outside-one".into());
         s.prompt(1, "typed-middle".into());
@@ -1055,7 +1066,7 @@ fn a_message_sent_during_a_run_is_woven_in_at_the_next_step() {
         anthropic_turn(Some(("q1", "shell", json!({"command": "cargo --version"}))), "Running."),
         anthropic_turn(None, "Seen, and done."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
         s.prompt(1, "also this".to_string());
         s.prompt(1, "and this".to_string());
@@ -1083,7 +1094,7 @@ fn a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_
     let root = temp_dir("queue2");
     let data = temp_dir("queue2-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("t1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "Done.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
         s.prompt(1, "never mind".to_string());
         assert!(s.unqueue(1, "never mind"));
@@ -1095,7 +1106,7 @@ fn a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_
     let root = temp_dir("queue3");
     let data = temp_dir("queue3-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("s1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "Now the urgent one.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, ends) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
         s.prompt(1, "urgent".to_string());
         s.stop(1);
@@ -1110,7 +1121,7 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
     let root = temp_dir("queue-rebind");
     let data = temp_dir("queue-rebind-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("r1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "The kept one.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     sessions.prompt(1, "first".to_string());
     let (mut entries, mut pending) = (Vec::new(), true);
     while let Some(message) = sessions.next(Duration::from_secs(5)) {
@@ -1143,7 +1154,7 @@ fn two_tabs_have_their_own_queues() {
     let root = temp_dir("queue-tabs");
     let data = temp_dir("queue-tabs-data");
     let (url, _seen) = fake_endpoint(vec![anthropic_turn(Some(("a1", "shell", json!({"command": "cargo --version"}))), "Running."), anthropic_turn(None, "One."), anthropic_turn(None, "Two.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     sessions.prompt(1, "in one".to_string());
     let (mut one, mut two) = (Vec::new(), Vec::new());
     while let Some(message) = sessions.next(Duration::from_secs(3)) {
@@ -1180,7 +1191,7 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
         anthropic_turn(None, "Built."),
         anthropic_turn(None, "Now I would debug."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     sessions.prompt(1, "build a thing".to_string());
     let (mut entries, mut asks, mut ends) = (Vec::new(), 0, 0);
     while let Some(message) = sessions.next(Duration::from_secs(5)) {
@@ -1218,7 +1229,7 @@ fn ask_user_ends_the_run_and_the_answer_is_the_next_message() {
     let root = temp_dir("ask");
     let data = temp_dir("ask-data");
     let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("a1", "ask_user", json!({"question": "CSV or JSON?", "options": ["CSV", {"label": "JSON"}]}))), ""), anthropic_turn(None, "CSV then.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, ends) = {
         let (entries, _, _) = drive(&mut sessions, &["make it"], Answer::AllowOnce);
         (entries, seen.lock().unwrap().len())
@@ -1241,7 +1252,7 @@ fn the_same_failure_is_said_at_the_third_time_and_stopped_at_the_fifth() {
     let data = temp_dir("repeat-data");
     let read = |id: &'static str| anthropic_turn(Some((id, "read", json!({"path": "nope.txt"}))), "");
     let (url, seen) = fake_endpoint(vec![read("r1"), read("r2"), read("r3"), read("r4"), read("r5"), read("r6"), anthropic_turn(None, "Other.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["read it"], Answer::AllowOnce);
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 5, "stopped at the fifth");
@@ -1263,7 +1274,7 @@ fn a_journal_entry_stores_though_the_model_filled_its_optionals_with_nothing() {
         anthropic_turn(Some(("j1", "journal_add", json!({"body": "A finding with nothing blocking it.", "category": "finding", "tags": ["t"], "blocked_by": 0, "feature": "", "salience": ""}))), "Noting."),
         anthropic_turn(None, "Done."),
     ]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, ends, _) = drive(&mut sessions, &["note it"], Answer::Deny);
     assert!(ends.iter().all(|e| e == "AwaitingInput"), "{ends:?}");
     let failed: Vec<&String> = entries.iter().filter_map(|e| if let Event::ToolResult { output, is_error: true, .. } = &e.event { Some(output) } else { None }).collect();
@@ -1285,7 +1296,7 @@ fn a_slave_needs_no_word_for_its_basics_and_asks_for_the_rest() {
     let (url, _) = fake_endpoint(turns());
     let mut quiet = settings(&url, "k");
     quiet.plan_first = Some("off".to_string());
-    let mut slave = Sessions::new(real_factory(quiet.clone(), root.clone(), data.clone().into()), root.clone());
+    let mut slave = Sessions::new(hermetic_factory(quiet.clone(), root.clone(), data.clone().into()), root.clone());
     slave.role(1, Some("slave".to_string()), Some("boss".to_string()), None);
     let (_, _, asked) = drive(&mut slave, &["work"], Answer::Deny);
     assert_eq!(asked, 1, "only touch asks");
@@ -1296,7 +1307,7 @@ fn a_slave_needs_no_word_for_its_basics_and_asks_for_the_rest() {
     let (url, _) = fake_endpoint(turns());
     let mut plain = settings(&url, "k");
     plain.plan_first = Some("off".to_string());
-    let mut sessions = Sessions::new(real_factory(plain, root_b.clone(), data_b.into()), root_b.clone());
+    let mut sessions = Sessions::new(hermetic_factory(plain, root_b.clone(), data_b.into()), root_b.clone());
     let (_, _, asked) = drive(&mut sessions, &["work"], Answer::Deny);
     assert_eq!(asked, 3, "everyone else asks as before");
 }
@@ -1317,7 +1328,7 @@ fn a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it() {
     ]);
     let mut quiet = settings(&url, "k");
     quiet.plan_first = Some("off".to_string());
-    let mut sessions = Sessions::new(real_factory(quiet, root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(quiet, root.clone(), data.clone().into()), root.clone());
     sessions.role(1, Some("slave".to_string()), Some("boss".to_string()), None);
     let (entries, _, asks) = drive(&mut sessions, &["plan it", "go ahead"], Answer::Deny);
     assert_eq!(asks, 0, "no card for the user");
@@ -1331,7 +1342,7 @@ fn the_agent_cannot_enter_debug_mode_while_planning() {
     let root = temp_dir("dbg-plan");
     let data = temp_dir("dbg-plan-data");
     let (url, _) = fake_endpoint(vec![anthropic_turn(Some(("p", "mode__plan_enter", json!({}))), ""), anthropic_turn(Some(("d", "mode__debug", json!({"on": true}))), ""), anthropic_turn(None, "Waiting.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     let (entries, _, _) = drive(&mut sessions, &["build it"], Answer::AllowOnce);
     assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { id, output, is_error: true } if id == "d" && output.contains("mode__plan_exit"))));
     assert!(!entries.iter().any(|e| matches!(&e.event, Event::StepDebug { .. })));
@@ -1360,7 +1371,7 @@ fn a_conversation_brought_in_goes_on_with_another_provider_and_valid_history() {
     let info = ConversationInfo { id: "their-id".into(), title: "old talk".into(), last_ms: 1000, bytes: 1 };
     let session = harness_session::store_imported(&data, &root, &ImportedConversation { info, entries, damaged: 0 }, 5).unwrap();
     let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Going on.")]);
-    let mut sessions = Sessions::new(real_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
+    let mut sessions = Sessions::new(hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into()), root.clone());
     sessions.resume(1, &session);
     let (entries, _, _) = drive(&mut sessions, &["what were we building?"], Answer::AllowOnce);
     assert!(entries.iter().any(|e| matches!(e.event, Event::BackendSessionLost)), "the other provider's session no longer holds it");
