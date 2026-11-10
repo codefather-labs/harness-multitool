@@ -469,24 +469,15 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             text(f, r.x, y + 1, r.width, vec![Span::styled(" Claude Code is signed out first. Conversations stay.", muted)], bg);
             text(f, r.x, y + 2, r.width, vec![Span::styled(" Enter or y deletes, Esc keeps it.", muted)], bg);
         }
-        // The card of the line under the cursor, always: its folder and the one Claude Code button
-        // that applies, Sign in or Sign out (journal#785).
-        ProfilesMode::List | ProfilesMode::Editing => {
+        // The card of the line under the cursor: what it is, as text. Its sign-ins are on the
+        // Provider page, which Edit opens (journal#794).
+        ProfilesMode::List => {
             if let Some(row) = p.rows.get(p.cursor) {
                 text(f, r.x, y, r.width, vec![Span::styled(format!(" {}: {} {}", row.name, row.provider, row.model), strong)], bg);
                 text(f, r.x, y + 1, r.width, vec![Span::styled(format!(" {}", row.folder), muted)], bg);
-                // The sign-in its adapter needs, and only that one (journal#791).
-                match card_button(row) {
-                    Some(label) => {
-                        let under = focus && p.mode == ProfilesMode::Editing;
-                        let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
-                        text(f, r.x + 1, y + 2, 26, vec![Span::styled(format!("[ {label} ]"), style)], bg);
-                        out.hits.push(Hit { rect: Rect::new(r.x + 1, y + 2, 26, 1), target: Target::ProfileButton(10) });
-                    }
-                    None => text(f, r.x, y + 2, r.width, vec![Span::styled(" Its key: Use it, then the Provider page.", muted)], bg),
-                }
             }
-            text(f, r.x, y + 3, r.width, vec![Span::styled(" ● this window. Enter uses the line; Down to the button.", muted)], bg);
+            text(f, r.x, y + 2, r.width, vec![Span::styled(" ● this window. Enter uses the line.", muted)], bg);
+            text(f, r.x, y + 3, r.width, vec![Span::styled(" Edit: its adapter and sign-ins, on the Provider page.", muted)], bg);
         }
     }
     if !p.status.is_empty() {
@@ -508,12 +499,12 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
     }
 }
 
-/// The card's button: the sign-in a profile's adapter needs, by what it is signed in to now.
-fn card_button(row: &crate::model::ProfileRow) -> Option<&'static str> {
-    match row.kind.as_str() {
-        "claude-code" => Some(if row.claude == Some(true) { "Sign out Claude Code" } else { "Sign in Claude Code" }),
-        "chatgpt" => Some(if row.chatgpt { "Sign out ChatGPT" } else { "Sign in ChatGPT" }),
-        _ => None,
+/// Edit was pressed: the settings go to the Provider page (journal#794).
+fn open_provider_if_asked(s: &mut SettingsView) {
+    if std::mem::take(&mut s.profiles.open_provider) {
+        s.section = 0;
+        s.cursor = s.provider;
+        s.focus = SettingsPane::Page;
     }
 }
 
@@ -533,7 +524,7 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
                 outbox.push(Outgoing::ProfileAdd { name });
             }
         }
-        (ProfilesMode::Naming(_) | ProfilesMode::Deleting | ProfilesMode::Editing, Key::Esc) | (ProfilesMode::Editing, Key::Up) => p.mode = ProfilesMode::List,
+        (ProfilesMode::Naming(_) | ProfilesMode::Deleting, Key::Esc) => p.mode = ProfilesMode::List,
         (ProfilesMode::Deleting, Key::Enter | Key::Char('y')) => {
             p.mode = ProfilesMode::List;
             if let Some(name) = selected {
@@ -542,33 +533,18 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
             }
         }
         (ProfilesMode::Deleting, _) => p.mode = ProfilesMode::List,
-        // The button does what applies: a profile signed in signs out, one not signed in signs in.
-        (ProfilesMode::Editing, Key::Enter | Key::Char(' ')) => {
-            let Some(row) = p.rows.get(p.cursor).cloned() else { return };
-            match row.kind.as_str() {
-                "claude-code" => outbox.push(Outgoing::ProfileClaude { name: row.name, login: row.claude != Some(true) }),
-                "chatgpt" if row.chatgpt => outbox.push(Outgoing::ProfileChatGptLogout { name: row.name }),
-                // ChatGPT's sign-in is OpenAI's page, in this window: the window moves onto the profile first.
-                "chatgpt" => {
-                    if !row.current {
-                        outbox.push(Outgoing::ProfileUse { name: row.name.clone() });
-                    }
-                    outbox.push(Outgoing::Login);
-                    p.status = format!("Signing {} in to ChatGPT: the Provider page shows the address.", row.name);
-                }
-                _ => p.status = "This profile's adapter takes a key: Use it, then the Provider page.".to_string(),
-            }
-        }
         (ProfilesMode::List, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
-        // Down past the last line goes onto the card's button.
-        (ProfilesMode::List, Key::Down) if p.cursor + 1 >= p.rows.len() => {
-            if selected.is_some() {
-                p.mode = ProfilesMode::Editing;
+        (ProfilesMode::List, Key::Down) => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
+        (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
+        // Edit: the window onto the profile, then its Provider page, where its sign-ins are (journal#794).
+        (ProfilesMode::List, Key::Char('e')) => {
+            if let Some(row) = p.rows.get(p.cursor) {
+                if !row.current {
+                    outbox.push(Outgoing::ProfileUse { name: row.name.clone() });
+                }
+                p.open_provider = true;
             }
         }
-        (ProfilesMode::List, Key::Down) => p.cursor += 1,
-        (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
-        (ProfilesMode::List, Key::Char('e')) if selected.is_some() => p.mode = ProfilesMode::Editing,
         (ProfilesMode::List, Key::Char('d')) => match p.rows.get(p.cursor) {
             Some(row) if row.name == "default" => p.status = "default is always there and cannot be deleted.".to_string(),
             Some(row) if row.current => p.status = format!("This window runs on {}: Use another first.", row.name),
@@ -1457,6 +1433,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 s.focus = SettingsPane::Sections;
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
+                open_provider_if_asked(s);
             }
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Memory") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
@@ -1671,13 +1648,9 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         (Some(Overlay::Settings(s)), Target::ProfileButton(i)) => {
             s.focus = SettingsPane::Page;
             let p = &mut s.profiles;
-            if i >= 10 {
-                p.mode = ProfilesMode::Editing;
-                profiles_key(p, Key::Enter, &mut w.outbox);
-            } else {
-                p.mode = ProfilesMode::List;
-                profiles_key(p, [Key::Char('a'), Key::Char('e'), Key::Char('d'), Key::Char('u')][i.min(3)], &mut w.outbox);
-            }
+            p.mode = ProfilesMode::List;
+            profiles_key(p, [Key::Char('a'), Key::Char('e'), Key::Char('d'), Key::Char('u')][i.min(3)], &mut w.outbox);
+            open_provider_if_asked(s);
         }
         (Some(Overlay::Settings(s)), Target::VoiceChoice(at)) => {
             s.voice.menu = Some(at);
@@ -1853,26 +1826,6 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"));
     }
 
-    /// journal#791: a profile's card offers the sign-in its adapter needs and no other.
-    #[test]
-    fn a_profiles_card_offers_its_adapters_sign_in() {
-        let row = |kind: &str, claude: bool, chatgpt: bool| crate::model::ProfileRow { kind: kind.into(), claude: Some(claude), chatgpt, ..Default::default() };
-        assert_eq!(card_button(&row("claude-code", false, true)), Some("Sign in Claude Code"));
-        assert_eq!(card_button(&row("claude-code", true, false)), Some("Sign out Claude Code"));
-        assert_eq!(card_button(&row("chatgpt", true, false)), Some("Sign in ChatGPT"), "a Claude sign-in is not this adapter's");
-        assert_eq!(card_button(&row("chatgpt", false, true)), Some("Sign out ChatGPT"));
-        assert_eq!(card_button(&row("key", true, true)), None);
-        let mut w = Workspace::one(Default::default(), "t");
-        profiles_settings(&mut w);
-        if let Some(Overlay::Settings(s)) = &mut w.overlay {
-            s.profiles.rows[1].kind = "chatgpt".into();
-        }
-        for k in [Key::Down, Key::Char('e'), Key::Enter] {
-            key(&mut w, k);
-        }
-        assert!(matches!(w.outbox.first(), Some(Outgoing::ProfileUse { name }) if name == "max"), "{:?}", w.outbox);
-        assert!(matches!(w.outbox.last(), Some(Outgoing::Login)), "ChatGPT signs in through this window's Login");
-    }
 
     #[test]
     fn one_page_holds_the_provider_and_its_sign_in() {
@@ -2412,8 +2365,8 @@ mod tests {
     }
 
     /// CON-125: Add asks a name and sends it; Delete refuses default and the profile in use, asks
-    /// for any other, and sends it on yes; Use sends the profile; Edit's buttons sign Claude Code
-    /// in or out; Esc leaves what is being done, not the settings.
+    /// for any other, and sends it on yes; Use sends the profile; Esc leaves what is being done, not
+    /// the settings.
     #[test]
     fn the_profiles_tab_adds_deletes_uses_and_signs_in() {
         let mut w = Workspace::one(Default::default(), "t");
@@ -2438,33 +2391,27 @@ mod tests {
         key(&mut w, Key::Up);
         key(&mut w, Key::Char('u'));
         assert!(w.outbox.is_empty() && profiles_of(&w).status.contains("already runs on default"));
-        key(&mut w, Key::Down);
-        key(&mut w, Key::Char('e'));
-        key(&mut w, Key::Enter);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"));
+
     }
 
-    /// journal#784, journal#785: Enter on a line chooses it for the window (Use) and never signs in;
-    /// the card's one button is Sign out on a profile signed in and Sign in on one not, reached by Down.
+    /// journal#784, journal#794: Enter on a line chooses it for the window (Use) and signs nothing in;
+    /// the tab has no sign-in at all, and Edit moves onto the profile and opens the Provider page.
     #[test]
-    fn enter_uses_a_profile_and_the_button_is_the_one_that_applies() {
+    fn enter_uses_a_profile_and_edit_opens_the_provider_page() {
         let mut w = Workspace::one(Default::default(), "t");
         profiles_settings(&mut w);
         key(&mut w, Key::Down);
         key(&mut w, Key::Enter);
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"), "Enter uses the line");
-        assert!(w.outbox.is_empty() && profiles_of(&w).mode == ProfilesMode::List);
+        assert!(w.outbox.is_empty());
         key(&mut w, Key::Down);
-        assert_eq!(profiles_of(&w).mode, ProfilesMode::Editing, "Down past the last line is the button");
         key(&mut w, Key::Enter);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"), "not signed in: Sign in");
-        if let Some(Overlay::Settings(s)) = &mut w.overlay {
-            s.profiles.rows[1].claude = Some(true);
-        }
-        key(&mut w, Key::Enter);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"), "signed in: only Sign out");
-        key(&mut w, Key::Up);
-        assert_eq!(profiles_of(&w).mode, ProfilesMode::List);
+        assert!(!w.outbox.iter().any(|o| matches!(o, Outgoing::ProfileClaude { .. } | Outgoing::Login | Outgoing::Logout)), "no sign-in here: {:?}", w.outbox);
+        w.outbox.clear();
+        key(&mut w, Key::Char('e'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(s.sections[s.section], "Provider", "Edit opens the Provider page");
     }
 
     /// CON-125: the list in one field on the left, the four buttons on the right, at 80 columns.
@@ -2484,8 +2431,8 @@ mod tests {
             assert!(screen.contains(want), "{want:?} missing:\n{screen}");
         }
         assert_eq!(drawn.hits.iter().filter(|h| matches!(h.target, Target::ProfileButton(i) if i < 4)).count(), 4);
-        // The card of default, signed in: only its Sign out shows (journal#785).
-        assert!(screen.contains("[ Sign out Claude Code ]") && !screen.contains("Sign in Claude Code"), "{screen}");
+        // No sign-in on this tab (journal#794).
+        assert!(!screen.contains("Sign in") && !screen.contains("Sign out"), "{screen}");
         w.overlay = None;
         let _ = &mut w;
     }

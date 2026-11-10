@@ -1190,6 +1190,8 @@ impl Live {
             let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
             let mut fresh = frontend_tui::overlay::settings_for(w);
             (fresh.section, fresh.focus, fresh.profiles) = (section, focus, profiles);
+            // On the Provider page the cursor starts on the profile's own adapter.
+            fresh.cursor = fresh.provider;
             w.overlay = Some(frontend_tui::model::Overlay::Settings(fresh));
         }
     }
@@ -1715,15 +1717,6 @@ impl Live {
                     show_profiles(w);
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, login)),
-                Outgoing::ProfileChatGptLogout { name } => {
-                    let status = match config::profile_dir(&name).map_err(|e| e.to_string()).and_then(|d| harness_auth_chatgpt::logout(&harness_auth_chatgpt::Store::at(&d.join("chatgpt")))) {
-                        Ok(_) => format!("{name} is signed out of ChatGPT."),
-                        Err(e) => format!("{name}: {e}"),
-                    };
-                    w.profiles = Some(self.profiles_page(status));
-                    show_profiles(w);
-                    w.auth = Some(self.auth_page(None));
-                }
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -2163,9 +2156,8 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
 fn show_profiles(w: &mut frontend_tui::model::Workspace) {
     let Some(page) = w.profiles.clone() else { return };
     if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
-        let (cursor, mode) = (s.profiles.cursor.min(page.rows.len().saturating_sub(1)), s.profiles.mode.clone());
-        let mode = if mode == frontend_tui::model::ProfilesMode::Editing { mode } else { frontend_tui::model::ProfilesMode::List };
-        s.profiles = frontend_tui::model::ProfilesPage { cursor, mode, ..page };
+        let cursor = s.profiles.cursor.min(page.rows.len().saturating_sub(1));
+        s.profiles = frontend_tui::model::ProfilesPage { cursor, ..page };
     }
 }
 

@@ -97,8 +97,6 @@ pub enum Outgoing {
     ProfileDelete { name: String },
     ProfileUse { name: String },
     ProfileClaude { name: String, login: bool },
-    /// A profile's ChatGPT signed out (journal#791); signing in goes through Use and Login.
-    ProfileChatGptLogout { name: String },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -1071,8 +1069,6 @@ pub enum ProfilesMode {
     Naming(String),
     /// Delete asked; Enter or y confirms.
     Deleting,
-    /// The keyboard is on the card's Claude Code button, below the list (journal#785).
-    Editing,
 }
 
 /// The settings' Profiles tab (CON-125): the profiles as one list, the buttons beside it.
@@ -1081,6 +1077,8 @@ pub struct ProfilesPage {
     pub rows: Vec<ProfileRow>,
     pub cursor: usize,
     pub mode: ProfilesMode,
+    /// Edit asked for the Provider page, where the profile's sign-ins are (journal#794).
+    pub open_provider: bool,
     pub status: String,
 }
 

@@ -69,20 +69,24 @@ assert "default" in profiles()
 press(DOWN, "d", "y")                                           # gpt: asked, then deleted
 until("Delete removed gpt", lambda: "gpt" not in profiles())
 print("Delete refused default, removed gpt:", profiles())
-press(UP, UP, DOWN, "e", "\r"); pump(2)                          # max: Edit, Sign in Claude Code
+press(UP, UP, DOWN, "e"); pump(1.5)                             # max: Edit is Use and the Provider page
+shot("profiles-edit-provider.png")
+# journal#794: the sign-in is the Provider page's. The cursor is on max's adapter (claude-code); its
+# Login button comes after the six adapter rows.
+press(DOWN, DOWN, "\r"); pump(2)
 logins = [l for l in open(calls).read().splitlines() if '"login"' in l] if os.path.exists(calls) else []
 assert logins and mt + "/profiles/max/claude" in logins[0], logins
 press("\r"); pump(1.5)                                          # Enter: back to the harness
-shot("profiles-signed-in.png")
-print("Sign in handed the terminal to claude auth login in max's directory and came back")
-press("\x1b", "u"); pump(1.5)                                   # out of Edit, then Use max
+shot("provider-signed-in.png")
+print("Edit opened max's Provider page; its Login handed the terminal to claude auth login in max's directory and came back")
+press("\t", *[DOWN] * 9, "\t"); pump(0.8)                      # back to Profiles
 shot("profiles-used.png")
 # journal#791: after Use the Provider page is max's (claude-code, its own Claude Code signed in), and a
 # choice saved there is written to max's file, not to default's.
 default_before = open(mt + "/profiles/default/profile.toml").read()
 press("\t", *[UP] * 9); pump(0.6)                              # the sections pane, up to Provider
 shot("provider-after-use.png")
-press("\t", " "); pump(0.4)                                    # into the page: the first row, Anthropic API
+press("\t", UP, UP, UP, UP, " "); pump(0.4)                    # into the page, from claude-code up to Anthropic API
 shot("provider-chosen.png")
 press("\x13"); pump(1.5)                                       # Ctrl+S
 shot("provider-saved.png")
