@@ -1,0 +1,10 @@
+Live run 2026-11-11 01:06, .harness/proofs/807/two_builds_two_profiles.py with target/release/multitool (this fix),
+window A = a copy of the same binary with mtime 2026-11-10 23:00 (another build_id), on profile claude-personal (claude-code,
+the owner's own sign-in linked in), window B = this build on profile gpt-25 (chatgpt, its sign-in linked in); one temporary
+XDG_DATA_HOME, settings copied, the real profile.toml files untouched.
+Steps: A says ALPHA; B opens and replaces A's idle daemon; B says BRAVO; A says CHARLIE.
+Conversation logs at the end:
+  icgb403n/1794351983874-1.jsonl ['claude-code'] ['Say just the word ALPHA.', '', 'ALPHA', 'Say just the word CHARLIE.', '', 'CHARLI', 'E']
+  icgb403n/1794352019358-1.jsonl ['chatgpt'] ['Say just the word BRAVO.', 'BR', 'AV', 'O']
+  daemons of this data directory: [('4156942', '.../target/release/multitool')]   (one; no old-build daemon left)
+Before the fix (run at 00:43, same script and build otherwise): A's log ended at ALPHA, CHARLIE never reached any daemon.

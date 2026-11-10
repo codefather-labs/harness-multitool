@@ -264,7 +264,14 @@ impl Daemon {
             std::thread::spawn(move || {
                 while let Ok(request) = server.recv() {
                     daemon.serve(request);
+                    // Stopped: its port closes when every thread has let the server go, in a
+                    // process that hosts it as well as in one that is only the daemon.
+                    if daemon.state.lock().expect("daemon state").shutting_down {
+                        break;
+                    }
                 }
+                // Each thread that leaves wakes the next one still waiting, until none is.
+                server.unblock();
             });
         }
         Ok(daemon)
@@ -398,7 +405,10 @@ impl Daemon {
         if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
             body.clear();
         }
+        let stopping = self.state.lock().expect("daemon state").shutting_down;
         let (status, reply) = match (method.as_str(), path) {
+            // A stopped daemon takes nothing more: what a window sends goes to the one after it.
+            _ if stopping => (503, json!({"error": "the daemon is stopping"})),
             ("GET", "/health") => (200, json!({"ok": true, "build": build_id()})),
             ("POST", "/conversations") if admin => self.conversation_op(&body),
             ("GET", "/conversations/events") if admin => self.conversation_events(query),

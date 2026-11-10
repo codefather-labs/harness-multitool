@@ -1678,3 +1678,67 @@ fn what_a_gone_window_queued_does_not_start() {
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([{"kind": "user", "text": "queued, then gone"}]));
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([]), "once");
 }
+
+/// journal#807: a daemon of a newer build replaces an idle one; a window of the old one goes on
+/// in the new daemon, its conversation resumed there, instead of waiting for a daemon that is gone.
+#[test]
+fn a_window_goes_on_when_another_daemon_takes_the_place_of_its_own() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("daemon-swap");
+    let data = temp_dir("daemon-swap-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Before the swap."), anthropic_turn(None, "After the swap."), anthropic_turn(None, "A new tab.")]);
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    let first = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    first.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host.clone()));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let mut link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings(&url, "k"), Default::default()).unwrap());
+    let pump = |link: &SessionLink, entries: &mut Vec<LogEntry>| -> Option<FromSession> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(25);
+        while std::time::Instant::now() < deadline {
+            for message in link.drain() {
+                match message {
+                    FromSession::Entry { entry, .. } => entries.push(entry),
+                    other => return Some(other),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    };
+    let mut entries = Vec::new();
+    link.prompt(1, "before".to_string());
+    assert!(matches!(pump(&link, &mut entries), Some(FromSession::Ended { tab: 1, .. })));
+    let session = link.session_of(1).unwrap();
+
+    // Another build's window stops this daemon while it is idle and starts its own on the same data.
+    client.shutdown().unwrap();
+    assert!(!client.current(), "the old daemon is gone");
+    let second = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    second.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    assert!(harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap().current());
+
+    link.prompt(1, "after".to_string());
+    // The resumed conversation says it caught up, maybe that it awaits input, then runs "after".
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    let mut ended = None;
+    while std::time::Instant::now() < deadline && !(ended.is_some() && user_texts(&entries).len() >= 2) {
+        for message in link.drain() {
+            match message {
+                FromSession::Entry { entry, .. } => entries.push(entry),
+                FromSession::Ended { tab, end } => ended = Some(FromSession::Ended { tab, end }),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(ended, Some(FromSession::Ended { tab: 1, .. })), "the message reached the new daemon, not a silent wait: {ended:?}");
+    assert_eq!(user_texts(&entries), ["before", "after"]);
+    assert_eq!(link.session_of(1).as_deref(), Some(session.as_str()), "the same conversation, resumed in the new daemon");
+    assert!(seen.lock().unwrap().last().unwrap().contains("Before the swap"), "its history went with it");
+    assert_eq!(user_texts(&read_log(&data, &root, &session)), ["before", "after"], "one log, both messages");
+
+    let mut fresh = Vec::new();
+    link.prompt(2, "new tab".to_string());
+    assert!(matches!(pump(&link, &mut fresh), Some(FromSession::Ended { tab: 2, .. })));
+    assert_eq!(user_texts(&fresh), ["new tab"]);
+}

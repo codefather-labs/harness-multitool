@@ -1305,17 +1305,71 @@ impl ConversationHost for DaemonHost {
 
 /// The client's side: the same operations as `Sessions`, all of them answered by the daemon.
 pub struct RemoteSessions {
-    client: Client,
+    link: Arc<Mutex<Link>>,
     window: String,
     incoming: Receiver<FromSession>,
     tabs: Arc<Mutex<HashSet<u64>>>,
     stopped: Arc<AtomicBool>,
-    environment: std::collections::BTreeMap<String, String>,
     say: Sender<FromSession>,
     /// The tab whose agent asked for a reload.
     asked_by: Arc<std::sync::atomic::AtomicU64>,
     /// Where a debug call has asked this window to draw itself.
     shot: Arc<Mutex<Option<String>>>,
+}
+
+/// The daemon a window speaks to, and what it takes to open the window again in another one: a
+/// daemon of a newer build replaces an idle one, and the windows of the old one go on (journal#807).
+struct Link {
+    client: Client,
+    /// The window's last `open`: its root, settings and environment.
+    open: Value,
+    /// The conversation each tab holds, to resume it in the new daemon.
+    sessions: std::collections::BTreeMap<u64, String>,
+    /// How many times the window moved to another daemon.
+    generation: u64,
+}
+
+/// Opens the window in the daemon that now answers for the data directory, if `link`'s has gone,
+/// with its tabs' conversations resumed. True when the link now holds a daemon other than the one
+/// of `seen` (another caller may have moved it already); false when its daemon is still the
+/// current one, so a failure was its answer, or when none could be reached.
+fn reconnect(link: &Mutex<Link>, window: &str, seen: u64) -> bool {
+    let mut link = link.lock().expect("link");
+    if link.generation != seen {
+        return true;
+    }
+    if link.client.current() {
+        return false;
+    }
+    let program = harness_daemon::own_program().ok();
+    let Some(client) = link.client.refind(program.as_deref()) else { return false };
+    let mut open = link.open.clone();
+    open["window"] = json!(window);
+    open["op"] = json!("open");
+    if client.conversation_op(&open).is_err() {
+        return false;
+    }
+    for (tab, session) in &link.sessions {
+        let _ = client.conversation_op(&json!({"window": window, "op": "resume", "tab": tab, "text": session}));
+    }
+    link.client = client;
+    link.generation += 1;
+    true
+}
+
+/// One operation through `link`; if its daemon has gone, once more through the one now answering.
+fn op_through(link: &Mutex<Link>, window: &str, op: &Value) -> Result<Value, String> {
+    let (client, seen) = {
+        let link = link.lock().expect("link");
+        (link.client.clone(), link.generation)
+    };
+    match client.conversation_op(op) {
+        Err(_) if reconnect(link, window, seen) => {
+            let client = link.lock().expect("link").client.clone();
+            client.conversation_op(op)
+        }
+        reply => reply,
+    }
 }
 
 impl RemoteSessions {
@@ -1329,13 +1383,20 @@ impl RemoteSessions {
     pub fn open_in(client: Client, root: &str, settings: &Settings, reload: Arc<AtomicBool>, environment: std::collections::BTreeMap<String, String>) -> Result<RemoteSessions, String> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let window = format!("conv-{}-{now}", std::process::id());
+        let open = json!({"root": root, "settings": settings, "env": environment});
         client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
+        let link = Arc::new(Mutex::new(Link { client, open, sessions: Default::default(), generation: 0 }));
         let (sender, incoming) = channel();
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
         let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
         let shot: Arc<Mutex<Option<String>>> = Arc::default();
-        listen(client.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), Asks { reload, asked_by: asked_by.clone(), shot: shot.clone() });
-        Ok(RemoteSessions { client, window, incoming, tabs, stopped, environment, say: sender, asked_by, shot })
+        listen(link.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), Asks { reload, asked_by: asked_by.clone(), shot: shot.clone() });
+        Ok(RemoteSessions { link, window, incoming, tabs, stopped, say: sender, asked_by, shot })
+    }
+
+    /// One operation of this window, through whichever daemon now answers.
+    fn op(&self, op: &Value) -> Result<Value, String> {
+        op_through(&self.link, &self.window, op)
     }
 
     fn call(&self, op: &str, tab: u64, mut rest: Value) -> Option<Value> {
@@ -1343,25 +1404,42 @@ impl RemoteSessions {
         rest["op"] = json!(op);
         rest["tab"] = json!(tab);
         self.tabs.lock().expect("tabs").insert(tab);
-        // The listener reports a daemon that went away.
-        self.client.conversation_op(&rest).ok()
+        if op == "resume"
+            && let Some(session) = rest["text"].as_str()
+        {
+            self.link.lock().expect("link").sessions.insert(tab, session.to_string());
+        }
+        let reply = self.op(&rest);
+        // A daemon that cannot be reached is said on the tab, never left as a silent wait.
+        if let Err(error) = &reply
+            && matches!(op, "prompt" | "task" | "inbound" | "answer")
+            && !self.link.lock().expect("link").client.current()
+        {
+            let _ = self.say.send(FromSession::Unavailable { tab, message: format!("The daemon that runs this conversation cannot be reached ({error}). The log keeps it: open it again from the start page.") });
+        }
+        reply.ok()
     }
 
     pub fn configure(&self, root: &str, settings: &Settings) -> Result<(), String> {
-        self.client.conversation_op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": self.environment})).map(|_| ())
+        let environment = self.link.lock().expect("link").open["env"].clone();
+        let open = json!({"root": root, "settings": settings, "env": environment});
+        self.op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
+        self.link.lock().expect("link").open = open;
+        Ok(())
     }
 
     /// The environment this window's sessions start with from the next `configure` on: another
     /// profile's (CON-121). Sessions already started keep the one they began with.
     pub fn set_environment(&mut self, environment: std::collections::BTreeMap<String, String>) {
-        self.environment = environment;
+        self.link.lock().expect("link").open["env"] = json!(environment);
     }
 }
 
 impl Drop for RemoteSessions {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
-        let _ = self.client.conversation_op(&json!({"window": self.window, "op": "close"}));
+        let client = self.link.lock().expect("link").client.clone();
+        let _ = client.conversation_op(&json!({"window": self.window, "op": "close"}));
     }
 }
 
@@ -1372,11 +1450,19 @@ struct Asks {
     shot: Arc<Mutex<Option<String>>>,
 }
 
-fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
+fn listen(link: Arc<Mutex<Link>>, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
     let Asks { reload, asked_by, shot } = asks;
     std::thread::spawn(move || {
-        let (mut after, mut failures) = (0, 0);
+        let (mut after, mut failures, mut polled) = (0, 0, 0);
         while !stopped.load(Ordering::SeqCst) {
+            let (client, seen) = {
+                let link = link.lock().expect("link");
+                (link.client.clone(), link.generation)
+            };
+            // Another daemon, moved to by an operation: it numbers this window's events from the start.
+            if seen != polled {
+                (after, polled) = (0, seen);
+            }
             match client.conversation_events(&window, after) {
                 Ok(events) => {
                     failures = 0;
@@ -1390,11 +1476,22 @@ fn listen(client: Client, window: String, sender: Sender<FromSession>, tabs: Arc
                                 asked_by.store(tab, Ordering::SeqCst);
                             }
                             reload.store(true, Ordering::SeqCst);
-                        } else if let Some(message) = from_wire(&event["event"]) && sender.send(message).is_err() {
-                            return;
+                        } else if let Some(message) = from_wire(&event["event"]) {
+                            // The conversation a tab holds, kept so another daemon can resume it.
+                            let tab = tab_of(&message);
+                            if matches!(message, FromSession::Entry { .. }) && !link.lock().expect("link").sessions.contains_key(&tab)
+                                && let Ok(reply) = client.conversation_op(&json!({"window": window, "op": "session_of", "tab": tab}))
+                                && let Some(session) = reply["session"].as_str()
+                            {
+                                link.lock().expect("link").sessions.insert(tab, session.to_string());
+                            }
+                            if sender.send(message).is_err() {
+                                return;
+                            }
                         }
                     }
                 }
+                Err(_) if reconnect(&link, &window, seen) => failures = 0,
                 Err(_) => {
                     failures += 1;
                     if failures == 5 {
@@ -1534,7 +1631,7 @@ impl SessionLink {
     pub fn choose(&mut self, tab: u64, provider: &str, model: &str) -> Result<bool, String> {
         match self {
             SessionLink::Local(s) => Ok(s.rebind(tab)),
-            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "choose", "tab": tab, "provider": provider, "model": model})).map(|reply| reply["ok"] == true),
+            SessionLink::Remote(r) => r.op(&json!({"window": r.window, "op": "choose", "tab": tab, "provider": provider, "model": model})).map(|reply| reply["ok"] == true),
         }
     }
 
@@ -1542,7 +1639,7 @@ impl SessionLink {
     pub fn adopt(&mut self, tab: u64, master_tab: u64, nick: &str, provider: &str, model: &str, task: u64) -> Result<(), String> {
         match self {
             SessionLink::Local(_) => Err("an orchestra needs the daemon".to_string()),
-            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "adopt", "tab": tab, "master_tab": master_tab, "nick": nick, "provider": provider, "model": model, "task": task})).map(|_| ()),
+            SessionLink::Remote(r) => r.op(&json!({"window": r.window, "op": "adopt", "tab": tab, "master_tab": master_tab, "nick": nick, "provider": provider, "model": model, "task": task})).map(|_| ()),
         }
     }
 
@@ -1550,7 +1647,7 @@ impl SessionLink {
     pub fn choice_of(&self, tab: u64) -> Option<crate::Choice> {
         match self {
             SessionLink::Local(_) => None,
-            SessionLink::Remote(r) => r.client.conversation_op(&json!({"window": r.window, "op": "choice_of", "tab": tab})).ok().and_then(|reply| serde_json::from_value(reply["choice"].clone()).ok()),
+            SessionLink::Remote(r) => r.op(&json!({"window": r.window, "op": "choice_of", "tab": tab})).ok().and_then(|reply| serde_json::from_value(reply["choice"].clone()).ok()),
         }
     }
 

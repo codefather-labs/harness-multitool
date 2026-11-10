@@ -1,17 +1,23 @@
 //! A window's side of the daemon: find it or start it, register, hear events.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::{Address, Numbered, address_path};
 
+/// How long a window waits for the daemon that replaced its own before it starts one.
+pub const REFIND_WAIT: Duration = Duration::from_secs(5);
+
 #[derive(Clone)]
 pub struct Client {
     base: String,
     admin: String,
     agent: ureq::Agent,
+    /// The data directory it was found in, so a window can find the daemon again after another
+    /// took its place (journal#807).
+    data_dir: Option<PathBuf>,
 }
 
 /// A registered window.
@@ -45,14 +51,41 @@ fn start_daemon(program: &Path) -> std::io::Result<()> {
 impl Client {
     pub fn new(address: &Address) -> Client {
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(40))).build().into();
-        Client { base: format!("http://127.0.0.1:{}", address.port), admin: address.admin.clone(), agent }
+        Client { base: format!("http://127.0.0.1:{}", address.port), admin: address.admin.clone(), agent, data_dir: None }
     }
 
     /// The daemon of this data directory, if one answers.
     pub fn find(data_dir: &Path) -> Option<Client> {
         let text = std::fs::read_to_string(address_path(data_dir)).ok()?;
-        let client = Client::new(&serde_json::from_str(&text).ok()?);
+        let client = Client { data_dir: Some(data_dir.to_path_buf()), ..Client::new(&serde_json::from_str(&text).ok()?) };
         client.healthy().then_some(client)
+    }
+
+    /// Whether this is still the daemon of its data directory and it answers. False once it
+    /// stopped, or another daemon was started in its place (journal#807).
+    pub fn current(&self) -> bool {
+        let Some(dir) = &self.data_dir else { return self.healthy() };
+        let written = std::fs::read_to_string(address_path(dir)).ok().and_then(|text| serde_json::from_str::<Address>(&text).ok());
+        written.is_some_and(|a| format!("http://127.0.0.1:{}", a.port) == self.base && a.admin == self.admin) && self.healthy()
+    }
+
+    /// The daemon now answering for this one's data directory; None for a client not found
+    /// through a data directory. Whoever stopped this one starts the next, so it is waited for
+    /// first: started here at once, two daemons would share one directory. Only when none comes
+    /// within `REFIND_WAIT` is one started with `program`.
+    pub fn refind(&self, program: Option<&Path>) -> Option<Client> {
+        let dir = self.data_dir.as_ref()?;
+        let deadline = std::time::Instant::now() + REFIND_WAIT;
+        loop {
+            if let Some(client) = Client::find(dir).filter(|c| c.base != self.base || c.admin != self.admin) {
+                return Some(client);
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Client::find_or_start(dir, program?).ok()
     }
 
     /// Finds the daemon, or starts `program daemon` detached from this terminal and waits for it.
@@ -83,7 +116,17 @@ impl Client {
 
     /// What happened in this window after `after`; waits a little for something.
     pub fn conversation_events(&self, window: &str, after: u64) -> Result<Vec<Value>, String> {
-        let mut response = self.agent.get(format!("{}/conversations/events?window={window}&after={after}", self.base)).header("authorization", &format!("Bearer {}", self.admin)).call().map_err(|e| e.to_string())?;
+        // The daemon answers within 2 s; a poll it does not answer in 10 is a daemon that is gone
+        // or stuck, for the window to find another (journal#807).
+        let mut response = self
+            .agent
+            .get(format!("{}/conversations/events?window={window}&after={after}", self.base))
+            .header("authorization", &format!("Bearer {}", self.admin))
+            .config()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .call()
+            .map_err(|e| e.to_string())?;
         let reply: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
         reply["events"].as_array().cloned().ok_or_else(|| reply["error"].as_str().unwrap_or("a bad answer from the daemon").to_string())
     }
