@@ -628,7 +628,7 @@ struct Live {
     /// A speech model on its way, if one is.
     voice_download: Option<std::sync::Arc<std::sync::Mutex<VoiceDownload>>>,
     /// A profile's Claude Code sign-in or sign-out, waiting for the loop to hand it the terminal.
-    terminal_wanted: Option<(String, bool)>,
+    terminal_wanted: Option<(String, ClaudeStep)>,
     voice_test: Option<VoiceTestRun>,
     voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
@@ -1716,7 +1716,8 @@ impl Live {
                     w.memory = Some(self.memory_page());
                     show_profiles(w);
                 }
-                Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, login)),
+                Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::Login } else { ClaudeStep::Logout })),
+                Outgoing::ProfileClaudeSwitch { name } => self.terminal_wanted = Some((name, ClaudeStep::Switch)),
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -2152,6 +2153,15 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
         .collect()
 }
 
+/// What the terminal is handed to `claude auth` for, on a profile's Claude Code directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeStep {
+    Login,
+    Logout,
+    /// Out, then in again with another account.
+    Switch,
+}
+
 /// The open settings show the Profiles tab as it now stands, the line under the cursor kept.
 fn show_profiles(w: &mut frontend_tui::model::Workspace) {
     let Some(page) = w.profiles.clone() else { return };
@@ -2192,6 +2202,15 @@ fn claude_code_auth_for(profile: &str, what: &str) -> Result<()> {
         }
     }
     println!("Profile {profile}: running `{binary} auth {what}` in {}", dir.display());
+    if what == "logout" {
+        println!("This signs out only this profile's own Claude Code login; your other logins on this machine stay.");
+    }
+    if what == "login" {
+        // The browser approves with whatever account it is signed in to (journal#802).
+        println!("In the browser, sign in with the account this profile is for. If the browser is signed in to claude.ai");
+        println!("with another account it will approve that one: press c to copy the address and open it in a private");
+        println!("window, or sign out of claude.ai in the browser first.");
+    }
     let status = command.env("CLAUDE_CONFIG_DIR", &dir).status().with_context(|| format!("running {binary}"))?;
     if !status.success() {
         bail!("`{binary} auth {what}` ended with {status}");
@@ -2488,11 +2507,21 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
         let mut dirty = true;
         loop {
             // A profile's Claude Code sign-in: Claude Code's own, in the terminal, then back here (CON-123).
-            if let Some((profile, login)) = live.terminal_wanted.take() {
+            if let Some((profile, step)) = live.terminal_wanted.take() {
                 let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
                 ratatui::restore();
-                let what = if login { "login" } else { "logout" };
-                let said = match claude_code_auth_for(&profile, what) {
+                let what = match step {
+                    ClaudeStep::Login => "login",
+                    ClaudeStep::Logout => "logout",
+                    ClaudeStep::Switch => "account switch",
+                };
+                let done = match step {
+                    ClaudeStep::Logout => claude_code_auth_for(&profile, "logout"),
+                    ClaudeStep::Login => claude_code_auth_for(&profile, "login"),
+                    // Its own login out, then in again: the other logins on this machine stay (journal#802).
+                    ClaudeStep::Switch => claude_code_auth_for(&profile, "logout").and_then(|()| claude_code_auth_for(&profile, "login")),
+                };
+                let said = match done {
                     Ok(()) => format!("Claude Code {what} for {profile} done."),
                     Err(e) => format!("Claude Code {what} for {profile}: {e:#}"),
                 };

@@ -5,7 +5,7 @@ another, moves the window onto a profile with Use, and takes screenshots on the 
 pictures, not the screen, so it needs no pyte.
 Usage: tools/pty_profiles_tab.py <absolute path to multitool> [a directory to keep the pictures in]"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup  # noqa: F401
-import fcntl, pty, select, shutil, struct, subprocess, tempfile, termios, time
+import fcntl, json, pty, select, shutil, struct, subprocess, tempfile, termios, time
 
 bin_ = sys.argv[1]; keep = sys.argv[2] if len(sys.argv) > 2 else None; COLS, ROWS = 120, 34
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-pt-root")); home = tempfile.mkdtemp(prefix="mt-pt-home"); os.makedirs(home + "/cfg/harness-multitool")
@@ -82,6 +82,12 @@ assert logins and mt + "/profiles/max/claude" in logins[0], logins
 press("\r"); pump(1.5)                                          # Enter: back to the harness
 shot("provider-signed-in.png")
 print("Edit opened max's Provider page; its Login handed the terminal to claude auth login in max's directory and came back")
+# journal#802: signed in, the button is Switch account: max's own login out, then in again.
+press(DOWN, DOWN, "\r"); pump(2)
+steps = [json.loads(l)["argv"][1] for l in open(calls).read().splitlines() if json.loads(l)["argv"][1] in ("login", "logout")]
+assert steps[-2:] == ["logout", "login"], steps
+press("\r"); pump(1.5)
+print("Switch account ran claude auth logout then login in max's directory:", steps[-2:])
 press("\t", *[DOWN] * 9, "\t"); pump(0.8)                      # back to Profiles
 shot("profiles-used.png")
 # journal#791: after Use the Provider page is max's (claude-code, its own Claude Code signed in), and a
@@ -98,6 +104,11 @@ assert open(mt + "/profiles/default/profile.toml").read() == default_before, "de
 print("after Use the Provider page saved to max's file, default's untouched")
 press("\x1b"); pump(0.5)
 shot("status-after-use.png")
+# journal#802: Right reaches the buttons; Delete on work by keys.
+press("\x1b"); pump(0.3); press("\x1b[<0;112;33M", "\x1b[<0;112;33m"); pump(0.8)    # settings again
+press(*[DOWN] * 9, RIGHT, DOWN, DOWN, RIGHT, DOWN, DOWN, "\r", "y"); pump(1.5)        # Profiles, work, Right, Delete, yes
+until("Delete by keys removed work", lambda: "work" not in profiles())
+print("Right reached the buttons; Delete by keys removed work:", profiles())
 saved = subprocess.run([bin_, "profile", "list"], env=env, cwd=root, capture_output=True, text=True).stdout
 print(saved.rstrip())
 assert any(l.split()[0] == "max" and "Claude Code: signed in" in l for l in saved.splitlines()), saved

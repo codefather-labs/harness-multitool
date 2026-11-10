@@ -97,6 +97,8 @@ pub enum Outgoing {
     ProfileDelete { name: String },
     ProfileUse { name: String },
     ProfileClaude { name: String, login: bool },
+    /// Another Claude account for a profile: its own sign-in out, then in again (journal#802).
+    ProfileClaudeSwitch { name: String },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -1079,6 +1081,8 @@ pub struct ProfilesPage {
     pub mode: ProfilesMode,
     /// Edit asked for the Provider page, where the profile's sign-ins are (journal#794).
     pub open_provider: bool,
+    /// The keyboard is on the buttons beside the list: 0 Add, 1 Edit, 2 Delete, 3 Use (journal#802).
+    pub button: Option<usize>,
     pub status: String,
 }
 

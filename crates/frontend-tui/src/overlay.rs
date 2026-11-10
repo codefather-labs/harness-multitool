@@ -451,7 +451,8 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
     let bx = r.x + list_w + 2;
     for (i, label) in PROFILE_BUTTONS.iter().enumerate() {
         let y = r.y + 1 + i as u16 * 2;
-        let style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+        let under = focus && p.button == Some(i);
+        let style = if under { Style::default().fg(t.surface).bg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) };
         text(f, bx, y, BUTTONS_W, vec![Span::styled(format!("[ {label:<6} ]"), style)], bg);
         out.hits.push(Hit { rect: Rect::new(bx, y, BUTTONS_W, 1), target: Target::ProfileButton(i) });
     }
@@ -510,6 +511,20 @@ fn open_provider_if_asked(s: &mut SettingsView) {
 
 /// What a Profiles tab key or button does.
 fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
+    // On the buttons beside the list (journal#802).
+    if let (Some(at), ProfilesMode::List) = (p.button, &p.mode) {
+        match k {
+            Key::Up => p.button = Some(at.saturating_sub(1)),
+            Key::Down => p.button = Some((at + 1).min(PROFILE_BUTTONS.len() - 1)),
+            Key::Left | Key::Esc => p.button = None,
+            Key::Enter | Key::Char(' ') => {
+                p.button = None;
+                profiles_key(p, [Key::Char('a'), Key::Char('e'), Key::Char('d'), Key::Char('u')][at.min(3)], outbox);
+            }
+            _ => {}
+        }
+        return;
+    }
     let selected = p.rows.get(p.cursor).map(|r| r.name.clone());
     match (&mut p.mode, k) {
         (ProfilesMode::Naming(name), Key::Char(c)) if (c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name.len() < 32 => {
@@ -543,6 +558,7 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
             }
         }
         (ProfilesMode::Deleting, _) => p.mode = ProfilesMode::List,
+        (ProfilesMode::List, Key::Right) => p.button = Some(0),
         (ProfilesMode::List, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
         (ProfilesMode::List, Key::Down) => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
         (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
@@ -994,7 +1010,7 @@ fn login_label(s: &SettingsView) -> &'static str {
         (true, false, false) => "Login",
         (false, ..) if s.providers.get(s.provider).is_some_and(|p| p.name == "Local") => "No key needed",
         (false, ..) if on_delegate(s) => match s.auth.claude_signed {
-            Some(true) => "Log out",
+            Some(true) => "Switch account",
             Some(false) => "Login",
             None => "Claude Code not found",
         },
@@ -1022,7 +1038,7 @@ fn sign_in_rows(f: &mut Frame, r: Rect, mut y: u16, s: &SettingsView, t: &Theme,
     } else if on_delegate(s) {
         // The profile's own Claude Code directory, as `claude auth status` says it (journal#791).
         match (a.claude_signed, &a.claude_note) {
-            (Some(true), _) => format!("Claude Code signed in for {}", a.profile),
+            (Some(true), _) => format!("Claude Code signed in for {}. o signs out only this profile", a.profile),
             (_, Some(note)) => format!("Not signed in for {}: {note}", a.profile),
             (Some(false), None) => format!("Not signed in for {}", a.profile),
             (None, _) => "Claude Code could not be asked".to_string(),
@@ -1089,7 +1105,9 @@ fn press_sign_in(w: &mut Workspace) {
         (false, ..) if s.providers[s.provider].name == "Local" => s.auth.message = vec!["A local model needs no key.".to_string()],
         // Claude Code's own sign-in, in this profile's directory: the terminal is handed to it (CON-123).
         (false, ..) if on_delegate(s) => match s.auth.claude_signed {
-            Some(signed) => w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: !signed }),
+            // Signed in: another account, its own login out then in again (journal#802).
+            Some(true) => w.outbox.push(Outgoing::ProfileClaudeSwitch { name: s.auth.profile.clone() }),
+            Some(false) => w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: true }),
             None => s.auth.message = vec!["Claude Code is not on this machine's PATH, or its binary setting is wrong.".to_string()],
         },
         (false, ..) => s.auth.entry = Some(String::new()),
@@ -1444,7 +1462,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         }
         // The Profiles tab: Esc leaves what it is doing before it closes the window.
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == PROFILES_SECTION) && s.focus == SettingsPane::Page && (!matches!(k, Key::Esc) || s.profiles.mode != ProfilesMode::List) => {
-            if matches!(k, Key::Tab | Key::Left) && s.profiles.mode == ProfilesMode::List {
+            if matches!(k, Key::Tab | Key::Left) && s.profiles.mode == ProfilesMode::List && s.profiles.button.is_none() {
                 s.focus = SettingsPane::Sections;
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
@@ -1564,6 +1582,10 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             Key::Enter if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !on_plan(s) && models_for(s).is_empty() => s.editing_model = true,
             // With a list, E types a name that is not on it.
             Key::Char('e') if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() + 1 && !on_plan(s) => s.editing_model = true,
+            // o on Claude Code's button signs this profile out, without signing in again (journal#802).
+            Key::Char('o') if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() && on_delegate(s) && s.auth.claude_signed == Some(true) => {
+                w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: false });
+            }
             Key::Char(' ') | Key::Enter if s.focus == SettingsPane::Page => activate(w),
             Key::Enter => s.focus = SettingsPane::Page,
             _ => {}
@@ -1841,10 +1863,10 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"));
         if let Some(Overlay::Settings(s)) = &mut w.overlay {
             s.auth.claude_signed = Some(true);
-            assert_eq!(login_label(s), "Log out");
+            assert_eq!(login_label(s), "Switch account");
         }
         press_sign_in(&mut w);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaudeSwitch { name }) if name == "max"));
     }
 
 
@@ -2437,6 +2459,49 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
         let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
         assert_eq!(s.sections[s.section], "Provider", "Edit opens the Provider page");
+    }
+
+    /// journal#802: Right goes from the list to the buttons, Up and Down move among them, Enter
+    /// presses one, Left goes back to the list.
+    #[test]
+    fn right_reaches_the_profiles_buttons() {
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Right);
+        assert_eq!(profiles_of(&w).button, Some(0), "on Add");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Down);
+        assert_eq!(profiles_of(&w).button, Some(2), "on Delete");
+        key(&mut w, Key::Enter);
+        assert_eq!(profiles_of(&w).mode, ProfilesMode::Deleting, "Delete asks about max");
+        key(&mut w, Key::Esc);
+        key(&mut w, Key::Right);
+        assert_eq!(profiles_of(&w).button, Some(0));
+        key(&mut w, Key::Left);
+        assert_eq!(profiles_of(&w).button, None, "Left goes back to the list");
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(s.focus, SettingsPane::Page, "and stays on the page");
+    }
+
+    /// journal#802: a profile signed in to Claude Code switches account in one step, signing out of
+    /// only its own login; o signs out without signing in again.
+    #[test]
+    fn a_signed_in_claude_code_profile_switches_account() {
+        let mut w = on_provider_page();
+        w.overlay = None;
+        w.auth = Some(AuthPage { delegate: true, profile: "max".into(), claude_signed: Some(true), ..Default::default() });
+        w.view_mut().status.fields = vec![("ADAPTER".into(), "claude-code".into()), ("MODEL".into(), "m".into())];
+        w.overlay = Some(Overlay::Settings(settings_for(&w)));
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(login_label(s), "Switch account");
+        press_sign_in(&mut w);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaudeSwitch { name }) if name == "max"));
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            (s.focus, s.cursor) = (SettingsPane::Page, s.providers.len());
+        }
+        key(&mut w, Key::Char('o'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"), "o signs out only");
     }
 
     /// journal#799: Add makes the profile, moves the window onto it and opens its Provider page; what
