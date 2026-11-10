@@ -25,7 +25,7 @@ class H(http.server.BaseHTTPRequestHandler):
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 root = tempfile.mkdtemp(prefix="mt-at-root"); home = tempfile.mkdtemp(prefix="mt-at-home"); os.makedirs(home + "/cfg/harness-multitool")
 open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovider="fake"\nmodel="m"\nplan_first="off"\n\n[session.providers.fake]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.fake]\nnone=true\n')
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 bin_ = sys.argv[1]; COLS, ROWS = 130, 46
 def tui(page):
     pid, fd = pty.fork()

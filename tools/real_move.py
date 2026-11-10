@@ -17,7 +17,7 @@ CONFIG = {
     "gpt": '[session]\nprovider="chatgpt"\nmodel="gpt-6.1-sol"\nmax_tokens=4000\nplan_first="off"\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n' + ROW,
     "claude": f'[session]\nprovider="claude-code"\nmodel="{MODEL}"\n' + ROW,
 }
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 for name in list(env):
     if name == "CLAUDECODE" or name.startswith("CLAUDE_CODE_"): env.pop(name)
 folder = os.path.expanduser("~/.claude/projects/") + "".join(c if c.isascii() and c.isalnum() else "-" for c in root)

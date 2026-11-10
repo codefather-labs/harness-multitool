@@ -52,12 +52,12 @@ base = f"http://127.0.0.1:{srv.server_address[1]}"
 root = tempfile.mkdtemp(prefix="mt-login-root"); home = tempfile.mkdtemp(prefix="mt-login-home"); os.makedirs(home + "/cfg/harness-multitool")
 browser = home + "/browser.sh"
 open(browser, "w").write(f'#!/bin/sh\nprintf %s "$1" > {home}/url\n'); os.chmod(browser, 0o755)
-cfg = home + "/cfg/harness-multitool/config.toml"
+cfg = home + "/mt-home/profiles/default/profile.toml"  # the profile the old config.toml moved into (CON-120)
 open(cfg, "w").write(f'[session.providers.chatgpt]\nkind="openai-responses"\nbase_url="{base}/v1"\n\n[session.auth.chatgpt]\noauth="chatgpt"\nissuer="{base}"\n\n[session.providers.openai]\nbase_url="{base}/openai/v1"\n')
 COLS, ROWS = 110, 26; bin_ = sys.argv[1]
 pid, fd = pty.fork()
 if pid == 0:
-    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", MULTITOOL_BROWSER=browser, TERM="xterm-256color", MULTITOOL_GRAPHICS="off"); os.environ.pop("OPENAI_API_KEY", None)
+    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", MULTITOOL_BROWSER=browser, TERM="xterm-256color", MULTITOOL_GRAPHICS="off"); os.environ.pop("OPENAI_API_KEY", None)
     os.execv(bin_, [bin_, "preview", "welcome"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)

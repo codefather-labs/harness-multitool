@@ -22,7 +22,7 @@ COLS,ROWS=110,40; bin_=sys.argv[1]
 def start(build=None):
     pid,fd=pty.fork()
     if pid==0:
-        os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home+"/cfg",XDG_DATA_HOME=home+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
+        os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home+"/cfg",MULTITOOL_HOME=home+"/mt-home",XDG_DATA_HOME=home+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
         if build is not None: os.environ["MULTITOOL_RELOAD_BUILD"]=build
         os.execv(bin_,[bin_,"preview","welcome"])
     fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack("HHHH",ROWS,COLS,0,0))

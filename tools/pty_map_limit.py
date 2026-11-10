@@ -13,7 +13,8 @@ root = os.path.realpath(tempfile.mkdtemp(prefix="mt-ml-root")); home = tempfile.
 os.makedirs(home + "/cfg/harness-multitool")
 config = home + "/cfg/harness-multitool/config.toml"
 open(config, "w").write("[session]\nmap_max_nodes = 200\n")
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+saved_file = home + "/mt-home/profiles/default/profile.toml"  # the profile the config moved into (CON-120)
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -36,7 +37,7 @@ def until(what, check, sec=15):
 def press(*keys):
     for k in keys: os.write(fd, k.encode()); pump(0.12)
 def saved_limit():
-    for line in open(config).read().splitlines():
+    for line in open(saved_file).read().splitlines():
         if line.strip().startswith("map_max_nodes"):
             return int(line.split("=")[1])
     return None
@@ -59,7 +60,7 @@ until("the save is said", lambda: "keeps its limit until it restarts" in drawn, 
 end = time.time() + 10
 while time.time() < end and saved_limit() != LIMIT: pump(0.1)
 assert saved_limit() == LIMIT, f"config says {saved_limit()}"
-print(f"typed {LIMIT} and saved; config.toml now holds:"); print(open(config).read().rstrip())
+print(f"typed {LIMIT} and saved; the profile now holds:"); print(open(saved_file).read().rstrip())
 print("the window says a running session keeps its limit until it restarts")
 
 # The MCP server is a separate process, started now with the saved configuration (CON-114).
@@ -95,8 +96,8 @@ press("\x1b[B", "\r")                      # the row below, Enter edits: what is
 for _ in range(3): press("\x7f")
 press("2", "\x13")
 end = time.time() + 10
-while time.time() < end and "search_max_linked = 2" not in open(config).read(): pump(0.1)
-assert "search_max_linked = 2" in open(config).read(), open(config).read()
+while time.time() < end and "search_max_linked = 2" not in open(saved_file).read(): pump(0.1)
+assert "search_max_linked = 2" in open(saved_file).read(), open(saved_file).read()
 print("typed 2 in the second row and saved it")
 adds = [call(100, "journal_add", {"body": "Graph root entry.", "category": "finding", "tags": ["g"]})]
 adds += [call(101 + n, "journal_add", {"body": f"Graph leaf {n}. Cites journal#1 and says more.", "category": "finding", "tags": ["g"]}) for n in range(3)]

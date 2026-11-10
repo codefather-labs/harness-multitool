@@ -26,7 +26,7 @@ open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session]\nprovid
 # The launcher keeps its own configuration: only the harness gets these folders.
 binary = sys.argv[1]
 os.environ["MULTITOOL_SKIP"] = "1"
-wrapper = home + "/harness"; open(wrapper, "w").write(f'#!/bin/sh\nXDG_CONFIG_HOME={home}/cfg XDG_DATA_HOME={home}/data TERM=xterm-256color MULTITOOL_GRAPHICS=off exec {binary} "$@"\n'); os.chmod(wrapper, 0o755)
+wrapper = home + "/harness"; open(wrapper, "w").write(f'#!/bin/sh\nXDG_CONFIG_HOME={home}/cfg MULTITOOL_HOME={home}/mt-home XDG_DATA_HOME={home}/data TERM=xterm-256color MULTITOOL_GRAPHICS=off exec {binary} "$@"\n'); os.chmod(wrapper, 0o755)
 shim = home + "/bin/claude"; path = os.environ["PATH"]
 open(shim, "w").write(f'#!/bin/sh\nexport PATH={shlex.quote(path)}\nexec {wrapper} preview welcome\n'); os.chmod(shim, 0o755)
 drop = [k for k in os.environ if k.startswith("CLAUDE")]

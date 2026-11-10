@@ -37,7 +37,7 @@ bin_=sys.argv[1]
 pid,fd=pty.fork()
 if pid==0:
     os.chdir(root)
-    os.environ.update(XDG_CONFIG_HOME=cfg,XDG_DATA_HOME=cfg+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
+    os.environ.update(XDG_CONFIG_HOME=cfg,MULTITOOL_HOME=cfg+"/mt-home",XDG_DATA_HOME=cfg+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
     os.execv(bin_,[bin_,"preview","welcome"])
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack("HHHH",ROWS,COLS,0,0))
 screen=pyte.Screen(COLS,ROWS); stream=pyte.ByteStream(screen)
@@ -71,7 +71,7 @@ turns[:] = [turn("Continuing the old session.")]
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root)
-    os.environ.update(XDG_CONFIG_HOME=cfg, XDG_DATA_HOME=cfg + "/data", ANTHROPIC_API_KEY="test-key-local-fake", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", COLORTERM="truecolor")
+    os.environ.update(XDG_CONFIG_HOME=cfg,MULTITOOL_HOME=cfg+"/mt-home", XDG_DATA_HOME=cfg + "/data", ANTHROPIC_API_KEY="test-key-local-fake", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", COLORTERM="truecolor")
     os.execv(bin_, [bin_, "preview", "startup"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 screen.reset()

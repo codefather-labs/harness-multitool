@@ -33,7 +33,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_
 os.chmod(fake, 0o755)
 config = home + "/cfg/harness-multitool/config.toml"
 open(config, "w").write(f'[session]\nprovider="local"\nmodel="m"\nplan_first="off"\n\n[session.providers.local]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.local]\nnone=true\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\n')
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=claude_dir, TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=claude_dir, TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 bin_ = sys.argv[1]; COLS, ROWS = 130, 46
 pid, fd = pty.fork()
 if pid == 0:
@@ -57,7 +57,7 @@ def click(name):
         if x >= 0:
             os.write(fd, f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m".encode()); pump(0.4); return
     raise AssertionError(f"no {name} on screen: " + text())
-def saved(): return tomllib.load(open(config, "rb"))["session"]
+def saved(): return tomllib.load(open(home + "/mt-home/profiles/default/profile.toml", "rb"))["session"]
 def forms(): return glob.glob(claude_dir + "/projects/**/*.jsonl", recursive=True)
 def until(what, check, sec=10):
     end = time.time() + sec

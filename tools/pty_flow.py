@@ -23,7 +23,7 @@ while IFS= read -r line; do
 done
 ''')
 os.chmod(home + "/bin/claude", 0o755)
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=claude_dir, PATH=home + "/bin:" + os.environ["PATH"], TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=claude_dir, PATH=home + "/bin:" + os.environ["PATH"], TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 bin_ = sys.argv[1]; COLS, ROWS = 130, 46
 pid, fd = pty.fork()
 if pid == 0:
@@ -54,7 +54,7 @@ os.write(fd, b"s"); pump(1); until("the settings", lambda: "claude-code" in text
 click("claude-code"); pump(0.3); assert "Your environment" in text(), text()
 click("No permission prompts"); pump(0.2)
 os.write(fd, b"\x13"); pump(1)
-c = tomllib.load(open(home + "/cfg/harness-multitool/config.toml", "rb"))["session"]; row = c["providers"]["claude-code"]
+c = tomllib.load(open(home + "/mt-home/profiles/default/profile.toml", "rb"))["session"]; row = c["providers"]["claude-code"]
 assert c["provider"] == "claude-code" and row["environment"] == "user" and row["permissions"] == "skip", c
 print("chosen and saved by the harness")
 until("back on the start page, showing it", lambda: "the old question" in text() and "claude-code" in text())

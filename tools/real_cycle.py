@@ -34,7 +34,7 @@ subprocess.run([bin_, "init"], cwd=root, env={**os.environ, "XDG_CONFIG_HOME": h
 COLS, ROWS = 140, 50
 pid, fd = pty.fork()
 if pid == 0:
-    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
     os.execv(bin_, [bin_, "preview", "welcome"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)

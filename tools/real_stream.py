@@ -11,7 +11,7 @@ import pyte
 bin_ = sys.argv[1]
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-st-root")); home = tempfile.mkdtemp(prefix="mt-st-home"); os.makedirs(home + "/cfg/harness-multitool")
 open(home + "/cfg/harness-multitool/config.toml", "w").write('[session]\nprovider="claude-code"\nmodel="claude-haiku-5-5"\n\n[session.providers.claude-code]\nkind="claude-code"\nenvironment="user"\npermissions="skip"\nchrome=false\n')
-env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}; env.update(XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}; env.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 folder = os.path.expanduser("~/.claude/projects/") + "".join(c if c.isascii() and c.isalnum() else "-" for c in root)
 COLS, ROWS = 130, 46
 pid, fd = pty.fork()

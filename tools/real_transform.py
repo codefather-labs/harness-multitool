@@ -23,7 +23,7 @@ for step, name in enumerate(chain):
     open(home + "/cfg/harness-multitool/config.toml", "w").write(CONFIG[name])
     pid, fd = pty.fork()
     if pid == 0:
-        os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+        os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
         os.execv(bin_, [bin_, "preview", "startup" if step else "welcome"])
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
     screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)

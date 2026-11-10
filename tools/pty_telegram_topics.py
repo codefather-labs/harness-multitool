@@ -42,7 +42,7 @@ for line in sys.stdin:
 os.chmod(fake, 0o755)
 open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[telegram]\ntoken = "{TOKEN}"\nallowed_users = [42]\nbase_url = "http://127.0.0.1:{srv.server_address[1]}"\n\n[session]\nprovider="claude-code"\nmodel="m"\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\n')
 bin_ = sys.argv[1]
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 env.pop("MULTITOOL_TELEGRAM_TOKEN", None)
 pid, fd = pty.fork()
 if pid == 0:

@@ -42,7 +42,7 @@ os.chmod(fake, 0o755)
 config = home + "/cfg/harness-multitool/config.toml"
 open(config, "w").write(f'[session]\nprovider="claude-code"\nmodel="m"\nplan_first="off"\n\n[session.providers.claude-code]\nkind="claude-code"\nbinary="{fake}"\n\n[session.providers.local]\nkind="openai-responses"\nbase_url="http://127.0.0.1:{srv.server_address[1]}"\n\n[session.auth.local]\nnone=true\n')
 build = f"cp {sys.argv[1]!r} {bin_ + '.new'!r} && mv {bin_ + '.new'!r} {bin_!r}"
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", MULTITOOL_RELOAD_BUILD=build)
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", MULTITOOL_RELOAD_BUILD=build)
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "welcome"])
@@ -63,7 +63,7 @@ def keys(*names):
     for k in names: os.write(fd, k.encode()); pump(0.2)
 def delegate(): return open(log).read() if os.path.exists(log) else ""
 def responses(): return "\n".join(bodies)
-def saved(): return tomllib.load(open(config, "rb"))["session"]
+def saved(): return tomllib.load(open(home + "/mt-home/profiles/default/profile.toml", "rb"))["session"]
 def stored(): return json.load(open(home + "/data/harness-multitool/daemon/conversations.json"))
 def until(what, check, sec=20):
     end = time.time() + sec

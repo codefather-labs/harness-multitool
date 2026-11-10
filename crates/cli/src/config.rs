@@ -1,6 +1,8 @@
-//! The user's configuration: `<config dir>/harness-multitool/config.toml`, where the config dir
-//! is the OS's own (dirs::config_dir: ~/.config on Linux, ~/Library/Application Support on
-//! macOS, %APPDATA% on Windows). Written by `multitool setup`; every field has a default.
+//! The user's configuration, by profile (CON-120, ADR 0026): `~/.harness/profiles/<name>/profile.toml`
+//! holds a profile's settings, `~/.harness/shared.toml` the cross-profile ones, Telegram and voice
+//! (CON-124). This process runs on one profile, chosen once at its start with [`select`]; every
+//! function here reads and writes that one. `default` always exists. The configuration of before
+//! profiles, `<config dir>/harness-multitool/config.toml`, is moved into `default` once.
 
 use std::path::PathBuf;
 
@@ -78,17 +80,188 @@ pub struct Config {
     pub session: harness_session::Settings,
 }
 
-pub fn path() -> Result<PathBuf> {
-    let dir = dirs::config_dir().ok_or_else(|| anyhow!("this OS reports no config directory"))?;
-    Ok(dir.join("harness-multitool").join("config.toml"))
+/// What a profile's file holds: every setting but the cross-profile ones.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ProfileFile {
+    #[serde(default)]
+    terminal: Terminal,
+    #[serde(default)]
+    session: harness_session::Settings,
 }
 
-/// The configuration, or the defaults when there is no file yet.
+/// What `shared.toml` holds: the same in every profile (CON-124).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SharedFile {
+    #[serde(default)]
+    voice: Voice,
+    #[serde(default)]
+    telegram: Telegram,
+}
+
+pub const DEFAULT_PROFILE: &str = "default";
+const MAX_NAME: usize = 32;
+
+static CURRENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Where every profile and the shared settings live: `~/.harness`, or `MULTITOOL_HOME` when it is
+/// set, which tests use so they never touch the user's own (journal#751).
+pub fn root() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("MULTITOOL_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".harness"))
+}
+
+/// The configuration file of before profiles, read only to move it into `default`.
+fn old_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("harness-multitool").join("config.toml"))
+}
+
+/// A profile's name, if it may be one: lowercase letters, digits and `-`, at most 32 (CON-120).
+pub fn check_name(name: &str) -> Result<()> {
+    let fits = !name.is_empty() && name.len() <= MAX_NAME && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if fits { Ok(()) } else { Err(anyhow!("a profile's name is lowercase letters, digits and -, at most {MAX_NAME}: {name:?} is not")) }
+}
+
+/// The profile this process runs on.
+pub fn current() -> &'static str {
+    CURRENT.get().map_or(DEFAULT_PROFILE, String::as_str)
+}
+
+/// Runs this process on `name`, once, at its start. An unknown name is refused with the names
+/// there are (CON-121).
+pub fn select(name: &str) -> Result<()> {
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    check_name(name)?;
+    let names = list_in(&root)?;
+    if !names.iter().any(|n| n == name) {
+        return Err(anyhow!("no profile {name:?}; the profiles are: {}", names.join(", ")));
+    }
+    CURRENT.set(name.to_string()).map_err(|_| anyhow!("the profile is chosen once, at the start"))
+}
+
+/// The profiles there are, `default` first, then by name.
+#[allow(dead_code)] // The Profiles tab calls it (journal#749).
+pub fn list() -> Result<Vec<String>> {
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    list_in(&root)
+}
+
+fn list_in(root: &std::path::Path) -> Result<Vec<String>> {
+    let dir = root.join("profiles");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("profile.toml").is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| check_name(n).is_ok())
+        .collect();
+    names.sort_by_key(|n| (n != DEFAULT_PROFILE, n.clone()));
+    Ok(names)
+}
+
+/// A profile's folder.
+pub fn profile_dir(name: &str) -> Result<PathBuf> {
+    check_name(name)?;
+    Ok(root()?.join("profiles").join(name))
+}
+
+/// Makes a new profile, entirely clean (CON-125): the built-in defaults, no key, no sign-in, and an
+/// empty Claude Code directory of its own.
+#[allow(dead_code)] // The Profiles tab calls it (journal#749).
+pub fn create(name: &str) -> Result<PathBuf> {
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    create_in(&root, name)
+}
+
+fn create_in(root: &std::path::Path, name: &str) -> Result<PathBuf> {
+    check_name(name)?;
+    let dir = root.join("profiles").join(name);
+    if dir.exists() {
+        return Err(anyhow!("a profile {name:?} is there already"));
+    }
+    private_dir(&dir)?;
+    private_dir(&dir.join("claude"))?;
+    write_private(&dir.join("profile.toml"), &toml::to_string_pretty(&ProfileFile::default())?)?;
+    Ok(dir)
+}
+
+/// The first start with profiles: `default` and `shared.toml` from the configuration of before, if
+/// there was one, which is then renamed so nothing reads it again. Later starts change nothing.
+fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
+    let default = root.join("profiles").join(DEFAULT_PROFILE);
+    if default.join("profile.toml").is_file() {
+        return Ok(());
+    }
+    let before = match old.map(|p| (p, std::fs::read_to_string(p))) {
+        Some((p, Ok(text))) => Some((p, parse(p, &text)?)),
+        Some((p, Err(e))) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("reading {}", p.display())),
+        _ => None,
+    };
+    let c = before.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
+    private_dir(root)?;
+    private_dir(&root.join("profiles"))?;
+    private_dir(&default)?;
+    if !root.join("shared.toml").is_file() {
+        write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
+    }
+    write_private(&default.join("profile.toml"), &toml::to_string_pretty(&ProfileFile { terminal: c.terminal, session: c.session })?)?;
+    if let Some((p, _)) = before {
+        let moved = p.with_extension("toml.moved-to-profiles");
+        std::fs::rename(p, &moved).with_context(|| format!("renaming {}", p.display()))?;
+    }
+    Ok(())
+}
+
+fn private_dir(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).with_context(|| format!("securing {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Written whole, owner-only: these files can hold keys and a bot token.
+fn write_private(p: &std::path::Path, text: &str) -> Result<()> {
+    let temp = p.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("securing {}", temp.display()))?;
+    }
+    std::fs::rename(&temp, p).with_context(|| format!("writing {}", p.display()))
+}
+
+/// This process's profile's file.
+pub fn path() -> Result<PathBuf> {
+    Ok(profile_dir(current())?.join("profile.toml"))
+}
+
+/// The configuration of this process's profile, with the shared settings.
 pub fn load() -> Result<Config> {
-    let p = path()?;
-    match std::fs::read_to_string(&p) {
-        Ok(text) => parse(&p, &text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    load_in(&root, current())
+}
+
+fn load_in(root: &std::path::Path, name: &str) -> Result<Config> {
+    let p = root.join("profiles").join(name).join("profile.toml");
+    let profile: ProfileFile = read(&p)?;
+    let shared: SharedFile = read(&root.join("shared.toml"))?;
+    Ok(Config { terminal: profile.terminal, voice: shared.voice, telegram: shared.telegram, session: profile.session })
+}
+
+/// A file's settings, the defaults when it is not there.
+fn read<T: Default + serde::de::DeserializeOwned>(p: &std::path::Path) -> Result<T> {
+    match std::fs::read_to_string(p) {
+        Ok(text) => toml::from_str(&text).map_err(|e| anyhow!("{} is not valid TOML{}", p.display(), line_of(&e, &text))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
     }
 }
@@ -109,6 +282,9 @@ fn line_of(e: &toml::de::Error, text: &str) -> String {
 /// file holds tokens (INV-6).
 pub fn map_limit() -> (u64, Option<String>) {
     let default = harness_session::Settings::default().map_max_nodes;
+    if let Err(e) = root().and_then(|root| ensure(&root, old_path().as_deref())) {
+        return (default, Some(format!("{e}; the default map node limit {default} is used.")));
+    }
     let Ok(p) = path() else { return (default, None) };
     match std::fs::read_to_string(&p) {
         Ok(text) => map_limit_from_text(&p, &text),
@@ -138,18 +314,19 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(dir.join("harness-multitool"))
 }
 
+/// Saves the settings to this process's profile, and the shared ones to `shared.toml` (CON-121, CON-124).
 pub fn save(c: &Config) -> Result<PathBuf> {
-    let p = path()?;
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    std::fs::write(&p, toml::to_string_pretty(c)?).with_context(|| format!("writing {}", p.display()))?;
-    // It can hold a bot token.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("securing {}", p.display()))?;
-    }
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    save_in(&root, current(), c)
+}
+
+fn save_in(root: &std::path::Path, name: &str, c: &Config) -> Result<PathBuf> {
+    let dir = root.join("profiles").join(name);
+    private_dir(&dir)?;
+    let p = dir.join("profile.toml");
+    write_private(&p, &toml::to_string_pretty(&ProfileFile { terminal: c.terminal.clone(), session: c.session.clone() })?)?;
+    write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
     Ok(p)
 }
 
@@ -218,6 +395,100 @@ mod tests {
         let error = format!("{:?}", parse(path, text).expect_err("an error"));
         assert!(!error.contains("CANARY") && !error.contains("oops"), "{error}");
         assert!(error.contains("/x/config.toml") && error.contains("line 2"), "{error}");
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("multitool-profiles-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[cfg(unix)]
+    fn mode(p: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// CON-120, CON-124: the configuration of before moves into `default` once, Telegram and voice
+    /// into `shared.toml`; the old file is renamed, and a second start changes nothing.
+    #[test]
+    fn the_old_config_moves_into_default_once() {
+        let root = temp_root("migrate");
+        let old_dir = root.join("old");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let old = old_dir.join("config.toml");
+        std::fs::write(&old, "[terminal]\ngraphics = \"sixel\"\n[telegram]\ntoken = \"CANARY-T\"\nallowed_users = [7]\n[voice]\nbackend = \"whisper\"\n[session]\nmap_max_nodes = 42\n").unwrap();
+        let home = root.join("home");
+        ensure(&home, Some(&old)).unwrap();
+        assert!(!old.exists() && old_dir.join("config.toml.moved-to-profiles").exists());
+        let c = load_in(&home, DEFAULT_PROFILE).unwrap();
+        assert_eq!((c.terminal.graphics, c.session.map_max_nodes, c.telegram.allowed_users.clone(), c.voice.backend.as_deref()), (Graphics::Sixel, 42, vec![7], Some("whisper")));
+        let profile = std::fs::read_to_string(home.join("profiles/default/profile.toml")).unwrap();
+        assert!(!profile.contains("CANARY") && !profile.contains("telegram"), "{profile}");
+        assert!(std::fs::read_to_string(home.join("shared.toml")).unwrap().contains("CANARY-T"));
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&home.join("shared.toml")), 0o600);
+            assert_eq!(mode(&home.join("profiles/default/profile.toml")), 0o600);
+            assert_eq!(mode(&home.join("profiles/default")), 0o700);
+        }
+        // A second start: nothing moves, nothing is rewritten.
+        std::fs::write(&old, "[session]\nmap_max_nodes = 9\n").unwrap();
+        ensure(&home, Some(&old)).unwrap();
+        assert!(old.exists());
+        assert_eq!(load_in(&home, DEFAULT_PROFILE).unwrap().session.map_max_nodes, 42);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CON-120: a fresh install has `default` with the built-in settings and no old file is needed.
+    #[test]
+    fn a_fresh_install_starts_with_default() {
+        let root = temp_root("fresh");
+        ensure(&root, Some(&root.join("absent.toml"))).unwrap();
+        assert_eq!(list_in(&root).unwrap(), vec![DEFAULT_PROFILE.to_string()]);
+        assert_eq!(load_in(&root, DEFAULT_PROFILE).unwrap().session.map_max_nodes, 200);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CON-125: a new profile is clean, has its own empty Claude Code directory, and its settings are
+    /// its own; the shared ones are the same in every profile.
+    #[test]
+    fn a_new_profile_is_clean_and_its_settings_its_own() {
+        let root = temp_root("create");
+        ensure(&root, None).unwrap();
+        let mut c = load_in(&root, DEFAULT_PROFILE).unwrap();
+        c.session.map_max_nodes = 7;
+        c.telegram.allowed_users = vec![5];
+        save_in(&root, DEFAULT_PROFILE, &c).unwrap();
+        let dir = create_in(&root, "work").unwrap();
+        assert!(dir.join("claude").is_dir() && std::fs::read_dir(dir.join("claude")).unwrap().next().is_none());
+        let work = load_in(&root, "work").unwrap();
+        assert_eq!(work.session.map_max_nodes, 200, "nothing copied from default");
+        assert_eq!(work.telegram.allowed_users, vec![5], "Telegram is cross-profile");
+        assert_eq!(list_in(&root).unwrap(), vec!["default".to_string(), "work".to_string()]);
+        assert!(create_in(&root, "work").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_names_are_checked() {
+        for good in ["default", "work", "a-1", &"x".repeat(32)] {
+            assert!(check_name(good).is_ok(), "{good}");
+        }
+        for bad in ["", "Work", "a/b", "..", "a b", &"x".repeat(33), "café"] {
+            assert!(check_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// journal#696 holds for a profile's file: its error names the path and the line, no text.
+    #[test]
+    fn a_broken_profile_is_told_without_quoting_its_text() {
+        let root = temp_root("broken");
+        ensure(&root, None).unwrap();
+        std::fs::write(root.join("profiles/default/profile.toml"), "[session]\nmodel = \"CANARY-K\" oops\n").unwrap();
+        let error = format!("{:?}", load_in(&root, DEFAULT_PROFILE).expect_err("an error"));
+        assert!(!error.contains("CANARY") && !error.contains("oops") && error.contains("line 2"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// CON-114: the node limit is saved in `[session]`, read back, and 200 when the file says nothing.

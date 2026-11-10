@@ -15,6 +15,9 @@ mod reload;
 #[derive(Parser)]
 #[command(name = "multitool", version, about = "harness-multitool")]
 struct Cli {
+    /// The profile this run works on: its settings and its sign-in (CON-121). `default` if not given.
+    #[arg(long, global = true)]
+    profile: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -228,7 +231,10 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    let command = Cli::parse().command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None, handoff: None });
+    let cli = Cli::parse();
+    // Every start: the profiles are made or moved in first (CON-120), then this run's is chosen.
+    config::select(cli.profile.as_deref().unwrap_or(config::DEFAULT_PROFILE))?;
+    let command = cli.command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None, handoff: None });
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),

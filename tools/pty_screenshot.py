@@ -7,7 +7,7 @@ import fcntl, hashlib, pty, select, shutil, struct, subprocess, tempfile, termio
 
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-ss-root")); home = tempfile.mkdtemp(prefix="mt-ss-home"); os.makedirs(home + "/cfg/harness-multitool")
 bin_ = sys.argv[1]; COLS, ROWS = 120, 40
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 call = lambda out: subprocess.run([bin_, "debug", "screenshot", "--out", out], env=env, cwd=root, capture_output=True, text=True, timeout=30)
 none = call(home + "/none.png")
 assert none.returncode != 0 and not os.path.exists(home + "/none.png"), none

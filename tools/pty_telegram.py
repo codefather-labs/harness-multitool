@@ -40,7 +40,7 @@ open(home+"/cfg/harness-multitool/config.toml","w").write(f'[telegram]\nbase_url
 COLS,ROWS=110,44; bin_=sys.argv[1]
 pid,fd=pty.fork()
 if pid==0:
-    os.chdir(root); os.environ.update(MULTITOOL_TELEGRAM_TOKEN=TOKEN,XDG_CONFIG_HOME=home+"/cfg",XDG_DATA_HOME=home+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
+    os.chdir(root); os.environ.update(MULTITOOL_TELEGRAM_TOKEN=TOKEN,XDG_CONFIG_HOME=home+"/cfg",MULTITOOL_HOME=home+"/mt-home",XDG_DATA_HOME=home+"/data",ANTHROPIC_API_KEY="test-key-local-fake",TERM="xterm-256color",MULTITOOL_GRAPHICS="off",COLORTERM="truecolor")
     os.execv(bin_,[bin_,"preview","welcome"])
 fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack("HHHH",ROWS,COLS,0,0))
 screen=pyte.Screen(COLS,ROWS); stream=pyte.ByteStream(screen)

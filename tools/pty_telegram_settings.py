@@ -28,7 +28,7 @@ srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Bot); srv.handle_error =
 config = home + "/cfg/harness-multitool/config.toml"
 open(config, "w").write(f'[telegram]\nbase_url = "http://127.0.0.1:{srv.server_address[1]}"\n')
 bin_ = sys.argv[1]
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
 env.pop("MULTITOOL_TELEGRAM_TOKEN", None)
 pid, fd = pty.fork()
 if pid == 0:
@@ -65,9 +65,10 @@ press("\r", "\x13"); pump(0.5)
 until("it polls at once, with no restart", lambda: any(c.endswith("/getUpdates") or c.endswith("/setMyCommands") for c in calls), 10)
 assert all(c.startswith(f"/bot{TOKEN}/") for c in calls), calls[:2]
 print("saved and polling, with the running daemon:", sorted({c.rsplit('/', 1)[-1] for c in calls}))
-text = open(config).read()
+shared = home + "/mt-home/shared.toml"  # Telegram is cross-profile (CON-124)
+text = open(shared).read()
 assert TOKEN in text and "allowed_users = [42]" in text.replace("[\n    42,\n]", "[42]"), "saved"
-assert stat.S_IMODE(os.stat(config).st_mode) == 0o600, oct(os.stat(config).st_mode)
+assert stat.S_IMODE(os.stat(shared).st_mode) == 0o600, oct(os.stat(shared).st_mode)
 assert TOKEN not in drawn and "SETTINGS-SECRET" not in drawn, "the token on the screen"
 status = subprocess.run([bin_, "daemon", "--status"], env=env, cwd=root, capture_output=True, text=True, timeout=20).stdout
 assert '"on":true' in status.replace(" ", "") and TOKEN not in status, status[:300]

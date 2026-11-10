@@ -6,7 +6,7 @@ import json, os, signal, subprocess, sys, tempfile, time, urllib.error, urllib.r
 
 bin_ = sys.argv[1]; here = os.path.dirname(os.path.abspath(__file__))
 home = tempfile.mkdtemp(prefix="mt-dbg-home"); root = tempfile.mkdtemp(prefix="mt-dbg-root")
-env = {**os.environ, "XDG_CONFIG_HOME": home + "/cfg", "XDG_DATA_HOME": home + "/data"}
+env = {**os.environ, "XDG_CONFIG_HOME": home + "/cfg", "MULTITOOL_HOME": home + "/mt-home", "XDG_DATA_HOME": home + "/data"}
 daemon = subprocess.Popen([bin_, "daemon"], env=env, stdout=subprocess.DEVNULL)
 def mt(*args): return subprocess.run([bin_, *args], env=env, cwd=root, capture_output=True, text=True)
 try:
