@@ -357,10 +357,24 @@ pub fn delete(name: &str) -> Result<()> {
 /// A line of the Profiles tab.
 pub struct ProfileLine {
     pub name: String,
+    /// What its adapter signs in to: `claude-code`, `chatgpt` (a plan), or `key`.
+    pub kind: String,
     pub provider: String,
     pub model: String,
     pub claude: Option<bool>,
     pub chatgpt: bool,
+}
+
+/// What a profile's chosen adapter signs in to.
+pub fn sign_in_kind(session: &harness_session::Settings) -> String {
+    let id = session.provider.as_str();
+    if session.providers.get(id).is_some_and(|row| row["kind"] == "claude-code") {
+        "claude-code".to_string()
+    } else if id == "chatgpt" || session.auth.get(id).is_some_and(|a| a["oauth"] == "chatgpt") {
+        "chatgpt".to_string()
+    } else {
+        "key".to_string()
+    }
 }
 
 /// Every profile, for the Profiles tab and `profile list`.
@@ -370,7 +384,8 @@ pub fn overview() -> Result<Vec<ProfileLine>> {
         let c = load_profile(&name)?;
         let claude = claude_signed_in(&claude_binary(&c), &claude_dir(&name)?);
         let chatgpt = harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::at(&profile_dir(&name)?.join("chatgpt"))).0;
-        lines.push(ProfileLine { name, provider: c.session.provider, model: c.session.model, claude, chatgpt });
+        let kind = sign_in_kind(&c.session);
+        lines.push(ProfileLine { name, kind, provider: c.session.provider, model: c.session.model, claude, chatgpt });
     }
     Ok(lines)
 }

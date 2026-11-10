@@ -97,6 +97,8 @@ pub enum Outgoing {
     ProfileDelete { name: String },
     ProfileUse { name: String },
     ProfileClaude { name: String, login: bool },
+    /// A profile's ChatGPT signed out (journal#791); signing in goes through Use and Login.
+    ProfileChatGptLogout { name: String },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -260,6 +262,12 @@ pub struct AuthPage {
     pub contexts: Vec<(String, u64)>,
     /// How Claude Code's row is set: (own environment, no permissions).
     pub delegate_row: (bool, bool),
+    /// The profile this window runs on, whose sign-ins these are (CON-121).
+    pub profile: String,
+    /// Its Claude Code directory signed in; none when Claude Code could not be asked (CON-123).
+    pub claude_signed: Option<bool>,
+    /// Where its Claude Code runs when that is not its own, such as default before its sign-in.
+    pub claude_note: Option<String>,
 }
 
 /// Prints no key.
@@ -1050,6 +1058,8 @@ pub struct ProfileRow {
     pub current: bool,
     /// Its folder, shown by Edit.
     pub folder: String,
+    /// Its provider row's kind, which says what it signs in to: `claude-code`, a ChatGPT plan, a key.
+    pub kind: String,
 }
 
 /// What the Profiles tab is doing besides showing the list.

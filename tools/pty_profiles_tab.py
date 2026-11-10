@@ -48,6 +48,7 @@ def shot(name):
     _, err = p.communicate(timeout=1)
     assert p.returncode == 0 and open(out, "rb").read()[:8] == b"\x89PNG\r\n\x1a\n", err
     shots.append(out)
+    if keep: shutil.copy(out, os.path.join(keep, name))
 def profiles(): return sorted(os.listdir(mt + "/profiles"))
 def until(what, check, sec=10):
     end = time.time() + sec
@@ -76,6 +77,18 @@ shot("profiles-signed-in.png")
 print("Sign in handed the terminal to claude auth login in max's directory and came back")
 press("\x1b", "u"); pump(1.5)                                   # out of Edit, then Use max
 shot("profiles-used.png")
+# journal#791: after Use the Provider page is max's (claude-code, its own Claude Code signed in), and a
+# choice saved there is written to max's file, not to default's.
+default_before = open(mt + "/profiles/default/profile.toml").read()
+press("\t", *[UP] * 9); pump(0.6)                              # the sections pane, up to Provider
+shot("provider-after-use.png")
+press("\t", " "); pump(0.4)                                    # into the page: the first row, Anthropic API
+shot("provider-chosen.png")
+press("\x13"); pump(1.5)                                       # Ctrl+S
+shot("provider-saved.png")
+until("max's file has Anthropic API", lambda: 'provider = "anthropic"' in open(mt + "/profiles/max/profile.toml").read())
+assert open(mt + "/profiles/default/profile.toml").read() == default_before, "default's file changed"
+print("after Use the Provider page saved to max's file, default's untouched")
 press("\x1b"); pump(0.5)
 shot("status-after-use.png")
 saved = subprocess.run([bin_, "profile", "list"], env=env, cwd=root, capture_output=True, text=True).stdout

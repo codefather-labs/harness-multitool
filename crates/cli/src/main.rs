@@ -1150,6 +1150,7 @@ impl Live {
                     model: l.model,
                     claude: l.claude,
                     chatgpt: l.chatgpt,
+                    kind: l.kind,
                 })
                 .collect(),
             Err(e) => return frontend_tui::model::ProfilesPage { status: format!("The profiles cannot be read: {e:#}"), ..Default::default() },
@@ -1168,12 +1169,29 @@ impl Live {
         self.model = c.session.model.clone();
         self.rebuild_factory(c.session)?;
         let label = profile_label();
-        // A tab nothing was said in has no session yet: it opens on the new profile.
+        // A tab nothing was said in has no session yet: it opens on the new profile, its adapter and model.
         let unstarted = |t: &frontend_tui::model::Tab| !t.view.transcript.iter().any(|i| matches!(i, frontend_tui::model::Item::Turn { .. } | frontend_tui::model::Item::Tool(_) | frontend_tui::model::Item::Inbound(_)));
         for t in w.tabs.iter_mut().filter(|t| unstarted(t)) {
             frontend_tui::live::set_status(&mut t.view, "PROFILE", &label);
+            frontend_tui::live::set_status(&mut t.view, "ADAPTER", &self.provider);
+            frontend_tui::live::set_status(&mut t.view, "MODEL", &self.model);
         }
+        // Every settings page is the new profile's from now on, the open window included (journal#791).
+        self.refresh_pages(w);
         Ok(())
+    }
+
+    /// The settings pages read again from this window's profile; an open settings window is drawn
+    /// again from them, on the section it was on.
+    fn refresh_pages(&self, w: &mut frontend_tui::model::Workspace) {
+        w.auth = Some(self.auth_page(None));
+        w.memory = Some(self.memory_page());
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &w.overlay {
+            let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
+            let mut fresh = frontend_tui::overlay::settings_for(w);
+            (fresh.section, fresh.focus, fresh.profiles) = (section, focus, profiles);
+            w.overlay = Some(frontend_tui::model::Overlay::Settings(fresh));
+        }
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
@@ -1210,6 +1228,10 @@ impl Live {
             (page.signed_in, page.plan_status) = harness_auth_chatgpt::status(&harness_session_store(&dir));
         }
         page.pending = self.login_cancel.is_some();
+        // This window's profile and its own Claude Code sign-in (journal#791).
+        page.profile = config::current();
+        page.claude_note = config::claude_note();
+        page.claude_signed = config::load().ok().and_then(|c| config::claude_signed_in(&config::claude_binary(&c), &config::claude_dir(&config::current()).ok()?));
         page
     }
 
@@ -1693,6 +1715,15 @@ impl Live {
                     show_profiles(w);
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, login)),
+                Outgoing::ProfileChatGptLogout { name } => {
+                    let status = match config::profile_dir(&name).map_err(|e| e.to_string()).and_then(|d| harness_auth_chatgpt::logout(&harness_auth_chatgpt::Store::at(&d.join("chatgpt")))) {
+                        Ok(_) => format!("{name} is signed out of ChatGPT."),
+                        Err(e) => format!("{name}: {e}"),
+                    };
+                    w.profiles = Some(self.profiles_page(status));
+                    show_profiles(w);
+                    w.auth = Some(self.auth_page(None));
+                }
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -2481,8 +2512,17 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 // terminal itself: Terminal::clear asks the cursor's position, which not every terminal answers.
                 execute!(std::io::stdout(), ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All), EnableMouseCapture, EnableBracketedPaste)?;
                 if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                    // This window's own profile signed in or out: its new tabs run on what it now has
+                    // (default leaves the user's own Claude Code once its own is signed in).
+                    if profile == config::current() {
+                        let moved = config::environment_for(harness_session::this_environment(), &profile).map_err(|e| e.to_string()).and_then(|env| live.sessions.set_environment(env));
+                        if moved.is_ok() && let Ok(c) = config::load() {
+                            let _ = live.rebuild_factory(c.session);
+                        }
+                    }
                     w.profiles = Some(live.profiles_page(said));
                     show_profiles(w);
+                    live.refresh_pages(w);
                 }
                 dirty = true;
             }

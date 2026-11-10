@@ -475,11 +475,16 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             if let Some(row) = p.rows.get(p.cursor) {
                 text(f, r.x, y, r.width, vec![Span::styled(format!(" {}: {} {}", row.name, row.provider, row.model), strong)], bg);
                 text(f, r.x, y + 1, r.width, vec![Span::styled(format!(" {}", row.folder), muted)], bg);
-                let label = if row.claude == Some(true) { "Sign out Claude Code" } else { "Sign in Claude Code" };
-                let under = focus && p.mode == ProfilesMode::Editing;
-                let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
-                text(f, r.x + 1, y + 2, 24, vec![Span::styled(format!("[ {label} ]"), style)], bg);
-                out.hits.push(Hit { rect: Rect::new(r.x + 1, y + 2, 24, 1), target: Target::ProfileButton(10) });
+                // The sign-in its adapter needs, and only that one (journal#791).
+                match card_button(row) {
+                    Some(label) => {
+                        let under = focus && p.mode == ProfilesMode::Editing;
+                        let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
+                        text(f, r.x + 1, y + 2, 26, vec![Span::styled(format!("[ {label} ]"), style)], bg);
+                        out.hits.push(Hit { rect: Rect::new(r.x + 1, y + 2, 26, 1), target: Target::ProfileButton(10) });
+                    }
+                    None => text(f, r.x, y + 2, r.width, vec![Span::styled(" Its key: Use it, then the Provider page.", muted)], bg),
+                }
             }
             text(f, r.x, y + 3, r.width, vec![Span::styled(" ● this window. Enter uses the line; Down to the button.", muted)], bg);
         }
@@ -500,6 +505,15 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             line.push_str(word);
         }
         text(f, r.x, y + 4 + row, r.width, vec![Span::styled(format!(" {line}"), strong)], bg);
+    }
+}
+
+/// The card's button: the sign-in a profile's adapter needs, by what it is signed in to now.
+fn card_button(row: &crate::model::ProfileRow) -> Option<&'static str> {
+    match row.kind.as_str() {
+        "claude-code" => Some(if row.claude == Some(true) { "Sign out Claude Code" } else { "Sign in Claude Code" }),
+        "chatgpt" => Some(if row.chatgpt { "Sign out ChatGPT" } else { "Sign in ChatGPT" }),
+        _ => None,
     }
 }
 
@@ -530,9 +544,19 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
         (ProfilesMode::Deleting, _) => p.mode = ProfilesMode::List,
         // The button does what applies: a profile signed in signs out, one not signed in signs in.
         (ProfilesMode::Editing, Key::Enter | Key::Char(' ')) => {
-            let signed_in = p.rows.get(p.cursor).and_then(|r| r.claude) == Some(true);
-            if let Some(name) = selected {
-                outbox.push(Outgoing::ProfileClaude { name, login: !signed_in });
+            let Some(row) = p.rows.get(p.cursor).cloned() else { return };
+            match row.kind.as_str() {
+                "claude-code" => outbox.push(Outgoing::ProfileClaude { name: row.name, login: row.claude != Some(true) }),
+                "chatgpt" if row.chatgpt => outbox.push(Outgoing::ProfileChatGptLogout { name: row.name }),
+                // ChatGPT's sign-in is OpenAI's page, in this window: the window moves onto the profile first.
+                "chatgpt" => {
+                    if !row.current {
+                        outbox.push(Outgoing::ProfileUse { name: row.name.clone() });
+                    }
+                    outbox.push(Outgoing::Login);
+                    p.status = format!("Signing {} in to ChatGPT: the Provider page shows the address.", row.name);
+                }
+                _ => p.status = "This profile's adapter takes a key: Use it, then the Provider page.".to_string(),
             }
         }
         (ProfilesMode::List, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
@@ -978,7 +1002,11 @@ fn login_label(s: &SettingsView) -> &'static str {
         (true, false, true) => "Log out",
         (true, false, false) => "Login",
         (false, ..) if s.providers.get(s.provider).is_some_and(|p| p.name == "Local") => "No key needed",
-        (false, ..) if on_delegate(s) => "Signed in by Claude Code",
+        (false, ..) if on_delegate(s) => match s.auth.claude_signed {
+            Some(true) => "Log out",
+            Some(false) => "Login",
+            None => "Claude Code not found",
+        },
         (false, ..) => "Enter a key",
     }
 }
@@ -998,7 +1026,17 @@ fn sign_in_rows(f: &mut Frame, r: Rect, mut y: u16, s: &SettingsView, t: &Theme,
     let page_focus = s.focus == SettingsPane::Page;
     let provider = s.providers.get(s.provider).map_or("", |p| p.name.as_str());
     let label = |text: &str| Span::styled(format!("{text:<22}"), Style::default().fg(t.text));
-    let status = if on_plan(s) { a.plan_status.clone() } else if on_delegate(s) { "Claude Code signs in by itself".to_string() } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("key {w}")) };
+    let status = if on_plan(s) {
+        a.plan_status.clone()
+    } else if on_delegate(s) {
+        // The profile's own Claude Code directory, as `claude auth status` says it (journal#791).
+        match (a.claude_signed, &a.claude_note) {
+            (Some(true), _) => format!("Claude Code signed in for {}", a.profile),
+            (_, Some(note)) => format!("Not signed in for {}: {note}", a.profile),
+            (Some(false), None) => format!("Not signed in for {}", a.profile),
+            (None, _) => "Claude Code could not be asked".to_string(),
+        }
+    } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("key {w}")) };
     text(f, r.x, y, r.width, vec![label("Sign-in"), Span::styled(status, Style::default().fg(if on_plan(s) && a.signed_in { t.success } else { t.text_muted }))], bg);
     y += 1;
     if let Some(entry) = &a.entry {
@@ -1058,7 +1096,11 @@ fn press_sign_in(w: &mut Workspace) {
         (true, false, true) => w.outbox.push(Outgoing::Logout),
         (true, false, false) => w.outbox.push(Outgoing::Login),
         (false, ..) if s.providers[s.provider].name == "Local" => s.auth.message = vec!["A local model needs no key.".to_string()],
-        (false, ..) if on_delegate(s) => s.auth.message = vec!["The harness never sees this sign-in. To change it, run claude in a terminal and use /login there.".to_string()],
+        // Claude Code's own sign-in, in this profile's directory: the terminal is handed to it (CON-123).
+        (false, ..) if on_delegate(s) => match s.auth.claude_signed {
+            Some(signed) => w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: !signed }),
+            None => s.auth.message = vec!["Claude Code is not on this machine's PATH, or its binary setting is wrong.".to_string()],
+        },
         (false, ..) => s.auth.entry = Some(String::new()),
     }
 }
@@ -1786,8 +1828,50 @@ mod tests {
         w.view_mut().status.fields = vec![("ADAPTER".into(), "claude-code".into()), ("MODEL".into(), "claude-haiku-5-5".into())];
         let s = settings_for(&w);
         assert_eq!(s.providers[s.provider].name, DELEGATE_PROVIDER);
-        assert_eq!(login_label(&s), "Signed in by Claude Code");
+        assert_eq!(login_label(&s), "Claude Code not found", "not asked yet");
         assert!(models_for(&s).iter().any(|m| m.id == "claude-opus-5-5"));
+    }
+
+    /// journal#791: the Provider page's claude-code sign-in is this profile's own: Login when its
+    /// directory is not signed in, Log out when it is, and the button hands it to `claude auth`.
+    #[test]
+    fn claude_codes_sign_in_is_the_profiles_own() {
+        let mut w = on_provider_page();
+        w.overlay = None;
+        w.auth = Some(AuthPage { delegate: true, profile: "max".into(), claude_signed: Some(false), ..Default::default() });
+        w.view_mut().status.fields = vec![("ADAPTER".into(), "claude-code".into()), ("MODEL".into(), "m".into())];
+        w.overlay = Some(Overlay::Settings(settings_for(&w)));
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(login_label(s), "Login");
+        press_sign_in(&mut w);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"));
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.auth.claude_signed = Some(true);
+            assert_eq!(login_label(s), "Log out");
+        }
+        press_sign_in(&mut w);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"));
+    }
+
+    /// journal#791: a profile's card offers the sign-in its adapter needs and no other.
+    #[test]
+    fn a_profiles_card_offers_its_adapters_sign_in() {
+        let row = |kind: &str, claude: bool, chatgpt: bool| crate::model::ProfileRow { kind: kind.into(), claude: Some(claude), chatgpt, ..Default::default() };
+        assert_eq!(card_button(&row("claude-code", false, true)), Some("Sign in Claude Code"));
+        assert_eq!(card_button(&row("claude-code", true, false)), Some("Sign out Claude Code"));
+        assert_eq!(card_button(&row("chatgpt", true, false)), Some("Sign in ChatGPT"), "a Claude sign-in is not this adapter's");
+        assert_eq!(card_button(&row("chatgpt", false, true)), Some("Sign out ChatGPT"));
+        assert_eq!(card_button(&row("key", true, true)), None);
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.profiles.rows[1].kind = "chatgpt".into();
+        }
+        for k in [Key::Down, Key::Char('e'), Key::Enter] {
+            key(&mut w, k);
+        }
+        assert!(matches!(w.outbox.first(), Some(Outgoing::ProfileUse { name }) if name == "max"), "{:?}", w.outbox);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::Login)), "ChatGPT signs in through this window's Login");
     }
 
     #[test]
@@ -2315,7 +2399,7 @@ mod tests {
         let mut s = sample_settings();
         s.section = s.sections.iter().position(|n| n == PROFILES_SECTION).unwrap();
         s.focus = SettingsPane::Page;
-        let row = |name: &str, current: bool| crate::model::ProfileRow { name: name.into(), provider: "claude-code".into(), model: "m".into(), claude: Some(current), chatgpt: false, current, folder: format!("/h/.harness/profiles/{name}") };
+        let row = |name: &str, current: bool| crate::model::ProfileRow { name: name.into(), provider: "claude-code".into(), model: "m".into(), claude: Some(current), chatgpt: false, current, folder: format!("/h/.harness/profiles/{name}"), kind: "claude-code".into() };
         s.profiles.rows = vec![row("default", true), row("max", false)];
         w.overlay = Some(Overlay::Settings(s));
     }
