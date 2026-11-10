@@ -1400,7 +1400,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == VOICE_SECTION) && s.voice.menu.is_some() && matches!(k, Key::Esc) => s.voice.menu = None,
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == VOICE_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
-            if matches!(k, Key::Tab) && s.voice.menu.is_none() {
+            if matches!(k, Key::Tab | Key::Left) && s.voice.menu.is_none() {
                 s.focus = SettingsPane::Sections;
             } else {
                 voice_key(&mut s.voice, k, &mut w.outbox);
@@ -1429,7 +1429,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         }
         // The Profiles tab: Esc leaves what it is doing before it closes the window.
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == PROFILES_SECTION) && s.focus == SettingsPane::Page && (!matches!(k, Key::Esc) || s.profiles.mode != ProfilesMode::List) => {
-            if matches!(k, Key::Tab) && s.profiles.mode == ProfilesMode::List {
+            if matches!(k, Key::Tab | Key::Left) && s.profiles.mode == ProfilesMode::List {
                 s.focus = SettingsPane::Sections;
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
@@ -1528,7 +1528,13 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                     }
                 }
             }
-            Key::Tab | Key::Left | Key::Right => {
+            // Left always goes back to the sections, Right to the page, Tab between them (journal#796).
+            Key::Left => {
+                s.focus = SettingsPane::Sections;
+                (s.model_menu, s.context_menu, s.editing_model) = (None, None, false);
+            }
+            Key::Right => s.focus = SettingsPane::Page,
+            Key::Tab => {
                 s.focus = if s.focus == SettingsPane::Sections { SettingsPane::Page } else { SettingsPane::Sections };
             }
             Key::Up => match s.focus {
@@ -2412,6 +2418,26 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
         let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
         assert_eq!(s.sections[s.section], "Provider", "Edit opens the Provider page");
+    }
+
+    /// journal#796: Left from any section's page goes back to the list of sections, and Left there
+    /// stays there.
+    #[test]
+    fn left_goes_back_to_the_sections_from_every_page() {
+        let names: Vec<String> = sample_settings().sections;
+        for name in names {
+            let mut w = Workspace::one(Default::default(), "t");
+            let mut s = sample_settings();
+            s.section = s.sections.iter().position(|n| *n == name).unwrap();
+            s.focus = SettingsPane::Page;
+            w.overlay = Some(Overlay::Settings(s));
+            key(&mut w, Key::Left);
+            let Some(Overlay::Settings(s)) = &w.overlay else { panic!("{name}: the settings closed") };
+            assert_eq!(s.focus, SettingsPane::Sections, "{name}: Left goes to the sections");
+            key(&mut w, Key::Left);
+            let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+            assert_eq!(s.focus, SettingsPane::Sections, "{name}: Left on the sections stays there");
+        }
     }
 
     /// CON-125: the list in one field on the left, the four buttons on the right, at 80 columns.
