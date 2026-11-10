@@ -53,6 +53,14 @@ enum DocsAction {
 }
 
 #[derive(Subcommand)]
+enum ProfileAction {
+    /// Each profile, its adapter and model, and whether its Claude Code and ChatGPT are signed in.
+    List,
+    /// A new profile, entirely clean: built-in defaults, no key, no sign-in.
+    Add { name: String },
+}
+
+#[derive(Subcommand)]
 enum JournalAction {
     /// Bring in a journal and maps from a stream of JSON documents, keeping their ids. Run again it
     /// updates what changed.
@@ -83,16 +91,23 @@ enum Command {
         #[arg(long)]
         handoff: Option<PathBuf>,
     },
-    /// Sign in with a ChatGPT plan, on OpenAI's own page. Only `chatgpt` is offered: Anthropic does
-    /// not permit Claude subscription sign-in in other apps, so Anthropic takes an API key.
+    /// Sign this profile in: `chatgpt` on OpenAI's own page, or `claude-code`, which hands the terminal
+    /// to the unmodified `claude auth login` in the profile's own Claude Code directory (CON-123). The
+    /// harness never sees a Claude token.
     Login {
-        /// `chatgpt`
+        /// `chatgpt` or `claude-code`
         provider: String,
     },
-    /// Sign out of a ChatGPT plan: the token is revoked and cleared.
+    /// Sign this profile out: `chatgpt` revokes and clears the token; `claude-code` runs
+    /// `claude auth logout` in the profile's Claude Code directory.
     Logout {
-        /// `chatgpt`
+        /// `chatgpt` or `claude-code`
         provider: String,
+    },
+    /// The profiles: `list` them, or `add <name>` a new, clean one (CON-120, CON-125).
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
     },
     /// Bring in a conversation another agent keeps for this directory; with no id, list them.
     /// The original is only read, and goes on in a fork (ADR 0022).
@@ -243,7 +258,16 @@ fn main() -> Result<()> {
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),
+        Command::Login { provider } if provider == "claude-code" => claude_code_auth("login"),
         Command::Login { provider } => login(&provider),
+        Command::Logout { provider } if provider == "claude-code" => claude_code_auth("logout"),
+        Command::Profile { action: ProfileAction::Add { name } } => {
+            let dir = config::create(&name)?;
+            println!("Made the profile {name} in {}. Start a window on it with: multitool --profile {name}", dir.display());
+            println!("Choose its adapter in the settings there; sign Claude Code in with: multitool --profile {name} login claude-code");
+            Ok(())
+        }
+        Command::Profile { action: ProfileAction::List } => list_profiles(),
         Command::Logout { provider } => {
             only_chatgpt(&provider)?;
             let store = harness_session_store(&config::data_dir()?);
@@ -1167,7 +1191,7 @@ impl Live {
         }
         let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) else { return };
         frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
-        frontend_tui::live::set_status(&mut t.view, "PROFILE", config::current());
+        frontend_tui::live::set_status(&mut t.view, "PROFILE", &profile_label());
         frontend_tui::live::set_status(&mut t.view, "MODEL", model);
         frontend_tui::live::show_context_window(&mut t.view, self.context_window);
         let has_session = self.sessions.session_of(tab).is_some();
@@ -1547,7 +1571,7 @@ impl Live {
             // What the next message goes through, not what the last one went through.
             let choice = self.sessions.choice_of(tab);
             frontend_tui::live::set_status(view, "ADAPTER", choice.as_ref().map_or(&self.provider, |c| &c.provider));
-            frontend_tui::live::set_status(view, "PROFILE", config::current());
+            frontend_tui::live::set_status(view, "PROFILE", &profile_label());
             frontend_tui::live::set_status(view, "MODEL", choice.as_ref().map_or(&self.model, |c| &c.model));
             if let Some(choice) = &choice {
                 let window = config::load().map_or(self.context_window, |c| harness_session::Settings { provider: choice.provider.clone(), ..c.session }.context_window());
@@ -1834,7 +1858,7 @@ impl Live {
                     frontend_tui::live::show_mode(&mut opened.view);
                     opened.view.background.clear();
                     frontend_tui::live::set_status(&mut opened.view, "ADAPTER", &provider);
-                    frontend_tui::live::set_status(&mut opened.view, "PROFILE", config::current());
+                    frontend_tui::live::set_status(&mut opened.view, "PROFILE", &profile_label());
                     frontend_tui::live::set_status(&mut opened.view, "MODEL", &model);
                     let mut at = w.tabs.iter().position(|t| t.id == master).map_or(w.tabs.len(), |i| i + 1);
                     while w.tabs.get(at).is_some_and(|t| t.view.orchestra.as_deref() == Some("slave")) {
@@ -2026,11 +2050,57 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
         .collect()
 }
 
+/// The status line's word for this window's profile, with where its Claude Code runs when that is
+/// not its own (CON-120).
+fn profile_label() -> String {
+    match config::claude_note() {
+        Some(note) => format!("{} ({note})", config::current()),
+        None => config::current().to_string(),
+    }
+}
+
+/// `multitool login|logout claude-code`: the unmodified `claude auth login|logout`, run in this
+/// profile's Claude Code directory with the terminal handed to it (CON-123). Nothing of the
+/// harness's own Claude Code environment reaches it, and the harness reads nothing of what it saves.
+fn claude_code_auth(what: &str) -> Result<()> {
+    let c = config::load()?;
+    let binary = config::claude_binary(&c);
+    let dir = config::claude_dir(config::current())?;
+    config::prepare_claude(&dir, &config::users_claude_dir()?)?;
+    let mut command = std::process::Command::new(&binary);
+    command.args(["auth", what]);
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("CLAUDE") {
+            command.env_remove(name);
+        }
+    }
+    println!("Profile {}: running `{binary} auth {what}` in {}", config::current(), dir.display());
+    let status = command.env("CLAUDE_CONFIG_DIR", &dir).status().with_context(|| format!("running {binary}"))?;
+    if !status.success() {
+        bail!("`{binary} auth {what}` ended with {status}");
+    }
+    let signed = config::claude_signed_in(&binary, &dir);
+    println!("Claude Code for the profile {}: {}", config::current(), match signed { Some(true) => "signed in", Some(false) => "not signed in", None => "status unknown" });
+    Ok(())
+}
+
+/// `multitool profile list`.
+fn list_profiles() -> Result<()> {
+    for name in config::list()? {
+        let c = config::load_profile(&name)?;
+        let claude = config::claude_signed_in(&config::claude_binary(&c), &config::claude_dir(&name)?).map_or("unknown", |s| if s { "signed in" } else { "not signed in" });
+        let chatgpt = if harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::at(&config::profile_dir(&name)?.join("chatgpt"))).0 { "signed in" } else { "not signed in" };
+        let mark = if name == config::current() { "*" } else { " " };
+        println!("{mark} {name:<16} {:<14} {:<24} Claude Code: {claude:<14} ChatGPT: {chatgpt}", c.session.provider, c.session.model);
+    }
+    Ok(())
+}
+
 fn only_chatgpt(provider: &str) -> Result<()> {
     match provider {
         "chatgpt" => Ok(()),
-        "claude" | "anthropic" => bail!("Anthropic does not permit Claude subscription sign-in in other apps; set ANTHROPIC_API_KEY with a key from Claude Console"),
-        other => bail!("no sign-in for {other:?}: only chatgpt"),
+        "claude" | "anthropic" => bail!("the harness takes no Claude subscription token (CON-56): sign this profile's Claude Code in with `multitool login claude-code`, which runs Claude Code's own sign-in, or set ANTHROPIC_API_KEY with a key from Claude Console"),
+        other => bail!("no sign-in for {other:?}: chatgpt or claude-code"),
     }
 }
 

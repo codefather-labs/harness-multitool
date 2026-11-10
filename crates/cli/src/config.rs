@@ -155,7 +155,6 @@ pub fn select(name: &str) -> Result<()> {
 }
 
 /// The profiles there are, `default` first, then by name.
-#[allow(dead_code)] // The Profiles tab calls it (journal#749).
 pub fn list() -> Result<Vec<String>> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
@@ -180,20 +179,86 @@ pub fn chatgpt_dir() -> Result<PathBuf> {
     Ok(profile_dir(current())?.join("chatgpt"))
 }
 
-/// The Claude Code configuration directory of this process's profile: none for `default`, which
-/// runs on the user's own Claude Code login (CON-120).
-pub fn claude_dir() -> Result<Option<PathBuf>> {
-    Ok((current() != DEFAULT_PROFILE).then(|| profile_dir(current())).transpose()?.map(|d| d.join("claude")))
+/// A profile's Claude Code configuration directory: its own login, and through its `projects`
+/// link the user's transcripts (CON-126).
+pub fn claude_dir(name: &str) -> Result<PathBuf> {
+    Ok(profile_dir(name)?.join("claude"))
+}
+
+/// The user's own Claude Code directory, where plain `claude` keeps its transcripts: the
+/// environment's `CLAUDE_CONFIG_DIR` as this process found it, else `~/.claude`.
+pub fn users_claude_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".claude"))
+}
+
+/// Makes a profile's Claude Code directory, with `projects` a link to the user's transcripts when
+/// it has none. A `projects` already there, link or folder, is left as it is; nothing is made in
+/// the user's own directory (CON-126).
+pub fn prepare_claude(dir: &std::path::Path, users: &std::path::Path) -> Result<()> {
+    private_dir(dir)?;
+    let link = dir.join("projects");
+    if std::fs::symlink_metadata(&link).is_ok() {
+        return Ok(());
+    }
+    let target = users.join("projects");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&target, &link);
+    made.with_context(|| format!("linking {} to {}", link.display(), target.display()))
+}
+
+/// The Claude Code program a profile runs: its delegate row's `binary`, else `claude`.
+pub fn claude_binary(c: &Config) -> String {
+    c.session.providers.values().find(|row| row["kind"] == "claude-code").and_then(|row| row["binary"].as_str()).unwrap_or("claude").to_string()
+}
+
+/// Whether a Claude Code directory is signed in, from `claude auth status`: only its yes or no is
+/// read, nothing else of the answer is kept (CON-123). None when the program cannot be run.
+pub fn claude_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
+    let mut command = std::process::Command::new(binary);
+    command.args(["auth", "status", "--json"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("CLAUDE") {
+            command.env_remove(name);
+        }
+    }
+    let out = command.env("CLAUDE_CONFIG_DIR", dir).output().ok()?;
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    answer["loggedIn"].as_bool()
+}
+
+static CLAUDE_NOTE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// What the status line says of this window's Claude Code login, if anything.
+pub fn claude_note() -> Option<&'static str> {
+    CLAUDE_NOTE.get().map(String::as_str)
 }
 
 /// What this window's sessions must see of its profile: the folders of its sign-ins, by the
 /// variables the delegate and the auth plugin read (CON-122). Paths only, never a credential.
+/// `default` runs on the user's own Claude Code directory until its own is signed in (CON-120);
+/// every other profile always runs on its own.
 pub fn sign_in_environment() -> Result<Vec<(&'static str, PathBuf)>> {
     let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, chatgpt_dir()?)];
-    if let Some(dir) = claude_dir()? {
-        private_dir(&dir)?;
-        vars.push(("CLAUDE_CONFIG_DIR", dir));
+    let dir = claude_dir(current())?;
+    let users = users_claude_dir()?;
+    if let Err(e) = prepare_claude(&dir, &users) {
+        let _ = CLAUDE_NOTE.set(format!("Claude on {} ({e:#})", users.display()));
+        return Ok(vars);
     }
+    if current() == DEFAULT_PROFILE {
+        let uses_claude = load().is_ok_and(|c| c.session.providers.values().any(|row| row["kind"] == "claude-code"));
+        let signed = uses_claude && claude_signed_in(&claude_binary(&load()?), &dir) == Some(true);
+        if !signed {
+            let _ = CLAUDE_NOTE.set(format!("Claude on {} until default signs in", users.display()));
+            return Ok(vars);
+        }
+    }
+    vars.push(("CLAUDE_CONFIG_DIR", dir));
     Ok(vars)
 }
 
@@ -205,7 +270,6 @@ pub fn profile_dir(name: &str) -> Result<PathBuf> {
 
 /// Makes a new profile, entirely clean (CON-125): the built-in defaults, no key, no sign-in, and an
 /// empty Claude Code directory of its own.
-#[allow(dead_code)] // The Profiles tab calls it (journal#749).
 pub fn create(name: &str) -> Result<PathBuf> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
@@ -320,6 +384,12 @@ pub fn load() -> Result<Config> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
     load_in(&root, current())
+}
+
+/// Another profile's configuration, to list it.
+pub fn load_profile(name: &str) -> Result<Config> {
+    check_name(name)?;
+    load_in(&root()?, name)
 }
 
 fn load_in(root: &std::path::Path, name: &str) -> Result<Config> {
@@ -583,6 +653,46 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(mode(&new.join("credentials.json")), 0o600);
         assert_eq!(std::fs::read_dir(new.parent().unwrap()).unwrap().count(), 1, "no copy left beside it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CON-126: a profile's Claude Code directory gets `projects` as a link to the user's
+    /// transcripts, once; one already there is kept; the user's directory gets nothing new.
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_sees_the_users_transcripts_through_a_link() {
+        let root = temp_root("link");
+        let users = root.join("dot-claude");
+        std::fs::create_dir_all(users.join("projects/-work-app")).unwrap();
+        std::fs::write(users.join("projects/-work-app/abc.jsonl"), "{}\n").unwrap();
+        let before: Vec<_> = std::fs::read_dir(&users).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let dir = root.join("home/profiles/work/claude");
+        prepare_claude(&dir, &users).unwrap();
+        assert_eq!(std::fs::read_link(dir.join("projects")).unwrap(), users.join("projects"));
+        assert!(dir.join("projects/-work-app/abc.jsonl").is_file(), "the transcript is seen through the link");
+        prepare_claude(&dir, &users).unwrap();
+        let after: Vec<_> = std::fs::read_dir(&users).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(before, after, "nothing made in the user's directory");
+        let own = root.join("home/profiles/old/claude");
+        std::fs::create_dir_all(own.join("projects")).unwrap();
+        prepare_claude(&own, &users).unwrap();
+        assert!(std::fs::symlink_metadata(own.join("projects")).unwrap().is_dir(), "a folder already there is kept");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CON-123: only the yes or no of `claude auth status` is read; a program that cannot run is None.
+    #[cfg(unix)]
+    #[test]
+    fn signed_in_is_read_from_claude_auth_status() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_root("status");
+        std::fs::create_dir_all(&root).unwrap();
+        let fake = root.join("claude");
+        std::fs::write(&fake, "#!/bin/sh\ncase \"$CLAUDE_CONFIG_DIR\" in *yes*) echo '{\"loggedIn\": true, \"email\": \"x@y\"}';; *) echo '{\"loggedIn\": false}'; exit 1;; esac\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(claude_signed_in(fake.to_str().unwrap(), &root.join("yes")), Some(true));
+        assert_eq!(claude_signed_in(fake.to_str().unwrap(), &root.join("no")), Some(false));
+        assert_eq!(claude_signed_in(root.join("missing").to_str().unwrap(), &root), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
