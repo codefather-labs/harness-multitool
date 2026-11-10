@@ -104,6 +104,11 @@ const MAX_NAME: usize = 32;
 
 static CURRENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// Whether the profiles' root is the user's own, not one set apart by MULTITOOL_HOME.
+fn root_is_users() -> bool {
+    std::env::var_os("MULTITOOL_HOME").is_none_or(|d| d.is_empty())
+}
+
 /// Where every profile and the shared settings live: `~/.harness`, or `MULTITOOL_HOME` when it is
 /// set, which tests use so they never touch the user's own (journal#751).
 pub fn root() -> Result<PathBuf> {
@@ -134,9 +139,12 @@ pub fn current() -> &'static str {
 pub fn select(name: &str) -> Result<()> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
-    // The ChatGPT credential of before profiles becomes default's, by the owner's word (journal#762).
-    if let Ok(data) = data_dir() {
-        move_chatgpt(&data.join("auth").join("chatgpt"), &root.join("profiles").join(DEFAULT_PROFILE).join("chatgpt"))?;
+    // The ChatGPT credential of before profiles becomes default's, by the owner's word (journal#762),
+    // only on the user's own root: one set apart by MULTITOOL_HOME has no "before" (journal#771).
+    if root_is_users()
+        && let Ok(data) = data_dir()
+    {
+        move_chatgpt(&data.join("auth").join("chatgpt"), &root.join("profiles").join(DEFAULT_PROFILE).join("chatgpt"), |a, b| std::fs::rename(a, b))?;
     }
     check_name(name)?;
     let names = list_in(&root)?;
@@ -243,11 +251,41 @@ fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
 /// Moves the ChatGPT credential folder of before profiles into `default`'s, once: only when it is
 /// there and `default` has none. Renamed, never copied: two copies of a rotating refresh token would
 /// each be refreshed on their own, and the stale one used can get both revoked.
-fn move_chatgpt(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
+///
+/// Across filesystems a rename cannot be done: the folder is then copied whole beside its new place,
+/// put there by a rename on that filesystem, and only then the old one removed, so at no moment are
+/// there two copies that would both be used.
+fn move_chatgpt(old: &std::path::Path, new: &std::path::Path, rename: impl Fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>) -> Result<()> {
     if !old.is_dir() || new.exists() {
         return Ok(());
     }
-    std::fs::rename(old, new).with_context(|| format!("moving {} to {}", old.display(), new.display()))
+    match rename(old, new) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(18) || e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let temp = new.with_extension(format!("moving{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&temp);
+            copy_dir(old, &temp).with_context(|| format!("copying {}", old.display()))?;
+            std::fs::rename(&temp, new).with_context(|| format!("placing {}", new.display()))?;
+            std::fs::remove_dir_all(old).with_context(|| format!("removing {} after moving it", old.display()))
+        }
+        Err(e) => Err(e).with_context(|| format!("moving {} to {}", old.display(), new.display())),
+    }
+}
+
+/// A folder of plain files, copied with their permissions.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    std::fs::set_permissions(to, std::fs::metadata(from)?.permissions())?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn private_dir(dir: &std::path::Path) -> Result<()> {
@@ -514,12 +552,37 @@ mod tests {
         std::fs::write(old.join("credentials.json"), "{}").unwrap();
         let new = root.join("home/profiles/default/chatgpt");
         std::fs::create_dir_all(new.parent().unwrap()).unwrap();
-        move_chatgpt(&old, &new).unwrap();
+        move_chatgpt(&old, &new, |a, b| std::fs::rename(a, b)).unwrap();
         assert!(!old.exists() && new.join("credentials.json").is_file());
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("credentials.json"), "{\"later\": 1}").unwrap();
-        move_chatgpt(&old, &new).unwrap();
+        move_chatgpt(&old, &new, |a, b| std::fs::rename(a, b)).unwrap();
         assert_eq!(std::fs::read_to_string(new.join("credentials.json")).unwrap(), "{}", "default's own is kept");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// journal#771: across filesystems the folder is copied whole, placed, and the old one removed,
+    /// leaving exactly one copy with its contents and modes.
+    #[test]
+    fn a_cross_device_move_leaves_one_copy() {
+        let root = temp_root("xdev");
+        let old = root.join("data/auth/chatgpt");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("credentials.json"), "{\"a\": 1}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(old.join("credentials.json"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let new = root.join("home/profiles/default/chatgpt");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        let cross = |_: &std::path::Path, _: &std::path::Path| Err(std::io::Error::from_raw_os_error(18));
+        move_chatgpt(&old, &new, cross).unwrap();
+        assert!(!old.exists(), "the old one is gone");
+        assert_eq!(std::fs::read_to_string(new.join("credentials.json")).unwrap(), "{\"a\": 1}");
+        #[cfg(unix)]
+        assert_eq!(mode(&new.join("credentials.json")), 0o600);
+        assert_eq!(std::fs::read_dir(new.parent().unwrap()).unwrap().count(), 1, "no copy left beside it");
         let _ = std::fs::remove_dir_all(&root);
     }
 
