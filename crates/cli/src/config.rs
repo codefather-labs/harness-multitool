@@ -134,6 +134,10 @@ pub fn current() -> &'static str {
 pub fn select(name: &str) -> Result<()> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
+    // The ChatGPT credential of before profiles becomes default's, by the owner's word (journal#762).
+    if let Ok(data) = data_dir() {
+        move_chatgpt(&data.join("auth").join("chatgpt"), &root.join("profiles").join(DEFAULT_PROFILE).join("chatgpt"))?;
+    }
     check_name(name)?;
     let names = list_in(&root)?;
     if !names.iter().any(|n| n == name) {
@@ -163,13 +167,8 @@ fn list_in(root: &std::path::Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Where this process's profile keeps its ChatGPT credential (CON-122). `default`'s stays where it
-/// was before profiles: moving or copying it would leave an older build, or a second copy of a
-/// rotating refresh token, behind (journal#754).
+/// Where this process's profile keeps its ChatGPT credential (CON-122), `default`'s included.
 pub fn chatgpt_dir() -> Result<PathBuf> {
-    if current() == DEFAULT_PROFILE {
-        return Ok(data_dir()?.join("auth").join("chatgpt"));
-    }
     Ok(profile_dir(current())?.join("chatgpt"))
 }
 
@@ -239,6 +238,16 @@ fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
     }
     write_private(&default.join("profile.toml"), &toml::to_string_pretty(&ProfileFile { terminal: c.terminal, session: c.session })?)?;
     Ok(())
+}
+
+/// Moves the ChatGPT credential folder of before profiles into `default`'s, once: only when it is
+/// there and `default` has none. Renamed, never copied: two copies of a rotating refresh token would
+/// each be refreshed on their own, and the stale one used can get both revoked.
+fn move_chatgpt(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
+    if !old.is_dir() || new.exists() {
+        return Ok(());
+    }
+    std::fs::rename(old, new).with_context(|| format!("moving {} to {}", old.display(), new.display()))
 }
 
 fn private_dir(dir: &std::path::Path) -> Result<()> {
@@ -492,6 +501,25 @@ mod tests {
         assert_eq!(work.telegram.allowed_users, vec![5], "Telegram is cross-profile");
         assert_eq!(list_in(&root).unwrap(), vec!["default".to_string(), "work".to_string()]);
         assert!(create_in(&root, "work").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CON-122 (journal#762): the ChatGPT credential of before moves into `default` once, never copied,
+    /// and `default`'s own is never overwritten.
+    #[test]
+    fn the_chatgpt_credential_moves_into_default_once() {
+        let root = temp_root("chatgpt");
+        let old = root.join("data/auth/chatgpt");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("credentials.json"), "{}").unwrap();
+        let new = root.join("home/profiles/default/chatgpt");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        move_chatgpt(&old, &new).unwrap();
+        assert!(!old.exists() && new.join("credentials.json").is_file());
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("credentials.json"), "{\"later\": 1}").unwrap();
+        move_chatgpt(&old, &new).unwrap();
+        assert_eq!(std::fs::read_to_string(new.join("credentials.json")).unwrap(), "{}", "default's own is kept");
         let _ = std::fs::remove_dir_all(&root);
     }
 

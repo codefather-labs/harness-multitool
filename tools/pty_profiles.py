@@ -64,7 +64,7 @@ b = window("work"); fds.append(b); pump(2.0)
 for round_ in range(3):
     da = say(a, f"from-default-{round_}"); db = say(b, f"from-work-{round_}")
     assert da["claude"] is None, f"default runs on the user's own Claude login: {da}"
-    assert da["chatgpt"] == home + "/data/harness-multitool/auth/chatgpt", da  # default keeps it where it was (journal#754)
+    assert da["chatgpt"] == mt + "/profiles/default/chatgpt", da
     assert db["claude"] == mt + "/profiles/work/claude", db
     assert db["chatgpt"] == mt + "/profiles/work/chatgpt", db
     print(f"round {round_}: default saw", da["claude"], da["chatgpt"], "| work saw", db["claude"], db["chatgpt"])
