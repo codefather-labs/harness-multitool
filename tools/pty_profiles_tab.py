@@ -96,8 +96,7 @@ default_before = open(mt + "/profiles/default/profile.toml").read()
 press("\t", *[UP] * 9); pump(0.6)                              # the sections pane, up to Provider
 shot("provider-after-use.png")
 press("\t", UP, UP, UP, UP, " "); pump(0.4)                    # into the page, from claude-code up to Anthropic API
-shot("provider-chosen.png")
-press("\x13"); pump(1.5)                                       # Ctrl+S
+shot("provider-chosen.png")                                      # journal#806: Space alone saves, no Ctrl+S
 shot("provider-saved.png")
 until("max's file has Anthropic API", lambda: 'provider = "anthropic"' in open(mt + "/profiles/max/profile.toml").read())
 assert open(mt + "/profiles/default/profile.toml").read() == default_before, "default's file changed"

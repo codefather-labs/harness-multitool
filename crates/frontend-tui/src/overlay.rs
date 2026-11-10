@@ -476,9 +476,11 @@ fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color,
             if let Some(row) = p.rows.get(p.cursor) {
                 text(f, r.x, y, r.width, vec![Span::styled(format!(" {}: {} {}", row.name, row.provider, row.model), strong)], bg);
                 text(f, r.x, y + 1, r.width, vec![Span::styled(format!(" {}", row.folder), muted)], bg);
+                if let Some(account) = &row.claude_account {
+                    text(f, r.x, y + 2, r.width, vec![Span::styled(format!(" Claude: {account}"), strong)], bg);
+                }
             }
-            text(f, r.x, y + 2, r.width, vec![Span::styled(" ● this window. Enter uses the line.", muted)], bg);
-            text(f, r.x, y + 3, r.width, vec![Span::styled(" Edit: its adapter and sign-ins, on the Provider page.", muted)], bg);
+            text(f, r.x, y + 3, r.width, vec![Span::styled(" ● this window. Enter uses the line. Edit: its adapter and sign-ins.", muted)], bg);
         }
     }
     if !p.status.is_empty() {
@@ -1038,7 +1040,10 @@ fn sign_in_rows(f: &mut Frame, r: Rect, mut y: u16, s: &SettingsView, t: &Theme,
     } else if on_delegate(s) {
         // The profile's own Claude Code directory, as `claude auth status` says it (journal#791).
         match (a.claude_signed, &a.claude_note) {
-            (Some(true), _) => format!("Claude Code signed in for {}. o signs out only this profile", a.profile),
+            (Some(true), _) => match &a.claude_account {
+                Some(account) => format!("{account}. o signs out only this profile"),
+                None => format!("Claude Code signed in for {}. o signs out only this profile", a.profile),
+            },
             (_, Some(note)) => format!("Not signed in for {}: {note}", a.profile),
             (Some(false), None) => format!("Not signed in for {}", a.profile),
             (None, _) => "Claude Code could not be asked".to_string(),
@@ -1176,6 +1181,20 @@ fn choose_provider(w: &mut Workspace, i: usize) {
     s.provider = i;
     fit_model(s);
     s.context = chosen_context(s);
+    save_now(w);
+}
+
+/// What is chosen on the Provider page is saved to the window's profile at once, the settings
+/// staying open (journal#806). A model still to be typed waits for its name.
+fn save_now(w: &mut Workspace) {
+    let Some(Overlay::Settings(s)) = &mut w.overlay else { return };
+    if !w.live || s.run_on || s.model.trim().is_empty() {
+        return;
+    }
+    s.saved = (s.provider, s.model.clone());
+    s.saved_context = s.context;
+    s.saved_delegate = (s.delegate_own, s.delegate_skip);
+    w.outbox.push(Outgoing::SaveSettings { provider: s.providers[s.provider].name.clone(), model: s.model.clone(), context: s.context, delegate: (s.delegate_own, s.delegate_skip) });
 }
 
 fn provider_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
@@ -1386,6 +1405,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                         s.model = choice.id.clone();
                     }
                     s.model_menu = None;
+                    save_now(w);
                 }
                 Key::Esc => s.model_menu = None,
                 _ => {}
@@ -1399,6 +1419,7 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 Key::Enter | Key::Char(' ') => {
                     s.context = CONTEXT_WINDOWS[at];
                     s.context_menu = None;
+                    save_now(w);
                 }
                 Key::Esc => s.context_menu = None,
                 _ => {}
@@ -1613,8 +1634,14 @@ fn activate(w: &mut Workspace) {
             s.timeout_s = TIMEOUTS[(at + 1) % TIMEOUTS.len()];
         }
         i if i == n + 4 => s.fallback = !s.fallback,
-        i if i == n + 5 && on_delegate(s) => s.delegate_own = !s.delegate_own,
-        i if i == n + 6 && on_delegate(s) => s.delegate_skip = !s.delegate_skip,
+        i if i == n + 5 && on_delegate(s) => {
+            s.delegate_own = !s.delegate_own;
+            save_now(w);
+        }
+        i if i == n + 6 && on_delegate(s) => {
+            s.delegate_skip = !s.delegate_skip;
+            save_now(w);
+        }
         _ => {}
     }
 }
@@ -1699,8 +1726,14 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.voice.menu = Some(at);
             voice_key(&mut s.voice, Key::Enter, &mut w.outbox);
         }
-        (Some(Overlay::Settings(s)), Target::DelegateOwn) => s.delegate_own = !s.delegate_own,
-        (Some(Overlay::Settings(s)), Target::DelegateSkip) => s.delegate_skip = !s.delegate_skip,
+        (Some(Overlay::Settings(s)), Target::DelegateOwn) => {
+            s.delegate_own = !s.delegate_own;
+            save_now(w);
+        }
+        (Some(Overlay::Settings(s)), Target::DelegateSkip) => {
+            s.delegate_skip = !s.delegate_skip;
+            save_now(w);
+        }
         (Some(Overlay::Settings(s)), Target::ContextRow) => {
             s.cursor = s.providers.len() + 2;
             s.focus = SettingsPane::Page;
@@ -1709,6 +1742,7 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         (Some(Overlay::Settings(s)), Target::ContextChoice(i)) => {
             s.context = CONTEXT_WINDOWS[i];
             s.context_menu = None;
+            save_now(w);
         }
         (Some(Overlay::Settings(s)), Target::ModelRow) => {
             s.cursor = s.providers.len() + 1;
@@ -1720,6 +1754,7 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
                 s.model = choice.id.clone();
             }
             s.model_menu = None;
+            save_now(w);
         }
         (Some(Overlay::Settings(s)), Target::AuthButton) => {
             s.cursor = s.providers.len();
@@ -1781,9 +1816,11 @@ mod tests {
         let mut w = on_provider_page();
         let plan = row(&w, PLAN_PROVIDER);
         to(&mut w, plan);
-        press(&mut w, &[Key::Enter, Key::Esc]);
-        assert!(w.overlay.is_none());
-        assert!(matches!(&w.toast, Some(t) if t.text.contains("Ctrl+S")));
+        // journal#806: a choice is saved at once, so closing loses nothing and says nothing.
+        press(&mut w, &[Key::Enter]);
+        assert!(matches!(w.outbox.last(), Some(Outgoing::SaveSettings { provider, .. }) if provider == PLAN_PROVIDER), "{:?}", w.outbox);
+        press(&mut w, &[Key::Esc]);
+        assert!(w.overlay.is_none() && w.toast.is_none());
     }
 
     #[test]
@@ -2395,7 +2432,7 @@ mod tests {
         let mut s = sample_settings();
         s.section = s.sections.iter().position(|n| n == PROFILES_SECTION).unwrap();
         s.focus = SettingsPane::Page;
-        let row = |name: &str, current: bool| crate::model::ProfileRow { name: name.into(), provider: "claude-code".into(), model: "m".into(), claude: Some(current), chatgpt: false, current, folder: format!("/h/.harness/profiles/{name}"), kind: "claude-code".into() };
+        let row = |name: &str, current: bool| crate::model::ProfileRow { name: name.into(), provider: "claude-code".into(), model: "m".into(), claude: Some(current), chatgpt: false, current, folder: format!("/h/.harness/profiles/{name}"), kind: "claude-code".into(), claude_account: None };
         s.profiles.rows = vec![row("default", true), row("max", false)];
         w.overlay = Some(Overlay::Settings(s));
     }
@@ -2459,6 +2496,39 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
         let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
         assert_eq!(s.sections[s.section], "Provider", "Edit opens the Provider page");
+    }
+
+    /// journal#808: the Provider page names the Claude account a profile is signed in as.
+    #[test]
+    fn the_provider_page_names_the_claude_account() {
+        let mut w = on_provider_page();
+        w.overlay = None;
+        w.auth = Some(AuthPage { delegate: true, profile: "max".into(), claude_signed: Some(true), claude_account: Some("me@example.com (max)".into()), ..Default::default() });
+        w.view_mut().status.fields = vec![("ADAPTER".into(), "claude-code".into()), ("MODEL".into(), "m".into())];
+        let s = settings_for(&w);
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let theme = Theme::builtin("dark").unwrap();
+        terminal.draw(|f| provider_page(f, f.area(), &s, &theme, Color::Reset, &mut Drawn::default())).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen = (0..20).map(|y| (0..100).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(screen.contains("me@example.com (max)"), "{screen}");
+    }
+
+    /// journal#806: choosing an adapter on the Provider page saves it to the window's profile at once,
+    /// and the settings stay open.
+    #[test]
+    fn choosing_an_adapter_saves_it_at_once() {
+        let mut w = on_provider_page();
+        w.live = true;
+        w.outbox.clear();
+        let plan = row(&w, PLAN_PROVIDER);
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            (s.focus, s.cursor) = (SettingsPane::Page, plan);
+        }
+        key(&mut w, Key::Char(' '));
+        assert!(matches!(w.outbox.last(), Some(Outgoing::SaveSettings { provider, .. }) if provider == PLAN_PROVIDER), "{:?}", w.outbox);
+        assert!(matches!(w.overlay, Some(Overlay::Settings(_))), "the settings stay open");
     }
 
     /// journal#802: Right goes from the list to the buttons, Up and Down move among them, Enter

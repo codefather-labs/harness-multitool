@@ -241,9 +241,18 @@ pub fn claude_binary(c: &Config) -> String {
     c.session.providers.values().find(|row| row["kind"] == "claude-code").and_then(|row| row["binary"].as_str()).unwrap_or("claude").to_string()
 }
 
-/// Whether a Claude Code directory is signed in, from `claude auth status`: only its yes or no is
-/// read, nothing else of the answer is kept (CON-123). None when the program cannot be run.
-pub fn claude_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
+/// Who a Claude Code directory is signed in as: the account's email and plan, to show which it is
+/// (CON-123, journal#808). Nothing else of `claude auth status` is kept.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClaudeAccount {
+    pub signed_in: bool,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+}
+
+/// The account of a Claude Code directory, from `claude auth status --json`; None when the program
+/// cannot be run or answers nothing readable.
+pub fn claude_account(binary: &str, dir: &std::path::Path) -> Option<ClaudeAccount> {
     let mut command = std::process::Command::new(binary);
     command.args(["auth", "status", "--json"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     for (name, _) in std::env::vars_os() {
@@ -253,7 +262,22 @@ pub fn claude_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
     }
     let out = command.env("CLAUDE_CONFIG_DIR", dir).output().ok()?;
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    answer["loggedIn"].as_bool()
+    let text = |key: &str| answer[key].as_str().filter(|v| !v.is_empty()).map(str::to_string);
+    Some(ClaudeAccount { signed_in: answer["loggedIn"].as_bool()?, email: text("email"), plan: text("subscriptionType") })
+}
+
+/// Whether a Claude Code directory is signed in: the yes or no of [`claude_account`].
+pub fn claude_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
+    claude_account(binary, dir).map(|a| a.signed_in)
+}
+
+/// The account in words, for the screen: `email (plan)`, or none when not signed in.
+pub fn claude_account_words(account: &ClaudeAccount) -> Option<String> {
+    account.signed_in.then(|| match (&account.email, &account.plan) {
+        (Some(email), Some(plan)) => format!("{email} ({plan})"),
+        (Some(email), None) => email.clone(),
+        _ => "signed in".to_string(),
+    })
 }
 
 static CLAUDE_NOTE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
@@ -359,6 +383,8 @@ pub struct ProfileLine {
     pub name: String,
     /// What its adapter signs in to: `claude-code`, `chatgpt` (a plan), or `key`.
     pub kind: String,
+    /// The Claude account it is signed in as, in words (journal#808).
+    pub claude_account: Option<String>,
     pub provider: String,
     pub model: String,
     pub claude: Option<bool>,
@@ -382,10 +408,12 @@ pub fn overview() -> Result<Vec<ProfileLine>> {
     let mut lines = Vec::new();
     for name in list()? {
         let c = load_profile(&name)?;
-        let claude = claude_signed_in(&claude_binary(&c), &claude_dir(&name)?);
+        let account = claude_account(&claude_binary(&c), &claude_dir(&name)?);
+        let claude = account.as_ref().map(|a| a.signed_in);
+        let claude_account = account.as_ref().and_then(claude_account_words);
         let chatgpt = harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::at(&profile_dir(&name)?.join("chatgpt"))).0;
         let kind = sign_in_kind(&c.session);
-        lines.push(ProfileLine { name, kind, provider: c.session.provider, model: c.session.model, claude, chatgpt });
+        lines.push(ProfileLine { name, kind, claude_account, provider: c.session.provider, model: c.session.model, claude, chatgpt });
     }
     Ok(lines)
 }

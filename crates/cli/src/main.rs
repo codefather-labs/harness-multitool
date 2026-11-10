@@ -1151,6 +1151,7 @@ impl Live {
                     claude: l.claude,
                     chatgpt: l.chatgpt,
                     kind: l.kind,
+                    claude_account: l.claude_account,
                 })
                 .collect(),
             Err(e) => return frontend_tui::model::ProfilesPage { status: format!("The profiles cannot be read: {e:#}"), ..Default::default() },
@@ -1233,7 +1234,9 @@ impl Live {
         // This window's profile and its own Claude Code sign-in (journal#791).
         page.profile = config::current();
         page.claude_note = config::claude_note();
-        page.claude_signed = config::load().ok().and_then(|c| config::claude_signed_in(&config::claude_binary(&c), &config::claude_dir(&config::current()).ok()?));
+        let account = config::load().ok().and_then(|c| config::claude_account(&config::claude_binary(&c), &config::claude_dir(&config::current()).ok()?));
+        page.claude_signed = account.as_ref().map(|a| a.signed_in);
+        page.claude_account = account.as_ref().and_then(config::claude_account_words);
         page
     }
 
@@ -2224,10 +2227,13 @@ fn claude_code_auth_for(profile: &str, what: &str) -> Result<()> {
 fn list_profiles() -> Result<()> {
     for name in config::list()? {
         let c = config::load_profile(&name)?;
-        let claude = config::claude_signed_in(&config::claude_binary(&c), &config::claude_dir(&name)?).map_or("unknown", |s| if s { "signed in" } else { "not signed in" });
+        let claude = match config::claude_account(&config::claude_binary(&c), &config::claude_dir(&name)?) {
+            Some(account) => config::claude_account_words(&account).unwrap_or_else(|| "not signed in".to_string()),
+            None => "unknown".to_string(),
+        };
         let chatgpt = if harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::at(&config::profile_dir(&name)?.join("chatgpt"))).0 { "signed in" } else { "not signed in" };
         let mark = if name == config::current() { "*" } else { " " };
-        println!("{mark} {name:<16} {:<14} {:<24} Claude Code: {claude:<14} ChatGPT: {chatgpt}", c.session.provider, c.session.model);
+        println!("{mark} {name:<16} {:<14} {:<24} Claude Code: {claude:<32} ChatGPT: {chatgpt}", c.session.provider, c.session.model);
     }
     Ok(())
 }

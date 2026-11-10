@@ -268,6 +268,8 @@ pub struct AuthPage {
     pub claude_signed: Option<bool>,
     /// Where its Claude Code runs when that is not its own, such as default before its sign-in.
     pub claude_note: Option<String>,
+    /// The Claude account it is signed in as: `email (plan)` (journal#808).
+    pub claude_account: Option<String>,
 }
 
 /// Prints no key.
@@ -1060,6 +1062,8 @@ pub struct ProfileRow {
     pub folder: String,
     /// Its provider row's kind, which says what it signs in to: `claude-code`, a ChatGPT plan, a key.
     pub kind: String,
+    /// The Claude account it is signed in as: `email (plan)` (journal#808).
+    pub claude_account: Option<String>,
 }
 
 /// What the Profiles tab is doing besides showing the list.
