@@ -512,17 +512,27 @@ fn open_provider_if_asked(s: &mut SettingsView) {
 fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
     let selected = p.rows.get(p.cursor).map(|r| r.name.clone());
     match (&mut p.mode, k) {
-        (ProfilesMode::Naming(name), Key::Char(c)) if (c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name.len() < 32 => name.push(c),
+        (ProfilesMode::Naming(name), Key::Char(c)) if (c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name.len() < 32 => {
+            name.push(c);
+            p.status.clear();
+        }
+        // What a name cannot hold is said, not dropped without a word (journal#799).
+        (ProfilesMode::Naming(name), Key::Char(c)) => {
+            p.status = if name.len() >= 32 { "A name is at most 32 characters.".to_string() } else { format!("{c:?} cannot be in a name: lowercase Latin letters, digits and - only.") };
+        }
         (ProfilesMode::Naming(name), Key::Backspace) => {
             name.pop();
         }
+        (ProfilesMode::Naming(name), Key::Enter) if name.is_empty() => p.status = "Type the new profile's name first: lowercase Latin letters, digits and -. Esc leaves it.".to_string(),
+        // The new profile is made, the window moves onto it and its Provider page opens: what is set
+        // and signed in next is the new profile's (journal#799).
         (ProfilesMode::Naming(name), Key::Enter) => {
             let name = std::mem::take(name);
             p.mode = ProfilesMode::List;
-            if !name.is_empty() {
-                p.status = format!("Making {name}...");
-                outbox.push(Outgoing::ProfileAdd { name });
-            }
+            p.status = format!("Making {name} and moving this window onto it...");
+            outbox.push(Outgoing::ProfileAdd { name: name.clone() });
+            outbox.push(Outgoing::ProfileUse { name });
+            p.open_provider = true;
         }
         (ProfilesMode::Naming(_) | ProfilesMode::Deleting, Key::Esc) => p.mode = ProfilesMode::List,
         (ProfilesMode::Deleting, Key::Enter | Key::Char('y')) => {
@@ -945,7 +955,12 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     // The page.
     let (px, pw) = (div_x + 3, (inner.x + inner.width).saturating_sub(div_x + 5));
     let name = s.sections.get(s.section).cloned().unwrap_or_default();
-    text(f, px, body_y, pw, vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))], bg);
+    let mut heading = vec![Span::styled(name.to_uppercase(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))];
+    // Whose settings these are: the window's profile (journal#799).
+    if !s.auth.profile.is_empty() && name != PROFILES_SECTION {
+        heading.push(Span::styled(format!("   profile {}", s.auth.profile), Style::default().fg(t.text).add_modifier(Modifier::BOLD)));
+    }
+    text(f, px, body_y, pw, heading, bg);
     if name == "Callbacks" {
         callbacks_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == VOICE_SECTION {
@@ -2380,7 +2395,11 @@ mod tests {
         for k in [Key::Char('a'), Key::Char('w'), Key::Char('O'), Key::Char('k'), Key::Char('/'), Key::Enter] {
             key(&mut w, k);
         }
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileAdd { name }) if name == "wk"), "only what a name may hold is typed");
+        assert!(matches!(w.outbox.first(), Some(Outgoing::ProfileAdd { name }) if name == "wk"), "only what a name may hold is typed: {:?}", w.outbox);
+        w.outbox.clear();
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            (s.section, s.focus) = (s.sections.iter().position(|n| n == PROFILES_SECTION).unwrap(), SettingsPane::Page);
+        }
         key(&mut w, Key::Char('d'));
         assert!(profiles_of(&w).status.contains("cannot be deleted") && w.outbox.is_empty());
         key(&mut w, Key::Down);
@@ -2418,6 +2437,30 @@ mod tests {
         assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
         let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
         assert_eq!(s.sections[s.section], "Provider", "Edit opens the Provider page");
+    }
+
+    /// journal#799: Add makes the profile, moves the window onto it and opens its Provider page; what
+    /// a name cannot hold, and an empty name, are said, not dropped without a word.
+    #[test]
+    fn add_moves_onto_the_new_profile_and_says_what_a_name_cannot_hold() {
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        key(&mut w, Key::Char('a'));
+        key(&mut w, Key::Enter);
+        assert!(w.outbox.is_empty() && profiles_of(&w).status.contains("name"), "empty: {}", profiles_of(&w).status);
+        assert!(matches!(profiles_of(&w).mode, ProfilesMode::Naming(_)), "still asking the name");
+        key(&mut w, Key::Char('W'));
+        assert!(profiles_of(&w).status.contains("lowercase"), "a capital is said: {}", profiles_of(&w).status);
+        key(&mut w, Key::Char('ж'));
+        assert!(profiles_of(&w).status.contains("lowercase"), "a Cyrillic letter is said");
+        for c in "max2".chars() {
+            key(&mut w, Key::Char(c));
+        }
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.first(), Some(Outgoing::ProfileAdd { name }) if name == "max2"), "{:?}", w.outbox);
+        assert!(matches!(w.outbox.get(1), Some(Outgoing::ProfileUse { name }) if name == "max2"), "{:?}", w.outbox);
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(s.sections[s.section], "Provider", "its Provider page opens");
     }
 
     /// journal#796: Left from any section's page goes back to the list of sections, and Left there

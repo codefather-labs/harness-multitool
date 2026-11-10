@@ -54,7 +54,7 @@ def until(what, check, sec=10):
     end = time.time() + sec
     while time.time() < end and not check(): pump(0.1)
     assert check(), what
-DOWN, UP = "\x1b[B", "\x1b[A"
+DOWN, UP, LEFT, RIGHT = "\x1b[B", "\x1b[A", "\x1b[D", "\x1b[C"
 pump(2)
 press("\x1b[<0;112;33M", "\x1b[<0;112;33m"); pump(0.8)          # the Settings button
 press(*[DOWN] * 9); press("\t"); pump(0.5)                      # Profiles, then into the page
@@ -63,6 +63,9 @@ press("a", "w", "o", "r", "k", "\r")
 until("Add made work", lambda: "work" in profiles())
 assert os.path.isdir(mt + "/profiles/work/claude") and os.readlink(mt + "/profiles/work/claude/projects") == home + "/dot-claude/projects"
 print("Add made a clean profile:", profiles())
+# journal#799: Add moves the window onto the new profile and opens its Provider page, not signed in.
+shot("added-provider.png")
+press(LEFT, *[DOWN] * 9, RIGHT); pump(0.6)                     # back to Profiles: Left, down to it, Right
 shot("profiles-added.png")
 press("d"); pump(0.5)                                           # on default: refused
 assert "default" in profiles()
