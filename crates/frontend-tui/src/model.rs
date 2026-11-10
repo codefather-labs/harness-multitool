@@ -63,6 +63,8 @@ pub struct Workspace {
     pub telegram: Option<TelegramPage>,
     pub voice: Option<VoicePage>,
     pub memory: Option<MemoryPage>,
+    /// The profiles, as the running harness reads them (CON-125).
+    pub profiles: Option<ProfilesPage>,
     /// The sign-in state as the running harness knows it.
     pub auth: Option<AuthPage>,
 }
@@ -89,6 +91,12 @@ pub enum Outgoing {
     SaveMapLimit { limit: u64 },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
+    /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
+    /// Claude Code signed in or out of one, which hands the terminal to `claude auth`.
+    ProfileAdd { name: String },
+    ProfileDelete { name: String },
+    ProfileUse { name: String },
+    ProfileClaude { name: String, login: bool },
     /// The Login button of gpt-subscription, and what follows it.
     Login,
     LoginCancel,
@@ -189,6 +197,7 @@ pub struct SettingsView {
     pub telegram: TelegramPage,
     pub voice: VoicePage,
     pub memory: MemoryPage,
+    pub profiles: ProfilesPage,
     pub auth: AuthPage,
     /// The model name is being typed.
     pub editing_model: bool,
@@ -323,7 +332,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -1026,6 +1035,45 @@ impl std::fmt::Debug for MemoryPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryPage").field("map_max_nodes", &self.map_max_nodes).field("search_max_linked", &self.search_max_linked).field("editing", &self.editing).finish()
     }
+}
+
+/// A line of the Profiles tab.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProfileRow {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    /// Claude Code signed in: none when it could not be asked.
+    pub claude: Option<bool>,
+    pub chatgpt: bool,
+    /// This window runs on it.
+    pub current: bool,
+    /// Its folder, shown by Edit.
+    pub folder: String,
+}
+
+/// What the Profiles tab is doing besides showing the list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ProfilesMode {
+    #[default]
+    List,
+    /// Add: the new name being typed.
+    Naming(String),
+    /// Delete asked; Enter or y confirms.
+    Deleting,
+    /// Edit: the selected profile's folder, adapter and sign-ins, with its sign-in buttons.
+    Editing,
+}
+
+/// The settings' Profiles tab (CON-125): the profiles as one list, the buttons beside it.
+#[derive(Debug, Clone, Default)]
+pub struct ProfilesPage {
+    pub rows: Vec<ProfileRow>,
+    pub cursor: usize,
+    pub mode: ProfilesMode,
+    /// The button under the keyboard in Edit: 0 sign Claude Code in, 1 sign it out.
+    pub button: usize,
+    pub status: String,
 }
 
 /// The settings' Telegram page. A saved token is never here, only whether there is one.

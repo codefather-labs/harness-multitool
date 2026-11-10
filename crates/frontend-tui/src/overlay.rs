@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
-use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, Toast};
+use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -49,6 +49,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     }
     if let Some(page) = &w.memory {
         s.memory = page.clone();
+    }
+    if let Some(page) = &w.profiles {
+        s.profiles = page.clone();
     }
     if let Some(page) = &w.auth {
         s.auth = page.clone();
@@ -115,7 +118,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, "Theme"].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme"].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -134,6 +137,7 @@ pub fn sample_settings() -> SettingsView {
         telegram: Default::default(),
         voice: Default::default(),
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
+        profiles: ProfilesPage::default(),
         auth: AuthPage::default(),
         editing_model: false,
         model_menu: None,
@@ -398,6 +402,164 @@ fn voice_key(p: &mut crate::model::VoicePage, k: Key, outbox: &mut Vec<Outgoing>
             p.status = if waiting { "Saved. It still has to be downloaded.".to_string() } else { "Saved.".to_string() };
             outbox.push(Outgoing::SaveVoice { engine: p.engine.clone(), model: p.model.clone(), device: p.device.clone() });
         }
+        _ => {}
+    }
+}
+
+/// The settings section of the profiles (CON-125).
+pub const PROFILES_SECTION: &str = "Profiles";
+
+const PROFILE_BUTTONS: [&str; 4] = ["Add", "Edit", "Delete", "Use"];
+const BUTTONS_W: u16 = 12;
+
+/// The profiles as one list on the left and the buttons on the right (CON-125). Edit shows the
+/// selected profile's folder and sign-ins, with its Claude Code sign-in buttons.
+fn profiles_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
+    let p = &s.profiles;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let list_w = r.width.saturating_sub(BUTTONS_W + 2);
+    let list_h = r.height.saturating_sub(8).max(4);
+    // The list, framed as one field.
+    text(f, r.x, r.y + 1, list_w, vec![Span::styled(format!("┌{}┐", "─".repeat(list_w.saturating_sub(2) as usize)), Style::default().fg(t.border_subtle))], bg);
+    for i in 0..list_h.saturating_sub(2) {
+        let y = r.y + 2 + i;
+        let inner = list_w.saturating_sub(2);
+        let (spans, row_bg) = match p.rows.get(i as usize) {
+            Some(row) => {
+                let under = p.cursor == i as usize;
+                // The sign-ins first: what is cut off at a narrow width is the model's name, not them.
+                let claude = match row.claude { Some(true) => "Claude ✓", Some(false) => "Claude ✗", None => "Claude ?" };
+                let chatgpt = if row.chatgpt { "GPT ✓" } else { "GPT ✗" };
+                let mark = if row.current { "●" } else { " " };
+                let line = format!(" {mark} {:<12} {claude}  {chatgpt}  {} {}", row.name, row.provider, row.model);
+                let clipped: String = line.chars().take(inner as usize).collect();
+                (vec![Span::styled(format!("{clipped:<w$}", w = inner as usize), if under { strong.add_modifier(Modifier::BOLD) } else { strong })], if under && focus { t.surface_raised } else { bg })
+            }
+            None => (vec![Span::styled(" ".repeat(inner as usize), strong)], bg),
+        };
+        text(f, r.x, y, 1, vec![Span::styled("│", Style::default().fg(t.border_subtle))], bg);
+        text(f, r.x + 1, y, inner, spans, row_bg);
+        text(f, r.x + 1 + inner, y, 1, vec![Span::styled("│", Style::default().fg(t.border_subtle))], bg);
+        if (i as usize) < p.rows.len() {
+            out.hits.push(Hit { rect: Rect::new(r.x + 1, y, inner, 1), target: Target::ProfileRow(i as usize) });
+        }
+    }
+    text(f, r.x, r.y + list_h, list_w, vec![Span::styled(format!("└{}┘", "─".repeat(list_w.saturating_sub(2) as usize)), Style::default().fg(t.border_subtle))], bg);
+    // The buttons, to the right of the list.
+    let bx = r.x + list_w + 2;
+    for (i, label) in PROFILE_BUTTONS.iter().enumerate() {
+        let y = r.y + 1 + i as u16 * 2;
+        let style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+        text(f, bx, y, BUTTONS_W, vec![Span::styled(format!("[ {label:<6} ]"), style)], bg);
+        out.hits.push(Hit { rect: Rect::new(bx, y, BUTTONS_W, 1), target: Target::ProfileButton(i) });
+    }
+    // Below the list: what is being done, or the keys.
+    let y = r.y + list_h + 1;
+    match &p.mode {
+        ProfilesMode::Naming(name) => {
+            text(f, r.x, y, r.width, vec![Span::styled(" New profile's name: ", muted), Span::styled(name.clone(), strong), Span::styled("█", Style::default().fg(t.accent_line))], bg);
+            text(f, r.x, y + 1, r.width, vec![Span::styled(" Lowercase letters, digits and -.", muted)], bg);
+            text(f, r.x, y + 2, r.width, vec![Span::styled(" Enter makes it, clean; Esc leaves it.", muted)], bg);
+        }
+        ProfilesMode::Deleting => {
+            let name = p.rows.get(p.cursor).map_or(String::new(), |r| r.name.clone());
+            text(f, r.x, y, r.width, vec![Span::styled(format!(" Delete {name}? Its settings and sign-ins go with it;"), strong)], bg);
+            text(f, r.x, y + 1, r.width, vec![Span::styled(" Claude Code is signed out first. Conversations stay.", muted)], bg);
+            text(f, r.x, y + 2, r.width, vec![Span::styled(" Enter or y deletes, Esc keeps it.", muted)], bg);
+        }
+        ProfilesMode::Editing => {
+            if let Some(row) = p.rows.get(p.cursor) {
+                text(f, r.x, y, r.width, vec![Span::styled(format!(" {}: {} {}", row.name, row.provider, row.model), strong)], bg);
+                text(f, r.x, y + 1, r.width, vec![Span::styled(format!(" {}", row.folder), muted)], bg);
+                for (i, label) in ["Sign in Claude Code", "Sign out Claude Code"].iter().enumerate() {
+                    let x = r.x + 1 + i as u16 * 26;
+                    let under = focus && p.button == i;
+                    let style = if under { Style::default().fg(t.text).bg(t.surface_raised).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent) };
+                    text(f, x, y + 2, 24, vec![Span::styled(format!("[ {label} ]"), style)], bg);
+                    out.hits.push(Hit { rect: Rect::new(x, y + 2, 24, 1), target: Target::ProfileButton(10 + i) });
+                }
+                text(f, r.x, y + 3, r.width, vec![Span::styled(" Adapter, model, ChatGPT: Use it, then the Provider page.", muted)], bg);
+            }
+        }
+        ProfilesMode::List => {
+            text(f, r.x, y, r.width, vec![Span::styled(" ● this window. a add, e edit, d delete, u use.", muted)], bg);
+            text(f, r.x, y + 1, r.width, vec![Span::styled(" New tabs run on the profile in use;", muted)], bg);
+            text(f, r.x, y + 2, r.width, vec![Span::styled(" a tab already started keeps its own.", muted)], bg);
+        }
+    }
+    if !p.status.is_empty() {
+        // The line said last, wrapped to the page.
+        let words: Vec<&str> = p.status.split(' ').collect();
+        let (mut line, mut row) = (String::new(), 0u16);
+        for word in words {
+            if line.chars().count() + word.chars().count() + 1 > r.width.saturating_sub(2) as usize && !line.is_empty() {
+                text(f, r.x, y + 4 + row, r.width, vec![Span::styled(format!(" {line}"), strong)], bg);
+                line.clear();
+                row += 1;
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        text(f, r.x, y + 4 + row, r.width, vec![Span::styled(format!(" {line}"), strong)], bg);
+    }
+}
+
+/// What a Profiles tab key or button does.
+fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
+    let selected = p.rows.get(p.cursor).map(|r| r.name.clone());
+    match (&mut p.mode, k) {
+        (ProfilesMode::Naming(name), Key::Char(c)) if (c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name.len() < 32 => name.push(c),
+        (ProfilesMode::Naming(name), Key::Backspace) => {
+            name.pop();
+        }
+        (ProfilesMode::Naming(name), Key::Enter) => {
+            let name = std::mem::take(name);
+            p.mode = ProfilesMode::List;
+            if !name.is_empty() {
+                p.status = format!("Making {name}...");
+                outbox.push(Outgoing::ProfileAdd { name });
+            }
+        }
+        (ProfilesMode::Naming(_) | ProfilesMode::Deleting | ProfilesMode::Editing, Key::Esc) => p.mode = ProfilesMode::List,
+        (ProfilesMode::Deleting, Key::Enter | Key::Char('y')) => {
+            p.mode = ProfilesMode::List;
+            if let Some(name) = selected {
+                p.status = format!("Deleting {name}...");
+                outbox.push(Outgoing::ProfileDelete { name });
+            }
+        }
+        (ProfilesMode::Deleting, _) => p.mode = ProfilesMode::List,
+        (ProfilesMode::Editing, Key::Left | Key::Right | Key::Tab) => p.button = 1 - p.button.min(1),
+        (ProfilesMode::Editing, Key::Enter | Key::Char(' ')) => {
+            if let Some(name) = selected {
+                outbox.push(Outgoing::ProfileClaude { name, login: p.button == 0 });
+            }
+        }
+        (ProfilesMode::List | ProfilesMode::Editing, Key::Up) => p.cursor = p.cursor.saturating_sub(1),
+        (ProfilesMode::List | ProfilesMode::Editing, Key::Down) => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
+        (ProfilesMode::List, Key::Char('a')) => p.mode = ProfilesMode::Naming(String::new()),
+        (ProfilesMode::List, Key::Char('e') | Key::Enter) if selected.is_some() => {
+            p.mode = ProfilesMode::Editing;
+            p.button = 0;
+        }
+        (ProfilesMode::List, Key::Char('d')) => match p.rows.get(p.cursor) {
+            Some(row) if row.name == "default" => p.status = "default is always there and cannot be deleted.".to_string(),
+            Some(row) if row.current => p.status = format!("This window runs on {}: Use another first.", row.name),
+            Some(_) => p.mode = ProfilesMode::Deleting,
+            None => {}
+        },
+        (ProfilesMode::List, Key::Char('u')) => match p.rows.get(p.cursor) {
+            Some(row) if row.current => p.status = format!("This window already runs on {}.", row.name),
+            Some(row) => {
+                p.status = format!("Moving this window onto {}...", row.name);
+                outbox.push(Outgoing::ProfileUse { name: row.name.clone() });
+            }
+            None => {}
+        },
         _ => {}
     }
 }
@@ -792,6 +954,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == PROFILES_SECTION {
+        profiles_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if s.section != 0 {
         text(f, px, body_y + 1, pw, vec![Span::styled(format!("{name} settings come with their stage."), Style::default().fg(t.text_muted))], bg);
     } else {
@@ -1245,6 +1409,14 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 _ => {}
             }
         }
+        // The Profiles tab: Esc leaves what it is doing before it closes the window.
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == PROFILES_SECTION) && s.focus == SettingsPane::Page && (!matches!(k, Key::Esc) || s.profiles.mode != ProfilesMode::List) => {
+            if matches!(k, Key::Tab) && s.profiles.mode == ProfilesMode::List {
+                s.focus = SettingsPane::Sections;
+            } else {
+                profiles_key(&mut s.profiles, k, &mut w.outbox);
+            }
+        }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Memory") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
             let p = &mut s.memory;
             match k {
@@ -1450,6 +1622,22 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         // On the button that stops it, Enter stops it; elsewhere a click does nothing while it listens.
         (Some(Overlay::Settings(s)), Target::VoiceRow(VOICE_TEST_ROW)) if s.voice.menu.is_none() => voice_key(&mut s.voice, Key::Enter, &mut w.outbox),
         (Some(Overlay::Settings(s)), Target::VoiceRow(_)) => s.voice.menu = None,
+        (Some(Overlay::Settings(s)), Target::ProfileRow(i)) => {
+            s.focus = SettingsPane::Page;
+            s.profiles.cursor = i;
+        }
+        (Some(Overlay::Settings(s)), Target::ProfileButton(i)) => {
+            s.focus = SettingsPane::Page;
+            let p = &mut s.profiles;
+            if i >= 10 {
+                p.mode = ProfilesMode::Editing;
+                p.button = i - 10;
+                profiles_key(p, Key::Enter, &mut w.outbox);
+            } else {
+                p.mode = ProfilesMode::List;
+                profiles_key(p, [Key::Char('a'), Key::Char('e'), Key::Char('d'), Key::Char('u')][i.min(3)], &mut w.outbox);
+            }
+        }
         (Some(Overlay::Settings(s)), Target::VoiceChoice(at)) => {
             s.voice.menu = Some(at);
             voice_key(&mut s.voice, Key::Enter, &mut w.outbox);
@@ -2122,6 +2310,79 @@ mod tests {
             Some(Overlay::Settings(s)) => s.memory.clone(),
             _ => panic!("no settings"),
         }
+    }
+
+    fn profiles_settings(w: &mut Workspace) {
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == PROFILES_SECTION).unwrap();
+        s.focus = SettingsPane::Page;
+        let row = |name: &str, current: bool| crate::model::ProfileRow { name: name.into(), provider: "claude-code".into(), model: "m".into(), claude: Some(current), chatgpt: false, current, folder: format!("/h/.harness/profiles/{name}") };
+        s.profiles.rows = vec![row("default", true), row("max", false)];
+        w.overlay = Some(Overlay::Settings(s));
+    }
+
+    fn profiles_of(w: &Workspace) -> ProfilesPage {
+        match &w.overlay {
+            Some(Overlay::Settings(s)) => s.profiles.clone(),
+            _ => panic!("no settings"),
+        }
+    }
+
+    /// CON-125: Add asks a name and sends it; Delete refuses default and the profile in use, asks
+    /// for any other, and sends it on yes; Use sends the profile; Edit's buttons sign Claude Code
+    /// in or out; Esc leaves what is being done, not the settings.
+    #[test]
+    fn the_profiles_tab_adds_deletes_uses_and_signs_in() {
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        for k in [Key::Char('a'), Key::Char('w'), Key::Char('O'), Key::Char('k'), Key::Char('/'), Key::Enter] {
+            key(&mut w, k);
+        }
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileAdd { name }) if name == "wk"), "only what a name may hold is typed");
+        key(&mut w, Key::Char('d'));
+        assert!(profiles_of(&w).status.contains("cannot be deleted") && w.outbox.is_empty());
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char('d'));
+        assert_eq!(profiles_of(&w).mode, ProfilesMode::Deleting);
+        key(&mut w, Key::Esc);
+        assert_eq!(profiles_of(&w).mode, ProfilesMode::List, "Esc keeps it");
+        assert!(matches!(w.overlay, Some(Overlay::Settings(_))), "and the settings stay open");
+        key(&mut w, Key::Char('d'));
+        key(&mut w, Key::Char('y'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileDelete { name }) if name == "max"));
+        key(&mut w, Key::Char('u'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileUse { name }) if name == "max"));
+        key(&mut w, Key::Up);
+        key(&mut w, Key::Char('u'));
+        assert!(w.outbox.is_empty() && profiles_of(&w).status.contains("already runs on default"));
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char('e'));
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: true }) if name == "max"));
+        key(&mut w, Key::Right);
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileClaude { name, login: false }) if name == "max"));
+    }
+
+    /// CON-125: the list in one field on the left, the four buttons on the right, at 80 columns.
+    #[test]
+    fn the_profiles_tab_draws_the_list_and_its_buttons() {
+        let mut w = Workspace::one(Default::default(), "t");
+        profiles_settings(&mut w);
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        let backend = ratatui::backend::TestBackend::new(64, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let theme = Theme::builtin("dark").unwrap();
+        let mut drawn = Drawn::default();
+        terminal.draw(|f| profiles_page(f, f.area(), s, &theme, Color::Reset, &mut drawn)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen = (0..16).map(|y| (0..64).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        for want in ["● default", "max", "[ Add    ]", "[ Edit   ]", "[ Delete ]", "[ Use    ]", "┌", "└"] {
+            assert!(screen.contains(want), "{want:?} missing:\n{screen}");
+        }
+        assert_eq!(drawn.hits.iter().filter(|h| matches!(h.target, Target::ProfileButton(_))).count(), 4);
+        w.overlay = None;
+        let _ = &mut w;
     }
 
     #[test]

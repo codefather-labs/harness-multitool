@@ -58,6 +58,10 @@ pub enum Target {
     VoiceRow(usize),
     /// A choice in that page's open dropdown.
     VoiceChoice(usize),
+    /// A line of the Profiles tab.
+    ProfileRow(usize),
+    /// A button of the Profiles tab: 0 Add, 1 Edit, 2 Delete, 3 Use; in Edit 10 sign Claude Code in, 11 out.
+    ProfileButton(usize),
     /// A provider row on the settings window's provider page.
     Provider(usize),
     /// A row of the settings' Callbacks tab.

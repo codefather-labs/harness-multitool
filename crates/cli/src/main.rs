@@ -549,7 +549,8 @@ fn live_session(provider: &str, model: &str, budget: &str) -> frontend_tui::AppS
     state.header.branch = git_branch();
     if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
         w.live = true;
-        w.view_mut().status.fields = [("MODE", "normal"), ("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
+        let profile = profile_label();
+        w.view_mut().status.fields = [("MODE", "normal"), ("PROFILE", profile.as_str()), ("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .to_vec();
     }
@@ -625,6 +626,8 @@ struct Live {
     registered: std::collections::HashMap<u64, harness_daemon::client::Registered>,
     /// A speech model on its way, if one is.
     voice_download: Option<std::sync::Arc<std::sync::Mutex<VoiceDownload>>>,
+    /// A profile's Claude Code sign-in or sign-out, waiting for the loop to hand it the terminal.
+    terminal_wanted: Option<(String, bool)>,
     voice_test: Option<VoiceTestRun>,
     voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
@@ -673,6 +676,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
         }
@@ -766,6 +770,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
         state
     }
 
@@ -974,7 +979,7 @@ impl Live {
             Some(_) => None,
             None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -984,6 +989,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
             }
@@ -1127,6 +1133,46 @@ impl Live {
             let result = harness_speech::transcribe_samples(&data, model, &samples);
             *heard.lock().expect("heard") = Some(result);
         });
+    }
+
+    /// The Profiles tab as the profiles stand now (CON-125), with a line to say.
+    fn profiles_page(&self, status: String) -> frontend_tui::model::ProfilesPage {
+        let current = config::current();
+        let rows = match config::overview() {
+            Ok(lines) => lines
+                .into_iter()
+                .map(|l| frontend_tui::model::ProfileRow {
+                    current: l.name == current,
+                    folder: config::profile_dir(&l.name).map(|d| d.display().to_string()).unwrap_or_default(),
+                    name: l.name,
+                    provider: l.provider,
+                    model: l.model,
+                    claude: l.claude,
+                    chatgpt: l.chatgpt,
+                })
+                .collect(),
+            Err(e) => return frontend_tui::model::ProfilesPage { status: format!("The profiles cannot be read: {e:#}"), ..Default::default() },
+        };
+        frontend_tui::model::ProfilesPage { rows, status, ..Default::default() }
+    }
+
+    /// Use (CON-121): this window's saved settings and new tabs move onto `name`; tabs already
+    /// started keep the profile they began on.
+    fn use_profile(&mut self, w: &mut frontend_tui::model::Workspace, name: &str) -> Result<()> {
+        let env = config::environment_for(harness_session::this_environment(), name)?;
+        self.sessions.set_environment(env).map_err(|e| anyhow!(e))?;
+        config::switch(name)?;
+        let c = config::load()?;
+        self.provider = c.session.provider.clone();
+        self.model = c.session.model.clone();
+        self.rebuild_factory(c.session)?;
+        let label = profile_label();
+        // A tab nothing was said in has no session yet: it opens on the new profile.
+        let unstarted = |t: &frontend_tui::model::Tab| !t.view.transcript.iter().any(|i| matches!(i, frontend_tui::model::Item::Turn { .. } | frontend_tui::model::Item::Tool(_) | frontend_tui::model::Item::Inbound(_)));
+        for t in w.tabs.iter_mut().filter(|t| unstarted(t)) {
+            frontend_tui::live::set_status(&mut t.view, "PROFILE", &label);
+        }
+        Ok(())
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
@@ -1620,6 +1666,32 @@ impl Live {
                         }
                     }
                 }
+                Outgoing::ProfileAdd { name } => {
+                    let status = match config::create(&name) {
+                        Ok(_) => format!("Made {name}: clean, nothing signed in. Use it, then choose its adapter on the Provider page."),
+                        Err(e) => format!("Not made: {e:#}"),
+                    };
+                    w.profiles = Some(self.profiles_page(status));
+                    show_profiles(w);
+                }
+                Outgoing::ProfileDelete { name } => {
+                    let status = match config::delete(&name) {
+                        Ok(()) => format!("Deleted {name}. Your conversations stay."),
+                        Err(e) => format!("Not deleted: {e:#}"),
+                    };
+                    w.profiles = Some(self.profiles_page(status));
+                    show_profiles(w);
+                }
+                Outgoing::ProfileUse { name } => {
+                    let status = match self.use_profile(w, &name) {
+                        Ok(()) => format!("This window is on {name} now: new tabs run on it; tabs already started keep theirs."),
+                        Err(e) => format!("Still on {}: {e:#}", config::current()),
+                    };
+                    w.profiles = Some(self.profiles_page(status));
+                    w.memory = Some(self.memory_page());
+                    show_profiles(w);
+                }
+                Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, login)),
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -1716,6 +1788,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveMapLimit { limit } => {
                     let saved = config::load().and_then(|mut c| {
@@ -1726,6 +1799,7 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveSearchPage { limit } => {
                     let saved = config::load().and_then(|mut c| {
@@ -1736,6 +1810,7 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::DownloadVoiceModel { model } => {
                     let progress: std::sync::Arc<std::sync::Mutex<VoiceDownload>> = Default::default();
@@ -1778,6 +1853,7 @@ impl Live {
                     }
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::StartVoiceTest { model, device } => {
                     let started = harness_speech::model(&model).ok_or_else(|| format!("no model {model}")).and_then(|model| Ok((model, harness_speech::Recording::start(device.as_deref())?)));
@@ -1802,6 +1878,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.profiles = Some(self.profiles_page(String::new()));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
                 Outgoing::Reload => {
@@ -2050,12 +2127,23 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
         .collect()
 }
 
+/// The open settings show the Profiles tab as it now stands, the line under the cursor kept.
+fn show_profiles(w: &mut frontend_tui::model::Workspace) {
+    let Some(page) = w.profiles.clone() else { return };
+    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+        let (cursor, mode) = (s.profiles.cursor.min(page.rows.len().saturating_sub(1)), s.profiles.mode.clone());
+        let mode = if mode == frontend_tui::model::ProfilesMode::Editing { mode } else { frontend_tui::model::ProfilesMode::List };
+        s.profiles = frontend_tui::model::ProfilesPage { cursor, mode, ..page };
+    }
+}
+
 /// The status line's word for this window's profile, with where its Claude Code runs when that is
 /// not its own (CON-120).
 fn profile_label() -> String {
+    // Short: the status line holds more after it. The full note is on the Profiles tab and in `profile list`.
     match config::claude_note() {
-        Some(note) => format!("{} ({note})", config::current()),
-        None => config::current().to_string(),
+        Some(_) => format!("{} (your Claude)", config::current()),
+        None => config::current(),
     }
 }
 
@@ -2063,9 +2151,14 @@ fn profile_label() -> String {
 /// profile's Claude Code directory with the terminal handed to it (CON-123). Nothing of the
 /// harness's own Claude Code environment reaches it, and the harness reads nothing of what it saves.
 fn claude_code_auth(what: &str) -> Result<()> {
-    let c = config::load()?;
+    claude_code_auth_for(&config::current(), what)
+}
+
+/// The same for a named profile: the Profiles tab's sign-in buttons.
+fn claude_code_auth_for(profile: &str, what: &str) -> Result<()> {
+    let c = config::load_profile(profile)?;
     let binary = config::claude_binary(&c);
-    let dir = config::claude_dir(config::current())?;
+    let dir = config::claude_dir(profile)?;
     config::prepare_claude(&dir, &config::users_claude_dir()?)?;
     let mut command = std::process::Command::new(&binary);
     command.args(["auth", what]);
@@ -2074,13 +2167,13 @@ fn claude_code_auth(what: &str) -> Result<()> {
             command.env_remove(name);
         }
     }
-    println!("Profile {}: running `{binary} auth {what}` in {}", config::current(), dir.display());
+    println!("Profile {profile}: running `{binary} auth {what}` in {}", dir.display());
     let status = command.env("CLAUDE_CONFIG_DIR", &dir).status().with_context(|| format!("running {binary}"))?;
     if !status.success() {
         bail!("`{binary} auth {what}` ended with {status}");
     }
     let signed = config::claude_signed_in(&binary, &dir);
-    println!("Claude Code for the profile {}: {}", config::current(), match signed { Some(true) => "signed in", Some(false) => "not signed in", None => "status unknown" });
+    println!("Claude Code for the profile {profile}: {}", match signed { Some(true) => "signed in", Some(false) => "not signed in", None => "status unknown" });
     Ok(())
 }
 
@@ -2370,6 +2463,28 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
         // Only a change is worth a frame: an idle session must not spin on drawing.
         let mut dirty = true;
         loop {
+            // A profile's Claude Code sign-in: Claude Code's own, in the terminal, then back here (CON-123).
+            if let Some((profile, login)) = live.terminal_wanted.take() {
+                let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+                ratatui::restore();
+                let what = if login { "login" } else { "logout" };
+                let said = match claude_code_auth_for(&profile, what) {
+                    Ok(()) => format!("Claude Code {what} for {profile} done."),
+                    Err(e) => format!("Claude Code {what} for {profile}: {e:#}"),
+                };
+                println!("\n{said} Press Enter to go back to the harness.");
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                terminal = ratatui::init();
+                // A new terminal draws the whole frame; what the sign-in printed is cleared first, by the
+                // terminal itself: Terminal::clear asks the cursor's position, which not every terminal answers.
+                execute!(std::io::stdout(), ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All), EnableMouseCapture, EnableBracketedPaste)?;
+                if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                    w.profiles = Some(live.profiles_page(said));
+                    show_profiles(w);
+                }
+                dirty = true;
+            }
             state.pictures = picker.is_some();
             live.connect_windows(&mut state);
             live.tick_linking(&mut state);

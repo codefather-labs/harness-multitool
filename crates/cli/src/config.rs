@@ -102,7 +102,15 @@ struct SharedFile {
 pub const DEFAULT_PROFILE: &str = "default";
 const MAX_NAME: usize = 32;
 
-static CURRENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// The profile this window runs on; Use in the Profiles tab changes it (CON-121).
+static CURRENT: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The user's own Claude Code directory, as the environment named it before this process set its
+/// profile's: noted once, at the start (CON-126).
+static USERS_CLAUDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `CLAUDE_CONFIG_DIR` as the environment had it at the start, if it had it.
+static USERS_CLAUDE_VAR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
 
 /// Whether the profiles' root is the user's own, not one set apart by MULTITOOL_HOME.
 fn root_is_users() -> bool {
@@ -129,9 +137,20 @@ pub fn check_name(name: &str) -> Result<()> {
     if fits { Ok(()) } else { Err(anyhow!("a profile's name is lowercase letters, digits and -, at most {MAX_NAME}: {name:?} is not")) }
 }
 
-/// The profile this process runs on.
-pub fn current() -> &'static str {
-    CURRENT.get().map_or(DEFAULT_PROFILE, String::as_str)
+/// The profile this window runs on.
+pub fn current() -> String {
+    CURRENT.read().ok().and_then(|c| c.clone()).unwrap_or_else(|| DEFAULT_PROFILE.to_string())
+}
+
+/// Moves this window onto another profile (CON-121): what it saves and loads from now on is that
+/// profile's. Its sessions are moved by the caller, tabs already started staying where they are.
+pub fn switch(name: &str) -> Result<()> {
+    check_name(name)?;
+    if !list()?.iter().any(|n| n == name) {
+        return Err(anyhow!("no profile {name:?}"));
+    }
+    *CURRENT.write().map_err(|_| anyhow!("the profile lock is poisoned"))? = Some(name.to_string());
+    Ok(())
 }
 
 /// Runs this process on `name`, once, at its start. An unknown name is refused with the names
@@ -151,7 +170,10 @@ pub fn select(name: &str) -> Result<()> {
     if !names.iter().any(|n| n == name) {
         return Err(anyhow!("no profile {name:?}; the profiles are: {}", names.join(", ")));
     }
-    CURRENT.set(name.to_string()).map_err(|_| anyhow!("the profile is chosen once, at the start"))
+    let _ = USERS_CLAUDE.set(users_claude_dir()?);
+    let _ = USERS_CLAUDE_VAR.set(std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()));
+    *CURRENT.write().map_err(|_| anyhow!("the profile lock is poisoned"))? = Some(name.to_string());
+    Ok(())
 }
 
 /// The profiles there are, `default` first, then by name.
@@ -176,7 +198,7 @@ fn list_in(root: &std::path::Path) -> Result<Vec<String>> {
 
 /// Where this process's profile keeps its ChatGPT credential (CON-122), `default`'s included.
 pub fn chatgpt_dir() -> Result<PathBuf> {
-    Ok(profile_dir(current())?.join("chatgpt"))
+    Ok(profile_dir(&current())?.join("chatgpt"))
 }
 
 /// A profile's Claude Code configuration directory: its own login, and through its `projects`
@@ -188,6 +210,9 @@ pub fn claude_dir(name: &str) -> Result<PathBuf> {
 /// The user's own Claude Code directory, where plain `claude` keeps its transcripts: the
 /// environment's `CLAUDE_CONFIG_DIR` as this process found it, else `~/.claude`.
 pub fn users_claude_dir() -> Result<PathBuf> {
+    if let Some(dir) = USERS_CLAUDE.get() {
+        return Ok(dir.clone());
+    }
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
@@ -231,35 +256,123 @@ pub fn claude_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
     answer["loggedIn"].as_bool()
 }
 
-static CLAUDE_NOTE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static CLAUDE_NOTE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
 /// What the status line says of this window's Claude Code login, if anything.
-pub fn claude_note() -> Option<&'static str> {
-    CLAUDE_NOTE.get().map(String::as_str)
+pub fn claude_note() -> Option<String> {
+    CLAUDE_NOTE.read().ok().and_then(|n| n.clone())
 }
+
+/// A profile's sign-in folders, by the variable each is read from.
+pub type SignInVars = Vec<(&'static str, PathBuf)>;
 
 /// What this window's sessions must see of its profile: the folders of its sign-ins, by the
 /// variables the delegate and the auth plugin read (CON-122). Paths only, never a credential.
 /// `default` runs on the user's own Claude Code directory until its own is signed in (CON-120);
-/// every other profile always runs on its own.
-pub fn sign_in_environment() -> Result<Vec<(&'static str, PathBuf)>> {
-    let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, chatgpt_dir()?)];
-    let dir = claude_dir(current())?;
+/// every other profile always runs on its own. The note says where Claude Code runs when that is
+/// not the profile's own.
+pub fn sign_in_vars(name: &str) -> Result<(SignInVars, Option<String>)> {
+    let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, profile_dir(name)?.join("chatgpt"))];
+    let dir = claude_dir(name)?;
     let users = users_claude_dir()?;
     if let Err(e) = prepare_claude(&dir, &users) {
-        let _ = CLAUDE_NOTE.set(format!("Claude on {} ({e:#})", users.display()));
-        return Ok(vars);
+        return Ok((vars, Some(format!("Claude on {} ({e:#})", users.display()))));
     }
-    if current() == DEFAULT_PROFILE {
-        let uses_claude = load().is_ok_and(|c| c.session.providers.values().any(|row| row["kind"] == "claude-code"));
-        let signed = uses_claude && claude_signed_in(&claude_binary(&load()?), &dir) == Some(true);
-        if !signed {
-            let _ = CLAUDE_NOTE.set(format!("Claude on {} until default signs in", users.display()));
-            return Ok(vars);
+    if name == DEFAULT_PROFILE {
+        let c = load_profile(name)?;
+        let uses_claude = c.session.providers.values().any(|row| row["kind"] == "claude-code");
+        if !(uses_claude && claude_signed_in(&claude_binary(&c), &dir) == Some(true)) {
+            return Ok((vars, Some(format!("Claude on {} until default signs in", users.display()))));
         }
     }
     vars.push(("CLAUDE_CONFIG_DIR", dir));
+    Ok((vars, None))
+}
+
+/// The same for this window's profile, its note kept for the status line.
+pub fn sign_in_environment() -> Result<Vec<(&'static str, PathBuf)>> {
+    let (vars, note) = sign_in_vars(&current())?;
+    if let Ok(mut held) = CLAUDE_NOTE.write() {
+        *held = note;
+    }
     Ok(vars)
+}
+
+/// A window's environment on another profile: this process's, with the user's own Claude Code
+/// directory as it was found at the start and that profile's sign-in folders over it.
+pub fn environment_for(base: std::collections::BTreeMap<String, String>, name: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut env = base;
+    env.remove("CLAUDE_CONFIG_DIR");
+    env.remove(harness_session::CHATGPT_DIR_VAR);
+    // The start may have set it for the profile it began on; the user's own value goes back.
+    if let Some(Some(own)) = USERS_CLAUDE_VAR.get() {
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), own.to_string_lossy().into_owned());
+    }
+    for (var, dir) in sign_in_environment_named(name)? {
+        env.insert(var.to_string(), dir.to_string_lossy().into_owned());
+    }
+    Ok(env)
+}
+
+fn sign_in_environment_named(name: &str) -> Result<Vec<(&'static str, PathBuf)>> {
+    let (vars, note) = sign_in_vars(name)?;
+    if let Ok(mut held) = CLAUDE_NOTE.write() {
+        *held = note;
+    }
+    Ok(vars)
+}
+
+/// Deletes a profile (CON-125): not `default`, not the one this window runs on. Its Claude Code is
+/// signed out by its own `claude auth logout` first, then its folder goes; the user's own Claude
+/// Code store is not in it, only a link to it.
+pub fn delete(name: &str) -> Result<()> {
+    check_name(name)?;
+    if name == DEFAULT_PROFILE {
+        return Err(anyhow!("default is always there and cannot be deleted"));
+    }
+    if name == current() {
+        return Err(anyhow!("this window runs on {name}: Use another first"));
+    }
+    let dir = profile_dir(name)?;
+    if !dir.join("profile.toml").is_file() {
+        return Err(anyhow!("no profile {name:?}"));
+    }
+    let claude = dir.join("claude");
+    let binary = load_profile(name).map(|c| claude_binary(&c)).unwrap_or_else(|_| "claude".to_string());
+    if claude_signed_in(&binary, &claude) == Some(true) {
+        let mut command = std::process::Command::new(&binary);
+        command.args(["auth", "logout"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        for (var, _) in std::env::vars_os() {
+            if var.to_string_lossy().starts_with("CLAUDE") {
+                command.env_remove(var);
+            }
+        }
+        let _ = command.env("CLAUDE_CONFIG_DIR", &claude).status();
+    }
+    // The link is removed as a link: what it points at, the user's transcripts, stays.
+    let _ = std::fs::remove_file(claude.join("projects"));
+    std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))
+}
+
+/// A line of the Profiles tab.
+pub struct ProfileLine {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub claude: Option<bool>,
+    pub chatgpt: bool,
+}
+
+/// Every profile, for the Profiles tab and `profile list`.
+pub fn overview() -> Result<Vec<ProfileLine>> {
+    let mut lines = Vec::new();
+    for name in list()? {
+        let c = load_profile(&name)?;
+        let claude = claude_signed_in(&claude_binary(&c), &claude_dir(&name)?);
+        let chatgpt = harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::at(&profile_dir(&name)?.join("chatgpt"))).0;
+        lines.push(ProfileLine { name, provider: c.session.provider, model: c.session.model, claude, chatgpt });
+    }
+    Ok(lines)
 }
 
 /// A profile's folder.
@@ -273,7 +386,11 @@ pub fn profile_dir(name: &str) -> Result<PathBuf> {
 pub fn create(name: &str) -> Result<PathBuf> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
-    create_in(&root, name)
+    let dir = create_in(&root, name)?;
+    // Its Claude Code sees the user's transcripts from the start (CON-126); if the link cannot be
+    // made now, the profile's first start says so.
+    let _ = prepare_claude(&dir.join("claude"), &users_claude_dir()?);
+    Ok(dir)
 }
 
 fn create_in(root: &std::path::Path, name: &str) -> Result<PathBuf> {
@@ -376,14 +493,14 @@ fn write_private(p: &std::path::Path, text: &str) -> Result<()> {
 
 /// This process's profile's file.
 pub fn path() -> Result<PathBuf> {
-    Ok(profile_dir(current())?.join("profile.toml"))
+    Ok(profile_dir(&current())?.join("profile.toml"))
 }
 
 /// The configuration of this process's profile, with the shared settings.
 pub fn load() -> Result<Config> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
-    load_in(&root, current())
+    load_in(&root, &current())
 }
 
 /// Another profile's configuration, to list it.
@@ -460,7 +577,7 @@ pub fn data_dir() -> Result<PathBuf> {
 pub fn save(c: &Config) -> Result<PathBuf> {
     let root = root()?;
     ensure(&root, old_path().as_deref())?;
-    save_in(&root, current(), c)
+    save_in(&root, &current(), c)
 }
 
 fn save_in(root: &std::path::Path, name: &str, c: &Config) -> Result<PathBuf> {

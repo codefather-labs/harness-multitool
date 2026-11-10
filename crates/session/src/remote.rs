@@ -1350,6 +1350,12 @@ impl RemoteSessions {
     pub fn configure(&self, root: &str, settings: &Settings) -> Result<(), String> {
         self.client.conversation_op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": self.environment})).map(|_| ())
     }
+
+    /// The environment this window's sessions start with from the next `configure` on: another
+    /// profile's (CON-121). Sessions already started keep the one they began with.
+    pub fn set_environment(&mut self, environment: std::collections::BTreeMap<String, String>) {
+        self.environment = environment;
+    }
 }
 
 impl Drop for RemoteSessions {
@@ -1423,6 +1429,18 @@ pub enum SessionLink {
 impl SessionLink {
     pub fn is_remote(&self) -> bool {
         matches!(self, SessionLink::Remote(_))
+    }
+
+    /// Moves the window onto another environment for the sessions it starts from now on. Only a
+    /// window served by the daemon can: one running its own sessions reads this process's.
+    pub fn set_environment(&mut self, environment: std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        match self {
+            SessionLink::Local(_) => Err("this window runs its sessions itself: start it again with --profile".to_string()),
+            SessionLink::Remote(r) => {
+                r.set_environment(environment);
+                Ok(())
+            }
+        }
     }
 
     pub fn configure(&mut self, root: &str, settings: &Settings, local: impl FnOnce() -> Factory) -> Result<(), String> {

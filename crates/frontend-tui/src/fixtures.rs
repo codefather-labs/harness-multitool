@@ -599,6 +599,7 @@ pub fn session_tabs() -> AppState {
         telegram: None,
         voice: None,
         memory: None,
+        profiles: None,
         auth: None,
     };
     AppState { header: header("session/router"), mode: Mode::Session(w), eyes: Eyes::Open, pictures: false }
