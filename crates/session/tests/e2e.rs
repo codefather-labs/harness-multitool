@@ -1742,3 +1742,48 @@ fn a_window_goes_on_when_another_daemon_takes_the_place_of_its_own() {
     assert!(matches!(pump(&link, &mut fresh), Some(FromSession::Ended { tab: 2, .. })));
     assert_eq!(user_texts(&fresh), ["new tab"]);
 }
+
+/// journal#814: the program of the user's own delegate tab asks the user, in that tab; the answer
+/// goes back to the program, and always is remembered for the tab.
+#[test]
+fn a_user_tabs_program_asks_the_user_in_the_tab() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("program-ask");
+    let data = temp_dir("program-ask-data");
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings("http://127.0.0.1:9", "k"), Default::default()).unwrap());
+    // The window's id, as the program's MCP server is given it.
+    let window = link.window_id().expect("a daemon's window").to_string();
+    let ask = |command: &str| client.conversation_op(&json!({"window": window, "op": "slave_ask", "tab": 1, "tool": "Bash", "input": {"command": command}})).unwrap();
+    let asked = |id: &serde_json::Value| client.conversation_op(&json!({"window": window, "op": "slave_asked", "tab": 1, "id": id})).unwrap();
+    let wait_ask = || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            for message in link.drain() {
+                if let FromSession::Ask { tab: 1, call, .. } = message {
+                    return Some(call);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    };
+
+    let first = ask("touch /tmp/x");
+    assert_eq!(first["user"], true, "the user's tab, not an orchestra's: {first}");
+    let call = wait_ask().expect("the request is shown in the tab");
+    assert_eq!((call.name.as_str(), call.input["command"].as_str()), ("Bash", Some("touch /tmp/x")));
+    assert_eq!(asked(&first["id"])["waiting"], true, "nothing answered yet");
+    link.answer(1, Answer::Deny);
+    assert_eq!(asked(&first["id"])["answer"], "deny");
+
+    let second = ask("touch /tmp/x");
+    wait_ask().expect("asked again after a deny");
+    link.answer(1, Answer::AlwaysAllow);
+    assert_eq!(asked(&second["id"])["answer"], "always");
+    assert_eq!(ask("touch /tmp/x")["answer"], "always", "always holds for the tab without asking");
+    assert!(ask("rm -rf /tmp/y")["id"].is_u64(), "another command is asked");
+}

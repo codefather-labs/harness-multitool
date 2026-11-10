@@ -1219,8 +1219,22 @@ impl ConversationHost for DaemonHost {
             return Ok(json!({"task": task}));
         }
         if name == "slave_ask" {
-            let session = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session)).ok_or("only an agent of an orchestra asks its master")?;
             let (tool, input) = (op["tool"].as_str().unwrap_or_default(), &op["input"]);
+            let slave = window.sessions.session_of(tab).map(str::to_string).filter(|session| self.orchestra.lock().expect("orchestra").slaves.contains_key(session));
+            // The user's own tab: its program's request is the user's, asked in that tab as the
+            // native loop's are (journal#814). Answered through the tab's answer, below.
+            let Some(session) = slave else {
+                let key = ask_key(tool, input);
+                if window.program_allowed.contains(&(tab, key.clone())) {
+                    return Ok(json!({"answer": "always"}));
+                }
+                let id = self.next_ask.fetch_add(1, Ordering::SeqCst);
+                window.program_asks.push(ProgramAsk { id, tab, key, answer: None });
+                let call = harness_api::ToolCall { id: format!("program-ask-{id}"), name: tool.to_string(), input: input.clone() };
+                window.say(json!({"kind": "ask", "tab": tab, "call": call, "capabilities": []}));
+                self.wake.notify_all();
+                return Ok(json!({"id": id, "user": true}));
+            };
             let planning = self.orchestra.lock().expect("orchestra").planning.contains(&session);
             // An edit by script is answered here: the file tools do it with no one asked (journal#674).
             if tool == "Bash"
@@ -1269,6 +1283,28 @@ impl ConversationHost for DaemonHost {
             return Self::on_followed(&mut windows, id, tab, name, op);
         }
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
+        // An answer to the program's own request (journal#814) is that request's, not the loop's.
+        if name == "answer" && window.sessions.session_of(tab).is_some() && !window.sessions.running(tab) {
+            // What a program that has stopped asked is no one's to answer now.
+            window.program_asks.retain(|ask| ask.tab != tab);
+        }
+        if name == "answer"
+            && let Some(ask) = window.program_asks.iter_mut().find(|ask| ask.tab == tab && ask.answer.is_none())
+        {
+            let answer = match answer_from_json(&op["answer"]) {
+                Answer::AllowOnce => "once",
+                Answer::AlwaysAllow => "always",
+                Answer::Deny => "deny",
+            };
+            if answer == "always" {
+                let key = ask.key.clone();
+                window.program_allowed.insert((tab, key));
+            }
+            if let Some(ask) = window.program_asks.iter_mut().find(|ask| ask.tab == tab && ask.answer.is_none()) {
+                ask.answer = Some(answer.to_string());
+            }
+            return Ok(json!({"ok": true}));
+        }
         let reply = window.apply(name, op);
         // A first message made it a conversation.
         if let Some(session) = window.sessions.session_of(tab).map(str::to_string) {
@@ -1524,6 +1560,14 @@ pub enum SessionLink {
 }
 
 impl SessionLink {
+    /// The daemon's id of this window, which its delegates' MCP servers are given.
+    pub fn window_id(&self) -> Option<&str> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => Some(&r.window),
+        }
+    }
+
     pub fn is_remote(&self) -> bool {
         matches!(self, SessionLink::Remote(_))
     }

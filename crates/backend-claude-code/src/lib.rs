@@ -283,7 +283,16 @@ impl ClaudeCode {
         } else {
             match &self.prompt_tool {
                 // Asking and planning are the harness's there: the program's own would come as prompts.
-                Some(tool) => args.extend(["--permission-prompts".to_string(), "host".to_string(), "--permission-prompt-tool".to_string(), tool.clone(), "--disallowedTools".to_string(), "AskUserQuestion,EnterPlanMode,ExitPlanMode,mcp__harness__telegram_send".to_string()]),
+                // A user's own tab keeps the program's plan mode, whose ExitPlanMode comes to the user as a prompt;
+                // a slave's planning and Telegram are the harness's (CON-108). Nobody can answer AskUserQuestion here.
+                Some(tool) => args.extend([
+                    "--permission-prompts".to_string(),
+                    "host".to_string(),
+                    "--permission-prompt-tool".to_string(),
+                    tool.clone(),
+                    "--disallowedTools".to_string(),
+                    if self.harness_plans { "AskUserQuestion,EnterPlanMode,ExitPlanMode,mcp__harness__telegram_send" } else { "AskUserQuestion" }.to_string(),
+                ]),
                 None => args.extend(["--permission-prompts".to_string(), "none".to_string()]),
             }
             args.extend(["--allowedTools".to_string(), if self.mcp.is_some() { format!("{},mcp__harness__*,mcp__mode__*", self.allowed_tools) } else { self.allowed_tools.clone() }]);
@@ -701,11 +710,14 @@ mod tests {
         let allowed = &with_tools[with_tools.iter().position(|a| a == "--allowedTools").expect("allowed") + 1];
         assert!(allowed.contains("mcp__harness__*") && allowed.contains("mcp__mode__*"), "{allowed}");
         // A row with a prompt tool sends the prompts there, not to nobody (CON-108).
-        let asking = ClaudeCode::new("m1", "/r", &json!({"permission_prompt_tool": "mcp__mode__permission_ask"})).args(&request(None, None, false, &never));
+        let asking = ClaudeCode::new("m1", "/r", &json!({"permission_prompt_tool": "mcp__mode__permission_ask", "harness_plans": true})).args(&request(None, None, false, &never));
         let flag = |flag: &str| asking[asking.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag}: {asking:?}")) + 1].clone();
         assert_eq!(flag("--permission-prompts"), "host");
         assert_eq!(flag("--permission-prompt-tool"), "mcp__mode__permission_ask");
         assert!(flag("--disallowedTools").contains("AskUserQuestion") && flag("--disallowedTools").contains("telegram_send"));
+        // The user's own tab asks the user (journal#814): its Telegram and plan mode stay its own.
+        let users = ClaudeCode::new("m1", "/r", &json!({"permission_prompt_tool": "mcp__mode__permission_ask"})).args(&request(None, None, false, &never));
+        assert_eq!(users[users.iter().position(|a| a == "--disallowedTools").expect("disallowed") + 1], "AskUserQuestion");
         // A slave's plan mode is the harness's: the program's own has instructions that win over ours.
         let held = ClaudeCode::new("m1", "/r", &json!({"harness_plans": true})).args(&request(None, None, true, &never));
         assert!(!held.iter().any(|a| a == "--permission-mode"), "{held:?}");

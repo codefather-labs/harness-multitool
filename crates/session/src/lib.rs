@@ -496,6 +496,15 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             // The harness's own tools go with it, whichever way the row runs.
             let mcp = harness_daemon::own_program().ok().map(|program| mcp::config(&program, &root, host.window.as_deref(), tab));
             let spec_dir = std::path::Path::new(&agent_workflow_file(&data)).parent().map(|d| d.to_string_lossy().into_owned());
+            // In a daemon's window its permission prompts come to the user in the tab, as the native
+            // loop's do, rather than being refused with nobody asked (journal#814). A slave's go to its master.
+            let mut settings = settings.clone();
+            if host.window.is_some()
+                && let Some(row) = settings.providers.get_mut(&settings.provider).and_then(|row| row.as_object_mut())
+                && !row.contains_key("permission_prompt_tool")
+            {
+                row.insert("permission_prompt_tool".to_string(), json!(host_tools::PROMPT_TOOL));
+            }
             parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp, spec_dir)?);
         }
         // A connected provider's form is kept in line whichever provider runs the session (INV-20).

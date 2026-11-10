@@ -252,16 +252,18 @@ fn wait_for_master(ask: &PermissionAsk, input: &Value) -> Result<(), String> {
         return Ok(());
     }
     let id = asked["id"].clone();
+    let whose = if asked["user"] == true { "The user" } else { "Your orchestrator" };
     let end = std::time::Instant::now() + PERMISSION_WAIT;
     while std::time::Instant::now() < end {
         let state = op("slave_asked", json!({"id": id}))?;
         match state["answer"].as_str() {
+            Some("deny") if whose == "The user" => return Err("The user did not allow this. Do not try it another way; say why you need it if your work does.".to_string()),
             Some("deny") => return Err("Your orchestrator did not allow this. Do not try it another way; tell it with agent_send if your work needs it.".to_string()),
             Some(_) => return Ok(()),
             None => std::thread::sleep(std::time::Duration::from_millis(200)),
         }
     }
-    Err("Your orchestrator did not answer in time, so this is denied. Tell it with agent_send if your work needs it.".to_string())
+    Err(format!("{whose} did not answer in time, so this is denied."))
 }
 
 pub struct ModeTool {
