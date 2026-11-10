@@ -254,7 +254,8 @@ fn main() -> Result<()> {
         // what a window sends its daemon, so its sessions reach this profile's sign-ins (CON-122).
         unsafe { std::env::set_var(name, dir) };
     }
-    let command = cli.command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None, handoff: None });
+    // Bare `multitool` opens the start page, as run.sh does (journal#780).
+    let command = cli.command.unwrap_or(Command::Preview { name: "splash".into(), theme: "dark".into(), script: None, handoff: None });
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
         Command::Trace { name, json } => trace(name.as_deref(), json),

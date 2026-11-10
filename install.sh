@@ -17,6 +17,8 @@ REPO_URL="https://github.com/codefather-labs/harness-multitool.git"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/harness-multitool"
 BIN_DIR="$DATA_HOME/bin"
 LINK_DIR="$HOME/.local/bin"
+# The one line this installer may add to a shell's profile, and how it finds it again.
+PATH_MARK="# harness-multitool: multitool on PATH"
 
 ASSUME_YES=false
 LOCAL_MODE=false
@@ -46,6 +48,9 @@ OPTIONS:
 WHAT GETS INSTALLED:
   $BIN_DIR/multitool
   $LINK_DIR/multitool   a link to it
+  if $LINK_DIR is not on your PATH, and you agree: one line in your shell's
+  profile that puts it there (zsh ~/.zshrc, bash ~/.bashrc or on macOS
+  ~/.bash_profile, fish ~/.config/fish/conf.d, other shells ~/.profile)
 HELP
 }
 
@@ -72,6 +77,56 @@ confirm() {
   case "$answer" in y|Y|yes) return 0 ;; *) return 1 ;; esac
 }
 
+# The profile file of the user's shell, by OS and shell.
+profile_file() {
+  case "$(basename "${SHELL:-sh}")" in
+    zsh) echo "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) if [ "$(uname -s)" = Darwin ]; then echo "$HOME/.bash_profile"; else echo "$HOME/.bashrc"; fi ;;
+    fish) echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/harness-multitool.fish" ;;
+    *) echo "$HOME/.profile" ;;
+  esac
+}
+
+path_line() {
+  case "$1" in
+    *.fish) echo "fish_add_path -g \"$LINK_DIR\" $PATH_MARK" ;;
+    *) echo "export PATH=\"$LINK_DIR:\$PATH\" $PATH_MARK" ;;
+  esac
+}
+
+# Puts LINK_DIR on PATH for new shells, once, if it is not there: asked first.
+ensure_on_path() {
+  case ":$PATH:" in *":$LINK_DIR:"*) return 0 ;; esac
+  local file line
+  file="$(profile_file)"
+  line="$(path_line "$file")"
+  if [ -f "$file" ] && grep -qF "$PATH_MARK" "$file"; then
+    log_info "$file already puts $LINK_DIR on PATH: open a new terminal to use multitool"
+    return 0
+  fi
+  log_warn "$LINK_DIR is not on your PATH"
+  if confirm "Add this line to $file?
+  $line
+"; then
+    mkdir -p "$(dirname "$file")"
+    printf '\n%s\n' "$line" >> "$file"
+    log_ok "added to $file: open a new terminal to use multitool"
+  else
+    log_warn "not added. To use multitool by its name, add this to your shell's profile:"
+    log_warn "  $line"
+  fi
+}
+
+# Takes back the line ensure_on_path added, and nothing else.
+remove_from_path() {
+  local file
+  for file in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/harness-multitool.fish"; do
+    [ -f "$file" ] && grep -qF "$PATH_MARK" "$file" || continue
+    grep -vF "$PATH_MARK" "$file" > "$file.harness-multitool.tmp" && cat "$file.harness-multitool.tmp" > "$file" && rm -f "$file.harness-multitool.tmp"
+    log_ok "removed the PATH line from $file"
+  done
+}
+
 uninstall() {
   local link="$LINK_DIR/multitool"
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$BIN_DIR/multitool" ]; then
@@ -84,9 +139,10 @@ uninstall() {
   else
     log_info "nothing installed at $BIN_DIR/multitool"
   fi
+  remove_from_path
   log_info "kept your data, delete it yourself if you want it gone:"
   log_info "  $DATA_HOME  (sessions, journals, speech models)"
-  log_info "  ${XDG_CONFIG_HOME:-$HOME/.config}/harness-multitool  (settings, may hold a bot token)"
+  log_info "  ${MULTITOOL_HOME:-$HOME/.harness}  (profiles: settings and sign-ins; may hold a bot token)"
 }
 
 # Named with the exact command, and installed only on your word: a script that quietly runs sudo
@@ -176,11 +232,7 @@ else
   log_error "the installed binary does not run"
   status=1
 fi
-case ":$PATH:" in
-  *":$LINK_DIR:"*) ;;
-  *) log_warn "$LINK_DIR is not on your PATH. Add this to your shell's profile:"
-     log_warn "  export PATH=\"$LINK_DIR:\$PATH\"" ;;
-esac
+ensure_on_path
 
 echo ""
 echo "${BOLD}harness-multitool installed.${NC}"

@@ -5,14 +5,16 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 ## Run
 
 ```bash
-./install.sh --local             # build it and put `multitool` on your PATH (install.ps1 on Windows)
-./run.sh                        # build (release) and open the TUI at the splash
+./install.sh --local             # build it, copy it, put `multitool` on your PATH (install.ps1 on Windows)
+multitool                       # from any folder: the start page, as ./run.sh opens it
+multitool --profile work        # the same on another profile (ADR 0026)
+./run.sh                        # build (release) from this checkout and open the TUI at the splash
 ./run.sh preview main-session   # open on a named state (see `screen --list`)
 ./run.sh --graphics off         # text only; auto|sixel|kitty|iterm2|off
 ./run.sh --debug                # debug build
 ```
 
-`run.ps1` does the same on Windows (`-Graphics`, `-DebugBuild`). The scripts set the environment the installer will set globally later: `MULTITOOL_GRAPHICS` (default `auto`) and `COLORTERM=truecolor`.
+`run.ps1` does the same on Windows (`-Graphics`, `-DebugBuild`). The installed `multitool` is a copy: run the installer again to update it. On Linux and macOS it is linked from `~/.local/bin`; if that folder is not on your PATH, the installer offers to add one marked line to your shell's profile (zsh `~/.zshrc`, bash `~/.bashrc`, or `~/.bash_profile` on macOS, fish `~/.config/fish/conf.d/harness-multitool.fish`, other shells `~/.profile`), and `--uninstall` takes that line back. On Windows the installer puts its folder on your user PATH, and says if another `multitool` comes first there. A link, not a shell alias: an alias works only in an interactive shell of one kind, a command on PATH works from any shell, script or launcher. Graphics default to `auto` without `MULTITOOL_GRAPHICS`, and nothing in the harness reads `COLORTERM`.
 
 **Text first.** Text mode is the primary target: the owner works in Ptyxis (VTE), which draws no pictures, so every screen must read well without them. The design targets text mode: every picture has a text form drawn in the same cells — the logo as half-block pixel art, icons as glyphs, mind maps as box-drawing cards and arrows. Terminals with a graphics protocol (kitty, WezTerm, Ghostty; sixel where enabled) get pictures instead, made from SVG for the cells they cover. A protocol forced with `--graphics` is used only when the terminal answers a graphics query; others keep the text forms.
 

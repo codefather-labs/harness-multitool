@@ -120,6 +120,11 @@ try {
         [Environment]::SetEnvironmentVariable('Path', (($path, $BinDir | Where-Object { $_ }) -join ';'), 'User')
         Log-Ok "added $BinDir to your user PATH: open a new terminal to use it"
     }
+    # Another multitool found first on PATH would be the one a new terminal runs.
+    $first = Get-Command multitool -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($first -and $first.Source -ne $exe) {
+        Log-Warn "another multitool comes first on your PATH: $($first.Source). Remove it, or run $exe"
+    }
     $version = & $exe --version
     if ($LASTEXITCODE -ne 0) { Log-Error 'the installed binary does not run'; exit 1 }
     Log-Ok "it runs: $version"
