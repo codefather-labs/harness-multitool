@@ -2,7 +2,8 @@
 //! holds a profile's settings, `~/.harness/shared.toml` the cross-profile ones, Telegram and voice
 //! (CON-124). This process runs on one profile, chosen once at its start with [`select`]; every
 //! function here reads and writes that one. `default` always exists. The configuration of before
-//! profiles, `<config dir>/harness-multitool/config.toml`, is moved into `default` once.
+//! profiles, `<config dir>/harness-multitool/config.toml`, is copied into `default` once and left
+//! where it is, for older builds still running (journal#754).
 
 use std::path::PathBuf;
 
@@ -162,6 +163,33 @@ fn list_in(root: &std::path::Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Where this process's profile keeps its ChatGPT credential (CON-122). `default`'s stays where it
+/// was before profiles: moving or copying it would leave an older build, or a second copy of a
+/// rotating refresh token, behind (journal#754).
+pub fn chatgpt_dir() -> Result<PathBuf> {
+    if current() == DEFAULT_PROFILE {
+        return Ok(data_dir()?.join("auth").join("chatgpt"));
+    }
+    Ok(profile_dir(current())?.join("chatgpt"))
+}
+
+/// The Claude Code configuration directory of this process's profile: none for `default`, which
+/// runs on the user's own Claude Code login (CON-120).
+pub fn claude_dir() -> Result<Option<PathBuf>> {
+    Ok((current() != DEFAULT_PROFILE).then(|| profile_dir(current())).transpose()?.map(|d| d.join("claude")))
+}
+
+/// What this window's sessions must see of its profile: the folders of its sign-ins, by the
+/// variables the delegate and the auth plugin read (CON-122). Paths only, never a credential.
+pub fn sign_in_environment() -> Result<Vec<(&'static str, PathBuf)>> {
+    let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, chatgpt_dir()?)];
+    if let Some(dir) = claude_dir()? {
+        private_dir(&dir)?;
+        vars.push(("CLAUDE_CONFIG_DIR", dir));
+    }
+    Ok(vars)
+}
+
 /// A profile's folder.
 pub fn profile_dir(name: &str) -> Result<PathBuf> {
     check_name(name)?;
@@ -190,7 +218,8 @@ fn create_in(root: &std::path::Path, name: &str) -> Result<PathBuf> {
 }
 
 /// The first start with profiles: `default` and `shared.toml` from the configuration of before, if
-/// there was one, which is then renamed so nothing reads it again. Later starts change nothing.
+/// there was one. That file is left as it is: an older build still running reads it, and this one
+/// never does again, since `default` exists (journal#754). Later starts change nothing.
 fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
     let default = root.join("profiles").join(DEFAULT_PROFILE);
     if default.join("profile.toml").is_file() {
@@ -209,10 +238,6 @@ fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
         write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
     }
     write_private(&default.join("profile.toml"), &toml::to_string_pretty(&ProfileFile { terminal: c.terminal, session: c.session })?)?;
-    if let Some((p, _)) = before {
-        let moved = p.with_extension("toml.moved-to-profiles");
-        std::fs::rename(p, &moved).with_context(|| format!("renaming {}", p.display()))?;
-    }
     Ok(())
 }
 
@@ -409,8 +434,8 @@ mod tests {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
     }
 
-    /// CON-120, CON-124: the configuration of before moves into `default` once, Telegram and voice
-    /// into `shared.toml`; the old file is renamed, and a second start changes nothing.
+    /// CON-120, CON-124: the configuration of before is copied into `default` once, Telegram and
+    /// voice into `shared.toml`; the old file stays, and a second start changes nothing.
     #[test]
     fn the_old_config_moves_into_default_once() {
         let root = temp_root("migrate");
@@ -419,8 +444,9 @@ mod tests {
         let old = old_dir.join("config.toml");
         std::fs::write(&old, "[terminal]\ngraphics = \"sixel\"\n[telegram]\ntoken = \"CANARY-T\"\nallowed_users = [7]\n[voice]\nbackend = \"whisper\"\n[session]\nmap_max_nodes = 42\n").unwrap();
         let home = root.join("home");
+        let before = std::fs::read(&old).unwrap();
         ensure(&home, Some(&old)).unwrap();
-        assert!(!old.exists() && old_dir.join("config.toml.moved-to-profiles").exists());
+        assert_eq!(std::fs::read(&old).unwrap(), before, "the old file stays as it was, for older builds (journal#754)");
         let c = load_in(&home, DEFAULT_PROFILE).unwrap();
         assert_eq!((c.terminal.graphics, c.session.map_max_nodes, c.telegram.allowed_users.clone(), c.voice.backend.as_deref()), (Graphics::Sixel, 42, vec![7], Some("whisper")));
         let profile = std::fs::read_to_string(home.join("profiles/default/profile.toml")).unwrap();
@@ -432,10 +458,9 @@ mod tests {
             assert_eq!(mode(&home.join("profiles/default/profile.toml")), 0o600);
             assert_eq!(mode(&home.join("profiles/default")), 0o700);
         }
-        // A second start: nothing moves, nothing is rewritten.
+        // A second start: the old file is not read again, even when an older build changed it.
         std::fs::write(&old, "[session]\nmap_max_nodes = 9\n").unwrap();
         ensure(&home, Some(&old)).unwrap();
-        assert!(old.exists());
         assert_eq!(load_in(&home, DEFAULT_PROFILE).unwrap().session.map_max_nodes, 42);
         let _ = std::fs::remove_dir_all(&root);
     }

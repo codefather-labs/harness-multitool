@@ -68,6 +68,11 @@ impl Store {
         Store { dir: data_dir.join("auth").join("chatgpt") }
     }
 
+    /// The store in this folder itself: a profile's own (CON-122).
+    pub fn at(dir: &Path) -> Store {
+        Store { dir: dir.to_path_buf() }
+    }
+
     fn write(&self, name: &str, text: &str) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let temp = self.dir.join(format!("{name}.{}.tmp", std::process::id()));
@@ -406,7 +411,11 @@ pub struct ChatGptAuth {
 
 impl ChatGptAuth {
     pub fn new(data_dir: &Path) -> ChatGptAuth {
-        ChatGptAuth { store: Store::new(data_dir), http: agent(30), cached: RefCell::new(None) }
+        ChatGptAuth::with_store(Store::new(data_dir))
+    }
+
+    pub fn with_store(store: Store) -> ChatGptAuth {
+        ChatGptAuth { store, http: agent(30), cached: RefCell::new(None) }
     }
 
     fn fresh(c: &Credential) -> bool {

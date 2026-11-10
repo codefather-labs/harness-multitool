@@ -234,6 +234,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     // Every start: the profiles are made or moved in first (CON-120), then this run's is chosen.
     config::select(cli.profile.as_deref().unwrap_or(config::DEFAULT_PROFILE))?;
+    for (name, dir) in config::sign_in_environment()? {
+        // SAFETY: first thing in main, before any thread is started. This process's environment is
+        // what a window sends its daemon, so its sessions reach this profile's sign-ins (CON-122).
+        unsafe { std::env::set_var(name, dir) };
+    }
     let command = cli.command.unwrap_or(Command::Preview { name: "welcome".into(), theme: "dark".into(), script: None, handoff: None });
     match command {
         Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
@@ -241,7 +246,7 @@ fn main() -> Result<()> {
         Command::Login { provider } => login(&provider),
         Command::Logout { provider } => {
             only_chatgpt(&provider)?;
-            let store = harness_auth_chatgpt::Store::new(&config::data_dir()?);
+            let store = harness_session_store(&config::data_dir()?);
             let confirmed = harness_auth_chatgpt::logout(&store).map_err(|e| anyhow!(e))?;
             println!("{}", if confirmed { "signed out" } else { "signed out here, but OpenAI did not confirm the revocation: disconnect the app in ChatGPT's settings" });
             Ok(())
@@ -1162,6 +1167,7 @@ impl Live {
         }
         let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) else { return };
         frontend_tui::live::set_status(&mut t.view, "ADAPTER", provider);
+        frontend_tui::live::set_status(&mut t.view, "PROFILE", config::current());
         frontend_tui::live::set_status(&mut t.view, "MODEL", model);
         frontend_tui::live::show_context_window(&mut t.view, self.context_window);
         let has_session = self.sessions.session_of(tab).is_some();
@@ -1223,7 +1229,7 @@ impl Live {
         let session = config::load().map(|c| c.session).unwrap_or_default();
         let sender = self.plan_models.0.clone();
         std::thread::spawn(move || {
-            let plan = harness_auth_chatgpt::ChatGptAuth::new(&dir);
+            let plan = harness_auth_chatgpt::ChatGptAuth::with_store(harness_session_store(&dir));
             if harness_auth_chatgpt::status(&harness_session_store(&dir)).0 {
                 let answer = pollster::block_on(harness_api::Auth::credentials(&plan, "chatgpt")).map_err(|e| e.to_string()).and_then(|token| harness_auth_chatgpt::list_models(&plan_base_url(&session), token.expose()));
                 let _ = sender.send((frontend_tui::model::PLAN_PROVIDER.to_string(), answer.map(|m| choices(frontend_tui::model::PLAN_PROVIDER, m))));
@@ -1541,6 +1547,7 @@ impl Live {
             // What the next message goes through, not what the last one went through.
             let choice = self.sessions.choice_of(tab);
             frontend_tui::live::set_status(view, "ADAPTER", choice.as_ref().map_or(&self.provider, |c| &c.provider));
+            frontend_tui::live::set_status(view, "PROFILE", config::current());
             frontend_tui::live::set_status(view, "MODEL", choice.as_ref().map_or(&self.model, |c| &c.model));
             if let Some(choice) = &choice {
                 let window = config::load().map_or(self.context_window, |c| harness_session::Settings { provider: choice.provider.clone(), ..c.session }.context_window());
@@ -1827,6 +1834,7 @@ impl Live {
                     frontend_tui::live::show_mode(&mut opened.view);
                     opened.view.background.clear();
                     frontend_tui::live::set_status(&mut opened.view, "ADAPTER", &provider);
+                    frontend_tui::live::set_status(&mut opened.view, "PROFILE", config::current());
                     frontend_tui::live::set_status(&mut opened.view, "MODEL", &model);
                     let mut at = w.tabs.iter().position(|t| t.id == master).map_or(w.tabs.len(), |i| i + 1);
                     while w.tabs.get(at).is_some_and(|t| t.view.orchestra.as_deref() == Some("slave")) {
@@ -1962,8 +1970,9 @@ fn provider_id(row: &str) -> String {
     }
 }
 
+/// This profile's ChatGPT credential store (CON-122); the data directory's if it cannot be named.
 fn harness_session_store(data_dir: &std::path::Path) -> harness_auth_chatgpt::Store {
-    harness_auth_chatgpt::Store::new(data_dir)
+    config::chatgpt_dir().map_or_else(|_| harness_auth_chatgpt::Store::new(data_dir), |dir| harness_auth_chatgpt::Store::at(&dir))
 }
 
 fn plan_base_url(session: &harness_session::Settings) -> String {
@@ -2028,7 +2037,7 @@ fn only_chatgpt(provider: &str) -> Result<()> {
 /// `multitool login chatgpt`: the user signs in on OpenAI's page; nothing here sees a password.
 fn login(provider: &str) -> Result<()> {
     only_chatgpt(provider)?;
-    let store = harness_auth_chatgpt::Store::new(&config::data_dir()?);
+    let store = harness_session_store(&config::data_dir()?);
     let session = config::load()?.session;
     let issuer = session.auth.get("chatgpt").and_then(|a| a["issuer"].as_str()).unwrap_or(harness_auth_chatgpt::ISSUER).to_string();
     let base = session.providers.get("chatgpt").and_then(|p| p["base_url"].as_str()).unwrap_or("https://api.openai.com/v1").to_string();

@@ -461,7 +461,7 @@ impl DaemonHost {
                 }
                 "mode__agent_models" => {
                     self.master_of_tab(window, tab)?;
-                    Ok(json!({"adapters": authorized_adapters(&window.settings, &self.data_dir)}))
+                    Ok(json!({"adapters": authorized_adapters(&window.settings, &self.data_dir, window.environment.clone())}))
                 }
                 "mode__agent_spawn" => {
                     let master = self.master_of_tab(window, tab)?;
@@ -481,7 +481,7 @@ impl DaemonHost {
                         Some(_) => return Err(format!("journal#{task} holds no open work: an agent's task is an open entry")),
                         None => return Err(format!("there is no journal#{task}")),
                     }
-                    if !authorized_adapters(&window.settings, &self.data_dir).iter().any(|row| row["adapter"] == adapter) {
+                    if !authorized_adapters(&window.settings, &self.data_dir, window.environment.clone()).iter().any(|row| row["adapter"] == adapter) {
                         return Err(format!("{adapter} is not authorized here: mode__agent_models lists what is. The user signs in, in the settings; never through an agent."));
                     }
                     Ok(json!({"spawn": {"nick": nick, "provider": adapter, "model": model, "task": task}}))
@@ -1644,8 +1644,10 @@ pub fn daemon_for_this_build(data_dir: &Path, program: &Path) -> Result<Client, 
 }
 
 /// The adapters of these settings that are authorized here, with the models known for each.
-fn authorized_adapters(settings: &Settings, data_dir: &Path) -> Vec<Value> {
-    let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &json!(settings.auth));
+/// They are the window's: its environment holds its profile's keys and credential folder (CON-122).
+fn authorized_adapters(settings: &Settings, data_dir: &Path, environment: Option<crate::WindowEnv>) -> Vec<Value> {
+    let read = crate::env_reader(environment);
+    let keys = harness_auth_apikey::ApiKeyAuth::new({ let read = read.clone(); move |name| read(name) }, &json!(settings.auth));
     let names = std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str));
     let mut seen = Vec::new();
     let mut rows = Vec::new();
@@ -1660,7 +1662,7 @@ fn authorized_adapters(settings: &Settings, data_dir: &Path) -> Vec<Value> {
         let authorized = if is_delegate {
             true
         } else if on_plan {
-            harness_auth_chatgpt::status(&harness_auth_chatgpt::Store::new(data_dir)).0
+            harness_auth_chatgpt::status(&crate::chatgpt_store(&|name: &str| read(name), data_dir)).0
         } else {
             let source = keys.source(name);
             !source.starts_with("not set")

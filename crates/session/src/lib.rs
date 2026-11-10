@@ -120,6 +120,19 @@ fn git_origin(root: &str) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|u| !u.is_empty())
 }
 
+/// Names the folder of a window's profile's ChatGPT credential (CON-122). Only a path: what is in it
+/// stays there.
+pub const CHATGPT_DIR_VAR: &str = "MULTITOOL_CHATGPT_DIR";
+
+/// The ChatGPT credential store of a window: its profile's folder, or the data directory's for a
+/// window that names none.
+pub fn chatgpt_store(read: &dyn Fn(&str) -> Option<String>, data_dir: &std::path::Path) -> harness_auth_chatgpt::Store {
+    match read(CHATGPT_DIR_VAR).filter(|d| !d.is_empty()) {
+        Some(dir) => harness_auth_chatgpt::Store::at(std::path::Path::new(&dir)),
+        None => harness_auth_chatgpt::Store::new(data_dir),
+    }
+}
+
 /// A window's environment, held in memory for its sessions: in no file and in no log (INV-6).
 pub type WindowEnv = Arc<BTreeMap<String, String>>;
 
@@ -169,7 +182,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
     let sessions_dir = sessions_dir(data_dir, root);
     let (root_d, data_d) = (root.to_string(), std::path::PathBuf::from(data_dir));
     let auth_data = PathBuf::from(data_dir);
-    r.auth("api-key", move |cx| Ok(Rc::new(ProviderAuth::new(harness_auth_apikey::ApiKeyAuth::new({ let env = env.clone(); move |name: &str| env(name) }, cx.settings), cx.settings, &auth_data))))
+    r.auth("api-key", move |cx| Ok(Rc::new(ProviderAuth::new(harness_auth_apikey::ApiKeyAuth::new({ let env = env.clone(); move |name: &str| env(name) }, cx.settings), cx.settings, chatgpt_store(&|name: &str| env(name), &auth_data)))))
         .router("one-model", |cx| Ok(Rc::new(harness_router_default::OneModel::new(cx.settings)?)))
         .tool("read", |_| Ok(Rc::new(harness_tools_builtin::Read)))
         .tool("edit", |_| Ok(Rc::new(harness_tools_builtin::Edit)))
@@ -620,10 +633,10 @@ impl Auth for ClaudeSubscription {
 }
 
 impl ProviderAuth {
-    fn new(keys: harness_auth_apikey::ApiKeyAuth, settings: &Value, data_dir: &std::path::Path) -> Self {
+    fn new(keys: harness_auth_apikey::ApiKeyAuth, settings: &Value, store: harness_auth_chatgpt::Store) -> Self {
         let on_plan = settings.as_object().map(|m| m.iter().filter(|(_, v)| v["oauth"] == "chatgpt").map(|(k, _)| k.clone()).collect()).unwrap_or_default();
         let refused = settings.as_object().map(|m| m.iter().filter(|(_, v)| v["oauth"] == "claude-subscription").map(|(k, _)| k.clone()).collect()).unwrap_or_default();
-        ProviderAuth { keys, chatgpt: harness_auth_chatgpt::ChatGptAuth::new(data_dir), on_plan, refused }
+        ProviderAuth { keys, chatgpt: harness_auth_chatgpt::ChatGptAuth::with_store(store), on_plan, refused }
     }
 }
 
