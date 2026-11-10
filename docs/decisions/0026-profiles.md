@@ -1,7 +1,7 @@
 # 0026 — Profiles: every setting, and each window's sign-in
 
 - **Status:** proposed · **Decided by:** the project owner, 2026-11-10
-- **Specs:** CON-120, CON-121, CON-122, CON-123, CON-124, CON-125; keeps CON-56, CON-87, INV-6
+- **Specs:** CON-120, CON-121, CON-122, CON-123, CON-124, CON-125, CON-126; keeps CON-56, CON-87, INV-6
 
 ## Decision
 
@@ -9,7 +9,26 @@ Every setting lives in a profile, a whole configuration of its own, and each win
 
 ## Where profiles live
 
-All of a profile is in one folder, `~/.harness/profiles/<name>/`: `profile.toml` with its settings, `claude/` with its Claude Code login, `chatgpt/` with its ChatGPT credential. The folder belongs to the user's machine, not to a project: every project opened on a profile uses the same sign-in. A fresh install has `default`, which runs on the user's own `~/.claude` login. Telegram and voice are in `~/.harness/shared.toml` (the owner, 2026-11-10).
+All of a profile is in one folder, `~/.harness/profiles/<name>/`. The folder belongs to the user's machine, not to a project. Profiles do not own conversations (CON-126):
+
+```
+~/.claude/                          the user's own Claude Code, used by plain claude and older harnesses; never touched
+  .credentials.json
+  projects/                         every Claude Code transcript, by project folder
+~/.harness/
+  shared.toml                       Telegram and voice, the same for every profile
+  profiles/
+    default/
+      profile.toml                  the profile's settings
+      chatgpt/                      its ChatGPT sign-in
+      claude/                       its Claude Code directory
+        .credentials.json           its own Claude login, made by claude auth login
+        projects -> ~/.claude/projects     a link: the same transcripts as everyone
+    work/                           the same layout, another account
+~/.local/share/harness-multitool/   the daemon's data: the harness's log of each conversation, journals
+```
+
+A fresh install has `default`. Until its Claude Code directory is signed in it runs on the user's own, so the conversation going on when profiles arrive keeps going. Telegram and voice are in `~/.harness/shared.toml` (the owner, 2026-11-10).
 
 ## Why this way
 
@@ -26,7 +45,7 @@ The harness already carries a window's environment to the daemon in memory, and 
 3. The harness hands the terminal to the unmodified `claude auth login`, run with that directory. The browser opens Anthropic's page; the user signs in with the account this profile is for, and Claude Code saves the login in that directory.
 4. The list shows the profile as signed in. `multitool --profile work`, or Use in the tab, starts work on it.
 
-No global sign-in is needed first, and no token is copied anywhere: each profile's login is made once, into its own directory, and Claude Code refreshes it itself. A second profile is the same steps; in the browser the user picks the other account. The user's own `~/.claude` login is untouched and stays what `default` runs on until its directory is set.
+No global sign-in is needed first, and no token is copied anywhere: each profile's login is made once, into its own directory, and Claude Code refreshes it itself. A second profile is the same steps; in the browser the user picks the other account. The user's own `~/.claude` is untouched; `default` runs on it until `default`'s own directory is signed in, and every profile sees its transcripts through the `projects` link.
 
 ## What is not per window
 
