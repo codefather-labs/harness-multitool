@@ -24,6 +24,7 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0023](0023-the-log-is-the-conversation.md) | The log is the conversation; each provider's form is written from it | accepted |
 | [0024](0024-conversations-live-in-the-daemon.md) | Conversations live in the daemon | accepted |
 | [0025](0025-one-conversation-in-every-form.md) | One conversation in every form | accepted |
+| [0026](0026-profiles.md) | Profiles: every setting, and each window's sign-in | proposed |
 | [0020](0020-claude-code-delegate.md) | Claude Code as a delegate agent, outside the default build | proposed |
 | [0019](0019-vendor-documented-sign-in.md) | A subscription sign-in ships where the vendor documents it for other apps | accepted |
 | [0016](0016-plan-mode.md) | Plan mode: the classic plan mode with the accent on the journal, mind maps and flowcharts | accepted |
