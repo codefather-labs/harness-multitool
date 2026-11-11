@@ -961,19 +961,19 @@ impl Live {
     /// the first included.
     fn receive_connection(&mut self, state: &mut frontend_tui::AppState) -> bool {
         use harness_daemon::client::Connection;
-        if let Some(why) = LOCAL_REASON.lock().expect("reason").take()
-            && let frontend_tui::model::Mode::Session(w) = &mut state.mode
-        {
-            w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text: format!("This window runs its conversations itself: {why}.") });
-            return true;
-        }
         if self.connection.is_none() {
             let client = self.sessions.client().or_else(|| self.window_ids.values().next().map(|(c, _)| c.clone()));
             self.connection = client.map(|c| c.watch());
         }
+        // Only a session shows toasts: on the start page nothing is taken, so what happened there,
+        // the first connection included, shows on the first session view (journal#873).
+        let frontend_tui::model::Mode::Session(w) = &mut state.mode else { return false };
+        if let Some(why) = LOCAL_REASON.lock().expect("reason").take() {
+            w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text: format!("This window runs its conversations itself: {why}.") });
+            return true;
+        }
         let Some(watch) = &self.connection else { return false };
         let Some(last) = watch.try_iter().last() else { return false };
-        let frontend_tui::model::Mode::Session(w) = &mut state.mode else { return false };
         let text = match last {
             Connection::Connected { pid, again: false } => format!("Connected to the daemon, pid {pid}."),
             Connection::Connected { pid, again: true } => format!("Reconnected to the daemon, pid {pid}."),

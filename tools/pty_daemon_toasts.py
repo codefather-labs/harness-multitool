@@ -3,7 +3,8 @@
 and every time one is made, the first included. A real window in a pty on its own data directory;
 the screen is read with pyte (no daemon is there to take a screenshot while it is down), and a
 debug screenshot is kept after each connection as proof.
-Rounds: start -> 'Connected to the daemon, pid A'; `multitool daemon stop` -> 'Connection to the
+The window starts bare, on the start page, as the user starts it (journal#873), and goes into a new
+session. Rounds: start -> 'Connected to the daemon, pid A'; `multitool daemon stop` -> 'Connection to the
 daemon lost' within 1 s, one such toast however long it lasts; a daemon started again ->
 'Reconnected to the daemon, pid B' within 2.5 s, B != A. Three rounds.
 Usage: tools/pty_daemon_toasts.py <absolute path to multitool> [a directory to keep the pictures in]"""
@@ -24,7 +25,8 @@ def daemon_pid(): return json.load(open(address))["pid"]
 screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)
 pid, fd = pty.fork()
 if pid == 0:
-    os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "welcome"])
+    # As the user starts it: bare, on the start page (journal#873), then into a new session.
+    os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 def pump(sec):
     end = time.time() + sec
@@ -50,8 +52,10 @@ def shot(name):
     shots.append(out)
     if keep: shutil.copy(out, os.path.join(keep, name))
 
-pump(1.0)
-until("the first connection's toast", lambda: "Connected to the daemon, pid" in flat(), 15)
+pump(3.0)
+os.write(fd, b"\r"); pump(1.5)                     # the splash, then the start page
+os.write(fd, b"n"); pump(1.0)                       # a new session
+until("the first connection's toast, though the connection was made on the start page", lambda: "Connected to the daemon, pid" in flat(), 15)
 first = daemon_pid()
 assert f"pid {first}" in flat(), flat()
 print("start:", re.search(r"Connected to the daemon, pid \d+", flat()).group(0))
