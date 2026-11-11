@@ -650,6 +650,9 @@ struct Live {
     /// The environment of the profile this window moved onto, for the sessions it runs itself;
     /// None while it is on the one it started on, whose sign-ins are this process's own (journal#824).
     local_env: Option<harness_session::WindowEnv>,
+    /// The reload waiting for its safe point builds nothing: the window restarts on the installed
+    /// binary (CON-129).
+    installed_swap: bool,
     voice_test: Option<VoiceTestRun>,
     voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
@@ -665,7 +668,7 @@ struct Live {
     /// The tab to tell how the reload in hand went.
     reload_for: Option<u64>,
     /// A rebuild in progress.
-    reloading: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    reloading: Option<std::sync::mpsc::Receiver<Result<reload::Built, String>>>,
     /// Built; the swap waits for a safe point.
     ready_to_swap: bool,
     /// When the daemon was last asked to step aside for the swap.
@@ -783,7 +786,12 @@ impl Live {
                 // It asked for this: it goes on by itself.
                 if handoff.tell == Some(index) {
                     w.tabs[index].view.generating = true;
-                    self.sessions.inbound(id, harness_api::HARNESS_LABEL.to_string(), "You asked for a reload: the harness has been rebuilt and restarted with your changes, and this conversation is here. Go on with what you were doing.".to_string());
+                    let what = if handoff.installed {
+                        "You asked for a reload: the harness has been restarted on the installed binary, with no build since it is not a local build, and this conversation is here. Go on with what you were doing."
+                    } else {
+                        "You asked for a reload: the harness has been rebuilt and restarted with your changes, and this conversation is here. Go on with what you were doing."
+                    };
+                    self.sessions.inbound(id, harness_api::HARNESS_LABEL.to_string(), what.to_string());
                 }
             }
         }
@@ -874,14 +882,20 @@ impl Live {
             let asked_by = self.sessions.reload_asked_by();
             self.reload_for = if std::mem::take(&mut self.reload_by_user) { None } else { Some(asked_by.unwrap_or(w.tabs[w.active].id)) };
             self.reloading = Some(reload::start_build());
-            note(w, "Rebuilding…".to_string());
+            note(w, "Reloading…".to_string());
             changed = true;
         }
         if let Some(result) = self.reloading.as_ref().and_then(|r| r.try_recv().ok()) {
             self.reloading = None;
             changed = true;
             match result {
-                Ok(()) => self.ready_to_swap = true,
+                Ok(built) => {
+                    self.ready_to_swap = true;
+                    self.installed_swap = built == reload::Built::Installed;
+                    if self.installed_swap {
+                        note(w, "Restarting on the installed binary: it is not a local build, so nothing is built (CON-129).".to_string());
+                    }
+                }
                 Err(message) => {
                     note(w, format!("Nothing was swapped: {message}"));
                     if let Some(tab) = self.reload_for.take() {
@@ -907,6 +921,7 @@ impl Live {
         // Before the daemon goes: it knows the tabs' sessions.
         let handoff = reload::Handoff {
             tell,
+            installed: self.installed_swap,
             active: w.active,
             theme: theme.to_string(),
             tabs: w
@@ -1001,7 +1016,7 @@ impl Live {
             Some(_) => None,
             None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {

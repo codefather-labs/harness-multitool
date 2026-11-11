@@ -27,6 +27,19 @@ pub struct Handoff {
     /// The tab whose agent asked for this: it is told when it is done.
     #[serde(default)]
     pub tell: Option<usize>,
+    /// Restarted on the installed binary, with no build (CON-129).
+    #[serde(default)]
+    pub installed: bool,
+}
+
+/// What a reload had to do before the swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Built {
+    /// A local build, rebuilt from its workspace (or by MULTITOOL_RELOAD_BUILD).
+    Rebuilt,
+    /// Not a local build's output, such as the installed `multitool`: nothing to build, the window
+    /// restarts on the file installed now (CON-129).
+    Installed,
 }
 
 pub fn write_handoff(data_dir: &Path, handoff: &Handoff) -> Result<PathBuf> {
@@ -44,7 +57,7 @@ pub fn take_handoff(path: &Path) -> Result<Handoff> {
 }
 
 /// Builds in the background. `MULTITOOL_RELOAD_BUILD` replaces the build command.
-pub fn start_build() -> Receiver<Result<(), String>> {
+pub fn start_build() -> Receiver<Result<Built, String>> {
     let (done, result) = channel();
     std::thread::spawn(move || {
         let _ = done.send(build());
@@ -64,7 +77,7 @@ fn shell(command: &str) -> Command {
     }
 }
 
-fn build() -> Result<(), String> {
+fn build() -> Result<Built, String> {
     let mut command = match std::env::var("MULTITOOL_RELOAD_BUILD") {
         Ok(custom) if !custom.is_empty() => shell(&custom),
         _ => {
@@ -75,7 +88,7 @@ fn build() -> Result<(), String> {
             let same = |a: &Path, b: &Path| a.canonicalize().ok().is_some_and(|x| b.canonicalize().ok().is_some_and(|y| x == y));
             let exe = harness_daemon::own_program().map_err(|e| e.to_string())?;
             if !same(&exe, &expected) {
-                return Err(format!("this binary ({}) is not the output of a local build, so there is nothing to rebuild", exe.display()));
+                return Ok(Built::Installed);
             }
             let mut c = Command::new("cargo");
             c.args(["build", "-q", "-p", "multitool"]).current_dir(workspace);
@@ -91,7 +104,7 @@ fn build() -> Result<(), String> {
     };
     let output = command.stdin(std::process::Stdio::null()).output().map_err(|e| format!("starting the build: {e}"))?;
     if output.status.success() {
-        return Ok(());
+        return Ok(Built::Rebuilt);
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let tail: Vec<&str> = stderr.lines().rev().take(12).collect();
@@ -129,6 +142,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mt-handoff-{}", std::process::id()));
         let h = Handoff {
             tell: None,
+            installed: true,
             active: 1,
             theme: "dark".into(),
             tabs: vec![TabHandoff { title: "a".into(), session: Some("s".into()), window: Some("w".into()), url: Some("u".into()), scroll: 3, draft: "half a thought".into() }],

@@ -73,7 +73,7 @@ def swapped(): return "--handoff" in open(f"/proc/{pid}/cmdline").read()
 
 pump(1.5); os.write(fd, b"r"); pump(2)
 typed("do reload now\r")
-until("the model heard it", lambda: any(n.get("prompt") == "do reload now" for n in notes()))
+until("the model heard it", lambda: any((n.get("prompt") or "").endswith("do reload now") for n in notes()))
 pump(0.5)
 typed("slow second\r")
 swap_at = None
