@@ -33,6 +33,94 @@ fn check_proofs(input: &Value, root: &str) -> PluginResult<()> {
     Ok(())
 }
 
+/// Where a project's proofs live (journal#928): one folder per project, in its own `.harness`.
+pub const PROOFS_DIR: &str = ".harness/proofs";
+/// Where a proof from elsewhere is copied to, inside it.
+const PROOFS_COPIED: &str = "journal";
+/// The largest file copied in as a proof.
+pub const PROOF_MAX_BYTES: u64 = 50 << 20;
+
+fn resolve(file: &str, root: &str) -> PathBuf {
+    let file = file.trim();
+    match file.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME").map_or_else(|| PathBuf::from(file), |home| PathBuf::from(home).join(rest)),
+        None if Path::new(file).is_absolute() => PathBuf::from(file),
+        None => Path::new(root).join(file),
+    }
+}
+
+/// Every proof file goes in the project's `.harness/proofs/` (journal#928): one there already is
+/// named by its path in the project; one from elsewhere is copied in, to `.harness/proofs/journal/`,
+/// and named by its copy, so what the journal links to lasts with the project. A folder, or a file
+/// over 50 MB, is refused, saying why. Answers the input with `proof_file` so named.
+fn place_proofs(input: &Value, root: &str) -> PluginResult<Value> {
+    check_proofs(input, root)?;
+    let files = strings(&input["proof_file"]);
+    if files.is_empty() {
+        return Ok(input.clone());
+    }
+    let proofs = Path::new(root).join(PROOFS_DIR);
+    let inside = proofs.canonicalize().ok();
+    let mut placed = Vec::new();
+    for file in files {
+        let path = resolve(&file, root);
+        let real = path.canonicalize().map_err(|e| PluginError::new(format!("proof_file `{file}`: {e}")))?;
+        if inside.as_ref().is_some_and(|inside| real.starts_with(inside)) {
+            let within = real.strip_prefix(inside.as_ref().expect("checked")).expect("checked");
+            placed.push(Path::new(PROOFS_DIR).join(within).to_string_lossy().into_owned());
+            continue;
+        }
+        let meta = std::fs::metadata(&real).map_err(|e| PluginError::new(format!("proof_file `{file}`: {e}")))?;
+        if meta.is_dir() {
+            return Err(PluginError::new(format!("proof_file `{file}` is a folder: name the files in it, and keep them in {PROOFS_DIR}/ of the project")));
+        }
+        if meta.len() > PROOF_MAX_BYTES {
+            return Err(PluginError::new(format!("proof_file `{file}` is {} MB, over the {} MB a proof is copied at: keep a smaller proof in {PROOFS_DIR}/ of the project", meta.len() >> 20, PROOF_MAX_BYTES >> 20)));
+        }
+        let into = proofs.join(PROOFS_COPIED);
+        std::fs::create_dir_all(&into).map_err(|e| PluginError::new(format!("making {}: {e}", into.display())))?;
+        let name = real.file_name().map_or_else(|| "proof".to_string(), |n| n.to_string_lossy().into_owned());
+        let (stem, extension) = match name.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
+            _ => (name.clone(), String::new()),
+        };
+        // The same file again is the same copy; another of the same name gets a number.
+        let content = std::fs::read(&real).map_err(|e| PluginError::new(format!("reading proof_file `{file}`: {e}")))?;
+        let mut n = 0;
+        let target = loop {
+            let candidate = into.join(if n == 0 { name.clone() } else { format!("{stem}-{n}{extension}") });
+            match std::fs::read(&candidate) {
+                Ok(there) if there == content => break candidate,
+                Ok(_) => n += 1,
+                Err(_) => {
+                    std::fs::write(&candidate, &content).map_err(|e| PluginError::new(format!("copying proof_file `{file}` to {}: {e}", candidate.display())))?;
+                    break candidate;
+                }
+            }
+        };
+        placed.push(Path::new(PROOFS_DIR).join(PROOFS_COPIED).join(target.file_name().expect("a file")).to_string_lossy().into_owned());
+    }
+    let mut input = input.clone();
+    input["proof_file"] = json!(placed);
+    Ok(input)
+}
+
+/// The proof files of a todo's whole branch, as the project has them (journal#928).
+async fn branch_proof_files(memory: &dyn Memory, id: u64, root: &str) -> Vec<Value> {
+    let Ok(branch) = memory.more(MemoryOp::JournalBranch { id }).await else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in branch["entries"].as_array().into_iter().flatten() {
+        let Some(id) = entry["entry"]["id"].as_u64() else { continue };
+        let Ok(Some(record)) = memory.journal_get(id).await else { continue };
+        for proof in &record.proofs {
+            if resolve(proof, root).is_file() {
+                out.push(json!({"entry": id, "file": proof}));
+            }
+        }
+    }
+    out
+}
+
 fn ids(v: &Value) -> Vec<u64> {
     v.as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default()
 }
@@ -125,16 +213,33 @@ impl Tool for MemoryTool {
             if !cx.granted.contains(&Capability::Memory) {
                 return ToolOutput::error("not granted: Memory");
             }
-            // A proof named as a file must be there before the entry is stored (journal#607).
-            if self.name == "journal_add" && let Err(e) = check_proofs(input, &cx.root) {
-                return ToolOutput::error(e.to_string());
-            }
+            // A proof named as a file must be there before the entry is stored (journal#607), and
+            // in the project's proofs folder, copied in if it is elsewhere (journal#928).
+            let placed;
+            let input = if self.name == "journal_add" {
+                match place_proofs(input, &cx.root) {
+                    Ok(v) => {
+                        placed = v;
+                        &placed
+                    }
+                    Err(e) => return ToolOutput::error(e.to_string()),
+                }
+            } else {
+                input
+            };
             if matches!(self.name, "mindmap_add" | "flowchart_add") && let Err(e) = self.check_node_limit(input).await {
                 return ToolOutput::error(e.to_string());
             }
             let mut answer = (self.action)(self.memory.as_ref(), input).await;
             if matches!(self.name, "journal_search" | "journal_get") && let Ok(found) = &mut answer && let Err(e) = self.add_graph(found, input).await {
                 return ToolOutput::error(e.to_string());
+            }
+            // A todo's answer names every proof file of its branch (journal#928).
+            if matches!(self.name, "journal_get" | "journal_branch") && let Ok(found) = &mut answer && let Some(id) = input["id"].as_u64() {
+                let files = branch_proof_files(self.memory.as_ref(), id, &cx.root).await;
+                if !files.is_empty() {
+                    found["proof_files"] = json!(files);
+                }
             }
             output(answer)
         })
@@ -491,6 +596,36 @@ mod tests {
         assert_eq!(flags_with_category("principle", s(&["important"])), s(&["important", "principle"]));
         assert_eq!(flags_with_category("invariant", s(&["invariant"])), s(&["invariant"]), "already set, not twice");
         assert_eq!(flags_with_category("decision", vec![]), Vec::<String>::new());
+    }
+
+    /// journal#928: proofs live in the project's .harness/proofs/; one from elsewhere is copied in
+    /// and named by its copy; the same file is one copy, another of its name gets a number; a
+    /// folder or a file too big is refused, saying why.
+    #[test]
+    fn proofs_go_in_the_projects_proofs_folder() {
+        let root = scratch("placed");
+        let outside = scratch("placed-outside");
+        std::fs::create_dir_all(root.join(".harness/proofs/916")).unwrap();
+        std::fs::write(root.join(".harness/proofs/916/run.txt"), "in").unwrap();
+        std::fs::write(outside.join("shot.png"), "png one").unwrap();
+        let r = root.to_str().unwrap();
+        let placed = place_proofs(&with_files(&[".harness/proofs/916/run.txt", outside.join("shot.png").to_str().unwrap()]), r).unwrap();
+        assert_eq!(placed["proof_file"], json!([".harness/proofs/916/run.txt", ".harness/proofs/journal/shot.png"]));
+        assert_eq!(std::fs::read_to_string(root.join(".harness/proofs/journal/shot.png")).unwrap(), "png one");
+        assert_eq!(placed["proof"], json!(["any words"]), "the words stay as they were");
+        let again = place_proofs(&with_files(&[outside.join("shot.png").to_str().unwrap()]), r).unwrap();
+        assert_eq!(again["proof_file"], json!([".harness/proofs/journal/shot.png"]), "the same file is the same copy");
+        std::fs::write(outside.join("shot.png"), "png two").unwrap();
+        let other = place_proofs(&with_files(&[outside.join("shot.png").to_str().unwrap()]), r).unwrap();
+        assert_eq!(other["proof_file"], json!([".harness/proofs/journal/shot-1.png"]), "another of its name gets a number");
+        let folder = place_proofs(&with_files(&[outside.to_str().unwrap()]), r).unwrap_err();
+        assert!(folder.to_string().contains("is a folder"), "{folder}");
+        let big = outside.join("big.bin");
+        std::fs::File::create(&big).unwrap().set_len(PROOF_MAX_BYTES + 1).unwrap();
+        let refused = place_proofs(&with_files(&[big.to_str().unwrap()]), r).unwrap_err();
+        assert!(refused.to_string().contains("over the 50 MB"), "{refused}");
+        assert!(place_proofs(&with_files(&["missing.txt"]), r).is_err(), "a missing file is still refused");
+        assert_eq!(place_proofs(&json!({"proof": ["words only"]}), r).unwrap(), json!({"proof": ["words only"]}));
     }
 
     /// A model gave `proof_file` as one string: the check held for nothing, and the proof was lost.
