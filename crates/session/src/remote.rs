@@ -1576,7 +1576,9 @@ impl SessionLink {
     /// window served by the daemon can: one running its own sessions reads this process's.
     pub fn set_environment(&mut self, environment: std::collections::BTreeMap<String, String>) -> Result<(), String> {
         match self {
-            SessionLink::Local(_) => Err("this window runs its sessions itself: start it again with --profile".to_string()),
+            // A window that runs its sessions itself gives the environment to its own factory, through
+            // the Host it builds (journal#824): nothing to tell a daemon here.
+            SessionLink::Local(_) => Ok(()),
             SessionLink::Remote(r) => {
                 r.set_environment(environment);
                 Ok(())

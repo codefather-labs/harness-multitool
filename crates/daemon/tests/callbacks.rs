@@ -400,3 +400,31 @@ fn windows_survive_a_restart() {
     assert_eq!(got.len(), 1);
     assert!(got[0].seq > 1_000_000, "numbered from the clock");
 }
+
+/// journal#822: long polls never queue other requests. Twenty windows' tabs each hold a poll open,
+/// more than the fixed pool of 8 it once had; the health check and a registration still answer at once.
+#[test]
+fn long_polls_do_not_hold_up_other_requests() {
+    let f = fixture();
+    let mut polls = Vec::new();
+    for _ in 0..20 {
+        let (client, window) = (f.client.clone(), f.window.clone());
+        // Past every event there is: each poll waits for POLL.
+        polls.push(std::thread::spawn(move || client.poll(&window, u64::MAX - 1)));
+    }
+    // Let them all reach the daemon and wait there.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let status = agent.get(format!("http://127.0.0.1:{}/health", f.client.port())).call().unwrap().status().as_u16();
+        assert_eq!(status, 200);
+        assert!(start.elapsed() < std::time::Duration::from_millis(100), "health took {:?} behind long polls", start.elapsed());
+    }
+    let start = std::time::Instant::now();
+    f.client.register(&f.root_path).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_millis(100), "register took {:?} behind long polls", start.elapsed());
+    // A shutdown still closes the port with the polls open.
+    f.client.shutdown().unwrap();
+    drop(polls);
+}

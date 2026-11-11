@@ -258,20 +258,29 @@ impl Daemon {
             telegram_source: Mutex::new(None),
             channels_stopped: std::sync::atomic::AtomicBool::new(false),
         });
-        // Long polls hold a thread each, so serve from several.
-        for _ in 0..8 {
+        // Every request on a thread of its own: a long poll holds its thread for up to POLL, and every
+        // tab of every window keeps one open, so a fixed pool left operations queued behind them for
+        // seconds (journal#822).
+        {
             let (server, daemon) = (server.clone(), daemon.clone());
             std::thread::spawn(move || {
                 while let Ok(request) = server.recv() {
-                    daemon.serve(request);
-                    // Stopped: its port closes when every thread has let the server go, in a
-                    // process that hosts it as well as in one that is only the daemon.
+                    // Stopped: nothing more is taken, and the port closes once this thread and the
+                    // requests still being answered have let the server go, in a process that hosts
+                    // it as well as in one that is only the daemon.
                     if daemon.state.lock().expect("daemon state").shutting_down {
+                        let _ = request.respond(tiny_http::Response::from_string(r#"{"error":"the daemon is stopping"}"#).with_status_code(503));
                         break;
                     }
+                    let (server, daemon) = (server.clone(), daemon.clone());
+                    std::thread::spawn(move || {
+                        daemon.serve(request);
+                        // The request that stopped it wakes the accepting thread, so it leaves at once.
+                        if daemon.state.lock().expect("daemon state").shutting_down {
+                            server.unblock();
+                        }
+                    });
                 }
-                // Each thread that leaves wakes the next one still waiting, until none is.
-                server.unblock();
             });
         }
         Ok(daemon)

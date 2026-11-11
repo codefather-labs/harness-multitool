@@ -629,6 +629,9 @@ struct Live {
     voice_download: Option<std::sync::Arc<std::sync::Mutex<VoiceDownload>>>,
     /// A profile's Claude Code sign-in or sign-out, waiting for the loop to hand it the terminal.
     terminal_wanted: Option<(String, ClaudeStep)>,
+    /// The environment of the profile this window moved onto, for the sessions it runs itself;
+    /// None while it is on the one it started on, whose sign-ins are this process's own (journal#824).
+    local_env: Option<harness_session::WindowEnv>,
     voice_test: Option<VoiceTestRun>,
     voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
@@ -980,7 +983,7 @@ impl Live {
             Some(_) => None,
             None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1163,7 +1166,9 @@ impl Live {
     /// started keep the profile they began on.
     fn use_profile(&mut self, w: &mut frontend_tui::model::Workspace, name: &str) -> Result<()> {
         let env = config::environment_for(harness_session::this_environment(), name)?;
-        self.sessions.set_environment(env).map_err(|e| anyhow!(e))?;
+        self.sessions.set_environment(env.clone()).map_err(|e| anyhow!(e))?;
+        // Sessions this window runs itself take the profile's environment from the factory (journal#824).
+        self.local_env = Some(std::sync::Arc::new(env));
         config::switch(name)?;
         let c = config::load()?;
         self.provider = c.session.provider.clone();
@@ -1426,7 +1431,9 @@ impl Live {
                 let urls = self.urls.clone();
                 std::sync::Arc::new(move |tab: u64| callback_note(&urls, tab))
             };
-            let host = host_for(note, self.reload_asked.clone(), selection_summary(&session));
+            let mut host = host_for(note, self.reload_asked.clone(), selection_summary(&session));
+            // Its profile's sign-ins, once the window moved off the one it started on (journal#824).
+            host.environment = self.local_env.clone();
             let (root, data) = (self.root.clone(), config::data_dir()?);
             let for_link = session.clone();
             self.sessions.configure(&root, &for_link, || harness_session::with_host(session, root.clone(), data, host)).map_err(|e| anyhow!(e))?;
@@ -2542,7 +2549,11 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     // This window's own profile signed in or out: its new tabs run on what it now has
                     // (default leaves the user's own Claude Code once its own is signed in).
                     if profile == config::current() {
-                        let moved = config::environment_for(harness_session::this_environment(), &profile).map_err(|e| e.to_string()).and_then(|env| live.sessions.set_environment(env));
+                        let moved = config::environment_for(harness_session::this_environment(), &profile).map_err(|e| e.to_string()).and_then(|env| {
+                            live.sessions.set_environment(env.clone())?;
+                            live.local_env = Some(std::sync::Arc::new(env));
+                            Ok(())
+                        });
                         if moved.is_ok() && let Ok(c) = config::load() {
                             let _ = live.rebuild_factory(c.session);
                         }
