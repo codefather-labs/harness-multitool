@@ -2916,8 +2916,18 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     input::release(&mut state);
                     continue;
                 }
+                // A sideways wheel or touchpad swipe, or Shift with the wheel, over a map pans it
+                // (journal#886); anywhere else the wheel scrolls the transcript.
+                Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) => {
+                    let step = if m.kind == MouseEventKind::ScrollRight { input::PAN_STEP } else { -input::PAN_STEP };
+                    input::pan_at(&mut state, &drawn, m.column, m.row, step);
+                    continue;
+                }
                 Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
-                    input::scroll(&mut state, if m.kind == MouseEventKind::ScrollUp { 3 } else { -3 });
+                    let step = if m.kind == MouseEventKind::ScrollDown { input::PAN_STEP } else { -input::PAN_STEP };
+                    if !(m.modifiers.contains(KeyModifiers::SHIFT) && input::pan_at(&mut state, &drawn, m.column, m.row, step)) {
+                        input::scroll(&mut state, if m.kind == MouseEventKind::ScrollUp { 3 } else { -3 });
+                    }
                     continue;
                 }
                 _ => continue,

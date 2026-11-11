@@ -337,6 +337,33 @@ fn scroll_view(w: &mut Workspace, rows: i32) {
     v.scroll = (v.scroll as i64 + rows as i64).clamp(0, 100_000) as usize;
 }
 
+/// How many columns one sideways wheel step pans a map.
+pub const PAN_STEP: i32 = 4;
+
+/// A sideways wheel (or Shift with the wheel) over a map pans it by `columns` (journal#886), within
+/// the map's limit; true when a map was there to take it. Elsewhere it does nothing.
+pub fn pan_at(s: &mut AppState, drawn: &Drawn, col: u16, row: u16, columns: i32) -> bool {
+    use crate::model::{Item, MapElement};
+    let Mode::Session(w) = &mut s.mode else { return false };
+    if w.overlay.is_some() {
+        return false;
+    }
+    // The map's area under the pointer, which carries its limit; its parts lie inside it.
+    let area = drawn.hits.iter().rev().find_map(|h| match h.target {
+        Target::MapPart { item, sub, element: MapElement::Area(x, y) } if col >= h.rect.x && col < h.rect.x + h.rect.width && row >= h.rect.y && row < h.rect.y + h.rect.height => Some((item, sub, (x, y))),
+        _ => None,
+    });
+    let Some((item, sub, limit)) = area else { return false };
+    let Some(pan) = map_pan(w, item, sub) else { return false };
+    let x = (pan.0 as i32 + columns).clamp(0, limit.0 as i32) as u16;
+    match map_event(w, item, sub) {
+        Some(Item::MindMap(e)) => e.pan = (x, pan.1),
+        Some(Item::Flowchart(e)) => e.pan = (x, pan.1),
+        _ => return false,
+    }
+    true
+}
+
 /// A left click at a cell, against what the last draw reported.
 pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
     let Some(target) = drawn.hit(col, row) else { return Outcome::Stay };
@@ -533,6 +560,46 @@ mod tests {
         release(&mut s);
         assert_eq!(pan(&s).0.0, limit, "the pan stops at the map's edge");
         assert!(pan(&s).1.is_some(), "a drag leaves the open ticket as it was");
+    }
+
+    /// journal#886: a sideways wheel over a map pans it, within its limit; elsewhere it does nothing.
+    #[test]
+    fn a_sideways_wheel_over_a_map_pans_it() {
+        use crate::model::{Item, MapElement};
+        use ratatui::{Terminal, backend::TestBackend};
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut s = fixtures::maps();
+        let mut term = Terminal::new(TestBackend::new(170, 120)).unwrap();
+        let mut drawn = Drawn::default();
+        term.draw(|f| drawn = crate::draw(f, &s, &t)).unwrap();
+        let area = drawn
+            .hits
+            .iter()
+            .find(|h| matches!(h.target, Target::MapPart { sub: Some(0), element: MapElement::Area(x, _), .. } if x > 0))
+            .expect("a map wider than its room");
+        let Target::MapPart { element: MapElement::Area(limit, _), .. } = area.target else { unreachable!() };
+        let pan = |s: &AppState| match &s.mode {
+            Mode::Session(w) => match &w.view().transcript[0] {
+                Item::Turn { attached, .. } => match &attached[0] {
+                    Item::Flowchart(e) => e.pan,
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        let (x, y) = (area.rect.x + 1, area.rect.y + 1);
+        assert!(pan_at(&mut s, &drawn, x, y, PAN_STEP));
+        assert_eq!(pan(&s).0, (PAN_STEP as u16).min(limit), "one step right");
+        for _ in 0..1000 {
+            pan_at(&mut s, &drawn, x, y, PAN_STEP);
+        }
+        assert_eq!(pan(&s).0, limit, "stops at the map's edge");
+        for _ in 0..1000 {
+            pan_at(&mut s, &drawn, x, y, -PAN_STEP);
+        }
+        assert_eq!(pan(&s).0, 0, "and back to its start");
+        assert!(!pan_at(&mut s, &drawn, 0, 0, PAN_STEP), "outside a map nothing pans");
     }
 
     #[test]
