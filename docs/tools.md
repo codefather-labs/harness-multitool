@@ -80,6 +80,8 @@ Mind maps hold where a long task stands; flowcharts draw how something flows.
 
 | Tool | For | Answers |
 |---|---|---|
+| `skill_list` | The harness's own skills here: the project's `.harness/skills/` and the user's `~/.harness/skills/`, the project's winning on a name (ADR 0030). The same on every adapter. | Each skill's name, description and whether it is the project's or the user's. |
+| `skill_load` | One skill's instructions, to follow before the task its description matches. | Its body, and the paths of its files. |
 | `plugins_list` | What is connected in this build. | Plugins and handlers. |
 | `plugins_reload` | Rebuilding the harness and swapping it, with the conversation. Swaps when the turn ends. | That it began; a message after the swap. |
 | `debug_contract` | The contract a step-debug router is built by. A utility to read; the mode is `mode__debug`. | The OpenAPI document. |

@@ -27,6 +27,7 @@ Read this file before acting, and again after a compaction or a resume: the harn
 | W-13 | You learn something not obvious, or an assumption falls. | `journal_add`, `finding` or `assumption-falsified`, naming the file and line. | An entry per finding. |
 | W-14 | You change the project. | `journal_add`, `update`: what, where, why, citing `journal#N`. | An `update` after each change. |
 | W-15 | A correction from the user, or your own mistake worth not repeating. | `journal_add`, `lesson`. | An entry. |
+| W-16 | A task matches the description of one of the harness's skills (`skill_list`). | `skill_load` it, and follow it. | `skill_load` before the task's first write. |
 
 Each entry stands alone: a later session reads it without this conversation. An entry you rely on is cited as `journal#N`. If the code says otherwise, the code wins, and that is a finding.
 

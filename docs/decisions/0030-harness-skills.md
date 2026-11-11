@@ -1,6 +1,6 @@
 # 0030 — Skills of the harness's own, the same on every adapter
 
-- **Status:** proposed · **Asked by:** the project owner, 2026-11-11 (journal#888; and 'скилы стоит сделать свои для переносимости между адаптерами', journal#905). The agent drafted the design overnight.
+- **Status:** accepted (journal#971; built in journal#987) · **Asked by:** the project owner, 2026-11-11 (journal#888; and 'скилы стоит сделать свои для переносимости между адаптерами', journal#905). The agent drafted the design overnight.
 - **Specs:** CON-135, CON-145 (the delegates' own plugins and skills stay theirs)
 
 ## Why

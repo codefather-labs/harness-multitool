@@ -17,6 +17,7 @@ mod host_tools;
 mod wire;
 
 pub mod mcp;
+pub mod skills;
 
 pub mod remote;
 
@@ -523,6 +524,12 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             let window = host.window.clone().map(|window| (window, tab));
             registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone(), from: window.clone() })));
         }
+        // The harness's own skills, on every adapter (ADR 0030).
+        for name in ["skill_list", "skill_load"] {
+            selection.tools.push(name.to_string());
+        }
+        registry.tool("skill_list", |_| Ok(Rc::new(skills::SkillList)));
+        registry.tool("skill_load", |_| Ok(Rc::new(skills::SkillLoad)));
         // What a session runs on its own loop can leave running; a delegate has its own.
         let background = (!settings.runs_delegate()).then(|| Rc::new(harness_tools_builtin::Background::new(&data_dir.join("background").to_string_lossy())));
         let shell_background = background.clone();
