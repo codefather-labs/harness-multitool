@@ -1854,25 +1854,28 @@ impl Live {
             let opened = self.sessions.resume(tab, &info.id);
             // What was sent and did not go in comes back to the composer, for the user to send.
             let left = self.sessions.left_waiting(tab, &info.id);
-            let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &info.id);
             let mut feed = frontend_tui::live::Feed::new(local_time, self.context_window);
             let view = w.view_mut();
             view.transcript.clear();
-            for entry in &log {
+            // Line by line into the view: the log is never held whole beside it (journal#955).
+            let (context_chosen, mut step_debug) = (self.context_chosen, None);
+            let last = harness_session::each_logged(&data.to_string_lossy(), &self.root, &info.id, |entry| {
                 if let harness_api::Event::StepDebug { on, .. } = entry.event {
-                    self.note_step_debug(tab, on);
+                    step_debug = Some(on);
                 }
-                if self.context_chosen && matches!(entry.event, harness_api::Event::ContextWindow { .. }) {
-                    continue;
+                if !(context_chosen && matches!(entry.event, harness_api::Event::ContextWindow { .. })) {
+                    feed.apply(view, &entry);
                 }
-                feed.apply(view, entry);
+            });
+            if let Some(on) = step_debug {
+                self.note_step_debug(tab, on);
             }
             if opened == harness_session::remote::Opened::Attached {
                 view.generating = true;
             } else {
                 feed.replayed(view);
             }
-            self.shown_up_to.insert(tab, log.last().map_or(0, |e| e.seq));
+            self.shown_up_to.insert(tab, last.unwrap_or(0));
             let typed: Vec<&str> = left.iter().filter_map(|m| if let harness_api::PendingMessage::User { text } = m { Some(text.as_str()) } else { None }).collect();
             view.composer.text.push_str(&typed.join("\n\n"));
             for message in &left {

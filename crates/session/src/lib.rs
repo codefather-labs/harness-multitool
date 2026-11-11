@@ -327,6 +327,23 @@ pub fn linked_session(data_dir: &str, root: &str, source: &str, id: &str) -> Opt
     names.into_iter().rev().find(|name| read_log(data_dir, root, name).iter().rev().any(|e| matches!(&e.event, Event::FormSynced { source: s, id: i, .. } if s == source && i == id)))
 }
 
+/// A stored session's entries one by one, as they are read, cut off at a damaged line (a crash can
+/// leave one at the end): a log of gigabytes is never held whole for it (journal#955). Answers the
+/// number of the last entry given.
+pub fn each_logged(data_dir: &str, root: &str, id: &str, mut each: impl FnMut(LogEntry)) -> Option<u64> {
+    use std::io::BufRead;
+    let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
+    let file = std::fs::File::open(path).ok()?;
+    let mut last = None;
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let Ok(entry) = harness_api::event::from_line(&line) else { break };
+        last = Some(entry.seq);
+        each(entry);
+    }
+    last
+}
+
 /// A stored session's entries, cut off at a damaged last line (a crash can leave one).
 pub fn read_log(data_dir: &str, root: &str, id: &str) -> Vec<LogEntry> {
     let path = format!("{}/{id}.jsonl", sessions_dir(data_dir, root));
