@@ -42,6 +42,19 @@ fn new_socket() -> std::io::Result<Socket> {
 }
 
 /// A connection to the socket at `path`, if something listens there.
+/// Which file a path is now, to tell one socket file from the next at the same path.
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino())
+    };
+    #[cfg(not(unix))]
+    let id = (meta.len(), meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64));
+    Some(id)
+}
+
 pub fn connect(path: &Path) -> std::io::Result<Socket> {
     let socket = new_socket()?;
     socket.connect(&SockAddr::unix(path)?)?;
@@ -61,6 +74,8 @@ pub fn ask_stop_if_idle(socket: Socket) -> std::io::Result<bool> {
 /// The listening side, held by the daemon.
 pub struct Server {
     path: PathBuf,
+    /// The socket file it made, so it removes only its own.
+    file: Option<(u64, u64)>,
     stopped: AtomicBool,
     next: AtomicU64,
     /// Every open connection, to close them all when the daemon stops.
@@ -71,8 +86,14 @@ impl Server {
     /// Binds the socket of `data_dir`, refusing if a daemon already answers on it.
     pub fn bind(data_dir: &Path) -> Result<(Arc<Server>, Socket), String> {
         let path = socket_path(data_dir);
-        if connect(&path).is_ok() {
-            return Err(format!("a daemon already listens on {}", path.display()));
+        // A daemon that is stopping still takes a connection for a moment, until its listener is
+        // gone: one that answers for 2 s more is there to stay (CON-130, journal#957).
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while connect(&path).is_ok() {
+            if std::time::Instant::now() >= until {
+                return Err(format!("a daemon already listens on {}", path.display()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // A file left by a daemon that is gone.
         let _ = std::fs::remove_file(&path);
@@ -85,7 +106,8 @@ impl Server {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("making {} private: {e}", path.display()))?;
         }
         listener.listen(128).map_err(|e| format!("listening on {}: {e}", path.display()))?;
-        Ok((Arc::new(Server { path, stopped: AtomicBool::new(false), next: AtomicU64::new(1), open: Mutex::new(HashMap::new()) }), listener))
+        let file = file_id(&path);
+        Ok((Arc::new(Server { path, file, stopped: AtomicBool::new(false), next: AtomicU64::new(1), open: Mutex::new(HashMap::new()) }), listener))
     }
 
     pub fn path(&self) -> &Path {
@@ -100,10 +122,15 @@ impl Server {
         }
         // Wakes the accepting thread, which then sees it is stopped.
         let _ = connect(&self.path);
+        // The file goes before any client hears of the loss: a client that starts the next daemon
+        // at once would otherwise have that daemon's file removed by this one (journal#957). Only
+        // its own file: one already of the next daemon stays.
+        if self.file.is_some() && file_id(&self.path) == self.file {
+            let _ = std::fs::remove_file(&self.path);
+        }
         for (_, socket) in self.open.lock().expect("connections").drain() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
-        let _ = std::fs::remove_file(&self.path);
     }
 
     pub fn connections(&self) -> usize {
