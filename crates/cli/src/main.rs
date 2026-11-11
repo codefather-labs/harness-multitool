@@ -15,11 +15,21 @@ mod reload;
 #[derive(Parser)]
 #[command(name = "multitool", version, about = "harness-multitool")]
 struct Cli {
-    /// The profile this run works on: its settings and its sign-in (CON-121). `default` if not given.
+    /// The profile this run works on, for this run only, as autostart wants it (CON-127). Without it,
+    /// the one last chosen with Use in the settings, else `default`.
     #[arg(long, global = true)]
     profile: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum DaemonAction {
+    /// Stops the running daemon, its runs included, and starts this build's in its place, on the
+    /// same port when it is free; open windows reopen their conversations in it (CON-128).
+    Restart,
+    /// Stops the running daemon, its runs included, and starts none (CON-128).
+    Stop,
 }
 
 #[derive(clap::Subcommand)]
@@ -162,6 +172,8 @@ enum Command {
         /// Don't start one: print what the running daemon counts.
         #[arg(long)]
         status: bool,
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
     },
     /// Debug: one message through a real session with no UI; prints its log, one line per event.
     Run {
@@ -248,7 +260,12 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     // Every start: the profiles are made or moved in first (CON-120), then this run's is chosen.
-    config::select(cli.profile.as_deref().unwrap_or(config::DEFAULT_PROFILE))?;
+    // --profile for this run only (autostart); else the one last chosen in the settings (CON-127).
+    let profile = match cli.profile {
+        Some(name) => name,
+        None => config::starting()?,
+    };
+    config::select(&profile)?;
     for (name, dir) in config::sign_in_environment()? {
         // SAFETY: first thing in main, before any thread is started. This process's environment is
         // what a window sends its daemon, so its sessions reach this profile's sign-ins (CON-122).
@@ -357,6 +374,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Run { prompt, yes, verify, task, plan, step_debug } => run_once(&prompt, yes, plan, step_debug, (task || !verify.is_empty()).then_some(verify)),
+        Command::Daemon { action: Some(action), .. } => daemon_restart(matches!(action, DaemonAction::Restart)),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
@@ -1162,14 +1180,15 @@ impl Live {
         frontend_tui::model::ProfilesPage { rows, status, ..Default::default() }
     }
 
-    /// Use (CON-121): this window's saved settings and new tabs move onto `name`; tabs already
-    /// started keep the profile they began on.
+    /// Use (CON-127): this window, every tab in it and the next bare start move onto `name`.
     fn use_profile(&mut self, w: &mut frontend_tui::model::Workspace, name: &str) -> Result<()> {
         let env = config::environment_for(harness_session::this_environment(), name)?;
         self.sessions.set_environment(env.clone()).map_err(|e| anyhow!(e))?;
         // Sessions this window runs itself take the profile's environment from the factory (journal#824).
         self.local_env = Some(std::sync::Arc::new(env));
         config::switch(name)?;
+        // The next bare start runs on it too (CON-127).
+        config::keep(name)?;
         let c = config::load()?;
         self.provider = c.session.provider.clone();
         self.model = c.session.model.clone();
@@ -1177,10 +1196,20 @@ impl Live {
         let label = profile_label();
         // A tab nothing was said in has no session yet: it opens on the new profile, its adapter and model.
         let unstarted = |t: &frontend_tui::model::Tab| !t.view.transcript.iter().any(|i| matches!(i, frontend_tui::model::Item::Turn { .. } | frontend_tui::model::Item::Tool(_) | frontend_tui::model::Item::Inbound(_)));
-        for t in w.tabs.iter_mut().filter(|t| unstarted(t)) {
+        for t in w.tabs.iter_mut() {
             frontend_tui::live::set_status(&mut t.view, "PROFILE", &label);
-            frontend_tui::live::set_status(&mut t.view, "ADAPTER", &self.provider);
-            frontend_tui::live::set_status(&mut t.view, "MODEL", &self.model);
+            if unstarted(t) {
+                frontend_tui::live::set_status(&mut t.view, "ADAPTER", &self.provider);
+                frontend_tui::live::set_status(&mut t.view, "MODEL", &self.model);
+            }
+        }
+        // Every started tab moves too, whatever its adapter (CON-127): its session starts again by
+        // its id on the factory that now has this profile's sign-ins, history and all; one whose run
+        // is on moves when that run ends. It keeps its own adapter and model.
+        for t in &w.tabs {
+            if t.view.generating || !self.sessions.rebind(t.id) {
+                self.rebind_after.insert(t.id);
+            }
         }
         // Every settings page is the new profile's from now on, the open window included (journal#791).
         self.refresh_pages(w);
@@ -2183,6 +2212,36 @@ fn show_profiles(w: &mut frontend_tui::model::Workspace) {
 
 /// The status line's word for this window's profile, with where its Claude Code runs when that is
 /// not its own (CON-120).
+/// `multitool daemon restart|stop` (CON-128): stops the daemon this data directory has, whatever
+/// it is doing, and with `start` starts the installed build's, which takes the port it had.
+fn daemon_restart(start: bool) -> Result<()> {
+    let dir = config::data_dir()?;
+    let running = harness_daemon::client::Client::find(&dir);
+    match &running {
+        Some(old) => {
+            let stats = old.stats().unwrap_or_default();
+            let pid = stats["pid"].as_u64().map_or("?".to_string(), |p| p.to_string());
+            let busy = stats["conversations"]["busy"].as_u64().unwrap_or(0);
+            old.shutdown().map_err(|e| anyhow!(e))?;
+            let runs = match busy {
+                0 => "no run was going on".to_string(),
+                1 => "1 window's run was stopped".to_string(),
+                n => format!("{n} windows' runs were stopped"),
+            };
+            println!("stopped the daemon (pid {pid}, port {}): {runs}", old.port());
+        }
+        None => println!("no daemon was running"),
+    }
+    if !start {
+        return Ok(());
+    }
+    let program = harness_daemon::own_program()?;
+    let new = harness_daemon::client::Client::find_or_start(&dir, &program).map_err(|e| anyhow!(e))?;
+    let pid = new.stats().ok().and_then(|s| s["pid"].as_u64()).map_or("?".to_string(), |p| p.to_string());
+    println!("started the daemon (pid {pid}, port {}): open windows reopen their conversations in it", new.port());
+    Ok(())
+}
+
 fn profile_label() -> String {
     // Short: the status line holds more after it. The full note is on the Profiles tab and in `profile list`.
     match config::claude_note() {

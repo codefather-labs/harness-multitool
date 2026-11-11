@@ -6,8 +6,10 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 
 ```bash
 ./install.sh --local             # build it, copy it, put `multitool` on your PATH (install.ps1 on Windows)
-multitool                       # from any folder: the start page, as ./run.sh opens it
-multitool --profile work        # the same on another profile (ADR 0026)
+multitool                       # from any folder: the start page, on the profile last chosen with Use in the settings
+multitool --profile work        # on another profile for this run only, as autostart wants it (CON-127)
+multitool daemon restart        # stop the daemon, its runs included, and start this build's on the same port (CON-128)
+multitool daemon stop           # stop it and start none
 ./run.sh                        # build (release) from this checkout and open the TUI at the splash
 ./run.sh preview main-session   # open on a named state (see `screen --list`)
 ./run.sh --graphics off         # text only; auto|sixel|kitty|iterm2|off

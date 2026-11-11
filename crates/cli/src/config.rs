@@ -93,6 +93,10 @@ struct ProfileFile {
 /// What `shared.toml` holds: the same in every profile (CON-124).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SharedFile {
+    /// The profile a bare `multitool` starts on: the one last chosen with Use (CON-127). First, since
+    /// TOML puts plain values before tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     #[serde(default)]
     voice: Voice,
     #[serde(default)]
@@ -466,7 +470,7 @@ fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
     private_dir(&root.join("profiles"))?;
     private_dir(&default)?;
     if !root.join("shared.toml").is_file() {
-        write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
+        write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile: None, voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
     }
     write_private(&default.join("profile.toml"), &toml::to_string_pretty(&ProfileFile { terminal: c.terminal, session: c.session })?)?;
     Ok(())
@@ -628,8 +632,38 @@ fn save_in(root: &std::path::Path, name: &str, c: &Config) -> Result<PathBuf> {
     private_dir(&dir)?;
     let p = dir.join("profile.toml");
     write_private(&p, &toml::to_string_pretty(&ProfileFile { terminal: c.terminal.clone(), session: c.session.clone() })?)?;
-    write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
+    // The kept profile is not a setting of the Config: it stays as it was (CON-127).
+    let profile = read::<SharedFile>(&root.join("shared.toml")).ok().and_then(|f| f.profile);
+    write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile, voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
     Ok(p)
+}
+
+/// The profile a bare `multitool` starts on (CON-127): the one kept by Use if it is still a
+/// profile, else `default`.
+pub fn starting() -> Result<String> {
+    let root = root()?;
+    ensure(&root, old_path().as_deref())?;
+    starting_in(&root)
+}
+
+fn starting_in(root: &std::path::Path) -> Result<String> {
+    let kept = read::<SharedFile>(&root.join("shared.toml"))?.profile;
+    let names = list_in(root)?;
+    Ok(kept.filter(|k| names.contains(k)).unwrap_or_else(|| DEFAULT_PROFILE.to_string()))
+}
+
+/// Keeps `name` as the profile the next bare `multitool` starts on (CON-127); the rest of
+/// `shared.toml` stays as it is.
+pub fn keep(name: &str) -> Result<()> {
+    check_name(name)?;
+    keep_in(&root()?, name)
+}
+
+fn keep_in(root: &std::path::Path, name: &str) -> Result<()> {
+    let path = root.join("shared.toml");
+    let mut file: SharedFile = read(&path)?;
+    file.profile = Some(name.to_string());
+    write_private(&path, &toml::to_string_pretty(&file)?)
 }
 
 /// What turns a voice note into words, if one is chosen and downloaded.
@@ -697,6 +731,28 @@ mod tests {
         let error = format!("{:?}", parse(path, text).expect_err("an error"));
         assert!(!error.contains("CANARY") && !error.contains("oops"), "{error}");
         assert!(error.contains("/x/config.toml") && error.contains("line 2"), "{error}");
+    }
+
+    /// CON-127: a bare start runs on the profile Use kept, else default; a kept profile that is gone
+    /// starts default; keeping and saving settings leave each other's part of shared.toml alone.
+    #[test]
+    fn a_bare_start_runs_on_the_kept_profile() {
+        let root = temp_root("kept");
+        ensure(&root, None).unwrap();
+        assert_eq!(starting_in(&root).unwrap(), DEFAULT_PROFILE);
+        private_dir(&root.join("profiles").join("max")).unwrap();
+        write_private(&root.join("profiles").join("max").join("profile.toml"), "").unwrap();
+        let mut c = load_in(&root, DEFAULT_PROFILE).unwrap();
+        c.telegram.allowed_users = vec![42];
+        save_in(&root, DEFAULT_PROFILE, &c).unwrap();
+        keep_in(&root, "max").unwrap();
+        assert_eq!(starting_in(&root).unwrap(), "max");
+        assert_eq!(load_in(&root, "max").unwrap().telegram.allowed_users, vec![42], "keeping leaves Telegram as it was");
+        save_in(&root, "max", &c).unwrap();
+        assert_eq!(starting_in(&root).unwrap(), "max", "saving settings leaves the kept profile");
+        std::fs::remove_dir_all(root.join("profiles").join("max")).unwrap();
+        assert_eq!(starting_in(&root).unwrap(), DEFAULT_PROFILE, "a kept profile that is gone starts default");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn temp_root(tag: &str) -> PathBuf {

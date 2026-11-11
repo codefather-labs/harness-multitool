@@ -43,7 +43,7 @@ The harness already carries a window's environment to the daemon in memory, and 
 1. Settings, Profiles, Add, a name such as `work`. The profile is clean: defaults, and its own empty Claude Code directory, `~/.harness/profiles/work/claude/`.
 2. Choose the Claude Code adapter in it, and press Sign in (or run `multitool login claude-code --profile work`).
 3. The harness hands the terminal to the unmodified `claude auth login`, run with that directory. The browser opens Anthropic's page; the user signs in with the account this profile is for, and Claude Code saves the login in that directory.
-4. The list shows the profile as signed in. `multitool --profile work`, or Use in the tab, starts work on it.
+4. The list shows the profile as signed in. Use in the tab (or Enter on its line) moves the window onto it: every tab, the started ones too, goes on with its conversation under its sign-ins, and the next `multitool` starts on it (CON-127). `multitool --profile work` runs on it for one start only, for autostart.
 
 No global sign-in is needed first, and no token is copied anywhere: each profile's login is made once, into its own directory, and Claude Code refreshes it itself. A second profile is the same steps; in the browser the user picks the other account. The user's own `~/.claude` is untouched; `default` runs on it until `default`'s own directory is signed in, and every profile sees its transcripts through the `projects` link.
 

@@ -110,7 +110,9 @@ until("Delete by keys removed work", lambda: "work" not in profiles())
 print("Right reached the buttons; Delete by keys removed work:", profiles())
 saved = subprocess.run([bin_, "profile", "list"], env=env, cwd=root, capture_output=True, text=True).stdout
 print(saved.rstrip())
-assert any(l.split()[0] == "max" and "Claude Code: signed in" in l for l in saved.splitlines()), saved
+assert any(l.lstrip("* ").split()[0] == "max" and "Claude Code: signed in" in l for l in saved.splitlines()), saved
+# CON-127: Use kept max, so a command run with no --profile is on it, marked with *.
+assert any(l.startswith("* max") for l in saved.splitlines()), saved
 if keep:
     for s in shots: shutil.copy(s, os.path.join(keep, os.path.basename(s)))
 print("ok")
