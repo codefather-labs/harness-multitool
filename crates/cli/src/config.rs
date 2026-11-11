@@ -249,16 +249,17 @@ pub fn users_codex_dir() -> Result<PathBuf> {
 pub fn prepare_codex(dir: &std::path::Path, users: &std::path::Path) -> Result<()> {
     private_dir(dir)?;
     let link = dir.join("sessions");
-    if std::fs::symlink_metadata(&link).is_ok() {
-        return Ok(());
+    if std::fs::symlink_metadata(&link).is_err() {
+        let target = users.join("sessions");
+        std::fs::create_dir_all(&target).with_context(|| format!("making {}", target.display()))?;
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&target, &link);
+        made.with_context(|| format!("linking {} to {}", link.display(), target.display()))?;
     }
-    let target = users.join("sessions");
-    std::fs::create_dir_all(&target).with_context(|| format!("making {}", target.display()))?;
-    #[cfg(unix)]
-    let made = std::os::unix::fs::symlink(&target, &link);
-    #[cfg(windows)]
-    let made = std::os::windows::fs::symlink_dir(&target, &link);
-    made.with_context(|| format!("linking {} to {}", link.display(), target.display()))
+    // The user's Codex setup in every profile; its auth.json stays the profile's own (CON-145).
+    share(dir, users, CODEX_SHARED)
 }
 
 /// Whether a Codex folder is signed in, by the unmodified `codex login status` (exit 0 when it is);
@@ -280,15 +281,100 @@ pub fn codex_binary(c: &Config) -> String {
 pub fn prepare_claude(dir: &std::path::Path, users: &std::path::Path) -> Result<()> {
     private_dir(dir)?;
     let link = dir.join("projects");
-    if std::fs::symlink_metadata(&link).is_ok() {
+    if std::fs::symlink_metadata(&link).is_err() {
+        let target = users.join("projects");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&target, &link);
+        made.with_context(|| format!("linking {} to {}", link.display(), target.display()))?;
+    }
+    // What the user set up in Claude Code works in every profile; its login does not cross (CON-145).
+    share(dir, users, CLAUDE_SHARED)?;
+    share_settings(dir, users)
+}
+
+/// What of the user's own Claude Code folder a profile's links to (CON-145).
+pub const CLAUDE_SHARED: &[&str] = &["plugins", "skills", "agents", "commands", "hooks", "rules", "CLAUDE.md"];
+/// What of the user's own Codex folder a profile's links to (CON-145). Its auth.json never.
+pub const CODEX_SHARED: &[&str] = &["config.toml", "plugins", "skills", "prompts", "AGENTS.md"];
+/// The keys of Claude Code's settings.json that can carry a login or credentials: a profile keeps
+/// its own (CON-145, CON-56).
+pub const LOGIN_KEYS: &[&str] = &["env", "apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper", "forceLoginMethod", "forceLoginOrgUUID"];
+/// The variable that tells a window's daemon where the user's own `.claude.json` is.
+pub const USERS_CLAUDE_JSON_VAR: &str = "MULTITOOL_USERS_CLAUDE_JSON";
+
+/// The user's own `.claude.json`, where Claude Code keeps their MCP servers: in their
+/// CLAUDE_CONFIG_DIR when they set one, else in the home folder.
+pub fn users_claude_json() -> Result<PathBuf> {
+    let own = USERS_CLAUDE_VAR.get().cloned().unwrap_or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()));
+    match own {
+        Some(dir) => Ok(PathBuf::from(dir).join(".claude.json")),
+        None => Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".claude.json")),
+    }
+}
+
+/// Links each of `names` that the user has in `users` from `dir`. What `dir` had there of its own
+/// is moved aside, never deleted; a link already right is left (CON-145).
+pub fn share(dir: &std::path::Path, users: &std::path::Path, names: &[&str]) -> Result<()> {
+    if dir.canonicalize().ok().is_some_and(|d| users.canonicalize().ok().is_some_and(|u| u == d)) {
         return Ok(());
     }
-    let target = users.join("projects");
-    #[cfg(unix)]
-    let made = std::os::unix::fs::symlink(&target, &link);
-    #[cfg(windows)]
-    let made = std::os::windows::fs::symlink_dir(&target, &link);
-    made.with_context(|| format!("linking {} to {}", link.display(), target.display()))
+    for name in names {
+        let target = users.join(name);
+        let Ok(meta) = std::fs::metadata(&target) else { continue };
+        let link = dir.join(name);
+        match std::fs::symlink_metadata(&link) {
+            Ok(m) if m.file_type().is_symlink() && std::fs::read_link(&link).is_ok_and(|to| to == target) => continue,
+            Ok(_) => {
+                let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let aside = dir.join(format!("{name}.before-link-{secs}"));
+                std::fs::rename(&link, &aside).with_context(|| format!("moving {} aside to {}", link.display(), aside.display()))?;
+            }
+            Err(_) => {}
+        }
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let made = if meta.is_dir() { std::os::windows::fs::symlink_dir(&target, &link) } else { std::os::windows::fs::symlink_file(&target, &link) };
+        let _ = &meta;
+        made.with_context(|| format!("linking {} to {}", link.display(), target.display()))?;
+    }
+    Ok(())
+}
+
+/// The user's settings.json in a profile's folder, without the keys that can carry a login. A copy,
+/// not a link: the profile's own login settings stay its own. While the profile's file is what was
+/// last written here it follows the user's; once changed in the profile it keeps its own and only
+/// gains the keys it lacks (CON-145).
+pub fn share_settings(dir: &std::path::Path, users: &std::path::Path) -> Result<()> {
+    if dir.canonicalize().ok().is_some_and(|d| users.canonicalize().ok().is_some_and(|u| u == d)) {
+        return Ok(());
+    }
+    let Some(serde_json::Value::Object(mut user)) = std::fs::read_to_string(users.join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()) else { return Ok(()) };
+    user.retain(|key, _| !LOGIN_KEYS.contains(&key.as_str()));
+    let (path, record) = (dir.join("settings.json"), dir.join(".harness-settings.json"));
+    let current = std::fs::read_to_string(&path).ok();
+    let last = std::fs::read_to_string(&record).ok();
+    let fresh = serde_json::to_string_pretty(&serde_json::Value::Object(user.clone()))?;
+    match current {
+        Some(current) if Some(&current) != last.as_ref() => {
+            // Changed in the profile: its own stays, the user's keys it lacks are added.
+            let Ok(serde_json::Value::Object(mut own)) = serde_json::from_str::<serde_json::Value>(&current) else { return Ok(()) };
+            let before = own.len();
+            for (key, value) in user {
+                own.entry(key).or_insert(value);
+            }
+            if own.len() != before {
+                write_private(&path, &serde_json::to_string_pretty(&serde_json::Value::Object(own))?)?;
+            }
+        }
+        _ => {
+            write_private(&path, &fresh)?;
+            write_private(&record, &fresh)?;
+        }
+    }
+    Ok(())
 }
 
 /// The Claude Code program a profile runs: its delegate row's `binary`, else `claude`.
@@ -352,6 +438,10 @@ pub type SignInVars = Vec<(&'static str, PathBuf)>;
 /// not the profile's own.
 pub fn sign_in_vars(name: &str) -> Result<(SignInVars, Option<String>)> {
     let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, profile_dir(name)?.join("chatgpt"))];
+    // Where the user's own MCP servers are, for a delegate on a profile's own folder (CON-145).
+    if let Ok(json) = users_claude_json() {
+        vars.push((USERS_CLAUDE_JSON_VAR, json));
+    }
     // Codex as Claude Code (journal#913): every profile on its own folder, default on the user's own
     // until default's is signed in.
     // Nothing is made for a user who has no Codex and no profile using it.
@@ -774,6 +864,77 @@ pub fn graphics() -> Graphics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh folder of its own for a test.
+    struct Temp(std::path::PathBuf);
+    impl Temp {
+        fn new(name: &str) -> Temp {
+            let dir = std::env::temp_dir().join(format!("mt-cfg-{name}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Temp(dir)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// CON-145: a profile's folder links what the user set up, moves its own aside, keeps its login;
+    /// settings follow the user's until changed in the profile, then only gain what they lack.
+    #[test]
+    fn a_profile_shares_the_users_setup_and_keeps_its_login() {
+        let (users, dir) = (Temp::new("users"), Temp::new("profile"));
+        std::fs::create_dir_all(users.path().join("plugins")).unwrap();
+        std::fs::write(users.path().join("CLAUDE.md"), "mine").unwrap();
+        std::fs::create_dir_all(dir.path().join("plugins")).unwrap();
+        std::fs::write(dir.path().join("plugins/own"), "profile's").unwrap();
+        std::fs::write(dir.path().join(".credentials.json"), "{}").unwrap();
+        std::fs::write(users.path().join("settings.json"), r#"{"enabledPlugins":{"p":true},"apiKeyHelper":"x","env":{"K":"v"}}"#).unwrap();
+        share(dir.path(), users.path(), CLAUDE_SHARED).unwrap();
+        share_settings(dir.path(), users.path()).unwrap();
+        assert_eq!(std::fs::read_link(dir.path().join("plugins")).unwrap(), users.path().join("plugins"));
+        assert_eq!(std::fs::read_link(dir.path().join("CLAUDE.md")).unwrap(), users.path().join("CLAUDE.md"));
+        let aside: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("plugins.before-link-")).collect();
+        assert_eq!(aside.len(), 1, "the profile's own moved aside");
+        assert_eq!(std::fs::read_to_string(dir.path().join(&aside[0]).join("own")).unwrap(), "profile's", "never deleted");
+        assert!(!dir.path().join("agents").exists(), "nothing linked that the user has not");
+        assert_eq!(std::fs::read_to_string(dir.path().join(".credentials.json")).unwrap(), "{}", "the login untouched");
+        let settings = |p: &std::path::Path| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings(dir.path()), serde_json::json!({"enabledPlugins": {"p": true}}), "no login keys");
+        // Again: a link already right stays; nothing more moved aside.
+        share(dir.path(), users.path(), CLAUDE_SHARED).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("before-link")).count(), 1);
+        // The user's change follows while the profile's file is as written...
+        std::fs::write(users.path().join("settings.json"), r#"{"enabledPlugins":{"p":true,"q":true}}"#).unwrap();
+        share_settings(dir.path(), users.path()).unwrap();
+        assert_eq!(settings(dir.path())["enabledPlugins"]["q"], true);
+        // ...and once changed in the profile, its own stays, gaining only what it lacks.
+        std::fs::write(dir.path().join("settings.json"), r#"{"enabledPlugins":{"own":true}}"#).unwrap();
+        std::fs::write(users.path().join("settings.json"), r#"{"enabledPlugins":{"p":true},"hooks":{"h":1}}"#).unwrap();
+        share_settings(dir.path(), users.path()).unwrap();
+        assert_eq!(settings(dir.path()), serde_json::json!({"enabledPlugins": {"own": true}, "hooks": {"h": 1}}));
+        // The user's own folder shares nothing with itself.
+        share(users.path(), users.path(), CLAUDE_SHARED).unwrap();
+        assert!(!std::fs::symlink_metadata(users.path().join("plugins")).unwrap().file_type().is_symlink());
+    }
+
+    /// CON-145: a profile's Codex folder links the user's config and plugins, never its auth.json.
+    #[test]
+    fn a_profiles_codex_links_the_users_config_not_its_login() {
+        let (users, dir) = (Temp::new("codex-users"), Temp::new("codex-profile"));
+        std::fs::write(users.path().join("config.toml"), "[mcp_servers.x]\ncommand = \"y\"\n").unwrap();
+        std::fs::write(users.path().join("auth.json"), "secret").unwrap();
+        std::fs::create_dir_all(users.path().join("skills")).unwrap();
+        prepare_codex(dir.path(), users.path()).unwrap();
+        assert_eq!(std::fs::read_link(dir.path().join("config.toml")).unwrap(), users.path().join("config.toml"));
+        assert_eq!(std::fs::read_link(dir.path().join("skills")).unwrap(), users.path().join("skills"));
+        assert!(std::fs::read_link(dir.path().join("sessions")).is_ok());
+        assert!(!dir.path().join("auth.json").exists(), "its login is its own");
+    }
 
     #[test]
     fn config_round_trips_and_defaults_to_auto() {

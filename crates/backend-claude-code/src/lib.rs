@@ -198,6 +198,33 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// Where the window says the user's own `.claude.json` is: their MCP servers are read from it
+/// for a profile's delegate (CON-145).
+pub const USERS_CLAUDE_JSON_VAR: &str = "MULTITOOL_USERS_CLAUDE_JSON";
+
+/// The user's MCP servers for this project, from their `.claude.json`: the global ones, then the
+/// project's own over them. The harness's own names are left out: its servers are given apart.
+pub fn user_servers(claude_json: &str, root: &str) -> serde_json::Map<String, serde_json::Value> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(claude_json) else { return Default::default() };
+    let mut servers = v["mcpServers"].as_object().cloned().unwrap_or_default();
+    if let Some(project) = v["projects"][root]["mcpServers"].as_object() {
+        servers.extend(project.clone());
+    }
+    servers.retain(|name, _| name != "harness" && name != "mode");
+    servers
+}
+
+/// A file only its owner can read, written whole.
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let staging = path.with_extension("partial");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&staging)?, text.as_bytes())?;
+    std::fs::rename(&staging, path)
+}
+
 /// Runs `claude` for one message.
 pub struct ClaudeCode {
     binary: String,
@@ -315,10 +342,41 @@ impl ClaudeCode {
         args
     }
 
+    /// A variable of the environment it runs with.
+    fn var(&self, name: &str) -> Option<String> {
+        match &self.environment {
+            Some(base) => base.get(name).cloned(),
+            None => std::env::var(name).ok(),
+        }.filter(|v| !v.is_empty())
+    }
+
+    /// The user's own MCP servers, for a profile whose Claude Code folder is not the user's
+    /// (CON-145): written to a private file in that folder and given by its path, so no server's
+    /// environment shows on a command line. None for an isolated run, or when the folder is the
+    /// user's own, whose servers Claude Code reads itself.
+    pub fn user_servers_file(&self) -> Option<std::path::PathBuf> {
+        if !self.own_environment {
+            return None;
+        }
+        let users = std::path::PathBuf::from(self.var(USERS_CLAUDE_JSON_VAR)?);
+        let dir = std::path::PathBuf::from(self.var("CLAUDE_CONFIG_DIR")?);
+        if users == dir.join(".claude.json") {
+            return None;
+        }
+        let servers = user_servers(&std::fs::read_to_string(&users).ok()?, &self.root);
+        let path = dir.join("harness-user-mcp.json");
+        write_private(&path, &serde_json::json!({ "mcpServers": servers }).to_string()).ok()?;
+        Some(path)
+    }
+
     /// Its process for this run: the one it has if that can go on, or a new one from its form.
     fn start(&self, request: &BackendRequest<'_>) -> PluginResult<Live> {
         let mut command = Command::new(&self.binary);
-        command.args(self.args(request)).current_dir(&self.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut args = self.args(request);
+        if let Some(file) = self.user_servers_file() {
+            args.extend(["--mcp-config".to_string(), file.to_string_lossy().into_owned()]);
+        }
+        command.args(args).current_dir(&self.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Nothing of the session that started the harness passes to the child; only where its own
         // configuration lives, which is where the user signed in.
         if let Some(base) = &self.environment {
@@ -637,6 +695,32 @@ impl AgentBackend for ClaudeCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CON-145: the user's servers for this project, the project's own over the global ones, the
+    /// harness's names left out; written private, and only for a run in the user's environment.
+    #[test]
+    fn the_users_servers_go_to_a_private_file_not_the_command_line() {
+        let json = serde_json::json!({"mcpServers": {"a": {"command": "1"}, "b": {"command": "global"}, "harness": {}, "mode": {}}, "projects": {"/p": {"mcpServers": {"b": {"command": "project"}}}, "/q": {"mcpServers": {"c": {}}}}}).to_string();
+        let servers = user_servers(&json, "/p");
+        assert_eq!(servers.keys().cloned().collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(servers["b"]["command"], "project");
+        assert!(user_servers("not json", "/p").is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let users = dir.path().join("user.json");
+        std::fs::write(&users, serde_json::json!({"mcpServers": {"a": {"command": "x", "env": {"T": "CANARY"}}}}).to_string()).unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let env = |pairs: &[(&str, &std::path::Path)]| std::sync::Arc::new(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned())).collect::<std::collections::BTreeMap<_, _>>());
+        let own = ClaudeCode::new("m", "/p", &serde_json::json!({"environment": "user"})).with_environment(env(&[(USERS_CLAUDE_JSON_VAR, &users), ("CLAUDE_CONFIG_DIR", &profile)]));
+        let file = own.user_servers_file().unwrap();
+        assert!(std::fs::read_to_string(&file).unwrap().contains("CANARY"));
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
+        let isolated = ClaudeCode::new("m", "/p", &serde_json::json!({})).with_environment(env(&[(USERS_CLAUDE_JSON_VAR, &users), ("CLAUDE_CONFIG_DIR", &profile)]));
+        assert!(isolated.user_servers_file().is_none(), "an isolated run keeps --strict-mcp-config alone");
+        let users_own = ClaudeCode::new("m", "/p", &serde_json::json!({"environment": "user"})).with_environment(env(&[(USERS_CLAUDE_JSON_VAR, &profile.join(".claude.json")), ("CLAUDE_CONFIG_DIR", &profile)]));
+        assert!(users_own.user_servers_file().is_none(), "the user's own folder: Claude Code reads its servers itself");
+    }
 
     fn map(lines: &[Value]) -> Vec<Mapped> {
         let mut m = Mapper::new(1);

@@ -1,0 +1,95 @@
+# 0029 — Games between agents, Texas hold'em first
+
+- **Status:** proposed · **Asked by:** the project owner, 2026-11-12 (journal#952). The agent drafted the design overnight; the owner's questions are open below.
+
+## Why
+
+The owner wants multitool's agents to play games with each other, Texas hold'em first:
+- a game section the user turns on and off in the settings;
+- the engine, the rules, the state and the callbacks on the daemon;
+- a game callback of its own, drawn like the /callback card in another colour;
+- a set of tools for an agent to act;
+- a good-looking dashboard page served by the daemon, with a Games tab, where the agents online are invited to a table.
+
+## Decision (draft)
+
+### The engine on the daemon
+
+A crate `harness-games` holds a `Game` interface and its first implementation, `texas_holdem`. It needs no platform (INV-1):
+- the deck comes from a seed that the daemon gives;
+- time comes as numbers.
+
+```rust
+pub trait Game {
+    fn name(&self) -> &str;
+    fn seats(&self) -> std::ops::RangeInclusive<usize>;      // 2..=9 for hold'em
+    fn start(&mut self, players: &[PlayerId], seed: u64, rules: &Value) -> Vec<GameEvent>;
+    fn act(&mut self, player: &PlayerId, action: &Value) -> Result<Vec<GameEvent>, Refusal>;
+    fn timeout(&mut self, player: &PlayerId) -> Vec<GameEvent>; // the rule of a silent player
+    fn view(&self, player: Option<&PlayerId>) -> Value;       // what one player may see; None is a spectator
+}
+```
+
+Hold'em covers:
+- the blinds and the button;
+- preflop, flop, turn and river;
+- fold, check, call, bet, raise and all-in, with the minimum raise;
+- side pots;
+- the showdown, with the best five of seven ranked: high card up to straight flush, kickers, and the wheel A-2-3-4-5;
+- split pots.
+
+A hand is reproducible from its seed and actions, which is how it is tested.
+
+### Tables and players
+
+The daemon keeps `<data dir>/games/tables/<id>.json`: the game, the rules, the seats, the state and the history of actions. A player is an agent: a conversation in some window, named by its nick (CON-105). An agent is online when its tab is open with a session.
+
+### Callbacks: kind `game`
+
+The daemon puts game messages into an agent's queue as an inbound message of a new kind, `game`, alongside telegram, agent and callback (the inbound-messages fixtures). Its card is the callback card in its own colour. The messages:
+
+| When | Says |
+|---|---|
+| invited | `You are invited to a poker table T7 (6 seats, blinds 10/20). Join with game_join, or game_decline.` |
+| your turn | `Your turn at T7, hand 12: you hold A♠ K♦, the board is …, the pot is 340, it is 60 to call. Act with game_act.` |
+| a player acted | `At T7: nick raised to 120.` Batched, so a turn's message carries what happened since the last one. |
+| a hand ended | `Hand 12 at T7: nick won 340 with a flush.` |
+| the game ended | `The game at T7 ended: 1st nick (2400), 2nd …` |
+
+### Tools for agents
+
+`game_tables`, `game_join`, `game_decline`, `game_state` (its own view only: its cards and never another's), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
+
+### Settings > Games
+
+- Games on or off, off by default.
+- Per game: on or off; hold'em only for now.
+- Its defaults: the starting stack, the blinds, and the time to act.
+
+### The dashboard
+
+The daemon serves a page on its HTTP port: `/dashboard`, local only. Its tabs:
+- Overview: windows, agents online, and the daemon's state;
+- Games:
+  - the tables;
+  - New table: a game, its rules, and the agents to invite, picked from those online;
+  - each table live, with its seats, stacks, board, pot and the last actions, over server-sent events;
+  - the history of finished games.
+
+Other tabs can come later (journals, maps).
+
+The page is one static HTML file with CSS and JavaScript, embedded in the binary, with no build step. It reads `/dashboard/api/*`, which answers JSON.
+
+## Open questions for the owner (journal#952)
+
+1. Chips: play money only? The starting stack and blinds by default? The draft: 1000, blinds 10/20, rising every 10 hands.
+2. Time to act, and what happens to a silent agent? The draft: 120 s, then check if it can, else fold.
+3. Can the user sit at a table from the dashboard? The draft: no, the user watches.
+4. Access to the dashboard: local only, with a token in the URL as callbacks have? The draft: localhost, plus the daemon's token.
+5. Cost: every 'your turn' is a model turn of the agent. Should a table have a limit on hands or on cost? The draft: a limit of 50 hands, and the table stops when an agent's session ends.
+6. Do agents see each other's chat, or table talk? The draft: no.
+
+## Rejected
+
+- **The engine in a window.** A game outlives a window, and players sit in many windows.
+- **Agents told through their prompts.** That would mix games into the work. The `game` kind keeps it apart, shown as such and refusable.
