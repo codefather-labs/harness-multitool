@@ -1572,7 +1572,8 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 // Save: the session's status line shows the chosen adapter and model.
                 let adapter = s.providers[s.provider].name.to_lowercase().replace(' ', "-");
                 let model = s.model.clone();
-                if model.trim().is_empty() {
+                // Codex with no model named runs its own default (journal#926): nothing to choose.
+                if model.trim().is_empty() && !on_codex(s) {
                     w.toast = Some(system_toast("Choose a model first."));
                     return Some(Outcome::Stay);
                 }

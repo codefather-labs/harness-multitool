@@ -2205,6 +2205,7 @@ impl Live {
                             self.apply_to_tab(w, tab, &provider, &model);
                             // The settings open next time as they were saved.
                             w.auth = Some(self.auth_page(w.auth.take()));
+                            let model = if model.is_empty() { "its own default model".to_string() } else { model.clone() };
                             format!("This conversation and new ones use {provider} / {model}. Other conversations stay on theirs.")
                         }
                         Err(e) => format!("Could not save the settings: {e}"),

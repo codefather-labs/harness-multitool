@@ -1873,7 +1873,7 @@ fn a_conversation_moved_to_codex_is_resumed_from_its_codex_form() {
     let codex_home = temp_dir("to-codex-home");
     let args = format!("{codex_home}/args");
     let fake = format!("{codex_home}/codex");
-    std::fs::write(&fake, format!("#!/bin/sh\necho \"$@\" >> {args}\ncat > /dev/null\necho '{{\"type\":\"turn.started\"}}'\necho '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"KESTREL\"}}}}'\necho '{{\"type\":\"turn.completed\",\"usage\":{{}}}}'\n")).unwrap();
+    std::fs::write(&fake, format!("#!/bin/sh\n[ \"$1 $2\" = \"login status\" ] && exit 0\necho \"$@\" >> {args}\ncat > /dev/null\necho '{{\"type\":\"turn.started\"}}'\necho '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"KESTREL\"}}}}'\necho '{{\"type\":\"turn.completed\",\"usage\":{{}}}}'\n")).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let log = [
         LogEntry { seq: 0, at_ms: 1, event: Event::UserMessage { text: "The code word is KESTREL.".into() } },
@@ -1943,6 +1943,7 @@ for line in sys.stdin:
 const FAKE_CODEX: &str = r#"#!/usr/bin/env python3
 import glob, json, os, sys, uuid
 args = sys.argv[1:]
+if args[:2] == ["login", "status"]: sys.exit(0)
 prompt = sys.stdin.read()
 home = os.environ["CODEX_HOME"]
 if "resume" in args:

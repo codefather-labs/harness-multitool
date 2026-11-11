@@ -1,92 +1,103 @@
 #!/usr/bin/env python3
-"""Debug: one conversation back and forth between Claude Code's own program and the harness (INV-20,
-INV-21, ADR 0025). It starts in `claude -p`; the harness opens it on GPT, then on Claude Code; between
-them `claude -p --resume` goes on with it. Each step names every word told on either side. The id and
-the file stay one, and what was in the file stays byte for byte. Spends a little of the owner's plans;
-the ChatGPT sign-in is linked, never read or copied. Needs pyte and --features claude-code.
-Usage: tools/real_move.py <absolute path to multitool>"""
+"""Debug, real programs (journal#926, CON-134, CON-144): one window, one tab, its conversation moved
+between adapters through Settings > Provider as the user does it. At each step the tab names the
+code words said so far and is given a new one; the status line must show that step's adapter. Spends
+a little of the owner's plans. Claude Code and Codex run as the user signed them in.
+What it leaves behind is its own only: Claude Code's transcripts and Codex's rollouts of its
+temporary project folder are removed at the end.
+Run it capped: systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 ...
+Usage: tools/real_move.py <absolute path to multitool> [claude codex claude]"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
-import fcntl, glob, json, pty, select, shutil, signal, struct, subprocess, tempfile, termios, time
+import fcntl, glob, json, pty, re, select, shutil, signal, struct, tempfile, termios, time
 import pyte
 
-bin_ = sys.argv[1]; MODEL = "claude-haiku-5-5"
-root = os.path.realpath(tempfile.mkdtemp(prefix="mt-mv-root")); home = tempfile.mkdtemp(prefix="mt-mv-home"); os.makedirs(home + "/cfg/harness-multitool"); os.makedirs(home + "/data/harness-multitool")
-os.symlink(os.path.expanduser("~/.local/share/harness-multitool/auth"), home + "/data/harness-multitool/auth")
-ROW = '\n[session.providers.claude-code]\nkind="claude-code"\n' + os.environ.get("ROW_EXTRA", "").replace("\\n", "\n")
-CONFIG = {
-    "gpt": '[session]\nprovider="chatgpt"\nmodel="gpt-6.1-sol"\nmax_tokens=4000\nplan_first="off"\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n' + ROW,
-    "claude": f'[session]\nprovider="claude-code"\nmodel="{MODEL}"\n' + ROW,
-}
-env = dict(os.environ, XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
-for name in list(env):
-    if name == "CLAUDECODE" or name.startswith("CLAUDE_CODE_"): env.pop(name)
-folder = os.path.expanduser("~/.claude/projects/") + "".join(c if c.isascii() and c.isalnum() else "-" for c in root)
-WORDS = ["лазурит", "кварцит", "малахит", "гранат", "обсидиан", "базальт"]
-results = []; COLS, ROWS = 130, 46
-def ask_text(step):
-    return (f"Какие кодовые слова я называл раньше в этой переписке? Перечисли все. " if step else "") + f"Новое кодовое слово: {WORDS[step]}. Запомни его. Ответь коротко, инструменты не используй."
-def note(step, where, reply):
-    known = WORDS[:step]; found = [w for w in known if w in reply]; ok = found == known
-    results.append((where, known, found, ok)); print(f"--- step {step + 1}: {where}; asked for {known}, named {found}: {'ok' if ok else 'MISSED'}", flush=True)
-    if not ok: print(reply[-900:], flush=True)
-def claude(step, session=None):
-    args = ["claude", "-p", "--model", MODEL, "--output-format", "json", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--tools", ""] + (["--resume", session] if session else [])
-    out = subprocess.run(args, cwd=root, env=env, input=ask_text(step), capture_output=True, text=True, timeout=300)
-    reply = json.loads(out.stdout); note(step, "claude's own program", reply["result"]); return reply["session_id"]
-def harness(step, name, first=False):
-    open(home + "/cfg/harness-multitool/config.toml", "w").write(CONFIG[name])
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(root); os.environ.clear(); os.environ.update(env); os.execv(bin_, [bin_, "preview", "startup"])
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-    screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)
-    def pump(sec):
-        end = time.time() + sec
-        while time.time() < end:
-            r, _, _ = select.select([fd], [], [], 0.02)
-            if r:
-                try: stream.feed(os.read(fd, 65536))
-                except OSError: return
-    text = lambda: "\n".join(l.rstrip() for l in screen.display).rstrip()
-    pump(2.0); os.write(fd, b"r"); pump(2.5)
+bin_ = sys.argv[1]; chain = sys.argv[2:] or ["claude", "codex", "claude"]
+ROW = {"claude": "claude-code", "codex": "codex"}
+ADAPTER = {"claude": "claude-code", "codex": "codex"}
+root = os.path.realpath(tempfile.mkdtemp(prefix="mt-rm-root")); home = tempfile.mkdtemp(prefix="mt-rm-home"); os.makedirs(home + "/cfg/harness-multitool")
+first = chain[0]
+open(home + "/cfg/harness-multitool/config.toml", "w").write(
+    f'[session]\nprovider="{ADAPTER[first]}"\nmodel="{"claude-haiku-5-5" if first == "claude" else ""}"\nplan_first="off"\n\n'
+    '[session.providers.claude-code]\nkind="claude-code"\n\n[session.providers.codex]\nkind="codex"\ncontext_window=272000\n')
+WORDS = ["лазурит", "кварцит", "малахит", "гранат", "обсидиан"]
+COLS, ROWS = 130, 46
+pid, fd = pty.fork()
+if pid == 0:
+    # The user's own Claude Code and Codex, signed in: not the folders of the profile this runs under.
+    for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "MULTITOOL_CHATGPT_DIR", "MULTITOOL_USERS_CLAUDE_JSON"): os.environ.pop(name, None)
+    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
+    os.execv(bin_, [bin_, "preview", "welcome"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+screen = pyte.Screen(COLS, ROWS); stream = pyte.ByteStream(screen)
+def pump(sec):
+    end = time.time() + sec
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.02)
+        if r:
+            try: stream.feed(os.read(fd, 65536))
+            except OSError: return
+def text(): return "\n".join(l.rstrip() for l in screen.display).rstrip()
+def status(): return next((l for l in text().splitlines() if "ADAPTER" in l), "")
+def typed(s):
+    for c in s: os.write(fd, c.encode()); time.sleep(0.003)
+
+def move_to(row):
+    """Settings > Provider: the row named `row`, by its index in the list as drawn, chosen and saved."""
+    typed("/settings\r"); pump(1.0)
+    rows = [m.group(1) for l in text().splitlines() for m in [re.search(r"\( [ ●] \)  (\S+(?: \S+)?)", l)] if m]
+    names = [r.split("   ")[0].strip() for r in rows]
+    index = next(i for i, n in enumerate(names) if n.startswith(row))
+    if os.environ.get("MT_DUMP"): print("rows:", names, "->", index, flush=True)
+    os.write(fd, b"\t"); pump(0.3)
+    for _ in range(12): os.write(fd, b"\x1b[A"); pump(0.03)
+    for _ in range(index): os.write(fd, b"\x1b[B"); pump(0.05)
+    os.write(fd, b"\r"); pump(0.4)
+    if os.environ.get("MT_DUMP"): print("\n".join(l for l in text().splitlines() if "( " in l), flush=True)
+    os.write(fd, b"\x13"); pump(0.6)
+    if os.environ.get("MT_DUMP"): print("AFTER SAVE:\n" + text(), flush=True)
+    if "Esc close" in text(): os.write(fd, b"\x1b"); pump(0.3)
+    # The move: its toast comes and goes (CON-144), whatever it says as the work goes on.
+    moving = lambda t: any(w in t for w in ("Bringing the conversation in line", "Claude Code's copy", "Codex's copy", "starting…", "Catching up"))
+    end = time.time() + 180
+    pump(0.5)
+    while time.time() < end and (moving(text()) or f"ADAPTER  {row}" not in status()):
+        pump(0.2)
+    pump(1.0)
+
+pump(2.5)
+results = []
+for step, name in enumerate(chain):
     if step:
-        # A window killed a moment ago holds the session for a few seconds yet.
-        end = time.time() + 12
-        while time.time() < end and WORDS[step - 1] not in text(): pump(0.3)
-        shown = text(); assert WORDS[step - 1] in shown, f"what was said outside is drawn on opening: {shown[-600:]}"
-    for c in ask_text(step) + "\r": os.write(fd, c.encode()); time.sleep(0.002)
+        move_to(ROW[name])
+    on = status()
+    known = WORDS[:step]
+    ask = (f"Какие кодовые слова я называл раньше в этой переписке? Перечисли их. " if step else "") + f"Новое кодовое слово: {WORDS[step]}. Ничего не запускай, просто ответь коротко, инструментов не вызывай."
+    typed(ask + "\r")
     t0 = time.time(); pump(2.0)
     while time.time() - t0 < 240:
         pump(0.3)
         if "Waiting for your answer" in text(): os.write(fd, b"\x1b[C\r"); pump(0.5)
         if "Esc stops" not in text() and time.time() - t0 > 4: break
     pump(1.0)
-    shown = text(); tail = shown[shown.rfind("ASSISTANT"):] if "ASSISTANT" in shown else shown[-700:]
-    note(step, f"harness on {name}", tail)
-    if "CANNOT" in shown or "held" in shown: print(shown[-700:])
-    os.kill(pid, signal.SIGTERM); pump(0.5)
-    try: os.waitpid(pid, 0)
-    except OSError: pass
-    time.sleep(0.5)
-try:
-    cid = claude(0)
-    path = f"{folder}/{cid}.jsonl"; print("conversation", cid)
-    open(home + "/cfg/harness-multitool/config.toml", "w").write(CONFIG["gpt"])
-    print(subprocess.run([bin_, "import", "claude-code", cid], cwd=root, env=env, capture_output=True, text=True).stdout.strip())
-    def kept(before):
-        now = open(path, "rb").read(); assert now[:len(before)] == before, "what was in the form stays byte for byte"; return now
-    held = open(path, "rb").read()
-    harness(1, "gpt"); held = kept(held); assert WORDS[1] in held.decode(), "the harness's turn on GPT is in Claude's file"
-    assert claude(2, cid) == cid, "the same id"; held = kept(held)
-    harness(3, "gpt"); held = kept(held); assert WORDS[3] in held.decode()
-    harness(4, "claude"); held = kept(held); assert WORDS[4] in held.decode()
-    assert claude(5, cid) == cid; held = kept(held)
-    names = sorted(os.path.basename(f) for f in glob.glob(folder + "/*.jsonl")); assert names == [cid + ".jsonl"], names
-    print("one id, one file:", names)
-    logs = glob.glob(home + "/data/**/sessions/**/*.jsonl", recursive=True); assert len(logs) == 1, logs
-    lines = [json.loads(l) for l in open(logs[0])]; assert [l["seq"] for l in lines] == list(range(len(lines))), "one numbering"
-finally:
-    print(json.dumps(results, ensure_ascii=False))
-    if "mt-mv-root" in folder: shutil.rmtree(folder, ignore_errors=True)
-ok = all(r[3] for r in results) and len(results) == 6
-print("VERDICT", "ok" if ok else "FAILED"); sys.exit(0 if ok else 1)
+    s = text(); tail = s[s.rfind("ASSISTANT"):] if "ASSISTANT" in s else s[-700:]
+    found = [w for w in known if w in tail]
+    adapter_ok = f"ADAPTER  {ADAPTER[name]}" in on
+    ok = found == known and adapter_ok
+    results.append((name, round(time.time() - t0, 1), known, found, adapter_ok, ok))
+    print(f"--- step {step + 1}: {name} ({'on ' + ADAPTER[name] if adapter_ok else 'WRONG ADAPTER: ' + on.strip()[:80]}), {time.time() - t0:.1f}s; asked for {known}, named {found}: {'ok' if ok else 'MISSED'}", flush=True)
+    print("\n".join(l[:120] for l in tail.splitlines()[:6]), flush=True)
+    if os.environ.get("MT_DUMP"): print("SCREEN:\n" + s, flush=True)
+print(json.dumps(results, ensure_ascii=False))
+os.kill(pid, signal.SIGTERM); pump(0.5)
+try: os.waitpid(pid, 0)
+except OSError: pass
+# Only its own: the transcripts of its temp folder, and the rollouts whose session_meta names it.
+slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in root)
+shutil.rmtree(os.path.expanduser("~/.claude/projects/") + slug, ignore_errors=True)
+for path in glob.glob(os.path.expanduser("~/.codex/sessions/**/rollout-*.jsonl"), recursive=True):
+    try:
+        with open(path) as f: meta = json.loads(f.readline())
+        if meta.get("type") == "session_meta" and meta["payload"].get("cwd") == root: os.remove(path)
+    except (OSError, ValueError, KeyError): pass
+shutil.rmtree(home, ignore_errors=True); shutil.rmtree(root, ignore_errors=True)
+sys.exit(0 if all(r[5] for r in results) else 1)

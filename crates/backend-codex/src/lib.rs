@@ -153,6 +153,8 @@ pub struct Codex {
     mcp: Option<String>,
     /// The process of the run now going on, to stop it.
     running: std::cell::RefCell<Option<u32>>,
+    /// Its sign-in, checked once before its first run (journal#976).
+    signed_in: std::cell::Cell<bool>,
 }
 
 impl Codex {
@@ -168,6 +170,7 @@ impl Codex {
             environment: None,
             mcp: None,
             running: Default::default(),
+            signed_in: Default::default(),
         }
     }
 
@@ -242,7 +245,34 @@ impl Codex {
         Ok(child)
     }
 
+    /// Whether Codex is signed in where it will run, by its own `codex login status`, once. A folder
+    /// with no sign-in would otherwise answer every message with a run of retried 401s.
+    fn check_signed_in(&self) -> PluginResult<()> {
+        if self.signed_in.get() {
+            return Ok(());
+        }
+        let mut command = Command::new(&self.binary);
+        command.args(["login", "status"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(base) = &self.environment {
+            command.env_clear();
+            command.envs(base.iter());
+        }
+        match command.status() {
+            Ok(status) if status.success() => {
+                self.signed_in.set(true);
+                Ok(())
+            }
+            Ok(_) => {
+                let place = self.environment.as_ref().and_then(|e| e.get("CODEX_HOME").cloned()).or_else(|| std::env::var("CODEX_HOME").ok()).unwrap_or_else(|| "~/.codex".to_string());
+                Err(PluginError::new(format!("Codex is not signed in for this profile ({place}): sign in with Login on Settings > Provider, or `multitool login codex`")))
+            }
+            // A program that cannot run says so when it is started.
+            Err(_) => Ok(()),
+        }
+    }
+
     fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
+        self.check_signed_in()?;
         STARTED.with(|s| s.borrow_mut().clear());
         let mut child = self.spawn(request)?;
         *self.running.borrow_mut() = Some(child.id());
@@ -413,6 +443,27 @@ mod tests {
         assert_eq!(c.stdin(&request(Some("t1"), false, &never, &none)), "secret prompt");
         let skip = Codex::new("m", "/r", &json!({"permissions": "skip"})).args(&request(None, false, &never, &none));
         assert!(skip.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox") && !skip.iter().any(|a| a == "-s"), "{skip:?}");
+    }
+
+    /// journal#976: a Codex not signed in where it runs is refused once, in words, before any run;
+    /// none of its retried 401s.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_not_signed_in_is_refused_in_words() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("codex");
+        let ran = dir.path().join("ran");
+        std::fs::write(&fake, format!("#!/bin/sh\n[ \"$1 $2\" = \"login status\" ] && exit 1\ntouch {}\n", ran.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = Codex::new("m", &dir.path().to_string_lossy(), &json!({"binary": fake.to_string_lossy()}))
+            .with_environment(std::sync::Arc::new([("CODEX_HOME".to_string(), "/p/codex".to_string()), ("PATH".to_string(), "/usr/bin:/bin".to_string())].into_iter().collect()));
+        let (never, none) = (|| false, || None);
+        let req = BackendRequest { prompt: "hi", session: None, system: None, plan_mode: false, fork: false, cost_total_micro_usd: 0, turn: 1, stopped: &never, next_message: &none, woken: false };
+        let end = pollster::block_on(c.run(req, &mut |_| true));
+        let message = end.unwrap_err().to_string();
+        assert!(message.contains("not signed in") && message.contains("/p/codex") && message.contains("multitool login codex"), "{message}");
+        assert!(!ran.exists(), "no run was started");
     }
 
     /// A fake codex: reads its prompt from stdin and prints a run's lines; a second process resumes.
