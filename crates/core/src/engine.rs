@@ -602,15 +602,19 @@ impl Engine {
     /// A failure moves nothing, so the next step tries again from the same place.
     fn push_form(&self, holding_prompt: bool) -> Result<(), String> {
         let Some((format, link)) = self.form() else { return Ok(()) };
-        let state = self.state.borrow().clone();
-        let end = state.messages.len();
-        if link.holds >= end {
-            return Ok(());
-        }
-        // The last message stays out only when it is the user's: its words go as the prompt. On a
-        // move there is none, and everything goes (journal#935).
-        let holding_prompt = holding_prompt && state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
-        let (mut history, holds) = (harness_api::provider_ready(&state.messages[link.holds..end]), if holding_prompt { end - 1 } else { end });
+        // Only what the form lacks is copied out of the log, never the whole state (journal#955).
+        let (mut history, holds, end) = {
+            let state = self.state.borrow();
+            let end = state.messages.len();
+            if link.holds >= end {
+                return Ok(());
+            }
+            // The last message stays out only when it is the user's: its words go as the prompt. On a
+            // move there is none, and everything goes (journal#935).
+            let holding_prompt = holding_prompt && state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
+            (harness_api::provider_ready(&state.messages[link.holds..end]), if holding_prompt { end - 1 } else { end }, end)
+        };
+        let holding_prompt = holds < end;
         if holding_prompt {
             Self::without_prompt(&mut history);
             if history.is_empty() {
@@ -660,22 +664,27 @@ impl Engine {
         if self.form().is_some() {
             return self.push_form(true);
         }
-        let state = self.state.borrow().clone();
-        // A session id that is another provider's form is not this backend's own: Codex cannot
-        // resume Claude Code's, nor Claude Code Codex's (CON-134).
-        let own_session = |format: &Rc<dyn harness_api::ConversationFormat>| state.backend_session.as_ref().is_some_and(|id| !state.forms.iter().any(|(name, link)| name != format.name() && link.id == *id));
-        let Some(format) = self.parts.conversations.clone().filter(|format| !own_session(format) && state.messages.len() > 1) else { return Ok(()) };
-        let mut history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+        // The log is borrowed, and only the history written is copied (journal#955).
+        let (format, mut history, holds) = {
+            let state = self.state.borrow();
+            // A session id that is another provider's form is not this backend's own: Codex cannot
+            // resume Claude Code's, nor Claude Code Codex's (CON-134).
+            let own_session = |format: &Rc<dyn harness_api::ConversationFormat>| state.backend_session.as_ref().is_some_and(|id| !state.forms.iter().any(|(name, link)| name != format.name() && link.id == *id));
+            let Some(format) = self.parts.conversations.clone().filter(|format| !own_session(format) && state.messages.len() > 1) else { return Ok(()) };
+            let history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+            // The last message is left out only when it is the user's, whose words go as the
+            // prompt; on a move there is none, and the form holds everything (journal#935).
+            let prompt_pending = state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
+            (format, history, state.messages.len() - usize::from(prompt_pending))
+        };
         Self::without_prompt(&mut history);
         if history.is_empty() {
             return Ok(());
         }
         let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
+        drop(history);
         let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
-        // The last message is left out only when it is the user's, whose words go as the prompt; on a
-        // move there is none, and the form holds everything (journal#935).
-        let prompt_pending = state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
-        self.synced(format.name().to_string(), id, cursor, Some(state.messages.len() - usize::from(prompt_pending)));
+        self.synced(format.name().to_string(), id, cursor, Some(holds));
         Ok(())
     }
 

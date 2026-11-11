@@ -344,6 +344,11 @@ fn main() -> Result<()> {
         Command::Docs { action: DocsAction::Check } => docs_check(),
         Command::Debug { action: DebugAction::Convert { from, to, id } } => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
+            // How far it got, on stderr, as a window's toast shows it (CON-144).
+            harness_api::platform::progress::bind(harness_session::throttled(|p| {
+                let unit = if p.unit == harness_api::platform::progress::Unit::Bytes { "bytes" } else { "messages" };
+                eprintln!("{}: {} / {} {unit}", p.what, p.done, p.total);
+            }));
             let source = harness_session::conversation_source(&from).map_err(|e| anyhow!(e))?;
             let target = harness_session::conversation_source(&to).map_err(|e| anyhow!(e))?;
             let read = source.read(&root, &id).map_err(|e| anyhow!(e.to_string()))?;
@@ -522,10 +527,37 @@ fn draw_to_file(state: &frontend_tui::AppState, theme: &Theme, cols: u16, rows: 
 }
 
 /// A log time as a card's stamp.
-fn syncing_overlay(what: &str) -> frontend_tui::model::Overlay {
-    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-    frontend_tui::model::Overlay::Syncing(frontend_tui::model::SyncingView { what: what.to_string(), started_ms: now_ms, now_ms })
+/// What the thread bringing in a Claude Code conversation says: how far it got, then the end.
+enum Linking {
+    Progress(harness_api::platform::progress::Progress),
+    Done(Result<harness_session::SessionInfo, String>),
 }
+
+/// A tab's conversation starts being moved or brought in line: its toast goes up (CON-144).
+fn start_moving(w: &mut frontend_tui::model::Workspace, tab: u64, name: &str, what: &str, to: &str) {
+    w.moving.retain(|m| m.tab != tab);
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    w.moving.push(frontend_tui::model::Moving { tab, name: name.to_string(), what: what.to_string(), to: to.to_string(), now_ms, ..Default::default() });
+}
+
+/// What a send into a conversation being moved is told (CON-144).
+fn moving_refusal(m: &frontend_tui::model::Moving) -> String {
+    if m.to.is_empty() {
+        "Not sent: this conversation is being brought in line. Send it again when its progress toast is gone.".to_string()
+    } else {
+        format!("Not sent: this conversation is being moved to {}. Send it again when its progress toast is gone.", m.to)
+    }
+}
+
+/// An adapter's name for the user.
+fn provider_label(provider: &str) -> String {
+    match provider {
+        "claude-code" => "Claude Code".to_string(),
+        "codex" => "Codex".to_string(),
+        other => other.to_string(),
+    }
+}
+
 
 fn local_time(at_ms: u64) -> String {
     use chrono::TimeZone;
@@ -690,7 +722,7 @@ struct Live {
     /// What to go back to if the change of adapter under way fails.
     previous_adapter: Option<(String, String)>,
     /// A conversation of Claude Code's being linked, off the window's thread.
-    linking: Option<std::sync::mpsc::Receiver<Result<harness_session::SessionInfo, String>>>,
+    linking: Option<std::sync::mpsc::Receiver<Linking>>,
     /// The reload in hand was the user's own.
     reload_by_user: bool,
     /// The tab to tell how the reload in hand went.
@@ -1421,15 +1453,14 @@ impl Live {
         frontend_tui::live::set_status(&mut t.view, "MODEL", model);
         frontend_tui::live::show_context_window(&mut t.view, self.context_window);
         let has_session = self.sessions.session_of(tab).is_some();
+        let name = t.title.clone();
         match self.sessions.choose(tab, provider, model) {
             Ok(true) if has_session => {
                 self.syncing.insert(tab);
+                start_moving(w, tab, &name, "Bringing the conversation in line", &provider_label(provider));
             }
             Ok(_) => {}
             Err(why) => t.view.transcript.push(frontend_tui::model::Item::Tips { label: "SETTINGS".into(), lines: vec![why] }),
-        }
-        if !self.syncing.is_empty() && w.overlay.is_none() {
-            w.overlay = Some(syncing_overlay("Bringing the conversation in line"));
         }
     }
 
@@ -1717,8 +1748,15 @@ impl Live {
         // be gigabytes, so off this thread, and the window waits (CON-81).
         if info.foreign {
             let (data, root) = (config::data_dir().ok()?, self.root.clone());
+            let name: String = info.title.chars().take(30).collect();
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
+                let reports = std::sync::Mutex::new(tx.clone());
+                harness_api::platform::progress::bind(harness_session::throttled(move |progress| {
+                    if let Ok(to) = reports.lock() {
+                        let _ = to.send(Linking::Progress(progress));
+                    }
+                }));
                 let linked = (|| -> Result<harness_session::SessionInfo, String> {
                     let imported = harness_session::conversation_source("claude-code")?.read(&root, &info.id).map_err(|e| e.to_string())?;
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -1732,12 +1770,14 @@ impl Live {
                     }
                     Ok(harness_session::SessionInfo { id, foreign: false, ..info })
                 })();
-                let _ = tx.send(linked);
+                let _ = tx.send(Linking::Done(linked));
             });
             self.linking = Some(rx);
             let mut state = self.fresh_session();
             if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
-                w.overlay = Some(syncing_overlay("Bringing in the conversation"));
+                let tab = w.tabs[w.active].id;
+                self.syncing.insert(tab);
+                start_moving(w, tab, &name, "Bringing in the conversation", "");
             }
             return Some(state);
         }
@@ -1746,17 +1786,58 @@ impl Live {
 
     /// A conversation that was being linked is ready: it opens. Otherwise the window goes on.
     fn tick_linking(&mut self, state: &mut frontend_tui::AppState) {
-        let Some(done) = self.linking.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        let mut done = None;
+        while let Some(said) = self.linking.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            match said {
+                Linking::Progress(progress) => {
+                    if let frontend_tui::model::Mode::Session(w) = &mut state.mode
+                        && let Some(m) = w.moving.first_mut()
+                    {
+                        m.what = progress.what;
+                        m.done = progress.done;
+                        m.total = progress.total;
+                        m.bytes = progress.unit == harness_api::platform::progress::Unit::Bytes;
+                    }
+                }
+                Linking::Done(result) => {
+                    done = Some(result);
+                    break;
+                }
+            }
+        }
+        let Some(done) = done else { return };
         self.linking = None;
+        // The tab it was being brought into; others opened meanwhile stay (CON-144).
+        let mut into = None;
+        if let frontend_tui::model::Mode::Session(w) = &mut state.mode
+            && let Some(at) = w.moving.iter().position(|m| self.syncing.contains(&m.tab) && w.tabs.iter().any(|t| t.id == m.tab))
+        {
+            let m = w.moving.remove(at);
+            self.syncing.remove(&m.tab);
+            into = Some(m.tab);
+        }
         match done {
             Ok(info) => {
-                if let Some(opened) = self.open_stored(info) {
-                    *state = opened;
+                if let Some(mut opened) = self.open_stored(info) {
+                    let others = matches!(&state.mode, frontend_tui::model::Mode::Session(w) if w.tabs.len() > 1);
+                    match (&mut state.mode, &mut opened.mode, into) {
+                        // Only the placeholder tab is replaced by the conversation's.
+                        (frontend_tui::model::Mode::Session(w), frontend_tui::model::Mode::Session(new), Some(tab)) if others => {
+                            let moving = std::mem::take(&mut new.moving);
+                            let fresh = new.tabs.swap_remove(new.active);
+                            if let Some(at) = w.tabs.iter().position(|t| t.id == tab) {
+                                w.tabs[at] = fresh;
+                                w.active = at;
+                            }
+                            w.moving.extend(moving);
+                        }
+                        _ => *state = opened,
+                    }
                 }
             }
             Err(message) => {
                 if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
-                    w.overlay = None;
+                    w.toast = Some(frontend_tui::overlay::system_toast(&format!("Could not bring the conversation in: {}", message.lines().next().unwrap_or_default())));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "COULD NOT BRING IT IN".into(), lines: message.lines().map(str::to_string).collect() });
                 }
             }
@@ -1814,7 +1895,8 @@ impl Live {
             frontend_tui::live::name_tab(&mut w.tabs[active]);
             if opened == harness_session::remote::Opened::Ready {
                 self.syncing.insert(tab);
-                w.overlay = Some(syncing_overlay("Catching up with the conversation"));
+                let name = w.tabs[active].title.clone();
+                start_moving(w, tab, &name, "Catching up with the conversation", "");
             }
         }
         Some(state)
@@ -1829,6 +1911,21 @@ impl Live {
         let down = self.sessions.client().is_some_and(|c| !c.current());
         for out in std::mem::take(&mut w.outbox) {
             let to_daemon = matches!(out, Outgoing::Prompt { .. } | Outgoing::Task { .. } | Outgoing::Answer { .. } | Outgoing::Stop { .. } | Outgoing::Plan { .. } | Outgoing::StepDebug { .. } | Outgoing::Nick { .. } | Outgoing::Unqueue { .. } | Outgoing::ProfileUse { .. });
+            // CON-144: only a conversation being moved is held; what is sent into it is refused.
+            let into = match &out {
+                Outgoing::Prompt { tab, .. } | Outgoing::Task { tab, .. } | Outgoing::Answer { tab, .. } | Outgoing::Plan { tab, .. } => Some(*tab),
+                _ => None,
+            };
+            if let Some(m) = into.and_then(|tab| w.moving.iter().find(|m| m.tab == tab)).cloned() {
+                if let Outgoing::Prompt { tab, text } | Outgoing::Task { tab, text, .. } = &out
+                    && let Some(t) = w.tabs.iter_mut().find(|t| t.id == *tab)
+                {
+                    t.view.composer.text = text.clone();
+                    t.view.composer.back = 0;
+                }
+                w.toast = Some(frontend_tui::overlay::system_toast(&moving_refusal(&m)));
+                continue;
+            }
             if down && to_daemon {
                 if let Outgoing::Prompt { tab, text } | Outgoing::Task { tab, text, .. } = &out
                     && let Some(t) = w.tabs.iter_mut().find(|t| t.id == *tab)
@@ -2092,6 +2189,11 @@ impl Live {
                 }
                 Outgoing::SaveSettings { provider, model, context: chosen, delegate } => {
                     let provider = provider_id(&provider);
+                    // CON-144: a conversation being moved is not moved again until it is done.
+                    if let Some(m) = w.moving.iter().find(|m| m.tab == w.tabs[w.active].id) {
+                        w.toast = Some(frontend_tui::overlay::system_toast(&moving_refusal(m)));
+                        continue;
+                    }
                     let auth = w.auth.clone().unwrap_or_default();
                     let context = auth.models.iter().chain(auth.provider_models.iter().flat_map(|(_, m)| m)).find(|m| m.id == model).and_then(|m| m.context);
                     let tab = w.tabs[w.active].id;
@@ -2224,10 +2326,20 @@ impl Live {
                         }
                     }
                 }
+                FromSession::Progress { tab, progress } => {
+                    if let Some(m) = w.moving.iter_mut().find(|m| m.tab == tab) {
+                        m.what = progress.what;
+                        m.done = progress.done;
+                        m.total = progress.total;
+                        m.bytes = progress.unit == harness_api::platform::progress::Unit::Bytes;
+                    }
+                }
                 FromSession::Synced { tab, error } => {
                     self.syncing.remove(&tab);
-                    if self.syncing.is_empty() && matches!(w.overlay, Some(Overlay::Syncing(_))) {
-                        w.overlay = None;
+                    w.moving.retain(|m| m.tab != tab);
+                    if let Some(message) = &error {
+                        let first = message.lines().next().unwrap_or_default();
+                        w.toast = Some(frontend_tui::overlay::system_toast(&format!("Could not move the conversation: {first}. It stays where it was.")));
                     }
                     if let Some(message) = error {
                         if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
@@ -2245,9 +2357,7 @@ impl Live {
                 }
                 FromSession::Unavailable { tab, message } => {
                     self.syncing.remove(&tab);
-                    if self.syncing.is_empty() && matches!(w.overlay, Some(Overlay::Syncing(_))) {
-                        w.overlay = None;
-                    }
+                    w.moving.retain(|m| m.tab != tab);
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {
                         t.view.generating = false;
                         t.view.transcript.push(Item::Tips { label: "CANNOT START THE SESSION".into(), lines: message.lines().map(str::to_string).collect() });
@@ -2590,7 +2700,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
                 println!("ended: {end:?}");
                 return Ok(());
             }
-            FromSession::Synced { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
         }
@@ -2820,13 +2930,16 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     }
                     dirty = true;
                 }
-                // The moon goes round; everything else waits for the daemon (CON-81).
-                if let Some(frontend_tui::model::Overlay::Syncing(s)) = &mut w.overlay {
-                    s.now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                // A moving conversation's bar moves (CON-144).
+                if !w.moving.is_empty() {
+                    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    w.moving.iter_mut().for_each(|m| m.now_ms = now_ms);
                     dirty = true;
                 }
                 // Messages go to the tab in front, once there is one; a run on takes them after it.
-                let waiting_for_daemon = matches!(w.overlay, Some(frontend_tui::model::Overlay::Syncing(_)));
+                // One being moved takes them once it is done (CON-144).
+                let front = w.tabs.get(w.active).map(|t| t.id);
+                let waiting_for_daemon = w.moving.iter().any(|m| Some(m.tab) == front);
                 for (label, body) in if waiting_for_daemon { Vec::new() } else { std::mem::take(&mut live.held_inbound) } {
                     let (kind, from) = frontend_tui::live::inbound_kind(&label);
                     w.toast = Some(frontend_tui::model::Toast { kind, from, text: body.clone() });

@@ -59,8 +59,15 @@ fn start_daemon(program: &Path) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     // Through a shell that ends at once and is waited for here, so the daemon is never left
     // defunct under a window that goes on for days.
+    // In a session of its own (journal#956): no controlling terminal, so nothing it or its programs
+    // write to /dev/tty lands in the window that started it, and closing that window's terminal
+    // does not hang it up.
     let mut shell = std::process::Command::new("sh");
-    shell.args(["-c", "\"$0\" daemon </dev/null >/dev/null 2>&1 &"]).arg(program).process_group(0);
+    shell.args(["-c", "\"$0\" daemon </dev/null >/dev/null 2>&1 &"]).arg(program);
+    // SAFETY: setsid is async-signal-safe, and the shell is not a process group leader yet.
+    unsafe {
+        shell.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
     shell.status().map(|_| ())
 }
 

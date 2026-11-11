@@ -56,6 +56,7 @@ fn to_wire(message: &FromSession) -> Value {
         FromSession::Ended { tab, end } => json!({"kind": "ended", "tab": tab, "end": end_to_json(end)}),
         FromSession::Unavailable { tab, message } => json!({"kind": "unavailable", "tab": tab, "message": message}),
         FromSession::Synced { tab, error } => json!({"kind": "synced", "tab": tab, "error": error}),
+        FromSession::Progress { tab, progress } => json!({"kind": "progress", "tab": tab, "progress": progress}),
     }
 }
 
@@ -70,6 +71,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
         "ended" => Some(FromSession::Ended { tab, end: end_from_json(&value["end"]) }),
         "unavailable" => Some(FromSession::Unavailable { tab, message: value["message"].as_str()?.to_string() }),
         "synced" => Some(FromSession::Synced { tab, error: value["error"].as_str().map(str::to_string) }),
+        "progress" => Some(FromSession::Progress { tab, progress: serde_json::from_value(value["progress"].clone()).ok()? }),
         _ => None,
     }
 }
@@ -78,7 +80,7 @@ fn tab_of(message: &FromSession) -> u64 {
     match message {
         FromSession::Queued { tab, .. } => *tab,
         FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } => *tab,
-        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } => *tab,
+        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } | FromSession::Progress { tab, .. } => *tab,
     }
 }
 
@@ -876,7 +878,7 @@ impl DaemonHost {
                         }
                     }
                     FromSession::Queued { .. } => {},
-                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
+                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
                 }
             }
             if window.closed {
@@ -928,6 +930,7 @@ impl DaemonHost {
             FromSession::Ended { end, .. } => FromSession::Ended { tab, end },
             FromSession::Unavailable { message, .. } => FromSession::Unavailable { tab, message },
             FromSession::Synced { error, .. } => FromSession::Synced { tab, error },
+            FromSession::Progress { progress, .. } => FromSession::Progress { tab, progress },
             FromSession::Spawn { nick, provider, model, task, .. } => FromSession::Spawn { tab, nick, provider, model, task },
             FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
         };
@@ -1906,6 +1909,17 @@ fn run_end_word(lines: &[String]) -> String {
 #[cfg(test)]
 mod read_agent_tests {
     use super::*;
+
+    /// CON-144: a move's progress crosses the daemon's socket whole, and to the tab it is for.
+    #[test]
+    fn progress_crosses_the_socket() {
+        use harness_api::platform::progress::{Progress, Unit};
+        let sent = FromSession::Progress { tab: 4, progress: Progress { what: "Reading Claude Code's copy".into(), done: 410, total: 1196, unit: Unit::Bytes } };
+        let wire: Value = serde_json::from_str(&to_wire(&sent).to_string()).unwrap();
+        assert_eq!(wire["kind"], "progress");
+        assert_eq!(from_wire(&wire), Some(sent.clone()));
+        assert_eq!(tab_of(&sent), 4);
+    }
 
     #[test]
     fn a_master_is_reminded_every_ten_minutes_unless_told_otherwise_for_a_test() {

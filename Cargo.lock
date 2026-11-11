@@ -1059,6 +1059,7 @@ version = "0.1.0-dev"
 dependencies = [
  "harness-api",
  "harness-memory-journal",
+ "libc",
  "pollster",
  "rusqlite",
  "serde",

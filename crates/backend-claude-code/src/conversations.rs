@@ -101,7 +101,11 @@ impl ConversationFormat for ClaudeCodeConversations {
         let id = uuid();
         let path = folder.join(format!("{id}.jsonl"));
         let staging = folder.join(format!("{id}.partial"));
-        std::fs::write(&staging, transcript(&id, root, title, history)).map_err(|e| PluginError::new(format!("{}: {e}", staging.display())))?;
+        let error = |e: std::io::Error| PluginError::new(format!("{}: {e}", staging.display()));
+        let mut file = std::io::BufWriter::new(File::create(&staging).map_err(error)?);
+        write_transcript(&mut file, &id, root, title, history).map_err(error)?;
+        std::io::Write::flush(&mut file).map_err(error)?;
+        drop(file);
         // Whole or not at all: Claude Code lists what it finds.
         std::fs::rename(&staging, &path).map_err(|e| PluginError::new(format!("{}: {e}", path.display())))?;
         Ok(id)
@@ -272,19 +276,26 @@ fn uuid() -> String {
 
 /// The history as a transcript Claude Code resumes. Its reasoning blocks stay out: they are signed
 /// for the conversation they were made in, and another provider's mean nothing to it.
-fn transcript(id: &str, root: &str, title: &str, history: &[Message]) -> String {
-    let mut out = json!({"type": "custom-title", "customTitle": title, "sessionId": id}).to_string();
-    out.push('\n');
-    out.push_str(&lines_of(id, root, None, history).0);
-    out
+/// Written as it is made: a whole conversation is never held twice (journal#955).
+fn write_transcript(out: &mut dyn std::io::Write, id: &str, root: &str, title: &str, history: &[Message]) -> std::io::Result<()> {
+    writeln!(out, "{}", json!({"type": "custom-title", "customTitle": title, "sessionId": id}))?;
+    write_lines(out, id, root, None, history).map(|_| ())
 }
 
 /// A history as lines of a transcript, going on from `parent`, and the last of them.
-fn lines_of(id: &str, root: &str, mut parent: Option<String>, history: &[Message]) -> (String, Option<String>) {
+fn lines_of(id: &str, root: &str, parent: Option<String>, history: &[Message]) -> (String, Option<String>) {
+    let mut out = Vec::new();
+    let tip = write_lines(&mut out, id, root, parent, history).expect("writing to memory");
+    (String::from_utf8(out).expect("JSON is UTF-8"), tip)
+}
+
+/// The same, written as it is made.
+fn write_lines(out: &mut dyn std::io::Write, id: &str, root: &str, mut parent: Option<String>, history: &[Message]) -> std::io::Result<Option<String>> {
     // The time it is: Claude Code goes on from the latest branch of a file.
     let stamp = rfc3339_now();
-    let mut out = String::new();
-    for message in history {
+    let total = history.len() as u64;
+    for (n, message) in history.iter().enumerate() {
+        harness_api::platform::progress::report("Writing Claude Code's copy", n as u64, total, harness_api::platform::progress::Unit::Messages);
         let uuid = uuid();
         let content: Vec<Value> = message.content.iter().filter_map(|c| match c {
             Content::Text { text } => Some(json!({"type": "text", "text": text})),
@@ -298,11 +309,11 @@ fn lines_of(id: &str, root: &str, mut parent: Option<String>, history: &[Message
         };
         let kind = if message.role == Role::User { "user" } else { "assistant" };
         let line = json!({"type": kind, "uuid": uuid, "parentUuid": parent, "isSidechain": false, "userType": "external", "cwd": root, "sessionId": id, "version": "harness", "timestamp": stamp, "message": body});
-        out.push_str(&line.to_string());
-        out.push('\n');
+        writeln!(out, "{line}")?;
         parent = Some(uuid);
     }
-    (out, parent)
+    harness_api::platform::progress::report("Writing Claude Code's copy", total, total, harness_api::platform::progress::Unit::Messages);
+    Ok(parent)
 }
 
 /// What the file says of a title, the last one written: a name the user gave wins.
@@ -352,8 +363,10 @@ struct Node {
     value: Option<Value>,
 }
 
+/// The whole file, its bytes reported as they are read (CON-144).
 fn read_nodes(file: File) -> (Vec<Node>, Option<String>, usize) {
-    read_lines(BufReader::new(file))
+    let total = file.metadata().map_or(0, |m| m.len());
+    read_lines(BufReader::new(harness_api::platform::progress::Counting::new(file, "Reading Claude Code's copy", total)))
 }
 
 /// The lines of a part of the file, between two ends of whole lines.
@@ -803,5 +816,41 @@ mod tests {
         assert_eq!(format.held_by("c2", None), None);
         assert_eq!(format.held_by("c3", None), None);
         assert_eq!(format.held_by("c1", Some(std::process::id())), None, "its own process does not count");
+    }
+
+    /// CON-144: a whole read reports its bytes as it goes, at least every 200 ms, the last at the end.
+    #[test]
+    fn a_long_read_reports_its_progress() {
+        use harness_api::platform::progress;
+        use std::sync::{Arc, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("projects").join("-w");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut file = std::io::BufWriter::new(File::create(folder.join("big.jsonl")).unwrap());
+        let filler = "x".repeat(4000);
+        let mut parent: Option<String> = None;
+        for n in 0..12_000 {
+            let uuid = format!("u{n}");
+            writeln!(file, "{}", line(&uuid, parent.as_deref(), json!({"type": "user", "message": {"role": "user", "content": format!("{n} {filler}")}}))).unwrap();
+            parent = Some(uuid);
+        }
+        drop(file);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        progress::bind(Arc::new(move |p| into.lock().unwrap().push((std::time::Instant::now(), p))));
+        let began = std::time::Instant::now();
+        ClaudeCodeConversations::new(dir.path()).read("/w", "big").unwrap();
+        let took = began.elapsed();
+        let seen = seen.lock().unwrap();
+        let total = std::fs::metadata(folder.join("big.jsonl")).unwrap().len();
+        let last = &seen.last().unwrap().1;
+        assert_eq!((last.done, last.total, last.unit), (total, total, progress::Unit::Bytes), "the last report is the whole");
+        assert!(seen.iter().all(|(_, p)| p.what == "Reading Claude Code's copy"));
+        let mut at = began;
+        for (when, _) in seen.iter() {
+            assert!(when.duration_since(at) <= std::time::Duration::from_millis(200), "a gap over 200 ms in {took:?}");
+            at = *when;
+        }
+        assert!(seen.len() >= 2, "{} reports in {took:?}", seen.len());
     }
 }

@@ -294,12 +294,24 @@ pub fn store_imported(data_dir: &str, root: &str, imported: &ImportedConversatio
     let dir = sessions_dir(data_dir, root);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
     let (path, staging) = (format!("{dir}/{id}.jsonl"), format!("{dir}/{id}.partial"));
-    let mut text = String::new();
+    // The form's link gets the digest of what it holds, as the engine gives every link (CON-138):
+    // a later move of this conversation then need not read the form again (journal#955).
+    let digest = {
+        let before = imported.entries.iter().take_while(|e| !matches!(e.event, Event::FormSynced { .. }));
+        let state = harness_api::SessionState::fold(before.map(|e| &e.event));
+        harness_api::conversation_digest(&state.messages)
+    };
+    let error = |e: std::io::Error| format!("{staging}: {e}");
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&staging).map_err(error)?);
     for entry in &imported.entries {
-        text.push_str(&harness_api::event::to_line(entry));
-        text.push('\n');
+        let line = match &entry.event {
+            Event::FormSynced { source, id, cursor, holds, digest: None } => harness_api::event::to_line(&LogEntry { event: Event::FormSynced { source: source.clone(), id: id.clone(), cursor: cursor.clone(), holds: *holds, digest: Some(digest.clone()) }, ..entry.clone() }),
+            _ => harness_api::event::to_line(entry),
+        };
+        std::io::Write::write_all(&mut file, line.as_bytes()).and_then(|()| std::io::Write::write_all(&mut file, b"\n")).map_err(error)?;
     }
-    std::fs::write(&staging, text).map_err(|e| format!("{staging}: {e}"))?;
+    std::io::Write::flush(&mut file).map_err(error)?;
+    drop(file);
     std::fs::rename(&staging, &path).map_err(|e| format!("{path}: {e}"))?;
     Ok(id)
 }
@@ -527,6 +539,29 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
     })
 }
 
+/// A progress sink that passes a report on at most every 100 ms, the first of each piece of work
+/// and its last always: so a long one is seen moving at least every 200 ms (CON-144).
+pub fn throttled(sink: impl Fn(harness_api::platform::progress::Progress) + Send + Sync + 'static) -> Arc<dyn Fn(harness_api::platform::progress::Progress) + Send + Sync> {
+    let last: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    Arc::new(move |progress| {
+        let now = std::time::Instant::now();
+        let pass = {
+            let Ok(mut last) = last.lock() else { return };
+            let pass = progress.finished() || last.as_ref().is_none_or(|(at, what)| *what != progress.what || now.duration_since(*at) >= PROGRESS_EVERY);
+            if pass {
+                *last = if progress.finished() { None } else { Some((now, progress.what.clone())) };
+            }
+            pass
+        };
+        if pass {
+            sink(progress);
+        }
+    })
+}
+
+/// The least time between two progress reports passed on.
+pub const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Whether a provider row runs a delegate program rather than a provider through the harness's loop.
 pub fn is_delegate_row(row: &serde_json::Value) -> bool {
     row["kind"] == "claude-code" || row["kind"] == harness_backend_codex::NAME
@@ -613,6 +648,8 @@ pub enum FromSession {
     Unavailable { tab: u64, message: String },
     /// A session being opened has caught up with its forms, or could not (CON-81).
     Synced { tab: u64, error: Option<String> },
+    /// How far the work of bringing this tab's conversation in line has got (CON-144): not logged.
+    Progress { tab: u64, progress: harness_api::platform::progress::Progress },
 }
 
 /// What a session's next run starts from.
@@ -1102,6 +1139,13 @@ impl Sessions {
             // What blocks this thread listens for a stop (CON-95).
             let asked = flag.clone();
             harness_api::platform::stopping::bind(Arc::new(move || asked.is_set()));
+            // What a form reports as it is read or written reaches the window (CON-144).
+            let reports = std::sync::Mutex::new(to_frontend.clone());
+            harness_api::platform::progress::bind(throttled(move |progress| {
+                if let Ok(to) = reports.lock() {
+                    let _ = to.send(FromSession::Progress { tab, progress });
+                }
+            }));
             let parts = match factory(tab) {
                 Ok(parts) => parts,
                 Err(message) => {
@@ -1120,6 +1164,9 @@ impl Sessions {
                 match pollster::block_on(engine.load_log()) {
                     Ok(entries) => {
                         engine.resume(&entries);
+                        // The state holds it now: the log is not kept beside it through a move
+                        // that may write the whole of it out (journal#955).
+                        drop(entries);
                         // INV-20: what its form gained meanwhile comes in before anything reads it.
                         let caught_up = pollster::block_on(engine.catch_up(connecting));
                         if caught_up == Ok(true) {
@@ -1211,6 +1258,37 @@ impl Sessions {
             }
         });
         self.handles.insert(tab, Handle { session: stored_name, prompts, answers, stop, running, retired, thread });
+    }
+}
+
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use harness_api::platform::progress::{Progress, Unit};
+
+    /// CON-144: the first, the last, and one report per 100 ms of the rest are passed on.
+    #[test]
+    fn the_first_the_last_and_one_per_100_ms_pass() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let into = seen.clone();
+        let sink = throttled(move |p: Progress| into.lock().unwrap().push(p.done));
+        let at = |done| Progress { what: "Writing".into(), done, total: 1000, unit: Unit::Messages };
+        (0..1000).for_each(|n| sink(at(n)));
+        sink(at(1000));
+        let got = seen.lock().unwrap().clone();
+        assert_eq!((got.first(), got.last()), (Some(&0), Some(&1000)));
+        assert!(got.len() <= 3, "fast work reports little: {got:?}");
+        seen.lock().unwrap().clear();
+        let began = std::time::Instant::now();
+        let mut n = 0;
+        while began.elapsed() < std::time::Duration::from_millis(550) {
+            sink(Progress { what: "Reading".into(), done: n, total: 0, unit: Unit::Bytes });
+            n += 1;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let count = seen.lock().unwrap().len();
+        assert!((5..=7).contains(&count), "one per 100 ms over 550 ms: {count}");
     }
 }
 

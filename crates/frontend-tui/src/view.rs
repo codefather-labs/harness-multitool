@@ -174,10 +174,12 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
         );
     }
     // The reconnecting toast stands at the top; any other toast goes under it (CON-131).
-    let below = match &w.reconnecting {
+    let mut below = match &w.reconnecting {
         Some(r) => draw_reconnecting(f, tr, r, t),
         None => 0,
     };
+    // Under it, a toast for each conversation being moved (CON-144).
+    below += draw_moving(f, Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr }, &w.moving, t);
     let tr_toast = Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr };
     if let (Some(toast), None) = (&w.toast, &w.overlay) {
         draw_toast(f, tr_toast, toast, t, out);
@@ -343,6 +345,72 @@ fn draw_reconnecting(f: &mut Frame, area: Rect, r: &crate::model::Reconnecting, 
     rect.height
 }
 
+/// How many moving conversations get a toast of their own; the rest are counted.
+pub const MOVING_SHOWN: usize = 3;
+
+/// The words and the bar of a moving conversation's toast, for a bar `width` cells wide: what is
+/// done; the count, its share and the tab's name; the bar. A line too long ends in an ellipsis.
+pub fn moving_lines(m: &crate::model::Moving, width: u16) -> (String, String, String) {
+    let fit = |text: String| {
+        let room = usize::from(width) + 1;
+        if text.chars().count() <= room { text } else { format!("{}…", text.chars().take(room.saturating_sub(1)).collect::<String>()) }
+    };
+    let head = fit(format!(" {}", m.what));
+    let count = |n: u64| if m.bytes { format!("{:.0} MB", n as f64 / 1e6) } else { n.to_string() };
+    let unit = if m.bytes { "" } else { " messages" };
+    let numbers = if m.total == 0 {
+        if m.done == 0 { "starting…".to_string() } else { format!("{}{unit}", count(m.done)) }
+    } else {
+        let share = m.done.min(m.total) * 100 / m.total.max(1);
+        format!("{} / {}{unit} · {share}%", count(m.done), count(m.total))
+    };
+    let detail = fit(if m.name.is_empty() { format!(" {numbers}") } else { format!(" {numbers} · {}", m.name) });
+    let bar: String = if m.total == 0 {
+        let lit = (width / 5).max(2);
+        let at = pulse_at(width, lit, m.now_ms);
+        (0..width).map(|i| if i >= at && i < at + lit { '█' } else { '░' }).collect()
+    } else {
+        let filled = (u64::from(width) * m.done.min(m.total) / m.total.max(1)) as u16;
+        (0..width).map(|i| if i < filled { '█' } else { '░' }).collect()
+    };
+    (head, detail, format!(" {bar}"))
+}
+
+/// The toasts of the conversations being moved (CON-144), one under another, the rest counted.
+/// Answers the rows they took.
+fn draw_moving(f: &mut Frame, area: Rect, moving: &[crate::model::Moving], t: &Theme) -> u16 {
+    use ratatui::widgets::{Block, BorderType, Borders};
+    let mut y = 0;
+    for m in moving.iter().take(MOVING_SHOWN) {
+        if y + 5 > area.height {
+            break;
+        }
+        let w = 52.min(area.width);
+        let rect = Rect { x: area.x + area.width.saturating_sub(w), y: area.y + y, width: w, height: 5 };
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(t.accent)).style(Style::default().bg(t.surface));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        let (head, detail, bar) = moving_lines(m, inner.width.saturating_sub(2));
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(head, Style::default().fg(t.text).add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled(detail, Style::default().fg(t.text_muted))),
+                Line::from(Span::styled(bar, Style::default().fg(t.accent))),
+            ]),
+            inner,
+        );
+        y += 5;
+    }
+    if moving.len() > MOVING_SHOWN && y < area.height {
+        let more = format!(" +{} more being moved ", moving.len() - MOVING_SHOWN);
+        let w = (more.chars().count() as u16).min(area.width);
+        f.render_widget(Paragraph::new(Span::styled(more, Style::default().fg(t.text_muted).bg(t.surface))), Rect { x: area.x + area.width.saturating_sub(w), y: area.y + y, width: w, height: 1 });
+        y += 1;
+    }
+    y
+}
+
 fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme, out: &mut Drawn) {
     use crate::images::{Icon, Tint};
     use crate::model::InboundKind;
@@ -391,6 +459,39 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
 #[cfg(test)]
 mod reconnecting_tests {
     use super::*;
+
+    /// CON-144: a moving conversation's toast says what is done, the count and its share, with a
+    /// bar filled to it; with no total yet its bar pulses; past 3 the rest are counted.
+    #[test]
+    fn a_moving_toast_counts_and_fills_its_bar() {
+        let m = crate::model::Moving { tab: 1, name: "fix login".into(), what: "Writing Codex's copy".into(), to: "Codex".into(), done: 3200, total: 10000, bytes: false, now_ms: 0 };
+        let (head, detail, bar) = moving_lines(&m, 48);
+        assert_eq!(head, " Writing Codex's copy");
+        assert_eq!(detail, " 3200 / 10000 messages · 32% · fix login");
+        let bar20 = moving_lines(&m, 20).2;
+        assert_eq!(bar20, format!(" {}{}", "█".repeat(6), "░".repeat(14)));
+        assert_eq!(bar.chars().count(), 49);
+        let read = crate::model::Moving { done: 410_000_000, total: 1_196_000_000, bytes: true, ..m.clone() };
+        assert_eq!(moving_lines(&read, 48).1, " 410 MB / 1196 MB · 34% · fix login");
+        let long = crate::model::Moving { name: "a very long name of a conversation that goes on".into(), ..m.clone() };
+        let cut = moving_lines(&long, 30).1;
+        assert!(cut.ends_with('…') && cut.chars().count() == 31, "{cut:?}");
+        let full = crate::model::Moving { done: 10000, ..m.clone() };
+        assert_eq!(moving_lines(&full, 10).2, format!(" {}", "█".repeat(10)));
+        let unknown = crate::model::Moving { total: 0, done: 0, ..m.clone() };
+        let (_, starting, a) = moving_lines(&unknown, 40);
+        assert_eq!(starting, " starting… · fix login");
+        let b = moving_lines(&crate::model::Moving { now_ms: 800, ..unknown.clone() }, 40).2;
+        assert_ne!(a, b, "with no total the bar moves");
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        let five: Vec<_> = (0..5).map(|i| crate::model::Moving { tab: i, ..m.clone() }).collect();
+        let mut rows = 0;
+        terminal.draw(|f| rows = draw_moving(f, f.area(), &five, &theme)).unwrap();
+        assert_eq!(rows, 16, "three toasts and the count");
+        let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("+2 more being moved"), "{screen}");
+    }
 
     /// CON-131: the reconnecting toast says the attempt and the reason, and its bar moves.
     #[test]

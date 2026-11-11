@@ -121,7 +121,7 @@ impl ConversationFormat for CodexConversations {
         let path = self.existing(id)?;
         let file = File::open(&path).map_err(|e| PluginError::new(format!("{}: {e}", path.display())))?;
         let bytes = file.metadata().map_or(0, |m| m.len());
-        let lines = read_lines(BufReader::new(file));
+        let lines = read_lines(BufReader::new(harness_api::platform::progress::Counting::new(file, "Reading Codex's copy", bytes)));
         let mut entries = to_entries(&lines.items);
         let title = entries.iter().find_map(|e| match &e.event {
             Event::UserMessage { text } => text.lines().next().map(str::to_string),
@@ -145,10 +145,12 @@ impl ConversationFormat for CodexConversations {
         let staging = folder.join(format!("{name}.partial"));
         // The first line names the session; Codex resumes from that and the messages alone (journal#918).
         let meta = json!({"timestamp": stamp, "ordinal": 0, "type": "session_meta", "payload": {"id": id, "session_id": id, "timestamp": stamp, "cwd": root, "originator": "codex_exec", "cli_version": CLI_VERSION, "source": "exec", "model_provider": "openai"}});
-        let mut text = meta.to_string();
-        text.push('\n');
-        text.push_str(&lines_of(1, &stamp, history).0);
-        std::fs::write(&staging, text).map_err(|e| PluginError::new(format!("{}: {e}", staging.display())))?;
+        let error = |e: std::io::Error| PluginError::new(format!("{}: {e}", staging.display()));
+        let mut file = std::io::BufWriter::new(File::create(&staging).map_err(error)?);
+        std::io::Write::write_all(&mut file, format!("{meta}\n").as_bytes()).map_err(error)?;
+        write_lines(&mut file, 1, &stamp, history).map_err(error)?;
+        std::io::Write::flush(&mut file).map_err(error)?;
+        drop(file);
         // Whole or not at all: Codex lists what it finds.
         std::fs::rename(&staging, &path).map_err(|e| PluginError::new(format!("{}: {e}", path.display())))?;
         self.found.lock().expect("found").insert(id.clone(), path);
@@ -443,14 +445,27 @@ fn to_entries(items: &[(u64, Value)]) -> Vec<LogEntry> {
 
 /// A history as rollout lines numbered from `ordinal`, and the ordinal after them. Reasoning stays
 /// out: it is the provider's own, made for the conversation it was made in.
-fn lines_of(mut ordinal: u64, stamp: &str, history: &[Message]) -> (String, u64) {
-    let mut out = String::new();
+fn lines_of(ordinal: u64, stamp: &str, history: &[Message]) -> (String, u64) {
+    let mut out = Vec::new();
+    let next = write_lines(&mut out, ordinal, stamp, history).expect("writing to memory");
+    (String::from_utf8(out).expect("JSON is UTF-8"), next)
+}
+
+/// The same, written as it is made: a whole conversation is never held twice (journal#955).
+fn write_lines(out: &mut dyn std::io::Write, mut ordinal: u64, stamp: &str, history: &[Message]) -> std::io::Result<u64> {
+    let mut failed: Option<std::io::Error> = None;
     let mut push = |payload: Value, ordinal: &mut u64| {
-        out.push_str(&json!({"timestamp": stamp, "ordinal": *ordinal, "type": "response_item", "payload": payload}).to_string());
-        out.push('\n');
+        if failed.is_none() {
+            let line = json!({"timestamp": stamp, "ordinal": *ordinal, "type": "response_item", "payload": payload}).to_string();
+            if let Err(e) = out.write_all(line.as_bytes()).and_then(|()| out.write_all(b"\n")) {
+                failed = Some(e);
+            }
+        }
         *ordinal += 1;
     };
-    for message in history {
+    let total = history.len() as u64;
+    for (n, message) in history.iter().enumerate() {
+        harness_api::platform::progress::report("Writing Codex's copy", n as u64, total, harness_api::platform::progress::Unit::Messages);
         let (role, kind) = match message.role {
             Role::User => ("user", "input_text"),
             Role::Assistant => ("assistant", "output_text"),
@@ -479,7 +494,11 @@ fn lines_of(mut ordinal: u64, stamp: &str, history: &[Message]) -> (String, u64)
         }
         flush(&mut texts, &mut push, &mut ordinal);
     }
-    (out, ordinal)
+    harness_api::platform::progress::report("Writing Codex's copy", total, total, harness_api::platform::progress::Unit::Messages);
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(ordinal),
+    }
 }
 
 fn now_millis() -> i64 {

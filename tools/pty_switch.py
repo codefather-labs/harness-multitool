@@ -77,7 +77,9 @@ os.write(fd, b"\x13"); pump(1.0)
 assert saved()["provider"] == "claude-code", "saved by the harness"
 assert "ADAPTER  claude-code" in text(), "the status line says so: " + text()
 until("the form exists at once", lambda: forms() and "The slow answer" in open(forms()[0]).read())
-assert not os.path.exists(home + "/calls"), "no message was needed"
+# The Provider page asks `claude auth status` to show the account (CON-123): that is no message.
+runs = [l for l in (open(home + "/calls").read().splitlines() if os.path.exists(home + "/calls") else []) if not l.startswith("auth ")]
+assert not runs, "no message was needed: " + repr(runs)
 form = forms()[0]; cid = os.path.basename(form)[:-6]; print("after it: saved, shown, and the form holds the conversation before any message:", cid)
 typed("next\r"); until("the delegate answers", lambda: "Delegate answer" in text())
 assert f"--resume {cid}" in open(home + "/calls").read(), "it goes on in that form"

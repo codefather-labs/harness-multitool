@@ -591,6 +591,7 @@ pub fn session_tabs() -> AppState {
         active: 0,
         toast: None,
         reconnecting: None,
+        moving: Vec::new(),
         overlay: None,
         drag: None,
         journal: crate::debug::known_entries(),

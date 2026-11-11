@@ -50,6 +50,9 @@ pub struct Workspace {
     /// While the window has no connection to the daemon: a toast of its own with a pulsing bar
     /// and the attempts so far (CON-131), above the other toast.
     pub reconnecting: Option<Reconnecting>,
+    /// Conversations the daemon is moving or bringing in line, each with its own toast and
+    /// progress bar (CON-136, CON-144). Only those tabs are held.
+    pub moving: Vec<Moving>,
     /// A modal window over the session: it takes the keys until it closes.
     pub overlay: Option<Overlay>,
     /// A map being dragged with the mouse.
@@ -154,16 +157,6 @@ pub struct Drag {
 pub enum Overlay {
     Permission(PermissionView),
     Settings(SettingsView),
-    /// The daemon is bringing a conversation in line: the window waits and takes no input (CON-81).
-    Syncing(SyncingView),
-}
-
-#[derive(Debug, Clone)]
-pub struct SyncingView {
-    /// What is being done, in a few words.
-    pub what: String,
-    pub started_ms: u64,
-    pub now_ms: u64,
 }
 
 /// A tool call waiting for the user's approval (permission-*; IF-5 Policy asked).
@@ -351,7 +344,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -409,6 +402,25 @@ pub struct Reconnecting {
     /// Why there is no connection, when it is known: no daemon, or a busy one of another protocol.
     pub reason: String,
     /// Milliseconds now, set by the window on every frame, so the bar moves.
+    pub now_ms: u64,
+}
+
+/// A conversation being moved or brought in line, as its toast shows it (CON-144).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Moving {
+    pub tab: u64,
+    /// The tab's name, as its tab shows it.
+    pub name: String,
+    /// What is being done: "Reading Claude Code's copy".
+    pub what: String,
+    /// Where it is going, for the refusal of a send: "Codex", or empty.
+    pub to: String,
+    pub done: u64,
+    /// 0 while it is not known: the bar pulses.
+    pub total: u64,
+    /// The count is bytes (shown as MB), else messages.
+    pub bytes: bool,
+    /// Milliseconds now, set by the window on every frame, so a bar with no total pulses.
     pub now_ms: u64,
 }
 
