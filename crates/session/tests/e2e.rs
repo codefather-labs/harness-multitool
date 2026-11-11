@@ -1861,3 +1861,50 @@ fn a_window_rides_out_three_daemon_restarts_losing_and_doubling_nothing() {
     assert_eq!(seen.lock().unwrap().len(), 4, "four model calls, none repeated");
     assert!(watch.try_iter().all(|e| matches!(e, Connection::Trying { .. })), "nothing more was told but tries");
 }
+
+/// CON-134, journal#914: a conversation linked to Claude Code's form, opened on Codex, is written
+/// into Codex's form and Codex resumes that one: never Claude Code's id, which it does not know.
+#[cfg(unix)]
+#[test]
+fn a_conversation_moved_to_codex_is_resumed_from_its_codex_form() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_dir("to-codex");
+    let data = temp_dir("to-codex-data");
+    let codex_home = temp_dir("to-codex-home");
+    let args = format!("{codex_home}/args");
+    let fake = format!("{codex_home}/codex");
+    std::fs::write(&fake, format!("#!/bin/sh\necho \"$@\" >> {args}\ncat > /dev/null\necho '{{\"type\":\"turn.started\"}}'\necho '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"KESTREL\"}}}}'\necho '{{\"type\":\"turn.completed\",\"usage\":{{}}}}'\n")).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let log = [
+        LogEntry { seq: 0, at_ms: 1, event: Event::UserMessage { text: "The code word is KESTREL.".into() } },
+        LogEntry { seq: 1, at_ms: 2, event: Event::TurnStarted { turn: 1, provider: "claude-code".into(), model: "m".into() } },
+        LogEntry { seq: 2, at_ms: 3, event: Event::TextDelta { text: "Noted.".into() } },
+        LogEntry { seq: 3, at_ms: 4, event: Event::TurnFinished { turn: 1, stop: StopReason::EndTurn, usage: Usage::default(), cost_micro_usd: None } },
+        LogEntry { seq: 4, at_ms: 5, event: Event::FormSynced { source: "claude-code".into(), id: "cc-1".into(), cursor: "100:leaf".into(), holds: Some(2) } },
+    ];
+    let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let dir = format!("{data}/sessions/{}", slug.trim_matches('-'));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(format!("{dir}/moved.jsonl"), log.iter().map(|e| harness_api::event::to_line(e) + "\n").collect::<String>()).unwrap();
+
+    let mut s = Settings { provider: "codex".into(), model: "m".into(), ..Default::default() };
+    s.providers.insert("codex".into(), json!({"kind": "codex", "binary": fake}));
+    let mut env = harness_session::this_environment();
+    for name in [harness_session::CHATGPT_DIR_VAR, "CLAUDE_CONFIG_DIR", "MULTITOOL_HOME"] {
+        env.remove(name);
+    }
+    env.insert("CODEX_HOME".into(), codex_home.clone());
+    let host = harness_session::Host { environment: Some(Arc::new(env)), ..Default::default() };
+    let mut sessions = Sessions::new(harness_session::with_host(s, root.clone(), data.clone().into(), host), root);
+    sessions.resume(1, "moved");
+    let (_, ends, _) = drive(&mut sessions, &["What was the code word?"], Answer::AllowOnce);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+
+    let called = std::fs::read_to_string(&args).unwrap();
+    assert!(!called.contains("cc-1"), "Claude Code's id went to Codex: {called}");
+    let id = called.split_whitespace().skip_while(|w| *w != "resume").nth(1).unwrap_or_else(|| panic!("not resumed: {called}")).to_string();
+    let form = harness_backend_codex::conversations::CodexConversations::new(&codex_home);
+    let written = form.read("", &id).unwrap();
+    let said: Vec<String> = written.entries.iter().filter_map(|e| if let Event::UserMessage { text } = &e.event { Some(text.clone()) } else { None }).collect();
+    assert_eq!(said, ["The code word is KESTREL."], "the history before this message, in Codex's form");
+}

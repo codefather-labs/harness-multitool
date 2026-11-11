@@ -516,7 +516,11 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             parts.backend = Some(delegate(&settings, &root, host.environment.clone(), mcp, spec_dir)?);
         }
         // A connected provider's form is kept in line whichever provider runs the session (INV-20).
-        if settings.providers.values().any(|p| p["kind"] == "claude-code") {
+        // A session on Codex keeps Codex's form, which its program resumes from (journal#914).
+        let running = settings.providers.get(&settings.provider).is_some_and(|p| p["kind"] == harness_backend_codex::NAME);
+        if running {
+            parts.conversations = conversation_source_in(harness_backend_codex::NAME, &*read).ok().map(Rc::from);
+        } else if settings.providers.values().any(|p| p["kind"] == "claude-code") {
             parts.conversations = conversation_source_in("claude-code", &*read).ok().map(Rc::from);
         }
         Ok(parts)
@@ -566,17 +570,24 @@ pub fn conversation_source(name: &str) -> Result<Box<dyn ConversationFormat>, St
     conversation_source_in(name, &|name| std::env::var(name).ok())
 }
 
-#[cfg(feature = "claude-code")]
 fn conversation_source_in(name: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
+    if name == harness_backend_codex::NAME {
+        return Ok(Box::new(harness_backend_codex::conversations::CodexConversations::from_lookup(env).map_err(|e| e.to_string())?));
+    }
+    claude_code_source_in(name, env)
+}
+
+#[cfg(feature = "claude-code")]
+fn claude_code_source_in(name: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
     match name {
         harness_backend_claude_code::NAME => Ok(Box::new(harness_backend_claude_code::conversations::ClaudeCodeConversations::from_lookup(env).map_err(|e| e.to_string())?)),
-        other => Err(format!("no conversations from {other}; known: {}", harness_backend_claude_code::NAME)),
+        other => Err(format!("no conversations from {other}; known: {}, {}", harness_backend_claude_code::NAME, harness_backend_codex::NAME)),
     }
 }
 
 #[cfg(not(feature = "claude-code"))]
-fn conversation_source_in(_name: &str, _env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
-    Err("this build reads no conversations: build with --features claude-code".to_string())
+fn claude_code_source_in(name: &str, _env: &dyn Fn(&str) -> Option<String>) -> Result<Box<dyn ConversationFormat>, String> {
+    Err(format!("no conversations from {name} in this build; known: {}", harness_backend_codex::NAME))
 }
 
 #[cfg(not(feature = "claude-code"))]

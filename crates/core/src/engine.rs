@@ -583,7 +583,10 @@ impl Engine {
             return self.push_form(true);
         }
         let state = self.state.borrow().clone();
-        let Some(format) = self.parts.conversations.clone().filter(|_| state.backend_session.is_none() && state.messages.len() > 1) else { return Ok(()) };
+        // A session id that is another provider's form is not this backend's own: Codex cannot
+        // resume Claude Code's, nor Claude Code Codex's (CON-134).
+        let own_session = |format: &Rc<dyn harness_api::ConversationFormat>| state.backend_session.as_ref().is_some_and(|id| !state.forms.iter().any(|(name, link)| name != format.name() && link.id == *id));
+        let Some(format) = self.parts.conversations.clone().filter(|format| !own_session(format) && state.messages.len() > 1) else { return Ok(()) };
         let mut history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
         Self::without_prompt(&mut history);
         if history.is_empty() {

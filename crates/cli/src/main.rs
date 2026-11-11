@@ -49,6 +49,15 @@ enum DebugAction {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Write a conversation of this directory from one provider's form into another's, as the
+    /// daemon does when it is moved (CON-134), and print the new id. The original is only read.
+    Convert {
+        /// `claude-code` or `codex`
+        from: String,
+        /// `claude-code` or `codex`
+        to: String,
+        id: String,
+    },
     /// The saved runs of the project in this directory, newest first.
     Runs {
         #[arg(long, default_value_t = 5)]
@@ -333,6 +342,17 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Docs { action: DocsAction::Check } => docs_check(),
+        Command::Debug { action: DebugAction::Convert { from, to, id } } => {
+            let root = std::env::current_dir()?.to_string_lossy().into_owned();
+            let source = harness_session::conversation_source(&from).map_err(|e| anyhow!(e))?;
+            let target = harness_session::conversation_source(&to).map_err(|e| anyhow!(e))?;
+            let read = source.read(&root, &id).map_err(|e| anyhow!(e.to_string()))?;
+            let state = harness_api::SessionState::fold(read.entries.iter().map(|e| &e.event));
+            let history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
+            let written = target.write(&root, &read.info.title, &history).map_err(|e| anyhow!(e.to_string()))?;
+            println!("{} messages of {from} {id} written as {to} {written}", history.len());
+            Ok(())
+        }
         Command::Debug { action: DebugAction::Screenshot { out } } => {
             let path = std::env::current_dir()?.join(out.unwrap_or_else(|| std::env::temp_dir().join(format!("multitool-screen-{}.png", std::process::id()))));
             // The window writes the file into this folder; if it is missing, no picture can come, so say that now.

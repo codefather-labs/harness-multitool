@@ -2,7 +2,7 @@
 """Debug: one session across real providers, in a real TUI in a pty (ADR 0023). Each step resumes the
 session on another provider, asks for the code words so far and gives a new one. Spends a little of
 the owner's plans. The owner's ChatGPT sign-in is linked, never read or copied. Needs pyte, a local
-Ollama and a build with --features claude-code.
+Ollama, a build with --features claude-code, and for codex the codex binary signed in.
 Usage: tools/real_transform.py <absolute path to multitool> [gpt claude gemma gpt]"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import fcntl, json, pty, re, select, shutil, signal, struct, tempfile, termios, time
@@ -14,6 +14,7 @@ os.symlink(os.path.expanduser("~/.local/share/harness-multitool/auth"), home + "
 CONFIG = {
     "gpt": '[session]\nprovider="chatgpt"\nmodel="gpt-6.1-sol"\nmax_tokens=4000\n\n[session.providers.chatgpt]\nkind="openai-responses"\n\n[session.auth.chatgpt]\noauth="chatgpt"\n',
     "claude": '[session]\nprovider="claude-code"\nmodel="claude-haiku-5-5"\n\n[session.providers.claude-code]\nkind="claude-code"\n',
+    "codex": '[session]\nprovider="codex"\nmodel=""\n\n[session.providers.codex]\nkind="codex"\ncontext_window=272000\n',
     "gemma": '[session]\nprovider="local"\nmodel="gemma4:e2b"\nmax_tokens=2000\n\n[session.providers.local]\nkind="openai"\nbase_url="http://127.0.0.1:11434/v1"\ncontext_window=32000\n\n[session.auth.local]\nnone=true\n',
 }
 WORDS = ["лазурит", "кварцит", "малахит", "гранат", "обсидиан"]
@@ -21,6 +22,10 @@ COLS, ROWS = 130, 46
 results = []
 for step, name in enumerate(chain):
     open(home + "/cfg/harness-multitool/config.toml", "w").write(CONFIG[name])
+    # The configuration of before profiles is copied into default only once (journal#754): each
+    # step's goes in again by removing default's, so the step runs on the provider it names.
+    try: os.remove(home + "/mt-home/profiles/default/profile.toml")
+    except FileNotFoundError: pass
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
@@ -52,7 +57,7 @@ for step, name in enumerate(chain):
     results.append((name, round(time.time() - t0, 1), known, found, ok))
     print(f"--- step {step + 1}: {name}, {time.time() - t0:.1f}s; asked for {known}, named {found}: {'ok' if ok else 'MISSED'}", flush=True)
     print("\n".join(l[:120] for l in tail.splitlines()[:9]), flush=True)
-    if "CANNOT" in screen_text or "error" in tail.lower()[:200]: print(screen_text[-900:])
+    if "CANNOT" in screen_text or "error" in tail.lower()[:200] or os.environ.get("MT_DUMP"): print(screen_text[-2500:])
     os.kill(pid, signal.SIGTERM); pump(0.5)
     try: os.waitpid(pid, 0)
     except OSError: pass

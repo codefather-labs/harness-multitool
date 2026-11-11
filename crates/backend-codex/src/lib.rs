@@ -4,6 +4,8 @@
 //! One process per message: `codex exec --json`, then `codex exec resume <thread>` for the next.
 //! The prompt goes on stdin, so it is on no command line.
 
+pub mod conversations;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
