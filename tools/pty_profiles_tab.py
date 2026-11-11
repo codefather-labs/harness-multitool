@@ -12,6 +12,9 @@ root = os.path.realpath(tempfile.mkdtemp(prefix="mt-pt-root")); home = tempfile.
 mt = home + "/mt-home"
 env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
 env.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=mt, XDG_DATA_HOME=home + "/data", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", CLAUDE_CONFIG_DIR=home + "/dot-claude")
+# Hermetic: no Codex from this machine's PATH, so the Provider page lists the same rows everywhere
+# (journal#913 lists Codex when it is installed).
+env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
 for n in ["gpt", "max"]:
     assert subprocess.run([bin_, "profile", "add", n], env=env, cwd=root, capture_output=True).returncode == 0
 # max runs a fake Claude Code, so its Sign in button can be pressed: it writes down how it was run.

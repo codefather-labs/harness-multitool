@@ -82,9 +82,10 @@ impl Settings {
         self.providers.get(&self.provider).and_then(|p| p["context_window"].as_u64()).unwrap_or(if self.provider == "anthropic" { 1_000_000 } else { 128_000 })
     }
 
-    /// Whether the chosen provider row is Claude Code as a delegate (ADR 0020).
+    /// Whether the chosen provider row is a delegate program: Claude Code (ADR 0020) or Codex
+    /// (journal#913).
     fn runs_delegate(&self) -> bool {
-        self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "claude-code")
+        self.providers.get(&self.provider).is_some_and(is_delegate_row)
     }
 
     fn on_large_model(&self) -> bool {
@@ -233,7 +234,7 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
         });
     }
     for name in std::iter::once(settings.provider.as_str()).chain(settings.providers.keys().map(String::as_str)) {
-        if settings.providers.get(name).is_some_and(|p| p["kind"] == "claude-code") {
+        if settings.providers.get(name).is_some_and(is_delegate_row) {
             continue;
         }
         let kind = settings.providers.get(name).and_then(|p| p["kind"].as_str()).map(str::to_string).unwrap_or_else(|| if name == "anthropic" { "anthropic".to_string() } else { "openai".to_string() });
@@ -396,6 +397,13 @@ pub struct Choice {
 /// permissions skip, and with its basics as the program's allowed tools (CON-108, CON-103).
 fn isolate_slave(settings: &mut Settings) {
     let Some(row) = settings.providers.get_mut(&settings.provider) else { return };
+    // A Codex slave: never with approvals and sandbox off, whatever the user's own row says.
+    if row["kind"] == harness_backend_codex::NAME {
+        if let Some(row) = row.as_object_mut() {
+            row.remove("permissions");
+        }
+        return;
+    }
     if row["kind"] != "claude-code" {
         return;
     }
@@ -515,9 +523,32 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
     })
 }
 
+/// Whether a provider row runs a delegate program rather than a provider through the harness's loop.
+pub fn is_delegate_row(row: &serde_json::Value) -> bool {
+    row["kind"] == "claude-code" || row["kind"] == harness_backend_codex::NAME
+}
+
+/// The delegate of the chosen row: Codex in every build (journal#913), Claude Code in a build that
+/// has it (ADR 0020).
+fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>, readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
+    let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
+    if row["kind"] == harness_backend_codex::NAME {
+        let codex = harness_backend_codex::Codex::new(&settings.model, root, &row);
+        let codex = match mcp {
+            Some(mcp) => codex.with_mcp(mcp),
+            None => codex,
+        };
+        return Ok(Rc::new(match environment {
+            Some(environment) => codex.with_environment(environment),
+            None => codex,
+        }));
+    }
+    claude_code_delegate(settings, root, environment, mcp, readable_dir)
+}
+
 /// Claude Code as a delegate, in a build that has it (ADR 0020).
 #[cfg(feature = "claude-code")]
-fn delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>, readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
+fn claude_code_delegate(settings: &Settings, root: &str, environment: Option<WindowEnv>, mcp: Option<String>, readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     let row = settings.providers.get(&settings.provider).cloned().unwrap_or_default();
     let code = harness_backend_claude_code::ClaudeCode::new(&settings.model, root, &row).with_readable_dir(readable_dir);
     let code = match mcp {
@@ -549,7 +580,7 @@ fn conversation_source_in(_name: &str, _env: &dyn Fn(&str) -> Option<String>) ->
 }
 
 #[cfg(not(feature = "claude-code"))]
-fn delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, _mcp: Option<String>, _readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
+fn claude_code_delegate(_settings: &Settings, _root: &str, _environment: Option<WindowEnv>, _mcp: Option<String>, _readable_dir: Option<String>) -> Result<Rc<dyn AgentBackend>, String> {
     Err("this build has no Claude Code delegate: build with --features claude-code".to_string())
 }
 

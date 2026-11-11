@@ -115,6 +115,8 @@ static USERS_CLAUDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// `CLAUDE_CONFIG_DIR` as the environment had it at the start, if it had it.
 static USERS_CLAUDE_VAR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+/// `CODEX_HOME` as this process found it, the user's own Codex folder when set (journal#913).
+static USERS_CODEX_VAR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
 
 /// Whether the profiles' root is the user's own, not one set apart by MULTITOOL_HOME.
 fn root_is_users() -> bool {
@@ -176,6 +178,7 @@ pub fn select(name: &str) -> Result<()> {
     }
     let _ = USERS_CLAUDE.set(users_claude_dir()?);
     let _ = USERS_CLAUDE_VAR.set(std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()));
+    let _ = USERS_CODEX_VAR.set(std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()));
     *CURRENT.write().map_err(|_| anyhow!("the profile lock is poisoned"))? = Some(name.to_string());
     Ok(())
 }
@@ -221,6 +224,54 @@ pub fn users_claude_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(dir));
     }
     Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".claude"))
+}
+
+/// A profile's Codex folder (its CODEX_HOME): its own sign-in, and through its `sessions` link the
+/// user's Codex sessions, so a conversation is the same under every profile (journal#913, CON-126).
+pub fn codex_dir(name: &str) -> Result<PathBuf> {
+    Ok(profile_dir(name)?.join("codex"))
+}
+
+/// The user's own Codex folder: `CODEX_HOME` as this process found it, else `~/.codex`.
+pub fn users_codex_dir() -> Result<PathBuf> {
+    if let Some(Some(dir)) = USERS_CODEX_VAR.get() {
+        return Ok(PathBuf::from(dir));
+    }
+    if let Some(dir) = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".codex"))
+}
+
+/// Makes a profile's Codex folder, with `sessions` a link to the user's Codex sessions when it has
+/// none; the user's `sessions` is made if it is not there yet. A `sessions` already in the profile,
+/// link or folder, is left as it is.
+pub fn prepare_codex(dir: &std::path::Path, users: &std::path::Path) -> Result<()> {
+    private_dir(dir)?;
+    let link = dir.join("sessions");
+    if std::fs::symlink_metadata(&link).is_ok() {
+        return Ok(());
+    }
+    let target = users.join("sessions");
+    std::fs::create_dir_all(&target).with_context(|| format!("making {}", target.display()))?;
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&target, &link);
+    made.with_context(|| format!("linking {} to {}", link.display(), target.display()))
+}
+
+/// Whether a Codex folder is signed in, by the unmodified `codex login status` (exit 0 when it is);
+/// None when the program cannot be run. Nothing of its answer but that is kept.
+pub fn codex_signed_in(binary: &str, dir: &std::path::Path) -> Option<bool> {
+    let mut command = std::process::Command::new(binary);
+    command.args(["login", "status"]).env("CODEX_HOME", dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.status().ok().map(|s| s.success())
+}
+
+/// The Codex program a profile runs: its codex row's `binary`, else `codex`.
+pub fn codex_binary(c: &Config) -> String {
+    c.session.providers.values().find(|row| row["kind"] == "codex").and_then(|row| row["binary"].as_str()).unwrap_or("codex").to_string()
 }
 
 /// Makes a profile's Claude Code directory, with `projects` a link to the user's transcripts when
@@ -301,6 +352,18 @@ pub type SignInVars = Vec<(&'static str, PathBuf)>;
 /// not the profile's own.
 pub fn sign_in_vars(name: &str) -> Result<(SignInVars, Option<String>)> {
     let mut vars = vec![(harness_session::CHATGPT_DIR_VAR, profile_dir(name)?.join("chatgpt"))];
+    // Codex as Claude Code (journal#913): every profile on its own folder, default on the user's own
+    // until default's is signed in.
+    // Nothing is made for a user who has no Codex and no profile using it.
+    let codex = codex_dir(name)?;
+    let users_codex = users_codex_dir()?;
+    let uses_codex = load_profile(name).is_ok_and(|c| c.session.providers.values().any(|row| row["kind"] == "codex"));
+    if (uses_codex || users_codex.is_dir()) && prepare_codex(&codex, &users_codex).is_ok() {
+        let own = name != DEFAULT_PROFILE || uses_codex && load_profile(name).is_ok_and(|c| codex_signed_in(&codex_binary(&c), &codex) == Some(true));
+        if own {
+            vars.push(("CODEX_HOME", codex));
+        }
+    }
     let dir = claude_dir(name)?;
     let users = users_claude_dir()?;
     if let Err(e) = prepare_claude(&dir, &users) {
@@ -333,6 +396,10 @@ pub fn environment_for(base: std::collections::BTreeMap<String, String>, name: &
     env.remove("CLAUDE_CONFIG_DIR");
     env.remove(harness_session::CHATGPT_DIR_VAR);
     // The start may have set it for the profile it began on; the user's own value goes back.
+    env.remove("CODEX_HOME");
+    if let Some(Some(own)) = USERS_CODEX_VAR.get() {
+        env.insert("CODEX_HOME".to_string(), own.to_string_lossy().into_owned());
+    }
     if let Some(Some(own)) = USERS_CLAUDE_VAR.get() {
         env.insert("CLAUDE_CONFIG_DIR".to_string(), own.to_string_lossy().into_owned());
     }
@@ -437,6 +504,9 @@ pub fn create(name: &str) -> Result<PathBuf> {
     // Its Claude Code sees the user's transcripts from the start (CON-126); if the link cannot be
     // made now, the profile's first start says so.
     let _ = prepare_claude(&dir.join("claude"), &users_claude_dir()?);
+    if users_codex_dir()?.is_dir() {
+        let _ = prepare_codex(&dir.join("codex"), &users_codex_dir()?);
+    }
     Ok(dir)
 }
 

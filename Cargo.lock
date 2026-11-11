@@ -1028,6 +1028,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-backend-codex"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-api",
+ "pollster",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "harness-context-default"
 version = "0.1.0-dev"
 dependencies = [
@@ -1168,6 +1178,7 @@ dependencies = [
  "harness-auth-apikey",
  "harness-auth-chatgpt",
  "harness-backend-claude-code",
+ "harness-backend-codex",
  "harness-context-default",
  "harness-core",
  "harness-daemon",

@@ -100,6 +100,8 @@ pub enum Outgoing {
     ProfileDelete { name: String },
     ProfileUse { name: String },
     ProfileClaude { name: String, login: bool },
+    /// Codex's own `codex login` or `codex logout` in this profile's Codex folder (journal#913).
+    ProfileCodex { name: String, login: bool },
     /// Another Claude account for a profile: its own sign-in out, then in again (journal#802).
     ProfileClaudeSwitch { name: String },
     /// The Login button of gpt-subscription, and what follows it.
@@ -231,6 +233,8 @@ pub const PLAN_PROVIDER: &str = "gpt-subscription";
 
 /// The provider row of the Claude Code delegate, in a build that has it.
 pub const DELEGATE_PROVIDER: &str = "claude-code";
+/// Codex CLI as a delegate (journal#913).
+pub const CODEX_PROVIDER: &str = "codex";
 
 /// A model on offer: its id, and what it costs and holds, as a line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -273,6 +277,8 @@ pub struct AuthPage {
     pub claude_note: Option<String>,
     /// The Claude account it is signed in as: `email (plan)` (journal#808).
     pub claude_account: Option<String>,
+    /// Its Codex folder signed in; none when Codex is not on this machine (journal#913).
+    pub codex_signed: Option<bool>,
 }
 
 /// Prints no key.

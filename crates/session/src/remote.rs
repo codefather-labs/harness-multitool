@@ -1811,7 +1811,7 @@ fn authorized_adapters(settings: &Settings, data_dir: &Path, environment: Option
         }
         seen.push(name);
         let row = settings.providers.get(name);
-        let is_delegate = row.is_some_and(|r| r["kind"] == "claude-code");
+        let is_delegate = row.is_some_and(crate::is_delegate_row);
         let on_plan = name == "chatgpt" || settings.auth.get(name).is_some_and(|a| a["oauth"] == "chatgpt");
         let authorized = if is_delegate {
             true

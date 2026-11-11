@@ -105,13 +105,13 @@ enum Command {
     /// to the unmodified `claude auth login` in the profile's own Claude Code directory (CON-123). The
     /// harness never sees a Claude token.
     Login {
-        /// `chatgpt` or `claude-code`
+        /// `chatgpt`, `claude-code` or `codex`
         provider: String,
     },
     /// Sign this profile out: `chatgpt` revokes and clears the token; `claude-code` runs
     /// `claude auth logout` in the profile's Claude Code directory.
     Logout {
-        /// `chatgpt` or `claude-code`
+        /// `chatgpt`, `claude-code` or `codex`
         provider: String,
     },
     /// The profiles: `list` them, or `add <name>` a new, clean one (CON-120, CON-125).
@@ -281,6 +281,8 @@ fn main() -> Result<()> {
         }
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Login { provider } if provider == "claude-code" => claude_code_auth("login"),
+        Command::Login { provider } if provider == "codex" => codex_auth(&config::current(), true),
+        Command::Logout { provider } if provider == "codex" => codex_auth(&config::current(), false),
         Command::Login { provider } => login(&provider),
         Command::Logout { provider } if provider == "claude-code" => claude_code_auth("logout"),
         Command::Profile { action: ProfileAction::Add { name } } => {
@@ -1365,6 +1367,8 @@ impl Live {
         let account = config::load().ok().and_then(|c| config::claude_account(&config::claude_binary(&c), &config::claude_dir(&config::current()).ok()?));
         page.claude_signed = account.as_ref().map(|a| a.signed_in);
         page.claude_account = account.as_ref().and_then(config::claude_account_words);
+        // Codex in this profile's own folder (journal#913); none when it is not on this machine.
+        page.codex_signed = config::load().ok().and_then(|c| config::codex_signed_in(&config::codex_binary(&c), &config::codex_dir(&config::current()).ok()?));
         page
     }
 
@@ -1574,6 +1578,9 @@ impl Live {
         c.session.model = model.to_string();
         if provider == "claude-code" {
             c.session.providers.entry("claude-code".to_string()).or_insert_with(|| serde_json::json!({"kind": "claude-code", "context_window": 200_000}));
+        }
+        if provider == "codex" {
+            c.session.providers.entry("codex".to_string()).or_insert_with(|| serde_json::json!({"kind": "codex", "context_window": 272_000}));
         }
         if provider == "local" {
             c.session.providers.entry("local".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai", "base_url": LOCAL_BASE_URL}));
@@ -1865,6 +1872,7 @@ impl Live {
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::Login } else { ClaudeStep::Logout })),
                 Outgoing::ProfileClaudeSwitch { name } => self.terminal_wanted = Some((name, ClaudeStep::Switch)),
+                Outgoing::ProfileCodex { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::CodexLogin } else { ClaudeStep::CodexLogout })),
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -2307,6 +2315,9 @@ enum ClaudeStep {
     Logout,
     /// Out, then in again with another account.
     Switch,
+    /// Codex's own sign-in and sign-out, in the profile's Codex folder (journal#913).
+    CodexLogin,
+    CodexLogout,
 }
 
 /// The open settings show the Profiles tab as it now stands, the line under the cursor kept.
@@ -2364,6 +2375,32 @@ fn profile_label() -> String {
 /// `multitool login|logout claude-code`: the unmodified `claude auth login|logout`, run in this
 /// profile's Claude Code directory with the terminal handed to it (CON-123). Nothing of the
 /// harness's own Claude Code environment reaches it, and the harness reads nothing of what it saves.
+/// `multitool login|logout codex`: the unmodified `codex login` (or `codex logout`) in this profile's
+/// own Codex folder (journal#913), as Claude Code's sign-in is (CON-123). The harness reads,
+/// stores and passes on none of what Codex saves there.
+fn codex_auth(profile: &str, login: bool) -> Result<()> {
+    let c = config::load_profile(profile)?;
+    let binary = config::codex_binary(&c);
+    let dir = config::codex_dir(profile)?;
+    config::prepare_codex(&dir, &config::users_codex_dir()?)?;
+    let what = if login { "login" } else { "logout" };
+    println!("Profile {profile}: running `{binary} {what}` in {}", dir.display());
+    if login {
+        println!("In the browser, sign in with the ChatGPT account this profile is for.");
+    }
+    let status = std::process::Command::new(&binary).arg(what).env("CODEX_HOME", &dir).status().with_context(|| format!("running {binary}"))?;
+    if !status.success() {
+        bail!("`{binary} {what}` ended with {status}");
+    }
+    let signed = config::codex_signed_in(&binary, &dir);
+    println!("Profile {profile}: Codex {}", match signed {
+        Some(true) => "signed in",
+        Some(false) => "not signed in",
+        None => "cannot be asked",
+    });
+    Ok(())
+}
+
 fn claude_code_auth(what: &str) -> Result<()> {
     claude_code_auth_for(&config::current(), what)
 }
@@ -2693,20 +2730,24 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             if let Some((profile, step)) = live.terminal_wanted.take() {
                 let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
                 ratatui::restore();
-                let what = match step {
-                    ClaudeStep::Login => "login",
-                    ClaudeStep::Logout => "logout",
-                    ClaudeStep::Switch => "account switch",
+                let (program, what) = match step {
+                    ClaudeStep::Login => ("Claude Code", "login"),
+                    ClaudeStep::Logout => ("Claude Code", "logout"),
+                    ClaudeStep::Switch => ("Claude Code", "account switch"),
+                    ClaudeStep::CodexLogin => ("Codex", "login"),
+                    ClaudeStep::CodexLogout => ("Codex", "logout"),
                 };
                 let done = match step {
                     ClaudeStep::Logout => claude_code_auth_for(&profile, "logout"),
                     ClaudeStep::Login => claude_code_auth_for(&profile, "login"),
                     // Its own login out, then in again: the other logins on this machine stay (journal#802).
                     ClaudeStep::Switch => claude_code_auth_for(&profile, "logout").and_then(|()| claude_code_auth_for(&profile, "login")),
+                    ClaudeStep::CodexLogin => codex_auth(&profile, true),
+                    ClaudeStep::CodexLogout => codex_auth(&profile, false),
                 };
                 let said = match done {
-                    Ok(()) => format!("Claude Code {what} for {profile} done."),
-                    Err(e) => format!("Claude Code {what} for {profile}: {e:#}"),
+                    Ok(()) => format!("{program} {what} for {profile} done."),
+                    Err(e) => format!("{program} {what} for {profile}: {e:#}"),
                 };
                 println!("\n{said} Press Enter to go back to the harness.");
                 let mut line = String::new();

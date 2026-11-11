@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
-use crate::model::{AuthPage, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
+use crate::model::{AuthPage, CODEX_PROVIDER, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -59,6 +59,12 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if s.auth.delegate {
         let at = s.providers.iter().position(|p| p.name == CLAUDE_SUBSCRIPTION).unwrap_or(s.providers.len());
         s.providers.insert(at, ProviderOption { name: DELEGATE_PROVIDER.into(), description: "runs your signed-in Claude Code as an agent".into(), local_build: false, disabled: None });
+    }
+    // Codex CLI, in every build, when it is on this machine (journal#913).
+    // At the end: the rows above keep their places.
+    if s.auth.codex_signed.is_some() {
+        let at = s.providers.len();
+        s.providers.insert(at, ProviderOption { name: CODEX_PROVIDER.into(), description: "runs your signed-in Codex CLI as an agent".into(), local_build: false, disabled: None });
     }
     // Yesterday's outcome is not news; an address still waiting to be opened is.
     if !s.auth.pending {
@@ -1016,12 +1022,21 @@ fn login_label(s: &SettingsView) -> &'static str {
             Some(false) => "Login",
             None => "Claude Code not found",
         },
+        (false, ..) if on_codex(s) => match s.auth.codex_signed {
+            Some(true) => "Sign in again",
+            Some(false) => "Login",
+            None => "Codex not found",
+        },
         (false, ..) => "Enter a key",
     }
 }
 
 fn on_delegate(s: &SettingsView) -> bool {
     s.providers.get(s.provider).is_some_and(|p| p.name == DELEGATE_PROVIDER)
+}
+
+fn on_codex(s: &SettingsView) -> bool {
+    s.providers.get(s.provider).is_some_and(|p| p.name == CODEX_PROVIDER)
 }
 
 fn on_plan(s: &SettingsView) -> bool {
@@ -1047,6 +1062,13 @@ fn sign_in_rows(f: &mut Frame, r: Rect, mut y: u16, s: &SettingsView, t: &Theme,
             (_, Some(note)) => format!("Not signed in for {}: {note}", a.profile),
             (Some(false), None) => format!("Not signed in for {}", a.profile),
             (None, _) => "Claude Code could not be asked".to_string(),
+        }
+    } else if on_codex(s) {
+        // The profile's own Codex folder, as `codex login status` says it (journal#913).
+        match a.codex_signed {
+            Some(true) => format!("Codex signed in for {}. o signs out only this profile", a.profile),
+            Some(false) => format!("Not signed in for {}", a.profile),
+            None => "Codex is not on this machine".to_string(),
         }
     } else { a.keys.iter().find(|(p, _)| p == provider).map_or("not set".to_string(), |(_, w)| format!("key {w}")) };
     text(f, r.x, y, r.width, vec![label("Sign-in"), Span::styled(status, Style::default().fg(if on_plan(s) && a.signed_in { t.success } else { t.text_muted }))], bg);
@@ -1114,6 +1136,11 @@ fn press_sign_in(w: &mut Workspace) {
             Some(true) => w.outbox.push(Outgoing::ProfileClaudeSwitch { name: s.auth.profile.clone() }),
             Some(false) => w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: true }),
             None => s.auth.message = vec!["Claude Code is not on this machine's PATH, or its binary setting is wrong.".to_string()],
+        },
+        // Codex's own sign-in, in this profile's Codex folder: the terminal is handed to it (journal#913).
+        (false, ..) if on_codex(s) => match s.auth.codex_signed {
+            Some(_) => w.outbox.push(Outgoing::ProfileCodex { name: s.auth.profile.clone(), login: true }),
+            None => s.auth.message = vec!["Codex is not on this machine's PATH.".to_string()],
         },
         (false, ..) => s.auth.entry = Some(String::new()),
     }
@@ -1606,6 +1633,9 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             // o on Claude Code's button signs this profile out, without signing in again (journal#802).
             Key::Char('o') if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() && on_delegate(s) && s.auth.claude_signed == Some(true) => {
                 w.outbox.push(Outgoing::ProfileClaude { name: s.auth.profile.clone(), login: false });
+            }
+            Key::Char('o') if s.focus == SettingsPane::Page && s.section == 0 && s.cursor == s.providers.len() && on_codex(s) && s.auth.codex_signed == Some(true) => {
+                w.outbox.push(Outgoing::ProfileCodex { name: s.auth.profile.clone(), login: false });
             }
             Key::Char(' ') | Key::Enter if s.focus == SettingsPane::Page => activate(w),
             Key::Enter => s.focus = SettingsPane::Page,
@@ -2513,6 +2543,32 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let screen = (0..20).map(|y| (0..100).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(screen.contains("me@example.com (max)"), "{screen}");
+    }
+
+    /// journal#913: Codex is listed, last, only where it is installed; its page says the profile's
+    /// sign-in and its button hands the terminal to `codex login` for that profile.
+    #[test]
+    fn codex_is_listed_where_it_is_installed_and_signs_in_by_its_own_login() {
+        let mut w = on_provider_page();
+        w.overlay = None;
+        w.auth = Some(AuthPage { profile: "max".into(), codex_signed: None, ..Default::default() });
+        assert!(!settings_for(&w).providers.iter().any(|p| p.name == CODEX_PROVIDER), "not installed: not listed");
+        w.auth = Some(AuthPage { profile: "max".into(), codex_signed: Some(false), ..Default::default() });
+        w.view_mut().status.fields = vec![("ADAPTER".into(), "codex".into()), ("MODEL".into(), "m".into())];
+        let s = settings_for(&w);
+        assert_eq!(s.providers.last().map(|p| p.name.as_str()), Some(CODEX_PROVIDER), "last, so the rows above keep their places");
+        assert_eq!(s.providers[s.provider].name, CODEX_PROVIDER, "the tab's adapter is chosen");
+        assert_eq!(login_label(&s), "Login");
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let theme = Theme::builtin("dark").unwrap();
+        terminal.draw(|f| provider_page(f, f.area(), &s, &theme, Color::Reset, &mut Drawn::default())).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen = (0..20).map(|y| (0..100).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(screen.contains("Not signed in for max"), "{screen}");
+        w.overlay = Some(Overlay::Settings(s));
+        press_sign_in(&mut w);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ProfileCodex { name, login: true }) if name == "max"));
     }
 
     /// journal#806: choosing an adapter on the Provider page saves it to the window's profile at once,
