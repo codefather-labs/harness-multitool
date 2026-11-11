@@ -274,7 +274,11 @@ fn main() -> Result<()> {
     // Bare `multitool` opens the start page, as run.sh does (journal#780).
     let command = cli.command.unwrap_or(Command::Preview { name: "splash".into(), theme: "dark".into(), script: None, handoff: None });
     match command {
-        Command::Preview { name, theme, script, handoff } => preview(&name, &theme, script.as_deref(), handoff.as_deref()),
+        Command::Preview { name, theme, script, handoff } => {
+            // A window: it never hangs on the daemon (CON-132).
+            harness_daemon::client::this_is_a_window();
+            preview(&name, &theme, script.as_deref(), handoff.as_deref())
+        }
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Login { provider } if provider == "claude-code" => claude_code_auth("login"),
         Command::Login { provider } => login(&provider),
@@ -688,13 +692,23 @@ impl Live {
         let tabs: Vec<u64> = w.tabs.iter().map(|t| t.id).collect();
         let before = self.windows.len();
         for tab in tabs {
-            if !self.windows.insert(tab) {
+            if self.windows.contains(&tab) {
                 continue;
             }
-            let Ok(dir) = config::data_dir() else { continue };
-            let Ok(program) = harness_daemon::own_program() else { continue };
-            let Ok(client) = harness_daemon::client::Client::find_or_start(&dir, &program) else { continue };
+            // This window's own connection, never waited for here (CON-132): a tab not yet
+            // registered is tried again on a later turn, once the connection is there.
+            let client = match self.sessions.client() {
+                Some(client) => client,
+                None => {
+                    let (Ok(dir), Ok(program)) = (config::data_dir(), harness_daemon::own_program()) else { continue };
+                    harness_daemon::client::Client::for_window(&dir, &program)
+                }
+            };
+            if !client.current() {
+                continue;
+            }
             let Ok(window) = client.register(&self.root) else { continue };
+            self.windows.insert(tab);
             self.listen(tab, client, window);
         }
         // The daemon may have just started: the settings should say so.
@@ -972,15 +986,34 @@ impl Live {
             w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text: format!("This window runs its conversations itself: {why}.") });
             return true;
         }
-        let Some(watch) = &self.connection else { return false };
-        let Some(last) = watch.try_iter().last() else { return false };
-        let text = match last {
-            Connection::Connected { pid, again: false } => format!("Connected to the daemon, pid {pid}."),
-            Connection::Connected { pid, again: true } => format!("Reconnected to the daemon, pid {pid}."),
-            Connection::Lost => "Connection to the daemon lost: trying again every 2 s.".to_string(),
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        // The reconnecting toast's bar pulses: it is drawn again on every turn of the loop.
+        let mut changed = match &mut w.reconnecting {
+            Some(r) => {
+                r.now_ms = now_ms;
+                true
+            }
+            None => false,
         };
-        w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text });
-        true
+        let Some(watch) = &self.connection else { return changed };
+        let toast = |text: String| frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text };
+        for event in watch.try_iter().collect::<Vec<_>>() {
+            changed = true;
+            match event {
+                Connection::Connected { pid, again } => {
+                    w.reconnecting = None;
+                    w.toast = Some(toast(if again { format!("Reconnected to the daemon, pid {pid}.") } else { format!("Connected to the daemon, pid {pid}.") }));
+                }
+                Connection::Lost => {
+                    w.reconnecting = Some(frontend_tui::model::Reconnecting { attempt: 0, reason: String::new(), now_ms });
+                    w.toast = Some(toast("Connection to the daemon lost: trying again every 2 s.".to_string()));
+                }
+                Connection::Trying { attempt, reason } => {
+                    w.reconnecting = Some(frontend_tui::model::Reconnecting { attempt, reason, now_ms });
+                }
+            }
+        }
+        changed
     }
 
     fn receive_daemon(&mut self, state: &mut frontend_tui::AppState) -> bool {
@@ -1764,7 +1797,21 @@ impl Live {
     fn send(&mut self, state: &mut frontend_tui::AppState) {
         use frontend_tui::model::{Mode, Outgoing, Overlay};
         let Mode::Session(w) = &mut state.mode else { return };
+        // CON-131: while the window has no connection to the daemon, what the user sends is refused
+        // at once and said so; a typed message goes back to the composer. Nothing waits for later.
+        let down = self.sessions.client().is_some_and(|c| !c.current());
         for out in std::mem::take(&mut w.outbox) {
+            let to_daemon = matches!(out, Outgoing::Prompt { .. } | Outgoing::Task { .. } | Outgoing::Answer { .. } | Outgoing::Stop { .. } | Outgoing::Plan { .. } | Outgoing::StepDebug { .. } | Outgoing::Nick { .. } | Outgoing::Unqueue { .. } | Outgoing::ProfileUse { .. });
+            if down && to_daemon {
+                if let Outgoing::Prompt { tab, text } | Outgoing::Task { tab, text, .. } = &out
+                    && let Some(t) = w.tabs.iter_mut().find(|t| t.id == *tab)
+                {
+                    t.view.composer.text = text.clone();
+                    t.view.composer.back = 0;
+                }
+                w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text: "Not sent: no connection to the daemon. Reconnecting; send it again once it is back.".into() });
+                continue;
+            }
             match out {
                 Outgoing::Prompt { tab, text } => {
                     if let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) {

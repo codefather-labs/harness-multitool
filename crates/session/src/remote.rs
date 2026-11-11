@@ -1405,7 +1405,11 @@ impl RemoteSessions {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let window = format!("conv-{}-{now}", std::process::id());
         let open = json!({"root": root, "settings": settings, "env": environment});
-        client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
+        // Not connected yet (a daemon of another protocol is waited for): the window opens itself
+        // there from its hook once the connection is made.
+        if client.current() {
+            client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
+        }
         let link = Arc::new(Mutex::new(Link { client: client.clone(), open, sessions: Default::default(), generation: 0 }));
         {
             let (weak, window) = (Arc::downgrade(&link), window.clone());
@@ -1779,14 +1783,12 @@ impl SessionLink {
 /// when it is idle and this build's started; while it runs other windows' conversations it is left
 /// alone, and the error says so.
 pub fn daemon_for_this_build(data_dir: &Path, program: &Path) -> Result<Client, String> {
-    let address: Option<harness_daemon::Address> = std::fs::read_to_string(harness_daemon::address_path(data_dir)).ok().and_then(|t| serde_json::from_str(&t).ok());
-    let other = address.filter(|a| a.protocol != harness_daemon::socket::PROTOCOL && harness_daemon::client::other_answers(a));
-    if let Some(old) = other {
-        let protocol = old.protocol;
+    if let Some(old) = harness_daemon::client::other_protocol(data_dir) {
         if !harness_daemon::client::stop_if_idle(&old) {
-            return Err(format!("a daemon of protocol {protocol} (an older build) runs other windows' conversations, so this window runs its own until it is reopened after they end"));
+            // Busy with other windows' runs: this window waits for it, connected to nothing yet; its
+            // client asks it to stop every 2 s and starts this build's once it has (CON-130).
+            return Ok(Client::for_window(data_dir, program));
         }
-        // Gone: its port and socket are free for this build's.
         let end = Instant::now() + Duration::from_secs(5);
         while harness_daemon::client::other_answers(&old) && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(100));

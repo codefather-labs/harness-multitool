@@ -47,6 +47,9 @@ pub struct Workspace {
     /// A notification over the top right of the transcript (an inbound message that arrived
     /// while the agent was busy).
     pub toast: Option<Toast>,
+    /// While the window has no connection to the daemon: a toast of its own with a pulsing bar
+    /// and the attempts so far (CON-131), above the other toast.
+    pub reconnecting: Option<Reconnecting>,
     /// A modal window over the session: it takes the keys until it closes.
     pub overlay: Option<Overlay>,
     /// A map being dragged with the mouse.
@@ -342,7 +345,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -391,6 +394,16 @@ pub enum TabMark {
     Unread(u32),
     /// The session waits for the user (a permission prompt).
     Attention,
+}
+
+/// The reconnecting toast's state (CON-131): what it says, and the clock its bar pulses by.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reconnecting {
+    pub attempt: u64,
+    /// Why there is no connection, when it is known: no daemon, or a busy one of another protocol.
+    pub reason: String,
+    /// Milliseconds now, set by the window on every frame, so the bar moves.
+    pub now_ms: u64,
 }
 
 #[derive(Debug, Clone)]

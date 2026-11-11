@@ -27,6 +27,9 @@ pub const REFIND_WAIT: Duration = Duration::from_secs(5);
 /// The pause between two tries to reach the daemon (CON-131).
 pub const RETRY: Duration = Duration::from_secs(2);
 
+/// What a window's call says when there is no connection (CON-131, CON-132).
+pub const NOT_CONNECTED: &str = "no connection to the daemon";
+
 /// A registered window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registered {
@@ -41,6 +44,9 @@ pub enum Connection {
     Connected { pid: u64, again: bool },
     /// The connection dropped; the client is trying again every 2 s.
     Lost,
+    /// A try that did not connect: the how-manyth since the connection was last made, and why
+    /// when it is known (CON-131).
+    Trying { attempt: u64, reason: String },
 }
 
 /// Run on every connection made after the first, before anything waiting is sent: a window opens
@@ -107,6 +113,8 @@ struct Inner {
     subs: Mutex<HashMap<u64, Sub>>,
     watchers: Mutex<Vec<Sender<Connection>>>,
     hooks: Mutex<Vec<OnConnect>>,
+    /// Tries since the connection was last made.
+    attempts: AtomicU64,
     /// Raised by someone who looks for the daemon now: the next try does not wait out its 2 s.
     kick: Mutex<bool>,
     kicked: Condvar,
@@ -138,6 +146,18 @@ impl Drop for Inner {
     }
 }
 
+/// Set in a window's process (CON-132): its calls never wait for a connection, and wait at most
+/// [`REPLY_WAIT`] for a reply; other processes (session servers, the command line) wait (CON-131).
+static WINDOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How long a window waits for a reply before it counts the daemon as lost (CON-132).
+pub const REPLY_WAIT: Duration = Duration::from_secs(2);
+
+/// This process is a window: it must never hang on the daemon (CON-132).
+pub fn this_is_a_window() {
+    WINDOW.store(true, Ordering::SeqCst);
+}
+
 thread_local! {
     /// Set while an on-connect hook runs: its requests go before the link is open to everyone.
     static IN_HOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -166,6 +186,7 @@ impl Client {
             subs: Mutex::new(HashMap::new()),
             watchers: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
+            attempts: AtomicU64::new(0),
             kick: Mutex::new(false),
             kicked: Condvar::new(),
         });
@@ -221,6 +242,10 @@ impl Client {
         if client.wait_ready(Duration::from_millis(300)) {
             return Ok(client);
         }
+        // Never a second daemon beside one of another protocol: that one is waited for (CON-130).
+        if other_protocol(data_dir).is_some() {
+            return Err("a daemon of another protocol holds this data directory".to_string());
+        }
         if !socket_answers(data_dir) {
             start_daemon(program).map_err(|e| format!("starting the daemon: {e}"))?;
         }
@@ -232,6 +257,14 @@ impl Client {
             }
         }
         Err("the daemon did not start".to_string())
+    }
+
+    /// This process's connection to the daemon of `data_dir`, connected or not yet: it keeps trying,
+    /// and starts `program`'s daemon when none answers (CON-130, CON-131).
+    pub fn for_window(data_dir: &Path, program: &Path) -> Client {
+        let client = Client::shared(data_dir, Some(program));
+        client.inner.try_now();
+        client
     }
 
     fn wait_ready(&self, within: Duration) -> bool {
@@ -278,14 +311,20 @@ impl Client {
         self.inner.link.lock().ok().filter(|l| l.ready).map(|l| l.pid)
     }
 
-    /// One request; waits while the connection is down (CON-131).
+    /// One request. In a window it fails at once when there is no connection and waits at most
+    /// [`REPLY_WAIT`] for its reply, after which the daemon counts as lost (CON-132); elsewhere it
+    /// waits while the connection is down (CON-131).
     pub fn request(&self, method: &str, path: &str, query: &str, body: &str) -> Result<(u16, Value), String> {
         let id = self.inner.next.fetch_add(1, Ordering::SeqCst);
         let (to, from) = channel();
+        let in_hook = IN_HOOK.with(|h| h.get());
+        let window = WINDOW.load(Ordering::SeqCst) && !in_hook;
         {
-            let in_hook = IN_HOOK.with(|h| h.get());
             let mut link = self.inner.link.lock().expect("link");
             while !(link.ready || in_hook && link.writer.is_some()) {
+                if window {
+                    return Err(NOT_CONNECTED.to_string());
+                }
                 link = self.inner.changed.wait(link).expect("link");
             }
             self.inner.pending.lock().expect("pending").insert(id, to);
@@ -296,7 +335,23 @@ impl Client {
                 return Err("the connection to the daemon dropped".to_string());
             }
         }
-        from.recv().unwrap_or_else(|_| Err("the connection to the daemon dropped before it answered".to_string()))
+        // A stop waits for the daemon's runs to close: it may take longer, and it ends the daemon anyway.
+        if !window || path == "/shutdown" {
+            return from.recv().unwrap_or_else(|_| Err("the connection to the daemon dropped before it answered".to_string()));
+        }
+        match from.recv_timeout(REPLY_WAIT) {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the connection to the daemon dropped before it answered".to_string()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // A daemon that does not answer is as good as gone: the connection is closed, so the
+                // reconnect loop and its toasts start and the next calls fail at once (CON-132).
+                self.inner.pending.lock().expect("pending").remove(&id);
+                if let Some(writer) = self.inner.link.lock().expect("link").writer.as_ref() {
+                    let _ = writer.shutdown(std::net::Shutdown::Both);
+                }
+                Err(format!("the daemon did not answer in {} s", REPLY_WAIT.as_secs()))
+            }
+        }
     }
 
     /// The reply of a request that has no other success than 200, as JSON.
@@ -478,6 +533,11 @@ pub fn stop_if_idle(address: &Address) -> bool {
         .is_ok_and(|r| r.status() == 200)
 }
 
+/// The address of a daemon of another protocol that still answers for `data_dir`, if there is one.
+pub fn other_protocol(data_dir: &Path) -> Option<Address> {
+    std::fs::read_to_string(address_path(data_dir)).ok().and_then(|t| serde_json::from_str::<Address>(&t).ok()).filter(|a| a.protocol != PROTOCOL && other_answers(a))
+}
+
 /// Whether something answers on the socket of this data directory, without the protocol.
 fn socket_answers(data_dir: &Path) -> bool {
     socket_of(data_dir).is_some_and(|path| connect(&path).is_ok())
@@ -522,20 +582,54 @@ fn keep_connected(weak: Weak<Inner>) {
         let Some(inner) = weak.upgrade() else { return };
         let attempt = dial(&inner);
         let Ok((writer, lines, welcome)) = attempt else {
-            // Nobody has come back: one who can start the daemon does, once it has waited.
             let program = inner.program.lock().expect("program").clone();
+            let mut reason = "no daemon answers".to_string();
+            // A daemon of another protocol holds the directory: asked to stop if idle, every try;
+            // while it runs other windows' conversations this window waits for it (CON-130).
+            let other = inner.dir.as_deref().and_then(other_protocol);
+            let mut freed = false;
+            if let Some(old) = other {
+                if program.is_some() && stop_if_idle(&old) {
+                    let end = Instant::now() + Duration::from_secs(5);
+                    while other_answers(&old) && Instant::now() < end {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    freed = true;
+                    reason = format!("a daemon of protocol {} was idle and is being replaced", old.protocol);
+                } else {
+                    reason = format!("a daemon of protocol {} (another build) runs other windows' conversations: waiting for it to be idle", old.protocol);
+                }
+            }
+            // Nobody has come back: one who can start the daemon does, once it has waited, or at
+            // once in place of one it just stopped.
             let since = inner.link.lock().expect("link").down_since;
-            if let (Some(program), Some(since), Some(dir)) = (program, since, &inner.dir)
-                && since.elapsed() >= REFIND_WAIT
+            if let (Some(program), Some(dir)) = (program, &inner.dir)
+                && (freed || since.is_some_and(|s| s.elapsed() >= REFIND_WAIT))
                 && !socket_answers(dir)
+                && (freed || other_protocol(dir).is_none())
             {
                 let _ = start_daemon(&program);
                 inner.link.lock().expect("link").down_since = Some(Instant::now());
+                // The one just started is connected to as soon as it listens, not a try later.
+                let end = Instant::now() + Duration::from_secs(3);
+                while !socket_answers(dir) && Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                inner.try_now();
+            }
+            if inner.link.lock().expect("link").down_since.is_none() {
+                inner.link.lock().expect("link").down_since = Some(Instant::now());
+            }
+            let attempt = inner.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            tell(&inner, Connection::Trying { attempt, reason });
+            if freed {
+                inner.try_now();
             }
             inner.pause();
             drop(inner);
             continue;
         };
+        inner.attempts.store(0, Ordering::SeqCst);
         let pid = welcome["pid"].as_u64().unwrap_or(0);
         let instance = welcome["instance"].as_str().unwrap_or_default().to_string();
         debug(&format!("welcome {instance}"));
@@ -557,8 +651,9 @@ fn keep_connected(weak: Weak<Inner>) {
             let weak = weak.clone();
             std::thread::spawn(move || read(weak, lines))
         };
-        // A window opens itself again in a new daemon before it hears or sends anything there.
-        if again {
+        // A window opens itself in a daemon it reaches for the first time, before it hears or sends
+        // anything there; the hooks say whether it is another daemon.
+        {
             let hooks = inner.hooks.lock().expect("hooks").clone();
             let client = Client { inner: inner.clone() };
             IN_HOOK.with(|h| h.set(true));

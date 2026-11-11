@@ -1842,7 +1842,15 @@ fn a_window_rides_out_three_daemon_restarts_losing_and_doubling_nothing() {
         assert!(!typed.is_finished(), "round {round}: it waits while the daemon is away");
         let began = std::time::Instant::now();
         daemon = start(&make_host);
-        let connected = watch.recv_timeout(Duration::from_secs(5));
+        // The tries made meanwhile are told too (CON-131), numbered from 1; then the connection.
+        let mut attempts = Vec::new();
+        let connected = loop {
+            match watch.recv_timeout(Duration::from_secs(5)) {
+                Ok(Connection::Trying { attempt, .. }) => attempts.push(attempt),
+                other => break other,
+            }
+        };
+        assert!(attempts.iter().enumerate().all(|(n, a)| *a == n as u64 + 1), "round {round}: tries numbered in order: {attempts:?}");
         assert!(matches!(connected, Ok(Connection::Connected { again: true, .. })), "round {round}: {connected:?}");
         assert!(began.elapsed() < Duration::from_millis(2500), "round {round}: connected within a try of the new daemon: {:?}", began.elapsed());
         assert!(typed.join().unwrap().is_ok(), "round {round}: the waiting message went");
@@ -1851,5 +1859,5 @@ fn a_window_rides_out_three_daemon_restarts_losing_and_doubling_nothing() {
     }
     assert_eq!(user_texts(&read_log(&data, &root, &session)), ["message 0", "message 1", "message 2", "message 3"], "each once, in order, in one log");
     assert_eq!(seen.lock().unwrap().len(), 4, "four model calls, none repeated");
-    assert!(watch.try_recv().is_err(), "nothing more was told");
+    assert!(watch.try_iter().all(|e| matches!(e, Connection::Trying { .. })), "nothing more was told but tries");
 }

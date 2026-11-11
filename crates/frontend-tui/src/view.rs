@@ -173,8 +173,14 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
             more,
         );
     }
+    // The reconnecting toast stands at the top; any other toast goes under it (CON-131).
+    let below = match &w.reconnecting {
+        Some(r) => draw_reconnecting(f, tr, r, t),
+        None => 0,
+    };
+    let tr_toast = Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr };
     if let (Some(toast), None) = (&w.toast, &w.overlay) {
-        draw_toast(f, tr, toast, t, out);
+        draw_toast(f, tr_toast, toast, t, out);
     }
     widgets::rule(f, rule, t);
     widgets::status_line(f, status, t, &v.status);
@@ -299,6 +305,44 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
 
 /// An inbound message that arrived while the agent was busy, over the top right (the toast of
 /// inbound-messages-*): icon, `Channel · sender  now`, the text, `×` to close.
+/// Where the lit part of the reconnecting bar stands at `now_ms`: it sweeps from end to end and
+/// back, a step every 80 ms.
+pub fn pulse_at(width: u16, lit: u16, now_ms: u64) -> u16 {
+    let span = width.saturating_sub(lit).max(1) as u64;
+    let step = (now_ms / 80) % (2 * span);
+    (if step < span { step } else { 2 * span - step }) as u16
+}
+
+/// The reconnecting toast (CON-131): 'Reconnecting to the daemon… attempt N', the reason, and a
+/// pulsing bar. Answers the rows it took.
+fn draw_reconnecting(f: &mut Frame, area: Rect, r: &crate::model::Reconnecting, t: &Theme) -> u16 {
+    use ratatui::widgets::{Block, BorderType, Borders};
+    let w = 46.min(area.width);
+    let rect = Rect { x: area.x + area.width.saturating_sub(w), y: area.y, width: w, height: 5.min(area.height) };
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(t.warning)).style(Style::default().bg(t.surface));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let attempt = if r.attempt == 0 { String::new() } else { format!(" · attempt {}", r.attempt) };
+    let bar_w = inner.width.saturating_sub(2);
+    let lit = (bar_w / 5).max(2);
+    let at = pulse_at(bar_w, lit, r.now_ms);
+    let bar: String = (0..bar_w).map(|i| if i >= at && i < at + lit { '█' } else { '░' }).collect();
+    let reason = if r.reason.is_empty() { "no connection".to_string() } else { r.reason.clone() };
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(" Reconnecting to the daemon…", Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+                Span::styled(attempt, Style::default().fg(t.text_muted)),
+            ]),
+            Line::from(Span::styled(format!(" {reason}"), Style::default().fg(t.text_muted))),
+            Line::from(Span::styled(format!(" {bar}"), Style::default().fg(t.warning))),
+        ]),
+        inner,
+    );
+    rect.height
+}
+
 fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme, out: &mut Drawn) {
     use crate::images::{Icon, Tint};
     use crate::model::InboundKind;
@@ -342,4 +386,30 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
     let close = Rect { x: inner.x + inner.width.saturating_sub(2), y: inner.y, width: 1, height: 1 };
     f.render_widget(Paragraph::new(Span::styled("×", Style::default().fg(t.text_muted))), close);
     out.hits.push(Hit { rect: close, target: Target::CloseToast });
+}
+
+#[cfg(test)]
+mod reconnecting_tests {
+    use super::*;
+
+    /// CON-131: the reconnecting toast says the attempt and the reason, and its bar moves.
+    #[test]
+    fn the_reconnecting_toast_says_the_attempt_and_its_bar_pulses() {
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let draw = |now_ms: u64| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+            let r = crate::model::Reconnecting { attempt: 3, reason: "no daemon answers".into(), now_ms };
+            terminal.draw(|f| { draw_reconnecting(f, f.area(), &r, &theme); }).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+        };
+        let first = draw(0);
+        let text = first.join("\n");
+        assert!(text.contains("Reconnecting to the daemon") && text.contains("attempt 3") && text.contains("no daemon answers"), "{text}");
+        let bar = |rows: &[String]| rows.iter().find(|l| l.contains('█')).cloned().expect("a bar");
+        let later = draw(800);
+        assert_ne!(bar(&first).find('█'), bar(&later).find('█'), "the lit part moved");
+        assert_eq!(pulse_at(20, 4, 0), 0);
+        assert!((0..400).all(|n| pulse_at(20, 4, n * 80) <= 16), "it stays inside the bar");
+    }
 }
