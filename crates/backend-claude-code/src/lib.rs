@@ -210,7 +210,6 @@ pub struct ClaudeCode {
     skip_permissions: bool,
     /// What it runs with instead of this process's environment (a window's, in the daemon).
     environment: Option<std::sync::Arc<std::collections::BTreeMap<String, String>>>,
-    chrome: bool,
     /// An MCP tool that answers this program's permission prompts (CON-108), instead of nobody.
     prompt_tool: Option<String>,
     /// The harness holds plan mode for it: the program's own has instructions that win over ours.
@@ -233,7 +232,6 @@ impl ClaudeCode {
             own_environment: settings["environment"] == "user",
             skip_permissions: settings["permissions"] == "skip",
             environment: None,
-            chrome: settings["chrome"] != false,
             prompt_tool: settings["permission_prompt_tool"].as_str().map(str::to_string),
             harness_plans: settings["harness_plans"] == true,
             readable_dir: None,
@@ -274,10 +272,9 @@ impl ClaudeCode {
         if !self.own_environment || self.mcp.is_some() {
             args.extend(["--mcp-config".to_string(), self.mcp.clone().unwrap_or_else(|| r#"{"mcpServers":{}}"#.to_string())]);
         }
-        // Its own environment has the user's browser tools, as their own session does.
-        if self.own_environment && self.chrome {
-            args.push("--chrome".to_string());
-        }
+        // The browser tools, always and in every environment, tab or slave (CON-133): they work
+        // under --strict-mcp-config too (journal#900).
+        args.push("--chrome".to_string());
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
         } else {
@@ -747,6 +744,17 @@ mod tests {
         assert!(own.iter().any(|a| a == "--dangerously-skip-permissions"));
         let next = BackendRequest { fork: false, ..request };
         assert!(!ClaudeCode::new("m", "/r", &serde_json::json!({})).args(&next).iter().any(|a| a == "--fork-session"), "only the first message forks");
+    }
+
+    /// CON-133: Claude Code always runs with --chrome: in its own environment and in the isolated
+    /// one (a slave's), and no row turns it off.
+    #[test]
+    fn every_delegate_runs_with_the_browser_tools() {
+        let never = || false;
+        for row in [json!({}), json!({"environment": "user"}), json!({"harness_plans": true, "permission_prompt_tool": "mcp__mode__permission_ask"}), json!({"chrome": false}), json!({"environment": "user", "chrome": false})] {
+            let args = ClaudeCode::new("m", "/r", &row).with_mcp("{}".into()).args(&request(None, None, false, &never));
+            assert_eq!(args.iter().filter(|a| *a == "--chrome").count(), 1, "{row}: {args:?}");
+        }
     }
 
     #[test]
