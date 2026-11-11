@@ -141,6 +141,46 @@ impl ToolOutput {
     }
 }
 
+/// The digest of a conversation (CON-138): in order, one FNV-1a hash per run of one role, over the
+/// role and the texts of its messages. Messages with no text (tool calls and results only) are
+/// passed over, so a run goes on across them; tool calls and results never count, because a
+/// program's stream and its form record one turn's calls differently, and a form joins messages
+/// of one role into one. A user message counts by its last paragraph, since what the harness sends
+/// a delegate may come before the user's words, after a blank line (journal#934).
+pub fn conversation_digest(messages: &[Message]) -> Vec<u64> {
+    let mut runs: Vec<(Role, Vec<&str>)> = Vec::new();
+    for message in messages {
+        let texts: Vec<&str> = message.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.trim()) } else { None }).filter(|t| !t.is_empty()).collect();
+        if texts.is_empty() {
+            continue;
+        }
+        let texts: Vec<&str> = match message.role {
+            Role::User => texts.iter().map(|t| t.rsplit("\n\n").next().unwrap_or(t).trim()).collect(),
+            Role::Assistant => texts,
+        };
+        match runs.last_mut() {
+            Some((role, run)) if *role == message.role => run.extend(texts),
+            _ => runs.push((message.role, texts)),
+        }
+    }
+    runs.into_iter().map(|(role, texts)| {
+        // FNV-1a, 64 bits: the same on every build and machine.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        feed(if role == Role::User { b"user" } else { b"assistant" });
+        for text in texts {
+            feed(b"\0");
+            feed(text.as_bytes());
+        }
+        hash
+    }).collect()
+}
+
 /// A history any provider takes, whatever it came from: roles alternate; every call is answered in
 /// the next message, results first; a result with no call before it is left out. A log can hold
 /// such things after a cut, a stop, or a conversation brought in from elsewhere.

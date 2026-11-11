@@ -45,6 +45,9 @@ pub struct FormLink {
     pub cursor: String,
     /// How many of the session's messages it holds.
     pub holds: usize,
+    /// The digest of those messages when the daemon last made the form agree (CON-138).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -171,10 +174,10 @@ impl SessionState {
                 }
             }
             Event::ContextWindow { .. } => {}
-            Event::FormSynced { source, id, cursor, holds } => {
+            Event::FormSynced { source, id, cursor, holds, digest } => {
                 self.backend_session = Some(id.clone());
                 self.backend_fork = false;
-                self.forms.insert(source.clone(), FormLink { id: id.clone(), cursor: cursor.clone(), holds: holds.unwrap_or(self.messages.len()) });
+                self.forms.insert(source.clone(), FormLink { id: id.clone(), cursor: cursor.clone(), holds: holds.unwrap_or(self.messages.len()), digest: digest.clone() });
             }
             Event::AgentName { name, .. } => self.agent_name = Some(name.clone()),
             Event::OrchestraRole { role, master, task } => {
@@ -273,5 +276,46 @@ mod tests {
         assert!(Verifying.can_become(Done));
         assert!(Verifying.can_become(Running));
         assert!(!Done.can_become(Running));
+    }
+
+    /// CON-138: one digest for one conversation whatever form it came from; a changed text changes
+    /// it; tools and the harness's wrapping do not count; a prefix is told.
+    #[test]
+    fn a_conversation_has_one_digest_in_every_form() {
+        use crate::model::{Content, Message, Role, conversation_digest};
+        let text = |t: &str| Content::Text { text: t.to_string() };
+        let log = vec![
+            Message { role: Role::User, content: vec![text("the word is WREN")] },
+            Message { role: Role::Assistant, content: vec![text("running"), Content::ToolUse { id: "item_1".into(), name: "shell".into(), input: serde_json::json!({"command": "ls"}) }] },
+            Message { role: Role::User, content: vec![Content::ToolResult { id: "item_1".into(), output: "a.txt".into(), is_error: false }] },
+            Message { role: Role::Assistant, content: vec![text("done")] },
+        ];
+        // The same turn as Codex's form records it: another call, another output, the note before the words.
+        let form = vec![
+            Message { role: Role::User, content: vec![text("the harness's note\n\nthe word is WREN")] },
+            Message { role: Role::Assistant, content: vec![text("running"), Content::ToolUse { id: "call_9".into(), name: "exec".into(), input: serde_json::json!({"input": "js"}) }] },
+            Message { role: Role::User, content: vec![Content::ToolResult { id: "call_9".into(), output: "Script completed".into(), is_error: false }] },
+            Message { role: Role::Assistant, content: vec![text("done")] },
+        ];
+        let digest = conversation_digest(&log);
+        assert_eq!(digest.len(), 2, "a run of one role is one, across tool-only messages");
+        // One script of Codex's ran two commands: more calls, the same words.
+        let mut split = form.clone();
+        split.insert(2, Message { role: Role::Assistant, content: vec![Content::ToolUse { id: "c2".into(), name: "exec".into(), input: serde_json::json!({}) }] });
+        split.insert(3, Message { role: Role::User, content: vec![Content::ToolResult { id: "c2".into(), output: "x".into(), is_error: false }] });
+        assert_eq!(conversation_digest(&split), digest);
+        // Two messages of the user in a row, joined into one by a form.
+        let two = [Message::user("one".to_string()), Message::user("two".to_string())];
+        let joined = [Message { role: Role::User, content: vec![text("one"), text("two")] }];
+        assert_eq!(conversation_digest(&two), conversation_digest(&joined));
+        assert_eq!(digest, conversation_digest(&form));
+        let mut changed = log.clone();
+        changed[3].content = vec![text("done!")];
+        assert_ne!(conversation_digest(&changed), digest);
+        let mut other_role = log.clone();
+        other_role[0].role = Role::Assistant;
+        assert_ne!(conversation_digest(&other_role)[0], digest[0], "the role counts");
+        assert!(digest.starts_with(&conversation_digest(&log[..1])), "a prefix of the log is a prefix of its digest");
+        assert_eq!(digest[0], conversation_digest(&log[..1])[0], "stable: the same each time");
     }
 }

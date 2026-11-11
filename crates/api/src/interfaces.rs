@@ -548,4 +548,7 @@ pub trait ConversationFormat {
     fn append(&self, root: &str, id: &str, cursor: &str, history: &[Message]) -> PluginResult<String>;
     /// The provider's own program that has this conversation open right now, in words for the user.
     fn held_by(&self, id: &str, except: Option<u32>) -> Option<String>;
+    /// Whether the form of conversation `id` is there at all: a position does not tell, since a
+    /// form not written yet stands at its start (CON-138).
+    fn exists(&self, root: &str, id: &str) -> bool;
 }

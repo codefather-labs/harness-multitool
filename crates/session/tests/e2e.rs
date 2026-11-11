@@ -1880,7 +1880,7 @@ fn a_conversation_moved_to_codex_is_resumed_from_its_codex_form() {
         LogEntry { seq: 1, at_ms: 2, event: Event::TurnStarted { turn: 1, provider: "claude-code".into(), model: "m".into() } },
         LogEntry { seq: 2, at_ms: 3, event: Event::TextDelta { text: "Noted.".into() } },
         LogEntry { seq: 3, at_ms: 4, event: Event::TurnFinished { turn: 1, stop: StopReason::EndTurn, usage: Usage::default(), cost_micro_usd: None } },
-        LogEntry { seq: 4, at_ms: 5, event: Event::FormSynced { source: "claude-code".into(), id: "cc-1".into(), cursor: "100:leaf".into(), holds: Some(2) } },
+        LogEntry { seq: 4, at_ms: 5, event: Event::FormSynced { source: "claude-code".into(), id: "cc-1".into(), cursor: "100:leaf".into(), holds: Some(2), digest: None } },
     ];
     let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     let dir = format!("{data}/sessions/{}", slug.trim_matches('-'));
@@ -1907,4 +1907,228 @@ fn a_conversation_moved_to_codex_is_resumed_from_its_codex_form() {
     let written = form.read("", &id).unwrap();
     let said: Vec<String> = written.entries.iter().filter_map(|e| if let Event::UserMessage { text } = &e.event { Some(text.clone()) } else { None }).collect();
     assert_eq!(said, ["The code word is KESTREL."], "the history before this message, in Codex's form");
+}
+
+/// A fake Claude Code that keeps its transcript as the real one does: a user and an assistant line
+/// per message, chained by parentUuid, in `$CLAUDE_CONFIG_DIR/projects/<slug>/<session>.jsonl`.
+#[cfg(all(unix, feature = "claude-code"))]
+const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
+import json, os, sys, uuid
+args = sys.argv[1:]
+sid = args[args.index("--resume") + 1] if "--resume" in args else str(uuid.uuid4())
+slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in os.getcwd())
+folder = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", slug); os.makedirs(folder, exist_ok=True)
+path = os.path.join(folder, sid + ".jsonl")
+print(json.dumps({"type": "system", "subtype": "init", "session_id": sid, "model": "fake"}), flush=True)
+for line in sys.stdin:
+    prompt = json.loads(line)["message"]["content"][0]["text"]
+    parent = None
+    if os.path.exists(path):
+        for l in open(path):
+            try: parent = json.loads(l).get("uuid") or parent
+            except ValueError: pass
+    reply = "claude heard " + prompt.split("\n\n")[-1]
+    u, a = str(uuid.uuid4()), str(uuid.uuid4())
+    stamp = "2026-11-11T10:00:00.000Z"
+    with open(path, "a") as f:
+        f.write(json.dumps({"type": "user", "uuid": u, "parentUuid": parent, "sessionId": sid, "timestamp": stamp, "message": {"role": "user", "content": prompt}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "uuid": a, "parentUuid": u, "sessionId": sid, "timestamp": stamp, "message": {"id": "msg_" + a, "role": "assistant", "model": "fake", "stop_reason": "end_turn", "usage": {}, "content": [{"type": "text", "text": reply}]}}) + "\n")
+    print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": reply}}}), flush=True)
+    print(json.dumps({"type": "result", "is_error": False, "stop_reason": "end_turn", "total_cost_usd": 0.0, "usage": {}}), flush=True)
+"#;
+
+/// A fake Codex that keeps its rollout as the real one does: numbered lines in
+/// `$CODEX_HOME/sessions/.../rollout-<time>-<id>.jsonl`, a turn's user and assistant items.
+#[cfg(all(unix, feature = "claude-code"))]
+const FAKE_CODEX: &str = r#"#!/usr/bin/env python3
+import glob, json, os, sys, uuid
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+home = os.environ["CODEX_HOME"]
+if "resume" in args:
+    tid = args[args.index("resume") + 1]
+    path = glob.glob(os.path.join(home, "sessions", "**", "rollout-*-" + tid + ".jsonl"), recursive=True)[0]
+else:
+    tid = str(uuid.uuid4()); folder = os.path.join(home, "sessions", "2026", "11", "11"); os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "rollout-2026-11-11T10-00-00-" + tid + ".jsonl")
+    open(path, "w").write(json.dumps({"timestamp": "2026-11-11T10:00:00.000Z", "ordinal": 0, "type": "session_meta", "payload": {"id": tid, "cwd": os.getcwd()}}) + "\n")
+n = sum(1 for _ in open(path))
+reply = "codex heard " + prompt.split("\n\n")[-1]
+with open(path, "a") as f:
+    for i, item in enumerate([{"type": "event_msg", "payload": {"type": "task_started"}},
+                              {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}},
+                              {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call_" + str(n), "name": "exec", "input": "js"}},
+                              {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "call_" + str(n), "output": [{"type": "input_text", "text": "ok"}]}},
+                              {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": reply}]}}]):
+        item.update(timestamp="2026-11-11T10:00:00.000Z", ordinal=n + i); f.write(json.dumps(item) + "\n")
+for e in [{"type": "thread.started", "thread_id": tid}, {"type": "turn.started"},
+          {"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "ls", "aggregated_output": "", "status": "in_progress"}},
+          {"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "ls", "aggregated_output": "a.txt", "exit_code": 0, "status": "completed"}},
+          {"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": reply}},
+          {"type": "turn.completed", "usage": {}}]:
+    print(json.dumps(e), flush=True)
+"#;
+
+/// CON-134, CON-138, journal#915: a conversation goes Claude Code -> Codex -> Claude Code three
+/// times. Each form keeps its id and gains exactly what the other program said meanwhile, nothing
+/// lost or doubled; a form cut short behind the daemon's back is written whole again under a new
+/// id, the old file left as it was.
+#[cfg(all(unix, feature = "claude-code"))]
+#[test]
+fn a_conversation_moves_between_forms_and_each_gains_only_what_it_lacks() {
+    use harness_api::ConversationFormat;
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_dir("round");
+    let data = temp_dir("round-data");
+    let home = temp_dir("round-home");
+    let (claude_dir, codex_dir) = (format!("{home}/claude"), format!("{home}/codex"));
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let (fake_claude, fake_codex) = (format!("{home}/claude-fake"), format!("{home}/codex-fake"));
+    for (path, text) in [(&fake_claude, FAKE_CLAUDE), (&fake_codex, FAKE_CODEX)] {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let factory = |provider: &str| {
+        let mut s = Settings { provider: provider.into(), model: "m".into(), ..Default::default() };
+        s.providers.insert("claude-code".into(), json!({"kind": "claude-code", "binary": fake_claude}));
+        s.providers.insert("codex".into(), json!({"kind": "codex", "binary": fake_codex}));
+        let mut env = harness_session::this_environment();
+        for name in [harness_session::CHATGPT_DIR_VAR, "MULTITOOL_HOME"] {
+            env.remove(name);
+        }
+        env.insert("CLAUDE_CONFIG_DIR".into(), claude_dir.clone());
+        env.insert("CODEX_HOME".into(), codex_dir.clone());
+        harness_session::with_host(s, root.clone(), data.clone().into(), harness_session::Host { environment: Some(Arc::new(env)), ..Default::default() })
+    };
+    let claude = harness_backend_claude_code::conversations::ClaudeCodeConversations::new(&claude_dir);
+    let codex = harness_backend_codex::conversations::CodexConversations::new(&codex_dir);
+    let lines = |path: &std::path::Path| std::fs::read_to_string(path).map_or(0, |t| t.lines().count());
+    let notices = |entries: &[LogEntry]| entries.iter().filter_map(|e| if let Event::Notice { text, .. } = &e.event { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+    let session_log = |sessions: &Sessions| read_log(&data, &root, sessions.session_of(1).unwrap());
+    let digest_of = |format: &dyn ConversationFormat, id: &str| {
+        let read = format.read(&root, id).unwrap();
+        conversation_digest(&SessionState::fold(read.entries.iter().map(|e| &e.event).filter(|e| !matches!(e, Event::ConversationImported { .. } | Event::FormSynced { .. }))).messages)
+    };
+    let log_digest = |sessions: &Sessions| conversation_digest(&SessionState::fold(session_log(sessions).iter().map(|e| &e.event)).messages);
+
+    let mut sessions = Sessions::new(factory("claude-code"), root.clone());
+    let (_, ends, _) = drive(&mut sessions, &["c0"], Answer::AllowOnce);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+    let found = claude.list(&root).unwrap();
+    assert_eq!(found.len(), 1, "one Claude Code form");
+    let claude_id = found[0].id.clone();
+    let claude_file = std::path::PathBuf::from(&claude_dir).join("projects").join(root.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>()).join(format!("{claude_id}.jsonl"));
+    assert_eq!(lines(&claude_file), 2);
+
+    let mut codex_id: Option<String> = None;
+    for round in 1..=3 {
+        // To Codex: its form gains what Claude Code said since it last held the conversation.
+        let codex_before = codex_id.as_ref().map(|id| std::fs::read_to_string(rollout(&codex_dir, id)).unwrap().lines().count());
+        sessions.set_factory(factory("codex"));
+        assert!(sessions.rebind(1));
+        let (entries, ends, _) = drive(&mut sessions, &[&format!("x{round}")], Answer::AllowOnce);
+        assert_eq!(ends, vec!["AwaitingInput"], "round {round}: {:?}", notices(&entries));
+        let ids: Vec<String> = codex.list(&root).unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), 1, "round {round}: one Codex form, kept: {ids:?}");
+        if let (Some(id), Some(before)) = (&codex_id, codex_before) {
+            assert_eq!(&ids[0], id);
+            // Claude Code's turn (2 lines: its user and assistant), then Codex's own (5 lines).
+            assert_eq!(std::fs::read_to_string(rollout(&codex_dir, id)).unwrap().lines().count(), before + 2 + 5, "round {round}");
+            assert!(notices(&entries).iter().any(|n| n.contains("codex") && n.contains("lacked 2 messages")), "round {round}: {:?}", notices(&entries));
+        }
+        codex_id = Some(ids[0].clone());
+        assert_eq!(digest_of(&codex, &ids[0]), log_digest(&sessions), "round {round}: Codex's form says what the log says");
+
+        // Back to Claude Code: its form, the same file, gains Codex's turn only.
+        let before = lines(&claude_file);
+        sessions.set_factory(factory("claude-code"));
+        assert!(sessions.rebind(1));
+        let (entries, ends, _) = drive(&mut sessions, &[&format!("c{round}")], Answer::AllowOnce);
+        assert_eq!(ends, vec!["AwaitingInput"]);
+        assert!(notices(&entries).iter().any(|n| n.contains("claude-code") && n.contains("lacked 4 messages")), "round {round}: {:?}", notices(&entries));
+        assert_eq!(claude.list(&root).unwrap().len(), 1, "round {round}: no second Claude Code form");
+        // Codex's turn as the log has it (the user's words, its shell call, the result, its answer:
+        // 4 lines), then Claude Code's own two.
+        assert_eq!(lines(&claude_file), before + 4 + 2, "round {round}");
+        assert_eq!(digest_of(&claude, &claude_id), log_digest(&sessions), "round {round}: Claude Code's form says what the log says");
+    }
+    let said = conversation_digest(&SessionState::fold(session_log(&sessions).iter().map(|e| &e.event)).messages);
+    assert_eq!(said.len(), 14, "7 user and 7 assistant runs: nothing lost or doubled");
+
+    // Behind the daemon's back: Claude Code's form cut to its first turn.
+    let cut: String = std::fs::read_to_string(&claude_file).unwrap().lines().take(2).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&claude_file, &cut).unwrap();
+    sessions.set_factory(factory("codex"));
+    assert!(sessions.rebind(1));
+    drive(&mut sessions, &["x4"], Answer::AllowOnce);
+    sessions.set_factory(factory("claude-code"));
+    assert!(sessions.rebind(1));
+    let (entries, _, _) = drive(&mut sessions, &["c4"], Answer::AllowOnce);
+    assert!(notices(&entries).iter().any(|n| n.contains("written whole again")), "{:?}", notices(&entries));
+    assert_eq!(std::fs::read_to_string(&claude_file).unwrap(), cut, "the old file left as it was");
+    let forms = claude.list(&root).unwrap();
+    assert_eq!(forms.len(), 2, "a new form beside the old");
+    let new_id = forms.iter().find(|c| c.id != claude_id).unwrap().id.clone();
+    assert_eq!(digest_of(&claude, &new_id), log_digest(&sessions), "the new form holds the whole conversation");
+
+    // A form that stands where the daemon left it is not read: an edit of the same length inside
+    // it is not seen, the stored digest standing for it (the fast path).
+    let new_file = claude_file.with_file_name(format!("{new_id}.jsonl"));
+    let edit = |from: &str, to: &str| {
+        let text = std::fs::read_to_string(&new_file).unwrap();
+        assert!(text.contains(from), "{from}");
+        std::fs::write(&new_file, text.replacen(from, to, 1)).unwrap();
+    };
+    let there_and_back = |sessions: &mut Sessions, n: u32| {
+        sessions.set_factory(factory("codex"));
+        assert!(sessions.rebind(1));
+        drive(sessions, &[&format!("x{n}")], Answer::AllowOnce);
+        sessions.set_factory(factory("claude-code"));
+        assert!(sessions.rebind(1));
+        notices(&drive(sessions, &[&format!("c{n}")], Answer::AllowOnce).0)
+    };
+    edit("claude heard c4", "claude HEARD c4");
+    let said = there_and_back(&mut sessions, 5);
+    assert!(said.iter().any(|n| n.contains("claude-code") && n.contains("lacked")) && !said.iter().any(|n| n.contains("written whole")), "not read: {said:?}");
+    assert_eq!(claude.list(&root).unwrap().len(), 2);
+
+    // A log of a build before digests: its form is read whole once, so the edit is seen and the
+    // conversation written again; the next move is the fast path again.
+    let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let log_file = format!("{data}/sessions/{}/{}.jsonl", slug.trim_matches('-'), sessions.session_of(1).unwrap());
+    let old: String = std::fs::read_to_string(&log_file).unwrap().lines().map(|l| {
+        let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+        v.as_object_mut().unwrap().remove("digest");
+        format!("{v}\n")
+    }).collect();
+    std::fs::write(&log_file, old).unwrap();
+    edit("claude heard c5", "claude HEARD c5");
+    sessions.set_factory(factory("codex"));
+    assert!(sessions.rebind(1));
+    drive(&mut sessions, &["x6"], Answer::AllowOnce);
+    sessions.set_factory(factory("claude-code"));
+    assert!(sessions.rebind(1));
+    let said = notices(&drive(&mut sessions, &["c6"], Answer::AllowOnce).0);
+    assert!(said.iter().any(|n| n.contains("written whole again")), "read whole once: {said:?}");
+    assert_eq!(claude.list(&root).unwrap().len(), 3);
+    let said = there_and_back(&mut sessions, 7);
+    assert!(said.iter().any(|n| n.contains("claude-code") && n.contains("lacked")), "fast again: {said:?}");
+    assert_eq!(claude.list(&root).unwrap().len(), 3);
+}
+
+#[cfg(all(unix, feature = "claude-code"))]
+fn rollout(codex_dir: &str, id: &str) -> std::path::PathBuf {
+    let mut todo = vec![std::path::PathBuf::from(codex_dir).join("sessions")];
+    while let Some(dir) = todo.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else if path.to_string_lossy().ends_with(&format!("-{id}.jsonl")) {
+                return path;
+            }
+        }
+    }
+    panic!("no rollout {id}")
 }

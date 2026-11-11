@@ -130,7 +130,7 @@ impl ConversationFormat for CodexConversations {
         let last_ms = entries.last().map_or(0, |e| e.at_ms);
         let cursor = format!("{}:{}", complete_length(&path).unwrap_or(0), lines.next_ordinal);
         entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::ConversationImported { source: NAME.to_string(), id: id.to_string(), title: title.clone() } });
-        entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::FormSynced { source: NAME.to_string(), id: id.to_string(), cursor, holds: None } });
+        entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::FormSynced { source: NAME.to_string(), id: id.to_string(), cursor, holds: None, digest: None } });
         Ok(ImportedConversation { info: ConversationInfo { id: id.to_string(), title, last_ms, bytes }, entries, damaged: lines.damaged })
     }
 
@@ -185,10 +185,10 @@ impl ConversationFormat for CodexConversations {
         if end == bytes {
             return Ok(PulledForm { entries: Vec::new(), cursor: cursor.to_string(), rewound: false });
         }
-        // Shorter than it was: written over, so the whole of it is the conversation now.
+        // Codex only ever appends: a shorter file was changed outside it, and what is left is not
+        // new (CON-138 checks it against the log).
         if end < bytes {
-            let lines = read_range(&path, 0, end).map_err(error)?;
-            return Ok(PulledForm { entries: to_entries(&lines.items), cursor: format!("{end}:{}", lines.next_ordinal), rewound: true });
+            return Err(PluginError::new(format!("{NAME} conversation {id} is shorter than when the harness last read it: it was changed outside Codex")));
         }
         let lines = read_range(&path, bytes, end).map_err(error)?;
         Ok(PulledForm { entries: to_entries(&lines.items), cursor: format!("{end}:{}", lines.next_ordinal.max(ordinal)), rewound: false })
@@ -206,6 +206,10 @@ impl ConversationFormat for CodexConversations {
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).map_err(error)?;
         std::io::Write::write_all(&mut file, lines.as_bytes()).map_err(error)?;
         Ok(format!("{}:{next}", bytes + lines.len() as u64))
+    }
+
+    fn exists(&self, _root: &str, id: &str) -> bool {
+        self.file(id).is_ok_and(|p| p.is_some())
     }
 
     fn held_by(&self, id: &str, except: Option<u32>) -> Option<String> {
@@ -422,7 +426,12 @@ fn to_entries(items: &[(u64, Value)]) -> Vec<LogEntry> {
                 let id = text(&item["call_id"]);
                 if answered.insert(id.clone()) {
                     let output = output_text(&item["output"]);
-                    events.push((at_ms, Event::ToolResult { id, output, is_error: false }));
+                    // How the harness writes a failed result for Codex (lines_of): read back as one.
+                    let (output, is_error) = match output.strip_prefix("[error] ") {
+                        Some(rest) => (rest.to_string(), true),
+                        None => (output, false),
+                    };
+                    events.push((at_ms, Event::ToolResult { id, output, is_error }));
                 }
             }
             _ => {}
@@ -602,6 +611,8 @@ mod tests {
             Message { role: Role::User, content: vec![text("first")] },
             Message { role: Role::Assistant, content: vec![text("running"), Content::Opaque { block: json!({"type": "thinking", "signature": "other's"}) }, Content::ToolUse { id: "t1".into(), name: "Bash".into(), input: json!({"command": "ls"}) }] },
             Message { role: Role::User, content: vec![Content::ToolResult { id: "t1".into(), output: "a.txt".into(), is_error: false }] },
+            Message { role: Role::Assistant, content: vec![text("again"), Content::ToolUse { id: "t2".into(), name: "Bash".into(), input: json!({"command": "false"}) }] },
+            Message { role: Role::User, content: vec![Content::ToolResult { id: "t2".into(), output: "exit 1".into(), is_error: true }] },
             Message { role: Role::Assistant, content: vec![text("done")] },
         ];
         let dir = tempfile::tempdir().unwrap();
@@ -620,6 +631,7 @@ mod tests {
         expected[1].content.remove(1);
         assert_eq!(provider_ready(&state.messages), expected);
         assert_eq!(form.list("/work/p").unwrap()[0].id, id);
+        assert!(form.exists("/work/p", &id) && !form.exists("/work/p", "01a1cc4a-none"));
     }
 
     /// INV-20, INV-21: appended at the tip with every earlier byte kept, numbered on; what Codex
@@ -655,11 +667,9 @@ mod tests {
         assert!(form.pull("/work/p", "T1", &pulled.cursor).unwrap().entries.is_empty(), "read once; the half line waits");
         assert_eq!(form.tip_after("/work/p", "T1", &second).unwrap(), pulled.cursor);
 
-        // Written over, shorter: the whole of it, as a rewind.
+        // Written over, shorter: changed outside Codex, and nothing of it comes in as new.
         std::fs::write(&path, format!("{}\n", recorded()[..6].join("\n"))).unwrap();
-        let rewound = form.pull("/work/p", "T1", &pulled.cursor).unwrap();
-        assert!(rewound.rewound);
-        assert_eq!(said(&rewound.entries), ["Run cat note.txt"]);
+        assert!(form.pull("/work/p", "T1", &pulled.cursor).unwrap_err().to_string().contains("changed outside"));
     }
 
     #[test]

@@ -141,6 +141,10 @@ pub enum Event {
         cursor: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         holds: Option<usize>,
+        /// The digest of the log's messages the form holds (CON-138), taken when the daemon made
+        /// them agree. None from a form's own reading, and in logs of builds before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest: Option<Vec<u64>>,
     },
     /// The agent's name in this session, and who gave it: `user` or `agent`.
     AgentName { name: String, by: String },

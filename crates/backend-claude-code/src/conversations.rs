@@ -91,7 +91,7 @@ impl ConversationFormat for ClaudeCodeConversations {
         })).unwrap_or_else(|| id.to_string());
         let last_ms = entries.last().map_or(0, |e| e.at_ms);
         entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::ConversationImported { source: NAME.to_string(), id: id.to_string(), title: title.clone() } });
-        entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::FormSynced { source: NAME.to_string(), id: id.to_string(), cursor: cursor_at(&path, &nodes), holds: None } });
+        entries.push(LogEntry { seq: entries.len() as u64, at_ms: last_ms, event: Event::FormSynced { source: NAME.to_string(), id: id.to_string(), cursor: cursor_at(&path, &nodes), holds: None, digest: None } });
         Ok(ImportedConversation { info: ConversationInfo { id: id.to_string(), title, last_ms, bytes }, entries, damaged })
     }
 
@@ -144,6 +144,11 @@ impl ConversationFormat for ClaudeCodeConversations {
         if end == bytes {
             return Ok(PulledForm { entries: Vec::new(), cursor: cursor.to_string(), rewound: false });
         }
+        // Claude Code only ever appends, a rewind included: a shorter file was changed outside it,
+        // and what is left is not new (CON-138 checks it against the log).
+        if end < bytes {
+            return Err(PluginError::new(format!("{NAME} conversation {id} is shorter than when the harness last read it: it was changed outside Claude Code")));
+        }
         // A long conversation runs to hundreds of megabytes: only what is new is read, unless the
         // new lines do not lead back to the position.
         if end > bytes {
@@ -186,6 +191,10 @@ impl ConversationFormat for ClaudeCodeConversations {
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).map_err(error)?;
         std::io::Write::write_all(&mut file, lines.as_bytes()).map_err(error)?;
         Ok(format!("{}:{}", bytes + lines.len() as u64, tip.unwrap_or_default()))
+    }
+
+    fn exists(&self, root: &str, id: &str) -> bool {
+        self.file(root, id).is_ok_and(|p| p.is_file())
     }
 
     fn held_by(&self, id: &str, except: Option<u32>) -> Option<String> {

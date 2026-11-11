@@ -201,7 +201,9 @@ impl Engine {
         let own = self.parts.backend.as_ref().and_then(|b| b.own_process());
         let held = self.form().is_some_and(|(format, link)| format.held_by(&link.id, own).is_some());
         if connecting && !held {
-            if self.parts.backend.is_some() {
+            if let Err(message) = self.bring_in_line() {
+                failed = Some(message);
+            } else if self.parts.backend.is_some() {
                 if let Err(message) = self.hand_over().await {
                     failed = Some(message);
                 }
@@ -498,6 +500,68 @@ impl Engine {
         Some((format, link))
     }
 
+    /// The form `id` at `source` stands at `cursor` and holds `holds` of the log's messages, or all
+    /// of them: said in the log with the digest of what it holds (CON-138).
+    fn synced(&self, source: String, id: String, cursor: String, holds: Option<usize>) {
+        let digest = {
+            let state = self.state.borrow();
+            let end = holds.unwrap_or(state.messages.len()).min(state.messages.len());
+            harness_api::conversation_digest(&state.messages[..end])
+        };
+        self.emit(Event::FormSynced { source, id, cursor, holds, digest: Some(digest) });
+    }
+
+    /// CON-134, CON-138: a conversation moved here; its form is checked against the log by their
+    /// digests. A form that stands where the daemon left it is not read: the digest kept with its
+    /// link stands for it. One changed behind the daemon's back is read whole. Equal to the log,
+    /// nothing is written; equal to the log up to the point the form holds, the rest is appended
+    /// (by the hand-over that follows); otherwise the whole conversation is written again under a
+    /// new id, the old file left as it was. Each move says which it was.
+    fn bring_in_line(&self) -> Result<(), String> {
+        let Some((format, link)) = self.form() else { return Ok(()) };
+        let source = format.name().to_string();
+        let (log_all, log_held, count) = {
+            let state = self.state.borrow();
+            let held = link.holds.min(state.messages.len());
+            (harness_api::conversation_digest(&state.messages), harness_api::conversation_digest(&state.messages[..held]), state.messages.len())
+        };
+        let exists = format.exists(&self.root, &link.id);
+        let standing = exists && format.tip_after(&self.root, &link.id, &link.cursor).is_ok_and(|tip| tip == link.cursor);
+        let form = match (&link.digest, standing) {
+            (Some(digest), true) => Some(digest.clone()),
+            // Changed outside, gone, or linked by a build before digests: what it holds is read.
+            _ if exists => format.read(&self.root, &link.id).ok().map(|read| {
+                let events = read.entries.iter().map(|e| &e.event).filter(|e| !matches!(e, Event::ConversationImported { .. } | Event::FormSynced { .. }));
+                harness_api::conversation_digest(&SessionState::fold(events).messages)
+            }),
+            _ => None,
+        };
+        let label = harness_api::HARNESS_LABEL;
+        if form.as_ref() == Some(&log_all) {
+            if link.holds != count {
+                self.synced(source.clone(), link.id.clone(), link.cursor.clone(), Some(count));
+            }
+            self.emit(Event::Notice { label: label.to_string(), text: format!("{source}: its copy of this conversation is in line; nothing written") });
+            return Ok(());
+        }
+        if form.as_ref() == Some(&log_held) {
+            let added = count.saturating_sub(link.holds);
+            self.emit(Event::Notice { label: label.to_string(), text: format!("{source}: its copy of this conversation lacked {added} messages; only those are added") });
+            return Ok(());
+        }
+        // Not what the log says: written whole again, under a new id.
+        let history = {
+            let state = self.state.borrow();
+            harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..])
+        };
+        let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
+        let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
+        self.synced(source.clone(), id.clone(), cursor, Some(count));
+        let why = if exists { "differs from this log" } else { "is gone" };
+        self.emit(Event::Notice { label: label.to_string(), text: format!("{source}: its copy of this conversation {why}; written whole again as {id}, the old one kept as it was") });
+        Ok(())
+    }
+
     /// INV-20: what the form gained outside the harness goes into the log. A provider's own
     /// program keeps writing the form while this reads. True if the log gained anything.
     pub async fn pull_form(&self) -> bool {
@@ -522,11 +586,11 @@ impl Engine {
         for entry in pulled.entries {
             self.emit(entry.event);
         }
-        self.emit(Event::FormSynced { source: source.clone(), id: link.id.clone(), cursor: pulled.cursor.clone(), holds: None });
+        self.synced(source.clone(), link.id.clone(), pulled.cursor.clone(), None);
         if !unsent.is_empty() {
             let history = harness_api::provider_ready(&unsent);
             match format.append(&self.root, &link.id, &pulled.cursor, &history) {
-                Ok(cursor) => self.emit(Event::FormSynced { source, id: link.id, cursor, holds: None }),
+                Ok(cursor) => self.synced(source, link.id, cursor, None),
                 Err(e) => self.emit(Event::Error { source, message: e.to_string() }),
             }
         }
@@ -543,6 +607,9 @@ impl Engine {
         if link.holds >= end {
             return Ok(());
         }
+        // The last message stays out only when it is the user's: its words go as the prompt. On a
+        // move there is none, and everything goes (journal#935).
+        let holding_prompt = holding_prompt && state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
         let (mut history, holds) = (harness_api::provider_ready(&state.messages[link.holds..end]), if holding_prompt { end - 1 } else { end });
         if holding_prompt {
             Self::without_prompt(&mut history);
@@ -551,11 +618,22 @@ impl Engine {
             }
         }
         if history.is_empty() {
-            self.emit(Event::FormSynced { source: format.name().to_string(), id: link.id, cursor: link.cursor, holds: Some(holds) });
+            self.synced(format.name().to_string(), link.id, link.cursor, Some(holds));
             return Ok(());
         }
-        let cursor = format.append(&self.root, &link.id, &link.cursor, &history).map_err(|e| e.to_string())?;
-        self.emit(Event::FormSynced { source: format.name().to_string(), id: link.id, cursor, holds: Some(holds) });
+        let cursor = match format.append(&self.root, &link.id, &link.cursor, &history) {
+            Ok(cursor) => cursor,
+            Err(refused) => {
+                // Gone or changed outside: checked against the log, written whole again if it must
+                // be (CON-138). One that still lacks only the rest refuses again, and that is said.
+                self.bring_in_line()?;
+                return match self.form() {
+                    Some((_, now)) if now.id != link.id || now.holds >= end => Ok(()),
+                    _ => Err(refused.to_string()),
+                };
+            }
+        };
+        self.synced(format.name().to_string(), link.id, cursor, Some(holds));
         Ok(())
     }
 
@@ -594,7 +672,10 @@ impl Engine {
         }
         let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
         let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
-        self.emit(Event::FormSynced { source: format.name().to_string(), id, cursor, holds: Some(state.messages.len() - 1) });
+        // The last message is left out only when it is the user's, whose words go as the prompt; on a
+        // move there is none, and the form holds everything (journal#935).
+        let prompt_pending = state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
+        self.synced(format.name().to_string(), id, cursor, Some(state.messages.len() - usize::from(prompt_pending)));
         Ok(())
     }
 
@@ -609,7 +690,7 @@ impl Engine {
             None => format.tip(&self.root, &id),
         };
         match tip {
-            Ok(cursor) => self.emit(Event::FormSynced { source: format.name().to_string(), id, cursor, holds: None }),
+            Ok(cursor) => self.synced(format.name().to_string(), id, cursor, None),
             Err(e) => self.emit(Event::Error { source: format.name().to_string(), message: e.to_string() }),
         }
     }
