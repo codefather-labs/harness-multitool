@@ -2,9 +2,7 @@
 //! daemon runs the call on the project's journal. Calls block their session's thread, which is
 //! the session's alone, as the store's own calls do.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use harness_api::*;
 use serde::de::DeserializeOwned;
@@ -13,8 +11,6 @@ use serde_json::Value;
 
 use crate::client::Client;
 
-/// How long a call waits for a daemon being replaced, as in a hot reload.
-const SWAP_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -68,35 +64,24 @@ pub fn serve(store: &dyn Memory, call: Call) -> Result<Value, String> {
 
 /// The session's side.
 pub struct DaemonMemory {
-    client: RefCell<Client>,
-    data_dir: PathBuf,
+    client: Client,
     root: String,
     owner: String,
 }
 
 impl DaemonMemory {
-    pub fn new(client: Client, data_dir: PathBuf, root: &str, owner: &str) -> DaemonMemory {
-        DaemonMemory { client: RefCell::new(client), data_dir, root: root.to_string(), owner: owner.to_string() }
+    /// `_data_dir` is where the daemon was found; the client finds it again there by itself.
+    pub fn new(client: Client, _data_dir: PathBuf, root: &str, owner: &str) -> DaemonMemory {
+        DaemonMemory { client, root: root.to_string(), owner: owner.to_string() }
     }
 
+    /// One call. It waits while the daemon is away and goes once it is back (CON-131); a call that
+    /// was out when the connection dropped fails and is not sent again, so nothing is applied twice.
     fn call<T: DeserializeOwned>(&self, call: Call) -> PluginResult<T> {
         let request = Request { root: self.root.clone(), owner: self.owner.clone(), call };
-        let deadline = Instant::now() + SWAP_WAIT;
-        loop {
-            let client = self.client.borrow().clone();
-            match client.memory(&request) {
-                Ok(value) => return serde_json::from_value(value).map_err(|e| PluginError::new(format!("the daemon's answer: {e}"))),
-                Err(CallError::Failed(message)) => return Err(PluginError::new(message)),
-                Err(CallError::Stale(message)) => {
-                    if Instant::now() >= deadline {
-                        return Err(PluginError::new(format!("the memory daemon: {message}")));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                    if let Some(found) = Client::find(&self.data_dir) {
-                        *self.client.borrow_mut() = found;
-                    }
-                }
-            }
+        match self.client.memory(&request) {
+            Ok(value) => serde_json::from_value(value).map_err(|e| PluginError::new(format!("the daemon's answer: {e}"))),
+            Err(CallError::Failed(message) | CallError::Stale(message)) => Err(PluginError::new(format!("the memory daemon: {message}"))),
         }
     }
 

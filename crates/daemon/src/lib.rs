@@ -161,9 +161,20 @@ mod own_program_tests {
     }
 }
 
-/// What identifies this binary: a client of another build must not be served by this one.
+/// What identifies this process's build: the size and time of its binary as it was when this process
+/// first asked, kept, so a rebuild in place of the file does not change what a running daemon says.
 pub fn build_id() -> String {
-    std::env::current_exe().ok().and_then(|p| std::fs::metadata(p).ok()).map_or(String::new(), |m| {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUILD.get_or_init(|| own_program().map(|p| build_of(&p)).unwrap_or_default()).clone()
+}
+
+/// The build of the binary on disk now, which a reload starts (CON-129, CON-130).
+pub fn build_on_disk() -> String {
+    own_program().map(|p| build_of(&p)).unwrap_or_default()
+}
+
+fn build_of(path: &Path) -> String {
+    std::fs::metadata(path).map_or(String::new(), |m| {
         let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
         format!("{}-{modified}", m.len())
     })
@@ -186,6 +197,9 @@ pub struct Daemon {
     channels_stopped: std::sync::atomic::AtomicBool,
     /// The local socket's server, stopped with the daemon (CON-130).
     local: Mutex<Option<Arc<socket::Server>>>,
+    /// This daemon, apart from any other: a client knows by it that the daemon was replaced, even
+    /// by one in the same process.
+    instance: String,
 }
 
 /// Where a running daemon says how to reach it.
@@ -247,6 +261,8 @@ impl Daemon {
             .collect();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("opening the trigger log: {e}"))?;
 
+        // Its build as it starts: a rebuild of the file later does not change it.
+        let _ = build_id();
         let (local, listener) = socket::Server::bind(data_dir)?;
         let admin = uuid::Uuid::new_v4().to_string();
         let address = serde_json::to_string(&Address { port, admin: admin.clone(), pid: std::process::id(), socket: Some(local.path().to_path_buf()), protocol: socket::PROTOCOL }).expect("an address serialises");
@@ -268,6 +284,7 @@ impl Daemon {
             telegram_source: Mutex::new(None),
             channels_stopped: std::sync::atomic::AtomicBool::new(false),
             local: Mutex::new(Some(local.clone())),
+            instance: uuid::Uuid::new_v4().to_string(),
         });
         socket::serve(daemon.clone(), local, listener);
         // Every request on a thread of its own: a long poll holds its thread for up to POLL, and every
@@ -301,10 +318,28 @@ impl Daemon {
     /// From now on the conversations of its windows run here.
     pub fn host_conversations(&self, host: Arc<dyn ConversationHost>) {
         *self.conversations.lock().expect("conversations") = Some(host);
+        self.wake.notify_all();
+    }
+
+    /// The conversations' host. A daemon that is starting plugs it in right after it listens, and a
+    /// window may connect in between: it waits for it a little rather than be refused.
+    fn host(&self) -> Option<Arc<dyn ConversationHost>> {
+        let end = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(host) = self.conversations.lock().expect("conversations").clone() {
+                return Some(host);
+            }
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() || self.stopping() {
+                return None;
+            }
+            let state = self.state.lock().expect("daemon state");
+            let _ = self.wake.wait_timeout(state, left.min(Duration::from_millis(50))).expect("daemon state");
+        }
     }
 
     fn conversation_op(&self, body: &str) -> (u16, Value) {
-        let Some(host) = self.conversations.lock().expect("conversations").clone() else { return (503, json!({"error": "this daemon runs no conversations"})) };
+        let Some(host) = self.host() else { return (503, json!({"error": "this daemon runs no conversations"})) };
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
         let Some(window) = input["window"].as_str() else { return (400, json!({"error": "window is required"})) };
         match host.op(window, &input) {
@@ -314,7 +349,7 @@ impl Daemon {
     }
 
     fn conversation_events(&self, query: &str) -> (u16, Value) {
-        let Some(host) = self.conversations.lock().expect("conversations").clone() else { return (503, json!({"error": "this daemon runs no conversations"})) };
+        let Some(host) = self.host() else { return (503, json!({"error": "this daemon runs no conversations"})) };
         let param = |name: &str| query.split('&').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='));
         let Some(window) = param("window") else { return (400, json!({"error": "window is required"})) };
         let after = param("after").and_then(|a| a.parse().ok()).unwrap_or(0);
@@ -371,7 +406,7 @@ impl Daemon {
 
     fn stats(&self) -> Value {
         let telegram = self.telegram.lock().expect("telegram").as_ref().map_or(json!({"on": false}), telegram::Channel::status);
-        json!({"conversations": self.conversations.lock().expect("conversations").as_ref().map_or(Value::Null, |h| h.stats()), "memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count()})
+        json!({"conversations": self.conversations.lock().expect("conversations").as_ref().map_or(Value::Null, |h| h.stats()), "memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count(), "socket_clients": self.socket_clients(), "protocol": socket::PROTOCOL, "build": build_id()})
     }
 
     /// The session's mode, from its log. Kept in the windows file, so a restart holds it.
@@ -412,6 +447,11 @@ impl Daemon {
         }
     }
 
+    /// This daemon's own id, told to every socket client in its welcome.
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
     /// Whether a stop was asked for.
     pub fn stopping(&self) -> bool {
         self.state.lock().map_or(true, |s| s.shutting_down)
@@ -444,7 +484,10 @@ impl Daemon {
         if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
             body.clear();
         }
-        let (status, reply) = self.route(&method, path, query, &body, admin);
+        // Over HTTP only what comes from outside: callbacks, and the health check. Windows, session
+        // servers and the command line talk over the local socket (CON-130).
+        let outside = (method == "GET" && path == "/health") || (method == "POST" && path.starts_with("/callback/"));
+        let (status, reply) = if outside { self.route(&method, path, query, &body, admin) } else { (404, json!({"error": "no such route: windows talk to the daemon over its local socket (CON-130)"})) };
         let response = tiny_http::Response::from_string(reply.to_string())
             .with_status_code(status)
             .with_header(tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..]).expect("a valid header"));

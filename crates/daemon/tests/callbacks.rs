@@ -75,7 +75,7 @@ fn the_contract_is_enforced() {
     // An unknown window and a missing admin token are refused.
     let base = format!("http://127.0.0.1:{}", f.daemon.port());
     assert_eq!(post(&format!("{base}/callback/nope"), "{}").0, 401);
-    assert_eq!(post(&format!("{base}/register"), "{}").0, 401);
+    assert_eq!(post(&format!("{base}/register"), "{}").0, 404, "windows register over the socket (CON-130)");
     assert_eq!(post(&format!("{base}/other"), "{}").0, 404);
 }
 
@@ -301,7 +301,7 @@ fn switching_off_refuses_and_a_reload_applies() {
     f.client.reload().unwrap();
     assert_eq!(post(&f.url, &json!({"uuid": "k4", "type": "journal", "text": "yes"}).to_string()).0, 200);
     let base = format!("http://127.0.0.1:{}", f.daemon.port());
-    assert_eq!(post(&format!("{base}/reload"), "{}").0, 401);
+    assert_eq!(post(&format!("{base}/reload"), "{}").0, 404, "over the socket only (CON-130)");
 }
 
 /// A custom handler for the tests: it counts its calls and can pass a message on, or fail.
@@ -386,7 +386,7 @@ fn a_custom_handler_can_be_switched_off_or_chosen_over_a_standard_type() {
     assert_eq!(calls(&h), 1);
     let base = format!("http://127.0.0.1:{}", f.daemon.port());
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
-    assert_eq!(agent.get(format!("{base}/handlers")).call().unwrap().status().as_u16(), 401);
+    assert_eq!(agent.get(format!("{base}/handlers")).call().unwrap().status().as_u16(), 404, "over the socket only (CON-130)");
 }
 
 /// A restart keeps the windows, so a callback URL given out earlier still works.

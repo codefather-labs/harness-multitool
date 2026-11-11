@@ -1165,6 +1165,10 @@ impl ConversationHost for DaemonHost {
         if name == "busy" {
             return Ok(json!({"busy": windows.values().any(|w| w.sessions.busy())}));
         }
+        // Whether this window has a run on in the daemon, which it may not have heard of yet.
+        if name == "window_busy" {
+            return Ok(json!({"busy": windows.get(id).is_some_and(|w| w.sessions.busy())}));
+        }
         // A debug call: the window the user is most likely looking at draws itself into a file.
         if name == "screenshot" {
             let path = op["text"].as_str().ok_or("text is required: the file to write")?;
@@ -1365,47 +1369,28 @@ struct Link {
     generation: u64,
 }
 
-/// Opens the window in the daemon that now answers for the data directory, if `link`'s has gone,
-/// with its tabs' conversations resumed. True when the link now holds a daemon other than the one
-/// of `seen` (another caller may have moved it already); false when its daemon is still the
-/// current one, so a failure was its answer, or when none could be reached.
-fn reconnect(link: &Mutex<Link>, window: &str, seen: u64) -> bool {
-    let mut link = link.lock().expect("link");
-    if link.generation != seen {
-        return true;
-    }
-    if link.client.current() {
-        return false;
-    }
-    let program = harness_daemon::own_program().ok();
-    let Some(client) = link.client.refind(program.as_deref()) else { return false };
-    let mut open = link.open.clone();
+/// Opens the window again in a daemon that is new, with its tabs' conversations resumed (CON-131):
+/// the client runs it on every connection to a daemon of another pid, before what waits is sent.
+fn reopen(link: &Mutex<Link>, client: &Client, window: &str) {
+    let (mut open, sessions) = {
+        let link = link.lock().expect("link");
+        (link.open.clone(), link.sessions.clone())
+    };
     open["window"] = json!(window);
     open["op"] = json!("open");
     if client.conversation_op(&open).is_err() {
-        return false;
+        return;
     }
-    for (tab, session) in &link.sessions {
+    for (tab, session) in &sessions {
         let _ = client.conversation_op(&json!({"window": window, "op": "resume", "tab": tab, "text": session}));
     }
-    link.client = client;
-    link.generation += 1;
-    true
+    link.lock().expect("link").generation += 1;
 }
 
-/// One operation through `link`; if its daemon has gone, once more through the one now answering.
-fn op_through(link: &Mutex<Link>, window: &str, op: &Value) -> Result<Value, String> {
-    let (client, seen) = {
-        let link = link.lock().expect("link");
-        (link.client.clone(), link.generation)
-    };
-    match client.conversation_op(op) {
-        Err(_) if reconnect(link, window, seen) => {
-            let client = link.lock().expect("link").client.clone();
-            client.conversation_op(op)
-        }
-        reply => reply,
-    }
+/// One operation through `link`'s client, which waits while the daemon is away (CON-131).
+fn op_through(link: &Mutex<Link>, _window: &str, op: &Value) -> Result<Value, String> {
+    let client = link.lock().expect("link").client.clone();
+    client.conversation_op(op)
 }
 
 impl RemoteSessions {
@@ -1421,7 +1406,15 @@ impl RemoteSessions {
         let window = format!("conv-{}-{now}", std::process::id());
         let open = json!({"root": root, "settings": settings, "env": environment});
         client.conversation_op(&json!({"window": window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
-        let link = Arc::new(Mutex::new(Link { client, open, sessions: Default::default(), generation: 0 }));
+        let link = Arc::new(Mutex::new(Link { client: client.clone(), open, sessions: Default::default(), generation: 0 }));
+        {
+            let (weak, window) = (Arc::downgrade(&link), window.clone());
+            client.on_connect(Arc::new(move |client: &Client, new_daemon: bool| {
+                if let (true, Some(link)) = (new_daemon, weak.upgrade()) {
+                    reopen(&link, client, &window);
+                }
+            }));
+        }
         let (sender, incoming) = channel();
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
         let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
@@ -1486,56 +1479,39 @@ struct Asks {
     shot: Arc<Mutex<Option<String>>>,
 }
 
-fn listen(link: Arc<Mutex<Link>>, window: String, sender: Sender<FromSession>, tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
+/// Hears the window's conversation events, pushed by the daemon on the window's connection
+/// (CON-130). The client subscribes again by itself after a loss, from where it was, or from the
+/// start in a new daemon, which numbers them afresh.
+fn listen(link: Arc<Mutex<Link>>, window: String, sender: Sender<FromSession>, _tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
     let Asks { reload, asked_by, shot } = asks;
     std::thread::spawn(move || {
-        let (mut after, mut failures, mut polled) = (0, 0, 0);
-        while !stopped.load(Ordering::SeqCst) {
-            let (client, seen) = {
-                let link = link.lock().expect("link");
-                (link.client.clone(), link.generation)
-            };
-            // Another daemon, moved to by an operation: it numbers this window's events from the start.
-            if seen != polled {
-                (after, polled) = (0, seen);
+        let client = link.lock().expect("link").client.clone();
+        let batches = client.subscribe("conversations", &window, 0);
+        for events in batches {
+            if stopped.load(Ordering::SeqCst) {
+                return;
             }
-            match client.conversation_events(&window, after) {
-                Ok(events) => {
-                    failures = 0;
-                    for event in events {
-                        after = event["seq"].as_u64().unwrap_or(after);
-                        if event["event"]["kind"] == "screenshot" {
-                            *shot.lock().expect("shot") = event["event"]["path"].as_str().map(str::to_string);
-                        } else if event["event"]["kind"] == "reload" {
-                            // Which tab asked, if the asking came from outside this process.
-                            if let Some(tab) = event["event"]["tab"].as_u64() {
-                                asked_by.store(tab, Ordering::SeqCst);
-                            }
-                            reload.store(true, Ordering::SeqCst);
-                        } else if let Some(message) = from_wire(&event["event"]) {
-                            // The conversation a tab holds, kept so another daemon can resume it.
-                            let tab = tab_of(&message);
-                            if matches!(message, FromSession::Entry { .. }) && !link.lock().expect("link").sessions.contains_key(&tab)
-                                && let Ok(reply) = client.conversation_op(&json!({"window": window, "op": "session_of", "tab": tab}))
-                                && let Some(session) = reply["session"].as_str()
-                            {
-                                link.lock().expect("link").sessions.insert(tab, session.to_string());
-                            }
-                            if sender.send(message).is_err() {
-                                return;
-                            }
-                        }
+            for event in events {
+                if event["event"]["kind"] == "screenshot" {
+                    *shot.lock().expect("shot") = event["event"]["path"].as_str().map(str::to_string);
+                } else if event["event"]["kind"] == "reload" {
+                    // Which tab asked, if the asking came from outside this process.
+                    if let Some(tab) = event["event"]["tab"].as_u64() {
+                        asked_by.store(tab, Ordering::SeqCst);
                     }
-                }
-                Err(_) if reconnect(&link, &window, seen) => failures = 0,
-                Err(_) => {
-                    failures += 1;
-                    if failures == 5 {
-                        for tab in tabs.lock().expect("tabs").iter() {
-                            let _ = sender.send(FromSession::Unavailable { tab: *tab, message: "The daemon that runs this conversation stopped. The log keeps it: open it again from the start page.".to_string() });
-                        }
+                    reload.store(true, Ordering::SeqCst);
+                } else if let Some(message) = from_wire(&event["event"]) {
+                    // The conversation a tab holds, kept so another daemon can resume it.
+                    let tab = tab_of(&message);
+                    if matches!(message, FromSession::Entry { .. }) && !link.lock().expect("link").sessions.contains_key(&tab)
+                        && let Ok(reply) = client.conversation_op(&json!({"window": window, "op": "session_of", "tab": tab}))
+                        && let Some(session) = reply["session"].as_str()
+                    {
+                        link.lock().expect("link").sessions.insert(tab, session.to_string());
                     }
-                    std::thread::sleep(Duration::from_millis(200));
+                    if sender.send(message).is_err() {
+                        return;
+                    }
                 }
             }
         }
@@ -1560,6 +1536,14 @@ pub enum SessionLink {
 }
 
 impl SessionLink {
+    /// The window's connection to the daemon, when its conversations run there.
+    pub fn client(&self) -> Option<Client> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => Some(r.link.lock().expect("link").client.clone()),
+        }
+    }
+
     /// The daemon's id of this window, which its delegates' MCP servers are given.
     pub fn window_id(&self) -> Option<&str> {
         match self {
@@ -1790,17 +1774,24 @@ impl SessionLink {
     }
 }
 
-/// The daemon for this binary: found or started; one of another build is replaced when idle.
+/// The daemon for this window (CON-130): any daemon that speaks this protocol, whatever its build,
+/// found or started. One of another protocol, such as a build from before the socket, is stopped
+/// when it is idle and this build's started; while it runs other windows' conversations it is left
+/// alone, and the error says so.
 pub fn daemon_for_this_build(data_dir: &Path, program: &Path) -> Result<Client, String> {
-    let client = Client::find_or_start(data_dir, program)?;
-    if client.build().as_deref() == Some(&harness_daemon::build_id()) {
-        return Ok(client);
+    let address: Option<harness_daemon::Address> = std::fs::read_to_string(harness_daemon::address_path(data_dir)).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let other = address.filter(|a| a.protocol != harness_daemon::socket::PROTOCOL && harness_daemon::client::other_answers(a));
+    if let Some(old) = other {
+        let protocol = old.protocol;
+        if !harness_daemon::client::stop_if_idle(&old) {
+            return Err(format!("a daemon of protocol {protocol} (an older build) runs other windows' conversations, so this window runs its own until it is reopened after they end"));
+        }
+        // Gone: its port and socket are free for this build's.
+        let end = Instant::now() + Duration::from_secs(5);
+        while harness_daemon::client::other_answers(&old) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
-    let busy = client.conversation_op(&json!({"window": "-", "op": "busy"})).is_ok_and(|reply| reply["busy"] == true);
-    if busy {
-        return Err("a daemon of another build is running conversations".to_string());
-    }
-    client.shutdown()?;
     Client::find_or_start(data_dir, program)
 }
 

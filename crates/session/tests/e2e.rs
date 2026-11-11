@@ -1787,3 +1787,69 @@ fn a_user_tabs_program_asks_the_user_in_the_tab() {
     assert_eq!(ask("touch /tmp/x")["answer"], "always", "always holds for the tab without asking");
     assert!(ask("rm -rf /tmp/y")["id"].is_u64(), "another command is asked");
 }
+
+/// CON-131 (journal#855): the daemon stopped and started three times in a row under a window. Each
+/// time the window hears the loss, a message typed while no daemon answers waits and goes once to
+/// the next daemon, in the same conversation, and the window hears the connection made again.
+#[test]
+fn a_window_rides_out_three_daemon_restarts_losing_and_doubling_nothing() {
+    use harness_daemon::client::Connection;
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("daemon-thrice");
+    let data = temp_dir("daemon-thrice-data");
+    let dir = std::path::PathBuf::from(&data);
+    let (url, seen) = fake_endpoint((0..4).map(|n| anthropic_turn(None, &format!("Answer {n}."))).collect());
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    let start = |make_host: &MakeHost| {
+        let daemon = harness_daemon::Daemon::start(&dir, 0).unwrap();
+        daemon.host_conversations(DaemonHost::new(&dir, make_host.clone()));
+        daemon
+    };
+    let mut daemon = start(&make_host);
+    let client = harness_daemon::client::Client::find(&dir).unwrap();
+    let watch = client.watch();
+    assert!(matches!(watch.recv_timeout(Duration::from_secs(1)), Ok(Connection::Connected { again: false, .. })), "the first connection is told");
+    let mut link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings(&url, "k"), Default::default()).unwrap());
+    let drain_until_ended = |link: &SessionLink, entries: &mut Vec<LogEntry>| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(25);
+        while std::time::Instant::now() < deadline {
+            for message in link.drain() {
+                match message {
+                    FromSession::Entry { entry, .. } => entries.push(entry),
+                    FromSession::Ended { tab: 1, .. } => return true,
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    };
+    let mut entries = Vec::new();
+    link.prompt(1, "message 0".to_string());
+    assert!(drain_until_ended(&link, &mut entries), "the first message ran");
+    let session = link.session_of(1).unwrap();
+    for round in 1..=3 {
+        client.shutdown().unwrap();
+        drop(daemon);
+        assert_eq!(watch.recv_timeout(Duration::from_secs(2)), Ok(Connection::Lost), "round {round}: the loss is told at once");
+        // Typed while no daemon answers: it waits.
+        let typed = std::thread::spawn({
+            let client = client.clone();
+            let window = link.window_id().unwrap().to_string();
+            move || client.conversation_op(&json!({"window": window, "op": "prompt", "tab": 1, "text": format!("message {round}")}))
+        });
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!typed.is_finished(), "round {round}: it waits while the daemon is away");
+        let began = std::time::Instant::now();
+        daemon = start(&make_host);
+        let connected = watch.recv_timeout(Duration::from_secs(5));
+        assert!(matches!(connected, Ok(Connection::Connected { again: true, .. })), "round {round}: {connected:?}");
+        assert!(began.elapsed() < Duration::from_millis(2500), "round {round}: connected within a try of the new daemon: {:?}", began.elapsed());
+        assert!(typed.join().unwrap().is_ok(), "round {round}: the waiting message went");
+        assert!(drain_until_ended(&link, &mut entries), "round {round}: it ran in the new daemon");
+        assert_eq!(link.session_of(1).as_deref(), Some(session.as_str()), "round {round}: the same conversation");
+    }
+    assert_eq!(user_texts(&read_log(&data, &root, &session)), ["message 0", "message 1", "message 2", "message 3"], "each once, in order, in one log");
+    assert_eq!(seen.lock().unwrap().len(), 4, "four model calls, none repeated");
+    assert!(watch.try_recv().is_err(), "nothing more was told");
+}

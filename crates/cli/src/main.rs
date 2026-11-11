@@ -653,6 +653,8 @@ struct Live {
     /// The reload waiting for its safe point builds nothing: the window restarts on the installed
     /// binary (CON-129).
     installed_swap: bool,
+    /// Each loss and each connection made of the window's connection to the daemon (CON-131).
+    connection: Option<std::sync::mpsc::Receiver<harness_daemon::client::Connection>>,
     voice_test: Option<VoiceTestRun>,
     voice_devices: Option<std::sync::Arc<std::sync::Mutex<Option<harness_speech::InputDevices>>>>,
     /// The agent's `plugins_reload` tool raises this.
@@ -722,19 +724,16 @@ impl Live {
         }
         self.registered.insert(tab, window.clone());
         let sender = self.window_events.0.clone();
+        // Pushed by the daemon on this window's connection (CON-130), subscribed again by the
+        // client after a loss.
+        let batches = client.subscribe("events", &window.window, 0);
         std::thread::spawn(move || {
-            let mut after = 0;
-            loop {
-                match client.poll(&window.window, after) {
-                    Ok(events) => {
-                        for e in events {
-                            after = after.max(e.seq);
-                            if sender.send((tab, e.event)).is_err() {
-                                return;
-                            }
-                        }
+            for batch in batches {
+                for event in batch {
+                    let Ok(numbered) = serde_json::from_value::<harness_daemon::Numbered>(event) else { continue };
+                    if sender.send((tab, numbered.event)).is_err() {
+                        return;
                     }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
                 }
             }
         });
@@ -937,12 +936,20 @@ impl Live {
                 })
                 .collect(),
         };
-        // The daemon holds the custom handlers, so it is replaced too; the new process starts it.
-        // What this window shows can be behind it: a message may be starting there. It decides.
-        if let Some(client) = harness_daemon::client::Client::find(&dir)
-            && client.shutdown_if_idle() == Ok(false)
-        {
-            return Ok(changed);
+        // The daemon holds the custom handlers, so one of another build is replaced too when it is
+        // idle, and the new process starts this build's. When other windows' runs are on in it, it
+        // is left as it is: this window's reload never waits on them (CON-130, journal#848), and
+        // the new process works with it, since it speaks the same protocol.
+        if let Some(client) = harness_daemon::client::Client::find(&dir) {
+            // This window's own run may be starting there before it shows here: that one it waits for.
+            if let Some(window) = self.sessions.window_id()
+                && client.conversation_op(&serde_json::json!({"window": window, "op": "window_busy"})).is_ok_and(|r| r["busy"] == true)
+            {
+                return Ok(changed);
+            }
+            if client.build().is_some_and(|b| b != harness_daemon::build_on_disk()) {
+                let _ = client.shutdown_if_idle();
+            }
         }
         let path = reload::write_handoff(&dir, &handoff)?;
         reload::swap(&path, theme)?;
@@ -950,6 +957,32 @@ impl Live {
     }
 
     /// What the daemon said reaches the view, or the agent.
+    /// CON-131: a toast every time the connection to the daemon is lost and every time one is made,
+    /// the first included.
+    fn receive_connection(&mut self, state: &mut frontend_tui::AppState) -> bool {
+        use harness_daemon::client::Connection;
+        if let Some(why) = LOCAL_REASON.lock().expect("reason").take()
+            && let frontend_tui::model::Mode::Session(w) = &mut state.mode
+        {
+            w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text: format!("This window runs its conversations itself: {why}.") });
+            return true;
+        }
+        if self.connection.is_none() {
+            let client = self.sessions.client().or_else(|| self.window_ids.values().next().map(|(c, _)| c.clone()));
+            self.connection = client.map(|c| c.watch());
+        }
+        let Some(watch) = &self.connection else { return false };
+        let Some(last) = watch.try_iter().last() else { return false };
+        let frontend_tui::model::Mode::Session(w) = &mut state.mode else { return false };
+        let text = match last {
+            Connection::Connected { pid, again: false } => format!("Connected to the daemon, pid {pid}."),
+            Connection::Connected { pid, again: true } => format!("Reconnected to the daemon, pid {pid}."),
+            Connection::Lost => "Connection to the daemon lost: trying again every 2 s.".to_string(),
+        };
+        w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "daemon".into(), text });
+        true
+    }
+
     fn receive_daemon(&mut self, state: &mut frontend_tui::AppState) -> bool {
         use frontend_tui::model::{Item, Mode};
         use harness_daemon::WindowEvent;
@@ -1014,9 +1047,22 @@ impl Live {
         // Everything goes through the daemon; a scripted run, or no daemon to be had, stays here.
         let remote = match script {
             Some(_) => None,
-            None => harness_daemon::own_program().ok().and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().ok()?, &program).ok()).and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()).ok()),
+            None => {
+                let opened = harness_daemon::own_program()
+                    .map_err(|e| e.to_string())
+                    .and_then(|program| harness_session::remote::daemon_for_this_build(&config::data_dir().map_err(|e| e.to_string())?, &program))
+                    .and_then(|client| harness_session::remote::RemoteSessions::open(client, &root, &link_settings, reload_asked.clone()));
+                match opened {
+                    Ok(remote) => Some(remote),
+                    Err(why) => {
+                        // Said once on screen, never silent (CON-130).
+                        *LOCAL_REASON.lock().expect("reason") = Some(why);
+                        None
+                    }
+                }
+            }
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -2257,6 +2303,9 @@ fn daemon_restart(start: bool) -> Result<()> {
     Ok(())
 }
 
+/// Why this window could not have its conversations in the daemon, to say once on screen.
+static LOCAL_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 fn profile_label() -> String {
     // Short: the status line holds more after it. The full note is on the Profiles tab and in `profile list`.
     match config::claude_note() {
@@ -2643,6 +2692,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             live.tick_linking(&mut state);
             dirty |= live.receive(&mut state);
             dirty |= live.receive_daemon(&mut state);
+            dirty |= live.receive_connection(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
             if let Some(path) = live.sessions.screenshot_asked() {
                 let size = terminal.size()?;

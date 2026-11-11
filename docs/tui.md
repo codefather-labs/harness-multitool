@@ -52,7 +52,7 @@ name = "check.sh"               # what the card shows
 
 The command sees `HOOK_EVENT`, `HOOK_CALL` (a tool event's call as JSON) and `HOOK_PROMPT`. Exit 0: its output lines join the agent's context. Exit 2: a veto, with stderr as the reason. Any other exit: failed, and it blocks nothing.
 
-Callbacks reach a tab through the daemon, which the UI starts when needed (`multitool daemon`; it listens on localhost and goes on after the UI closes). Each tab has a URL, which its agent knows. POST JSON with a unique `uuid` and a `type`:
+Callbacks reach a tab through the daemon, which the UI starts when needed (`multitool daemon`; it listens on localhost and goes on after the UI closes). Windows, session servers and the command line talk to it over its local socket, `<data dir>/daemon/daemon.sock` (ADR 0027, CON-130): one connection per process, the daemon pushing each window's events on it; HTTP serves only callbacks and `/health`. Windows of different builds share one daemon as long as they speak its protocol. When the connection drops, the window tries again every 2 seconds for as long as it is open, starting a daemon if none comes back, and shows a toast at every loss and every connection made (CON-131); what it sent meanwhile goes once the daemon is back. `MULTITOOL_CLIENT_DEBUG=1` logs each connection, loss and welcome to stderr. Each tab has a URL, which its agent knows. POST JSON with a unique `uuid` and a `type`:
 
 | `type` | Fields | What happens |
 |---|---|---|

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use harness_api::*;
 use harness_daemon::client::Client;
-use harness_daemon::memory::{CallError, Call, DaemonMemory, Request};
+use harness_daemon::memory::DaemonMemory;
 use harness_daemon::*;
 use harness_memory_journal::plugin::JournalMemory;
 use harness_memory_journal::project::key_for;
@@ -64,48 +64,28 @@ fn every_call_answers_as_it_does_in_process() {
     assert_eq!(now(store.journal_search("cents")).unwrap().len(), 1);
 }
 
+/// A daemon replaced under a session (CON-131): a call made while none answers waits, and goes
+/// once the next one is up, applied once.
 #[test]
-fn a_wrong_token_stores_nothing() {
+fn a_call_made_while_the_daemon_is_away_waits_and_goes_once() {
     let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let first = Daemon::start(data.path(), 0).unwrap();
+    let client = Client::find(data.path()).unwrap();
     let root_path = root.path().to_string_lossy().into_owned();
-    let stranger = Client::new(&Address { port: daemon.port(), admin: "wrong".into(), pid: 0, ..Default::default() });
-    let call = Call::JournalAdd { entry: entry("sneaked in", &[]) };
-    let answer = stranger.memory(&Request { root: root_path.clone(), owner: "s".into(), call });
-    assert!(matches!(answer, Err(CallError::Stale(_))), "{answer:?}");
-    let key = key_for(None, Path::new(&root_path));
-    let store = JournalMemory::open(&data.path().join("journals"), &key, "s").unwrap();
-    assert!(now(store.journal_search("sneaked")).unwrap().is_empty());
-    assert_eq!(Client::find(data.path()).unwrap().stats().unwrap()["memory_ops"], 0);
-}
-
-/// A daemon replaced under a session: another port and token, found again from the address file.
-#[test]
-fn a_call_outlives_the_daemon_being_replaced() {
-    let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0, ..Default::default() });
-    let root_path = root.path().to_string_lossy().into_owned();
-    let memory = DaemonMemory::new(gone, data.path().to_path_buf(), &root_path, "s");
+    let memory = DaemonMemory::new(client.clone(), data.path().to_path_buf(), &root_path, "s");
+    assert_eq!(now(memory.journal_add(entry("before the swap", &[]))).unwrap().id, 1);
+    client.shutdown().unwrap();
+    drop(first);
     let path = data.path().to_path_buf();
     let starter = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_secs(3));
         Daemon::start(&path, 0).unwrap()
     });
-    let record = now(memory.journal_add(entry("across the swap", &[]))).unwrap();
-    assert_eq!(record.id, 1);
-    assert_eq!(now(memory.journal_search("swap")).unwrap().len(), 1, "applied once");
-    let _daemon = starter.join().unwrap();
-}
-
-#[test]
-fn no_daemon_is_an_error_not_a_hang() {
-    let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0, ..Default::default() });
-    let memory = DaemonMemory::new(gone, data.path().to_path_buf(), &root.path().to_string_lossy(), "s");
     let started = std::time::Instant::now();
-    let answer = now(memory.journal_get(1));
-    assert!(answer.is_err());
-    assert!(started.elapsed() < std::time::Duration::from_secs(15), "{:?}", started.elapsed());
+    let record = now(memory.journal_add(entry("across the swap", &[]))).unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(3), "it waited for the next daemon");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "and went within a try of it: {:?}", started.elapsed());
+    assert_eq!(record.id, 2);
+    assert_eq!(now(memory.journal_search("swap")).unwrap().len(), 2, "each applied once");
+    let _daemon = starter.join().unwrap();
 }

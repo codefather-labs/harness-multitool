@@ -81,7 +81,9 @@ assert "--handoff" in open(f"/proc/{pid}/cmdline").read(), "the process was repl
 assert "second question" in text() or "a slow one" in text()
 assert "Answer number 2" in text()
 after=daemon_pid(); print("daemon pid",after["pid"],"port kept:",after["port"]==before["port"])
-assert after["pid"]!=before["pid"] and after["port"]==before["port"]
+# CON-130: a daemon of the same build serves on through the reload (nothing was rebuilt here, so the
+# build is the same); one of another build is replaced, which pty_reload_replaced checks.
+assert after["pid"]==before["pid"] and after["port"]==before["port"]
 assert not os.path.exists(home+"/data/harness-multitool/handoff.json"), "the hand-off is used up"
 
 # 3. Sessions go on: the old history, and the old callback URL.

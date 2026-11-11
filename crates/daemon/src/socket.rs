@@ -48,6 +48,16 @@ pub fn connect(path: &Path) -> std::io::Result<Socket> {
     Ok(socket)
 }
 
+/// Asks the daemon on `socket` to stop if nothing runs in it, whatever protocol it speaks; true
+/// when it agreed.
+pub fn ask_stop_if_idle(socket: Socket) -> std::io::Result<bool> {
+    let mut writer = socket.try_clone()?;
+    writer.write_all(b"{\"stop_if_idle\": true}\n")?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line)?;
+    Ok(serde_json::from_str::<Value>(&line).is_ok_and(|v| v["stopped"] == true))
+}
+
 /// The listening side, held by the daemon.
 pub struct Server {
     path: PathBuf,
@@ -188,13 +198,24 @@ fn connection(daemon: &Arc<Daemon>, socket: Socket) {
     // The hello first: a client of another protocol is told which this one speaks, and let go.
     let Some(Ok(first)) = lines.next() else { return conn.close() };
     let hello: Value = serde_json::from_str(&first).unwrap_or(Value::Null);
+    // The one thing every protocol understands: a window of another stops this daemon if it is idle,
+    // to put its own in its place (CON-130).
+    if hello.get("stop_if_idle").is_some() {
+        let (status, _) = daemon.route("POST", "/shutdown", "", r#"{"if_idle":true}"#, true);
+        conn.send(json!({"stopped": status == 200}));
+        conn.flush();
+        if daemon.stopping() {
+            daemon.stop_local();
+        }
+        return conn.close();
+    }
     let protocol = hello["hello"]["protocol"].as_u64();
     if protocol != Some(PROTOCOL as u64) {
         conn.send(json!({"refused": {"protocol": PROTOCOL, "error": format!("this daemon speaks protocol {PROTOCOL}, not {}", protocol.map_or("none".to_string(), |p| p.to_string()))}}));
         conn.flush();
         return conn.close();
     }
-    conn.send(json!({"welcome": {"protocol": PROTOCOL, "pid": std::process::id(), "build": crate::build_id()}}));
+    conn.send(json!({"welcome": {"protocol": PROTOCOL, "pid": std::process::id(), "build": crate::build_id(), "port": daemon.port(), "instance": daemon.instance()}}));
     for line in lines {
         let Ok(line) = line else { break };
         if !conn.alive.load(Ordering::SeqCst) {
@@ -255,7 +276,8 @@ fn subscribe(daemon: &Arc<Daemon>, conn: &Arc<Conn>, id: u64, kind: &str, messag
     std::thread::spawn(move || {
         while flag.load(Ordering::SeqCst) && conn.alive.load(Ordering::SeqCst) && !daemon.stopping() {
             let (status, reply) = daemon.route("GET", path, &format!("window={window}&after={after}"), "", true);
-            if !flag.load(Ordering::SeqCst) {
+            // A daemon that stops ends no subscription: the client subscribes again in the next one.
+            if !flag.load(Ordering::SeqCst) || daemon.stopping() {
                 break;
             }
             if status != 200 {

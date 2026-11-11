@@ -73,7 +73,9 @@ def say(text):
     return got[-1]
 DOWN = "\x1b[B"
 pump(2.5)
-assert ("POST", "/shutdown") not in [a[:2] for a in asked], "the busy daemon of another build was asked to stop"
+# CON-130: a daemon of another protocol is asked to stop only if it is idle, never outright.
+stops = [a for a in asked if a[:2] == ("POST", "/shutdown")]
+assert all(b'"if_idle":true' in a[2] for a in stops), f"the busy daemon was asked to stop outright: {stops}"
 press("\x1b[<0;112;33M", "\x1b[<0;112;33m"); pump(0.8)          # the Settings button
 press(*[DOWN] * 9); press("\t"); pump(0.5)                      # Profiles, then into the page
 press(DOWN, "\r"); pump(1.5)                                    # max, Enter is Use
