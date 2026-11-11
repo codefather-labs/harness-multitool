@@ -550,16 +550,37 @@ impl Engine {
             return Ok(());
         }
         // Not what the log says: written whole again, under a new id.
-        let history = {
-            let state = self.state.borrow();
-            harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..])
-        };
-        let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
+        let id = self.write_whole(&format, false)?.ok_or("nothing to write")?;
         let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
         self.synced(source.clone(), id.clone(), cursor, Some(count));
         let why = if exists { "differs from this log" } else { "is gone" };
         self.emit(Event::Notice { label: label.to_string(), text: format!("{source}: its copy of this conversation {why}; written whole again as {id}, the old one kept as it was") });
         Ok(())
+    }
+
+    /// Writes the conversation since its last compaction as a new form, and answers its id; None
+    /// when there is nothing to write. The log is used as it is, borrowed, when a provider takes it
+    /// so, which is the usual case: a conversation of gigabytes is not copied for it (journal#955).
+    /// With `holding_prompt`, a last message of the user's own words stays out: it goes as the prompt.
+    fn write_whole(&self, format: &Rc<dyn harness_api::ConversationFormat>, holding_prompt: bool) -> Result<Option<String>, String> {
+        let state = self.state.borrow();
+        let messages = &state.messages[state.compacted_upto.min(state.messages.len())..];
+        let prompt_pending = holding_prompt && messages.last().is_some_and(|m| m.role == harness_api::Role::User);
+        if !prompt_pending && harness_api::is_provider_ready(messages) {
+            if messages.is_empty() {
+                return Ok(None);
+            }
+            return format.write(&self.root, &self.session, messages).map(Some).map_err(|e| e.to_string());
+        }
+        let mut history = harness_api::provider_ready(messages);
+        drop(state);
+        if holding_prompt {
+            Self::without_prompt(&mut history);
+        }
+        if history.is_empty() {
+            return Ok(None);
+        }
+        format.write(&self.root, &self.session, &history).map(Some).map_err(|e| e.to_string())
     }
 
     /// INV-20: what the form gained outside the harness goes into the log. A provider's own
@@ -664,25 +685,18 @@ impl Engine {
         if self.form().is_some() {
             return self.push_form(true);
         }
-        // The log is borrowed, and only the history written is copied (journal#955).
-        let (format, mut history, holds) = {
+        let (format, holds) = {
             let state = self.state.borrow();
             // A session id that is another provider's form is not this backend's own: Codex cannot
             // resume Claude Code's, nor Claude Code Codex's (CON-134).
             let own_session = |format: &Rc<dyn harness_api::ConversationFormat>| state.backend_session.as_ref().is_some_and(|id| !state.forms.iter().any(|(name, link)| name != format.name() && link.id == *id));
             let Some(format) = self.parts.conversations.clone().filter(|format| !own_session(format) && state.messages.len() > 1) else { return Ok(()) };
-            let history = harness_api::provider_ready(&state.messages[state.compacted_upto.min(state.messages.len())..]);
             // The last message is left out only when it is the user's, whose words go as the
             // prompt; on a move there is none, and the form holds everything (journal#935).
             let prompt_pending = state.messages.last().is_some_and(|m| m.role == harness_api::Role::User);
-            (format, history, state.messages.len() - usize::from(prompt_pending))
+            (format, state.messages.len() - usize::from(prompt_pending))
         };
-        Self::without_prompt(&mut history);
-        if history.is_empty() {
-            return Ok(());
-        }
-        let id = format.write(&self.root, &self.session, &history).map_err(|e| e.to_string())?;
-        drop(history);
+        let Some(id) = self.write_whole(&format, true)? else { return Ok(()) };
         let cursor = format.tip(&self.root, &id).map_err(|e| e.to_string())?;
         self.synced(format.name().to_string(), id, cursor, Some(holds));
         Ok(())

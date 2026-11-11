@@ -181,6 +181,37 @@ pub fn conversation_digest(messages: &[Message]) -> Vec<u64> {
     }).collect()
 }
 
+/// Whether `provider_ready` would give these messages back unchanged: then they can be used as they
+/// are, borrowed, with no copy of a conversation that may be gigabytes (journal#955).
+pub fn is_provider_ready(messages: &[Message]) -> bool {
+    let mut open: Vec<&str> = Vec::new();
+    let mut last: Option<Role> = None;
+    for message in messages {
+        match message.role {
+            Role::User => {
+                // Its results answer the open calls, in their order, first; no other result after.
+                if last == Some(Role::User) || message.content.len() < open.len() {
+                    return false;
+                }
+                let (answers, rest) = message.content.split_at(open.len());
+                let answered = answers.iter().zip(&open).all(|(c, id)| matches!(c, Content::ToolResult { id: i, .. } if i == id));
+                if !answered || rest.iter().any(|c| matches!(c, Content::ToolResult { .. })) || message.content.is_empty() {
+                    return false;
+                }
+                open.clear();
+            }
+            Role::Assistant => {
+                if !open.is_empty() || last == Some(Role::Assistant) {
+                    return false;
+                }
+                open.extend(message.content.iter().filter_map(|c| if let Content::ToolUse { id, .. } = c { Some(id.as_str()) } else { None }));
+            }
+        }
+        last = Some(message.role);
+    }
+    open.is_empty()
+}
+
 /// A history any provider takes, whatever it came from: roles alternate; every call is answered in
 /// the next message, results first; a result with no call before it is left out. A log can hold
 /// such things after a cut, a stop, or a conversation brought in from elsewhere.
@@ -229,6 +260,23 @@ pub fn provider_ready(messages: &[Message]) -> Vec<Message> {
 #[cfg(test)]
 mod ready_tests {
     use super::*;
+
+    proptest::proptest! {
+        /// journal#955: the check agrees with the fix on any history: unchanged exactly when ready.
+        #[test]
+        fn is_ready_agrees_with_provider_ready(shape in proptest::collection::vec((proptest::bool::ANY, proptest::collection::vec(0u8..5, 0..4)), 0..12)) {
+            let messages: Vec<Message> = shape.iter().map(|(user, parts)| Message {
+                role: if *user { Role::User } else { Role::Assistant },
+                content: parts.iter().map(|p| match p {
+                    0 | 1 => Content::Text { text: format!("t{p}") },
+                    2 => Content::ToolUse { id: format!("c{}", p), name: "n".into(), input: serde_json::Value::Null },
+                    3 => Content::ToolUse { id: "c9".into(), name: "n".into(), input: serde_json::Value::Null },
+                    _ => Content::ToolResult { id: if *user { "c2".into() } else { "c9".into() }, output: "r".into(), is_error: false },
+                }).collect(),
+            }).collect();
+            proptest::prop_assert_eq!(is_provider_ready(&messages), provider_ready(&messages) == messages);
+        }
+    }
 
     fn result(id: &str) -> Content {
         Content::ToolResult { id: id.into(), output: "r".into(), is_error: false }
