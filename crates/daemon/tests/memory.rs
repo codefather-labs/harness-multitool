@@ -69,7 +69,7 @@ fn a_wrong_token_stores_nothing() {
     let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let daemon = Daemon::start(data.path(), 0).unwrap();
     let root_path = root.path().to_string_lossy().into_owned();
-    let stranger = Client::new(&Address { port: daemon.port(), admin: "wrong".into(), pid: 0 });
+    let stranger = Client::new(&Address { port: daemon.port(), admin: "wrong".into(), pid: 0, ..Default::default() });
     let call = Call::JournalAdd { entry: entry("sneaked in", &[]) };
     let answer = stranger.memory(&Request { root: root_path.clone(), owner: "s".into(), call });
     assert!(matches!(answer, Err(CallError::Stale(_))), "{answer:?}");
@@ -84,7 +84,7 @@ fn a_wrong_token_stores_nothing() {
 fn a_call_outlives_the_daemon_being_replaced() {
     let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0 });
+    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0, ..Default::default() });
     let root_path = root.path().to_string_lossy().into_owned();
     let memory = DaemonMemory::new(gone, data.path().to_path_buf(), &root_path, "s");
     let path = data.path().to_path_buf();
@@ -102,7 +102,7 @@ fn a_call_outlives_the_daemon_being_replaced() {
 fn no_daemon_is_an_error_not_a_hang() {
     let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0 });
+    let gone = Client::new(&Address { port: free, admin: "old".into(), pid: 0, ..Default::default() });
     let memory = DaemonMemory::new(gone, data.path().to_path_buf(), &root.path().to_string_lossy(), "s");
     let started = std::time::Instant::now();
     let answer = now(memory.journal_get(1));

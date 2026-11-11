@@ -149,6 +149,8 @@ fn with_no_window_listening_nothing_is_taken_and_a_restart_does_not_repeat() {
 
     w.daemon.stop_channels();
     std::thread::sleep(Duration::from_millis(300));
+    // A restart: the first stops before the second takes the data directory (CON-130).
+    w.client.shutdown().unwrap();
     let again = Daemon::start(w.data.path(), 0).unwrap();
     again.start_telegram(config(&url, &[42]));
     let client = Client::find(w.data.path()).unwrap();

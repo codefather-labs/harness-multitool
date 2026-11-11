@@ -93,6 +93,8 @@ fn a_payload_is_only_data() {
 fn a_seen_uuid_stays_seen_across_a_restart() {
     let f = fixture();
     assert_eq!(post(&f.url, &json!({"uuid": "u4", "type": "notification", "text": "x"}).to_string()).0, 200);
+    // A restart: the first stops before the second takes the data directory (two cannot share one).
+    f.client.shutdown().unwrap();
     let second = Daemon::start(&f.data_path, 0).unwrap();
     let client = Client::find(&f.data_path).unwrap();
     let reg = client.register(&f.root_path).unwrap();
@@ -392,6 +394,7 @@ fn a_custom_handler_can_be_switched_off_or_chosen_over_a_standard_type() {
 fn windows_survive_a_restart() {
     let f = fixture();
     assert_eq!(last_port(&f.data_path), Some(f.daemon.port()));
+    f.client.shutdown().unwrap();
     let second = Daemon::start(&f.data_path, 0).unwrap();
     let client = Client::find(&f.data_path).unwrap();
     let url = f.url.replace(&f.daemon.port().to_string(), &second.port().to_string());

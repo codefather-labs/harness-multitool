@@ -103,6 +103,8 @@ fn a_window_not_in_the_mode_creates_nothing_whatever_the_payload_says() {
 fn a_restart_keeps_a_windows_mode() {
     let w = world();
     w.client.set_step_debug(&w.window, true).unwrap();
+    // A restart: the first stops before the second takes the data directory (CON-130).
+    w.client.shutdown().unwrap();
     let again = Daemon::start(w._data.path(), 0).unwrap();
     let client = Client::find(w._data.path()).unwrap();
     assert_eq!(client.stats().unwrap()["step_debug_windows"], 1);

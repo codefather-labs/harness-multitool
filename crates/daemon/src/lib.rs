@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 pub mod client;
 pub mod conditions;
 pub mod memory;
+pub mod socket;
 pub mod stepdebug;
 pub mod telegram;
 
@@ -183,16 +184,24 @@ pub struct Daemon {
     telegram_generation: std::sync::atomic::AtomicU64,
     telegram_source: Mutex<Option<TelegramSource>>,
     channels_stopped: std::sync::atomic::AtomicBool,
+    /// The local socket's server, stopped with the daemon (CON-130).
+    local: Mutex<Option<Arc<socket::Server>>>,
 }
 
 /// Where a running daemon says how to reach it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Address {
     pub port: u16,
     pub admin: String,
     /// The daemon's process, so that a stop hits exactly it.
     #[serde(default)]
     pub pid: u32,
+    /// Its local socket, where windows and session servers reach it (CON-130).
+    #[serde(default)]
+    pub socket: Option<PathBuf>,
+    /// The protocol spoken on that socket.
+    #[serde(default)]
+    pub protocol: u32,
 }
 
 pub fn address_path(data_dir: &Path) -> PathBuf {
@@ -238,8 +247,9 @@ impl Daemon {
             .collect();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("opening the trigger log: {e}"))?;
 
+        let (local, listener) = socket::Server::bind(data_dir)?;
         let admin = uuid::Uuid::new_v4().to_string();
-        let address = serde_json::to_string(&Address { port, admin: admin.clone(), pid: std::process::id() }).expect("an address serialises");
+        let address = serde_json::to_string(&Address { port, admin: admin.clone(), pid: std::process::id(), socket: Some(local.path().to_path_buf()), protocol: socket::PROTOCOL }).expect("an address serialises");
         write_private(&address_path(data_dir), &address).map_err(|e| format!("publishing the address: {e}"))?;
 
         let daemon = Arc::new(Daemon {
@@ -257,7 +267,9 @@ impl Daemon {
             telegram_generation: Default::default(),
             telegram_source: Mutex::new(None),
             channels_stopped: std::sync::atomic::AtomicBool::new(false),
+            local: Mutex::new(Some(local.clone())),
         });
+        socket::serve(daemon.clone(), local, listener);
         // Every request on a thread of its own: a long poll holds its thread for up to POLL, and every
         // tab of every window keeps one open, so a fixed pool left operations queued behind them for
         // seconds (journal#822).
@@ -400,6 +412,24 @@ impl Daemon {
         }
     }
 
+    /// Whether a stop was asked for.
+    pub fn stopping(&self) -> bool {
+        self.state.lock().map_or(true, |s| s.shutting_down)
+    }
+
+    /// Stops the local socket: every client sees the loss at once, and the next daemon can bind
+    /// the path. Called once the reply to the stop has gone out, whichever way it was asked.
+    pub(crate) fn stop_local(&self) {
+        if let Some(local) = self.local.lock().expect("socket").take() {
+            local.stop();
+        }
+    }
+
+    /// How many clients are connected on the local socket.
+    pub fn socket_clients(&self) -> usize {
+        self.local.lock().ok().and_then(|l| l.as_ref().map(|s| s.connections())).unwrap_or(0)
+    }
+
     pub fn admin_token(&self) -> &str {
         &self.admin
     }
@@ -414,8 +444,22 @@ impl Daemon {
         if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
             body.clear();
         }
+        let (status, reply) = self.route(&method, path, query, &body, admin);
+        let response = tiny_http::Response::from_string(reply.to_string())
+            .with_status_code(status)
+            .with_header(tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..]).expect("a valid header"));
+        let _ = request.respond(response);
+        if self.stopping() {
+            self.stop_local();
+        }
+    }
+
+    /// One request, by method and path, whichever way it came: HTTP, or the local socket, whose
+    /// clients are admin since only this user can open it (CON-130).
+    fn route(self: &Arc<Self>, method: &str, path: &str, query: &str, body: &str, admin: bool) -> (u16, Value) {
+        let body = body.to_string();
         let stopping = self.state.lock().expect("daemon state").shutting_down;
-        let (status, reply) = match (method.as_str(), path) {
+        match (method, path) {
             // A stopped daemon takes nothing more: what a window sends goes to the one after it.
             _ if stopping => (503, json!({"error": "the daemon is stopping"})),
             ("GET", "/health") => (200, json!({"ok": true, "build": build_id()})),
@@ -448,11 +492,7 @@ impl Daemon {
             ("POST", "/register") | ("POST", "/reload") | ("POST", "/shutdown") | ("GET", "/events") => (401, json!({"error": "bad token"})),
             ("POST", p) if p.starts_with("/callback/") => self.callback(&p["/callback/".len()..], &body),
             _ => (404, json!({"error": "no such route"})),
-        };
-        let response = tiny_http::Response::from_string(reply.to_string())
-            .with_status_code(status)
-            .with_header(tiny_http::Header::from_bytes(&b"content-type"[..], &b"application/json"[..]).expect("a valid header"));
-        let _ = request.respond(response);
+        }
     }
 
     fn register(&self, body: &str) -> (u16, Value) {
