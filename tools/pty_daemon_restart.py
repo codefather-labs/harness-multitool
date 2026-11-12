@@ -23,7 +23,10 @@ print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid, "mode
 for line in sys.stdin:
     text = json.loads(line)["message"]["content"][0]["text"]
     open({log!r}, "a").write(json.dumps({{"text": text, "resumed": resumed, "session": sid, "pid": os.getpid(), "ppid": os.getppid(), "at": time.time()}}) + "\\n")
-    if text.endswith("slow"): time.sleep(60)
+    # A slow turn that also ignores SIGTERM, as a real delegate busy with a tool may: its daemon
+    # ends only after the grace and a KILL (journal#1054).
+    if text.endswith("slow"):
+        import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)
     print(json.dumps({{"type": "result", "is_error": False, "stop_reason": "end_turn", "session_id": sid, "total_cost_usd": 0.0, "usage": {{}}}}), flush=True)
 ''')
 os.chmod(fake, 0o755)
@@ -81,6 +84,9 @@ while time.time() < end and not [s for s in seen() if s["text"].endswith("slow")
 print("before the busy restart, at", round(time.time() % 1000, 1))
 out = cli("daemon", "restart"); print(out.stdout.strip())
 assert "1 window's run was stopped" in out.stdout, (out.stdout, out.stderr)
+busy_pid, busy_port = daemon()
+assert busy_port == new_port, f"the busy restart moved the daemon from port {new_port} to {busy_port} (journal#1054)"
+print("busy restart: port", busy_port, "kept")
 slow_pid = [s for s in seen() if s["text"].endswith("slow")][0]["pid"]
 def alive(pid):
     try: os.kill(pid, 0)

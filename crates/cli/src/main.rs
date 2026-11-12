@@ -460,9 +460,16 @@ fn main() -> Result<()> {
             let dir = config::data_dir()?;
             // The port it had before if it is free: callback URLs stay as they were.
             let wanted = if port == 0 { harness_daemon::last_port(&dir).unwrap_or(0) } else { port };
-            let daemon = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers())
-                .or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers()))
-                .map_err(|e| anyhow!(e))?;
+            // A daemon that just stopped can hold its port a while: up to CLOSING (5 s) for its runs and
+            // 3 s for its delegates to end (journal#1021). Wait for it rather than drift to another port,
+            // which would leave every open dashboard and callback URL pointing nowhere (journal#1054).
+            let mut started = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers());
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while started.is_err() && wanted != 0 && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                started = harness_daemon::Daemon::start_with(&dir, wanted, plugins::callback_handlers());
+            }
+            let daemon = started.or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers())).map_err(|e| anyhow!(e))?;
             daemon.telegram_from(std::sync::Arc::new(config::telegram));
             // The conversations run here, whichever window asks (ADR 0024).
             let make_host: harness_session::remote::MakeHost = std::sync::Arc::new(|settings, note, reload| host_for(note, reload, selection_summary(settings)));

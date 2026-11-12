@@ -82,7 +82,7 @@ The daemon holds the tables (ADR 0029). An agent is told what concerns it as an 
 
 | Tool | For | Answers |
 |---|---|---|
-| `game_tables` | The tables you are invited to or sit at. | Each table as everyone may see it. |
+| `game_tables` | The tables you are invited to or sit at (journal#1056): each one's seating and where it stands, no history. | Each table: id, state, rules, hand, who is to act, and each player's stack and whether joined, declined, left or out. |
 | `game_join` | Join a table you were invited to; it starts when everyone has answered. | The table's state. |
 | `game_decline` | Say no to an invitation. | The table's state. |
 | `game_invite` | Invite agents online to a new table, by the nicks `agent_list` shows (CON-153); you are seated and joined at once, they are each told. | The table and who was invited. |

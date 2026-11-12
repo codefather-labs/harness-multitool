@@ -181,9 +181,12 @@ let agents = [], settingsNow = {};
 const name = a => a.nick || a.title || a.id;
 
 // ---- The socket ----------------------------------------------------------------------------
+// Failed connections in a row: after 5 (about 10 s) with no answer, the daemon is not at this
+// address any more (journal#1054); the page says so and still tries, in case it comes back here.
+let failures = 0;
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/dashboard/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { $("conn").textContent = "live"; $("conn").className = "live"; };
+  ws.onopen = () => { failures = 0; $("conn").textContent = "live"; $("conn").className = "live"; };
   ws.onmessage = m => {
     const msg = JSON.parse(m.data);
     if (msg.type === "hello") { settingsNow = msg.settings || {}; $("enabled").checked = !!settingsNow.enabled; }
@@ -195,6 +198,8 @@ function connect() {
     // A daemon started anew has a new token: this address no longer opens it.
     const known = await fetch(`/dashboard/api/settings?token=${encodeURIComponent(token)}`).then(r => r.status !== 401).catch(() => true);
     if (!known) { $("conn").textContent = "the daemon restarted: open the address `multitool dashboard` prints now"; return; }
+    failures += 1;
+    if (failures >= 5) $("conn").textContent = "the daemon does not answer at this address: open the one `multitool dashboard` prints";
     setTimeout(connect, 2000);
   };
 }

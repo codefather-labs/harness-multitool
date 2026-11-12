@@ -256,7 +256,8 @@ impl Client {
         if !socket_answers(data_dir) {
             start_daemon(program).map_err(|e| format!("starting the daemon: {e}"))?;
         }
-        let end = Instant::now() + Duration::from_secs(5);
+        // A new daemon may wait up to 10 s for its last port to be let go (journal#1054).
+        let end = Instant::now() + Duration::from_secs(15);
         while Instant::now() < end {
             client.inner.try_now();
             if client.wait_ready(Duration::from_millis(100)) {

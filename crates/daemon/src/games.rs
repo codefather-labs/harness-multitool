@@ -90,6 +90,34 @@ impl Table {
         self.invited.iter().find(|p| p.nick == nick).map(|p| p.session.clone())
     }
 
+    /// The table as an agent's game_tables lists it (journal#1056): who sits there with what, and
+    /// where the game stands; no history (game_history's) and no hand in detail (game_state's).
+    pub fn seating(&self) -> Value {
+        let view = self.engine.as_ref().map(|e| e.view(None));
+        let seat = |nick: &str| view.as_ref().and_then(|v| v["players"].as_array().and_then(|ps| ps.iter().find(|p| p["player"] == nick)).cloned());
+        let players: Vec<Value> = self
+            .invited
+            .iter()
+            .map(|p| {
+                let s = seat(&p.nick);
+                json!({
+                    "nick": p.nick,
+                    "stack": s.as_ref().and_then(|s| s["stack"].as_u64()).unwrap_or(self.rules.stack),
+                    "joined": self.joined.contains(&p.session),
+                    "declined": self.declined.contains(&p.session),
+                    "left": s.as_ref().is_some_and(|s| s["left"] == true),
+                    "out": s.as_ref().is_some_and(|s| s["out"] == true),
+                })
+            })
+            .collect();
+        json!({
+            "id": self.id, "game": self.game, "state": self.state, "rules": self.rules,
+            "hand": view.as_ref().map(|v| v["hand"].clone()),
+            "to_act": view.as_ref().map(|v| v["to_act"].clone()),
+            "players": players,
+        })
+    }
+
     /// The table as the dashboard shows it: what everyone may see, no one's cards.
     pub fn public(&self) -> Value {
         json!({
@@ -284,7 +312,7 @@ impl Games {
     pub fn op(&self, session: &str, name: &str, args: &Value, deliver: Deliver<'_>) -> Result<Value, String> {
         let mut tables = self.tables.lock().expect("tables");
         if name == "game_tables" {
-            let mine: Vec<Value> = tables.values().filter(|t| t.invited.iter().any(|p| p.session == session)).map(Table::public).collect();
+            let mine: Vec<Value> = tables.values().filter(|t| t.invited.iter().any(|p| p.session == session)).map(Table::seating).collect();
             return Ok(json!({"tables": mine}));
         }
         let id = args["table"].as_str().ok_or("table is required: game_tables lists yours")?;
@@ -684,6 +712,15 @@ mod tests {
         assert_eq!(*said.borrow(), ["c-tt"], "only the invited are told");
         let t = games.table(&id).unwrap();
         assert_eq!((t["invited"][0]["joined"].as_bool(), t["invited"][1]["joined"].as_bool()), (Some(true), Some(false)));
+        // journal#1056: game_tables is the seating and where each table stands, with no history.
+        games.op("c-tt", "game_join", &json!({"table": id}), &deliver).unwrap();
+        let listed = games.op("c-me", "game_tables", &json!({}), &deliver).unwrap();
+        let t = &listed["tables"][0];
+        assert!(t.get("log").is_none() && t.get("view").is_none(), "{listed}");
+        assert_eq!((t["id"].as_str(), t["state"].as_str(), t["hand"].as_u64()), (Some(id.as_str()), Some("playing"), Some(1)), "{listed}");
+        assert!(t["to_act"].is_string() && t["rules"].is_object());
+        assert_eq!(t["players"][0], json!({"nick": "multitool-arch", "stack": 990, "joined": true, "declined": false, "left": false, "out": false}), "{listed}");
+        assert!(listed.to_string().len() < 1200, "small: {} bytes", listed.to_string().len());
         // One alone is no table.
         assert!(games.invite("texas_holdem", resolve(&all, &[], "c-me").unwrap(), &deliver).unwrap_err().contains("2 to 9"));
         let _ = std::fs::remove_dir_all(&dir);
