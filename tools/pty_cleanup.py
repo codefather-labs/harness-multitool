@@ -3,6 +3,11 @@ daemons it started and removes its temp directories. Only daemons whose address 
 and only if that process still is a multitool."""
 import atexit, glob, json, os, shutil, signal, tempfile, time
 
+# A script run from inside a harness session inherits what that session's multitool noted of its
+# own user (journal#1025): the user a script plays is its own, so those notes go.
+for _name in ("MULTITOOL_OWN_CLAUDE_CONFIG_DIR", "MULTITOOL_OWN_CODEX_HOME"):
+    os.environ.pop(_name, None)
+
 _made = []
 _mkdtemp = tempfile.mkdtemp
 

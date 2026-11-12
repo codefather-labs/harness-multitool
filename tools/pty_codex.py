@@ -15,6 +15,8 @@ bin_ = sys.argv[1]; real = os.environ.get("MT_REAL_CODEX") == "1"
 home = tempfile.mkdtemp(prefix="mt-codex-home"); mt = home + "/mt-home"; log = home + "/codex-log"
 root = os.path.realpath(tempfile.mkdtemp(prefix="mt-codex-root-"))
 users_codex = home + "/dot-codex"; os.makedirs(users_codex + "/sessions")
+# The fake answers `codex login status` from this marker: the user's own Codex is signed in (journal#976).
+open(users_codex + "/signed-in", "w").close()
 fake = home + "/codex"
 open(fake, "w").write(f'''#!/usr/bin/env python3
 import json, os, sys
@@ -84,10 +86,13 @@ else:
     assert not any("first message" in x for x in a["args"]), "the prompt is on stdin, never on the command line"
     assert a["prompt"].rstrip().endswith("first message")
     assert any(x.startswith("mcp_servers.harness.command=") for x in a["args"]), "the harness's tools go with it"
+    assert 'mcp_servers.harness.default_tools_approval_mode="approve"' in a["args"], "codex exec can ask no one: the harness's tools are approved (journal#1069)"
     assert a["resumed"] is None and b["resumed"] == "T1", (a["resumed"], b["resumed"])
     assert a["codex_home"] == users_codex, f"default not signed in on its own: the user's Codex folder: {a['codex_home']}"
     print("second run resumed", b["resumed"], "on the user's own Codex folder", b["codex_home"])
     close(w)
+    # Max's own Codex folder, signed in on its own (CON-137).
+    os.makedirs(mt + "/profiles/max/codex", exist_ok=True); open(mt + "/profiles/max/codex/signed-in", "w").close()
     w = window("--profile", "max"); pump(w, 3)
     say(w, "on max", "FAKE-ANSWER to on max")
     c = seen()[-1]

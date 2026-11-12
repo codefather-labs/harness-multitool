@@ -207,6 +207,11 @@ impl Codex {
                 if let Some(list) = server["args"].as_array() {
                     args.extend(["-c".to_string(), format!("mcp_servers.{name}.args={}", Value::from(list.clone()))]);
                 }
+                // Codex asks before an MCP tool call by default, and `codex exec` has no one to ask,
+                // so it would refuse every call (journal#1069). These are the harness's own servers,
+                // given for this run: their tools run unasked, as the Claude Code delegate's do. The
+                // user's own servers, from their config.toml, keep the approval they set.
+                args.extend(["-c".to_string(), format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\"")]);
             }
         }
         if let Some(session) = request.session {
@@ -442,6 +447,9 @@ mod tests {
         assert!(first.windows(2).any(|w| w == ["-m", "gpt-x"]) && first.windows(2).any(|w| w == ["-s", "workspace-write"]), "{first:?}");
         assert!(first.windows(2).any(|w| w == ["-c", r#"mcp_servers.harness.command="/bin/mt""#]), "{first:?}");
         assert!(first.windows(2).any(|w| w == ["-c", r#"mcp_servers.harness.args=["mcp","--root","/r"]"#]), "{first:?}");
+        // journal#1069: codex exec has no one to ask, so the harness's own tools are approved.
+        assert!(first.windows(2).any(|w| w == ["-c", r#"mcp_servers.harness.default_tools_approval_mode="approve""#]), "{first:?}");
+        assert_eq!(first.iter().filter(|a| a.contains("default_tools_approval_mode")).count(), 1, "only the harness's own servers: {first:?}");
         assert_eq!(first.last().map(String::as_str), Some("-"));
         assert!(!first.iter().any(|a| a.contains("secret prompt") || a == "resume"));
         let next = c.args(&request(Some("t1"), true, &never, &none));
