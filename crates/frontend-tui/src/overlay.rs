@@ -50,6 +50,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.memory {
         s.memory = page.clone();
     }
+    if let Some(page) = &w.journal_issues {
+        s.journal = page.clone();
+    }
     if let Some(page) = &w.profiles {
         s.profiles = page.clone();
     }
@@ -124,7 +127,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme"].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -143,6 +146,7 @@ pub fn sample_settings() -> SettingsView {
         telegram: Default::default(),
         voice: Default::default(),
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
+        journal: Default::default(),
         profiles: ProfilesPage::default(),
         auth: AuthPage::default(),
         editing_model: false,
@@ -598,6 +602,47 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
     }
 }
 
+/// The settings section of the project's tracker (ADR 0028).
+pub const JOURNAL_SECTION: &str = "Journal";
+
+/// The window's project's todos as issues (ADR 0028): the tracker, the gh folder, the option, and
+/// what stands in the way. Saved with Ctrl+S, for this project only (CON-142).
+fn journal_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.journal;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let (tracker, built) = crate::model::TRACKERS.get(p.tracker).copied().unwrap_or(("github", true));
+    let rows = [
+        (" Tracker              ", format!("{tracker}{}", if built { "" } else { "  (not built yet)" })),
+        (" gh folder            ", if p.cursor == 1 && p.editing { p.typed.clone() } else if p.gh_dir.is_empty() { format!("the project's own: {}", p.gh_dir_used) } else { p.gh_dir.clone() }),
+        (" Send todos to issues ", format!("[{}]", if p.enabled { "x" } else { " " })),
+    ];
+    for (row, (label, value)) in rows.into_iter().enumerate() {
+        let under = focus && p.cursor == row;
+        let cursor = if under && p.editing { "█" } else { "" };
+        text(f, r.x, r.y + 1 + row as u16, r.width, vec![Span::styled(label, muted), Span::styled(value, strong), Span::styled(cursor.to_string(), Style::default().fg(t.accent_line))], if under { t.surface_raised } else { bg });
+    }
+    let place = if p.place.is_empty() { "none: the project has no GitHub remote".to_string() } else if p.visibility.is_empty() { p.place.clone() } else { format!("{} ({})", p.place, p.visibility.to_lowercase()) };
+    let sending = if p.why.is_empty() { "on: todos go to issues as they are written".to_string() } else { p.why.clone() };
+    let notes = [
+        format!("Project   {}", p.project),
+        format!("As        {}", p.account),
+        format!("Place     {place}"),
+        format!("Sending   {sending}"),
+        format!("Queued    {}   ·   issues opened {}", p.queued, p.issues),
+        String::new(),
+        if p.confirming { format!("{} is public: its issues are seen by everyone. y sends to it anyway, n does not.", p.place) } else { p.status.clone() },
+        String::new(),
+        "A todo opens an issue; what is linked to it comments; closing it closes the issue.".to_string(),
+        "For this project only: another project keeps its own. gh runs with this folder alone.".to_string(),
+        "Up and Down choose, Enter changes, Space turns sending on or off, c connects gh, r checks it, Ctrl+S saves.".to_string(),
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 5 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+    }
+}
+
 /// The most nodes a map may hold: one row, edited as text, saved with Ctrl+S (CON-114).
 fn memory_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let p = &s.memory;
@@ -978,6 +1023,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == JOURNAL_SECTION {
+        journal_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == PROFILES_SECTION {
         profiles_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if s.section != 0 {
@@ -1499,6 +1546,63 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
                 open_provider_if_asked(s);
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == JOURNAL_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.journal;
+            match k {
+                Key::Char('y') if p.confirming => {
+                    p.confirming = false;
+                    p.public_ok = true;
+                    p.enabled = true;
+                    p.status = "Sending to a public repository: Ctrl+S saves.".to_string();
+                }
+                Key::Char('n') if p.confirming => {
+                    p.confirming = false;
+                    p.status = "Not sent to the public repository.".to_string();
+                }
+                _ if p.confirming => {}
+                Key::Tab | Key::Left | Key::Right if !p.editing => s.focus = SettingsPane::Sections,
+                Key::Up if !p.editing => p.cursor = p.cursor.saturating_sub(1),
+                Key::Down if !p.editing => p.cursor = (p.cursor + 1).min(2),
+                Key::Enter if !p.editing && p.cursor == 0 => p.tracker = (p.tracker + 1) % crate::model::TRACKERS.len(),
+                Key::Enter | Key::Char('e') if !p.editing && p.cursor == 1 => {
+                    p.editing = true;
+                    p.typed = p.gh_dir.clone();
+                }
+                Key::Enter if p.editing => {
+                    p.editing = false;
+                    p.gh_dir = p.typed.trim().to_string();
+                }
+                Key::Backspace if p.editing => {
+                    p.typed.pop();
+                }
+                Key::Char(c) if p.editing => p.typed.push(c),
+                Key::Char(' ') | Key::Enter if p.cursor == 2 => {
+                    if !p.enabled && p.visibility.starts_with("PUBLIC") && !p.public_ok {
+                        p.confirming = true;
+                    } else {
+                        p.enabled = !p.enabled;
+                    }
+                }
+                Key::Char('c') if !p.editing => {
+                    p.status = "gh auth login runs in the terminal...".to_string();
+                    w.outbox.push(Outgoing::JournalConnect);
+                }
+                Key::Char('r') if !p.editing => {
+                    p.status = "Checking gh...".to_string();
+                    w.outbox.push(Outgoing::JournalCheck);
+                }
+                Key::Ctrl('s') => {
+                    if p.editing {
+                        p.editing = false;
+                        p.gh_dir = p.typed.trim().to_string();
+                    }
+                    let (tracker, _) = crate::model::TRACKERS.get(p.tracker).copied().unwrap_or(("github", true));
+                    p.status = "Saved for this project.".to_string();
+                    w.outbox.push(Outgoing::SaveJournalIssues { tracker: tracker.to_string(), gh_dir: p.gh_dir.clone(), enabled: p.enabled, public_ok: p.public_ok });
+                }
+                _ => {}
             }
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Memory") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
@@ -2695,6 +2799,47 @@ mod tests {
         assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveMapLimit { limit: 205 })));
         assert_eq!((memory_of(&w).map_max_nodes, memory_of(&w).editing), (205, false));
         assert!(memory_of(&w).status.contains("keeps its limit until it restarts"));
+    }
+
+    /// ADR 0028, CON-141: the Journal page chooses the tracker, the gh folder and the option; a
+    /// public repository asks once; c and r ask the window for gh; Ctrl+S sends the settings.
+    #[test]
+    fn the_journal_page_saves_the_projects_tracker_settings() {
+        let mut w = Workspace::one(Default::default(), "t");
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == JOURNAL_SECTION).unwrap();
+        s.focus = SettingsPane::Page;
+        s.journal = crate::model::JournalPage { place: "acme/widgets".into(), visibility: "PUBLIC WRITE".into(), ..Default::default() };
+        w.overlay = Some(Overlay::Settings(s));
+        let page = |w: &Workspace| match &w.overlay {
+            Some(Overlay::Settings(s)) => s.journal.clone(),
+            _ => panic!("no settings"),
+        };
+        key(&mut w, Key::Enter);
+        assert_eq!(crate::model::TRACKERS[page(&w).tracker].0, "gitlab", "Enter on the tracker goes to the next");
+        for _ in 0..3 {
+            key(&mut w, Key::Enter);
+        }
+        assert_eq!(page(&w).tracker, 0, "and round to github");
+        key(&mut w, Key::Down);
+        for k in [Key::Enter, Key::Char('/'), Key::Char('g'), Key::Enter] {
+            key(&mut w, k);
+        }
+        assert_eq!(page(&w).gh_dir, "/g");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char(' '));
+        assert!(page(&w).confirming && !page(&w).enabled, "a public repository asks first");
+        key(&mut w, Key::Char('y'));
+        assert!(page(&w).enabled && page(&w).public_ok);
+        key(&mut w, Key::Char('c'));
+        key(&mut w, Key::Char('r'));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::JournalConnect)));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::JournalCheck)));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveJournalIssues { tracker, gh_dir, enabled: true, public_ok: true } if tracker == "github" && gh_dir == "/g")), "{:?}", w.outbox);
+        // Space again turns it off, with no question.
+        key(&mut w, Key::Char(' '));
+        assert!(!page(&w).enabled && !page(&w).confirming);
     }
 
     /// CON-118: the second row saves its own setting and leaves the first.

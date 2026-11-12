@@ -696,6 +696,8 @@ struct Live {
     /// Set while a browser sign-in waits: setting the flag cancels it.
     login_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     login_events: LoginEvents,
+    /// The Journal page as a check of gh found it, off the window's thread (CON-132).
+    journal_checks: (std::sync::mpsc::Sender<frontend_tui::model::JournalPage>, std::sync::mpsc::Receiver<frontend_tui::model::JournalPage>),
     plan_models: (std::sync::mpsc::Sender<ModelList>, std::sync::mpsc::Receiver<ModelList>),
     step_debug_tabs: std::collections::HashSet<u64>,
     window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
@@ -797,6 +799,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
@@ -893,6 +896,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
         state
     }
@@ -1175,7 +1179,7 @@ impl Live {
                 }
             }
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1185,6 +1189,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
@@ -1395,6 +1400,7 @@ impl Live {
     fn refresh_pages(&self, w: &mut frontend_tui::model::Workspace) {
         w.auth = Some(self.auth_page(None));
         w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &w.overlay {
             let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
             let mut fresh = frontend_tui::overlay::settings_for(w);
@@ -1403,6 +1409,53 @@ impl Live {
             fresh.cursor = fresh.provider;
             w.overlay = Some(frontend_tui::model::Overlay::Settings(fresh));
         }
+    }
+
+    /// The Journal page of this window's project (ADR 0028) from its files alone: gh is asked only by
+    /// a check, off the window's thread, since it goes over the network (CON-132).
+    fn journal_issues_page(&self, status: String) -> frontend_tui::model::JournalPage {
+        journal_page_for(&self.root, status, false)
+    }
+
+    /// Checks gh for the Journal page on a thread of its own; the page comes back by journal_checks.
+    fn check_journal_issues(&self, status: String) {
+        let (root, sender) = (self.root.clone(), self.journal_checks.0.clone());
+        std::thread::spawn(move || {
+            let _ = sender.send(journal_page_for(&root, status, true));
+        });
+    }
+
+    /// What a check of gh found reaches the Journal page, its cursor kept.
+    fn tick_journal_checks(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        let Ok(page) = self.journal_checks.1.try_recv() else { return false };
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+            let cursor = s.journal.cursor;
+            s.journal = frontend_tui::model::JournalPage { cursor, ..page.clone() };
+        }
+        w.journal_issues = Some(page);
+        true
+    }
+
+    /// Saves the Journal page for this project; turning sending on queues its open todos (ADR 0028).
+    fn save_journal_issues(&self, tracker: &str, gh_dir: &str, enabled: bool, public_ok: bool) -> Result<String, String> {
+        use harness_daemon::trackers;
+        let data = config::data_dir().map_err(|e| e.to_string())?.to_string_lossy().into_owned();
+        let folder = harness_session::tracker_folder(&data, &self.root);
+        let mut settings = trackers::read_settings(&folder);
+        let was = settings.enabled;
+        settings.tracker = Some(tracker.to_string());
+        settings.gh_config_dir = (!gh_dir.trim().is_empty()).then(|| std::path::PathBuf::from(gh_dir.trim()));
+        settings.enabled = enabled;
+        settings.public_ok = public_ok;
+        trackers::write_settings(&folder, &settings).map_err(|e| e.to_string())?;
+        if enabled && !was {
+            let todos = harness_session::open_todos(&data, &self.root)?;
+            for id in &todos {
+                trackers::enqueue(&folder, &trackers::Item { root: self.root.clone(), action: trackers::Action::Open { id: *id } }).map_err(|e| e.to_string())?;
+            }
+            return Ok(format!("Saved for this project: on, {} open todos queued.", todos.len()));
+        }
+        Ok(format!("Saved for this project: {}.", if enabled { "on" } else { "off" }))
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
@@ -2014,11 +2067,30 @@ impl Live {
                     };
                     w.profiles = Some(self.profiles_page(status));
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
                     show_profiles(w);
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::Login } else { ClaudeStep::Logout })),
                 Outgoing::ProfileClaudeSwitch { name } => self.terminal_wanted = Some((name, ClaudeStep::Switch)),
                 Outgoing::ProfileCodex { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::CodexLogin } else { ClaudeStep::CodexLogout })),
+                Outgoing::JournalCheck => self.check_journal_issues("Checking gh...".to_string()),
+                Outgoing::JournalConnect => {
+                    if let Ok(data) = config::data_dir() {
+                        let folder = harness_session::tracker_folder(&data.to_string_lossy(), &self.root);
+                        let dir = harness_daemon::trackers::gh_dir(&folder, &harness_daemon::trackers::read_settings(&folder));
+                        self.terminal_wanted = Some((dir.to_string_lossy().into_owned(), ClaudeStep::GhLogin));
+                    }
+                }
+                Outgoing::SaveJournalIssues { tracker, gh_dir, enabled, public_ok } => {
+                    let said = self.save_journal_issues(&tracker, &gh_dir, enabled, public_ok).unwrap_or_else(|e| format!("Not saved: {e}"));
+                    self.check_journal_issues(said.clone());
+                    let page = self.journal_issues_page(said);
+                    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        let cursor = s.journal.cursor;
+                        s.journal = frontend_tui::model::JournalPage { cursor, ..page.clone() };
+                    }
+                    w.journal_issues = Some(page);
+                }
                 Outgoing::Login => self.start_login(w),
                 Outgoing::LoginCancel => {
                     if let Some(cancel) = &self.login_cancel {
@@ -2115,6 +2187,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveMapLimit { limit } => {
@@ -2126,6 +2199,7 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveSearchPage { limit } => {
@@ -2137,6 +2211,7 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::DownloadVoiceModel { model } => {
@@ -2180,6 +2255,7 @@ impl Live {
                     }
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::StartVoiceTest { model, device } => {
@@ -2205,6 +2281,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
@@ -2478,6 +2555,8 @@ enum ClaudeStep {
     /// Codex's own sign-in and sign-out, in the profile's Codex folder (journal#913).
     CodexLogin,
     CodexLogout,
+    /// gh's own sign-in, in a project's gh folder (ADR 0028); the name carries the folder.
+    GhLogin,
 }
 
 /// The open settings show the Profiles tab as it now stands, the line under the cursor kept.
@@ -2737,6 +2816,43 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
     }
 }
 
+/// The Journal page of a project (ADR 0028). With `check`, gh is asked who it is and what the
+/// repository is: network calls, never on the window's thread (CON-132).
+fn journal_page_for(root: &str, status: String, check: bool) -> frontend_tui::model::JournalPage {
+    use harness_daemon::trackers;
+    let Ok(data) = config::data_dir() else { return Default::default() };
+    let folder = harness_session::tracker_folder(&data.to_string_lossy(), root);
+    let settings = trackers::read_settings(&folder);
+    let place = harness_daemon::git_origin(root).as_deref().and_then(trackers::github_place);
+    let tracker = trackers::tracker(&folder, &settings);
+    let (account, visibility, why) = if check {
+        (
+            tracker.connected().unwrap_or_else(|e| format!("not connected: {e}")),
+            place.as_deref().and_then(|p| tracker.visibility(p).ok()).unwrap_or_default(),
+            trackers::why_not(&settings, place.as_deref(), tracker.as_ref()).unwrap_or_default(),
+        )
+    } else {
+        let why = if settings.enabled { String::new() } else { "off: 'Send todos to issues' is not turned on".to_string() };
+        ("not checked yet: r checks gh".to_string(), String::new(), why)
+    };
+    frontend_tui::model::JournalPage {
+        project: root.to_string(),
+        tracker: frontend_tui::model::TRACKERS.iter().position(|(n, _)| Some(*n) == settings.tracker.as_deref()).unwrap_or(0),
+        gh_dir: settings.gh_config_dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+        gh_dir_used: folder.join("gh").to_string_lossy().into_owned(),
+        account,
+        place: place.unwrap_or_default(),
+        visibility,
+        enabled: settings.enabled,
+        public_ok: settings.public_ok,
+        why,
+        queued: std::fs::read_to_string(folder.join("queue.jsonl")).map_or(0, |t| t.lines().count()),
+        issues: trackers::issues(&folder).len(),
+        status,
+        ..Default::default()
+    }
+}
+
 /// `multitool journal issues` (ADR 0028): a project's tracker settings, per project (CON-142).
 fn journal_issues(data: &str, root: &str, action: IssuesAction) -> Result<()> {
     use harness_daemon::trackers;
@@ -2968,6 +3084,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     ClaudeStep::Switch => ("Claude Code", "account switch"),
                     ClaudeStep::CodexLogin => ("Codex", "login"),
                     ClaudeStep::CodexLogout => ("Codex", "logout"),
+                    ClaudeStep::GhLogin => ("gh", "auth login"),
                 };
                 let done = match step {
                     ClaudeStep::Logout => claude_code_auth_for(&profile, "logout"),
@@ -2976,6 +3093,15 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     ClaudeStep::Switch => claude_code_auth_for(&profile, "logout").and_then(|()| claude_code_auth_for(&profile, "login")),
                     ClaudeStep::CodexLogin => codex_auth(&profile, true),
                     ClaudeStep::CodexLogout => codex_auth(&profile, false),
+                    ClaudeStep::GhLogin => {
+                        println!("gh auth login, in {profile} (GH_CONFIG_DIR)");
+                        let _ = std::fs::create_dir_all(&profile);
+                        match std::process::Command::new("gh").args(["auth", "login"]).env("GH_CONFIG_DIR", &profile).status() {
+                            Ok(s) if s.success() => Ok(()),
+                            Ok(s) => Err(anyhow!("gh auth login ended: {s}")),
+                            Err(e) => Err(anyhow!("running gh: {e}")),
+                        }
+                    }
                 };
                 let said = match done {
                     Ok(()) => format!("{program} {what} for {profile} done."),
@@ -3068,6 +3194,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 live.tick_first_start(w);
                 dirty |= live.tick_toast(w);
                 dirty |= live.tick_login(w);
+                dirty |= live.tick_journal_checks(w);
                 w.new_tab_runs_on = Some((live.provider.clone(), live.model.clone()));
                 dirty |= live.tick_voice_download(w);
                 dirty |= live.tick_voice_test(w);

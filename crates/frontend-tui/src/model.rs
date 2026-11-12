@@ -69,6 +69,8 @@ pub struct Workspace {
     pub telegram: Option<TelegramPage>,
     pub voice: Option<VoicePage>,
     pub memory: Option<MemoryPage>,
+    /// The Journal page, the window's project's tracker (ADR 0028).
+    pub journal_issues: Option<JournalPage>,
     /// The profiles, as the running harness reads them (CON-125).
     pub profiles: Option<ProfilesPage>,
     /// The sign-in state as the running harness knows it.
@@ -95,6 +97,12 @@ pub enum Outgoing {
     SaveTelegram { token: Option<String>, users: Vec<i64> },
     /// The Memory page saved: the most nodes a map may hold, 0 for none (CON-114).
     SaveMapLimit { limit: u64 },
+    /// The project's tracker settings, from the Journal page (ADR 0028).
+    SaveJournalIssues { tracker: String, gh_dir: String, enabled: bool, public_ok: bool },
+    /// gh's own sign-in, in the project's gh folder, in the terminal.
+    JournalConnect,
+    /// Ask gh who it is and what the repository is, off the window's thread.
+    JournalCheck,
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -197,6 +205,7 @@ pub struct SettingsView {
     pub telegram: TelegramPage,
     pub voice: VoicePage,
     pub memory: MemoryPage,
+    pub journal: JournalPage,
     pub profiles: ProfilesPage,
     pub auth: AuthPage,
     /// The model name is being typed.
@@ -344,7 +353,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -1055,6 +1064,41 @@ impl VoicePage {
             self.model = first.map_or(String::new(), |m| m.name.clone());
         }
     }
+}
+
+/// The trackers the Journal page offers, and whether each is built (ADR 0028, CON-143).
+pub const TRACKERS: [(&str, bool); 4] = [("github", true), ("gitlab", false), ("asana", false), ("clickup", false)];
+
+/// The settings' Journal page: the window's project's todos as issues in its tracker (ADR 0028).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JournalPage {
+    /// The project, as the window has it.
+    pub project: String,
+    /// Index into TRACKERS.
+    pub tracker: usize,
+    /// The gh configuration folder; empty for the project's own.
+    pub gh_dir: String,
+    /// The gh folder that will be used, shown when gh_dir is empty.
+    pub gh_dir_used: String,
+    /// As whom gh is signed in, or why not.
+    pub account: String,
+    /// owner/repo, or empty when the project has no GitHub remote.
+    pub place: String,
+    /// "PUBLIC WRITE", "PRIVATE ADMIN" and the like, or empty when unknown.
+    pub visibility: String,
+    pub enabled: bool,
+    pub public_ok: bool,
+    /// Why nothing is sent, or empty when it is.
+    pub why: String,
+    pub queued: usize,
+    pub issues: usize,
+    /// 0 the tracker, 1 the gh folder, 2 the option.
+    pub cursor: usize,
+    pub editing: bool,
+    pub typed: String,
+    /// A public repository's sending waits for `y`.
+    pub confirming: bool,
+    pub status: String,
 }
 
 /// The settings' Memory page: the most nodes a map may hold (CON-114), the page of linked entries (CON-118).
