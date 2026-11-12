@@ -237,6 +237,8 @@ impl Codex {
             let why = if e.kind() == std::io::ErrorKind::NotFound { "it is not installed or not on the PATH".to_string() } else { e.to_string() };
             PluginError::new(format!("could not start {}: {why}", self.binary))
         })?;
+        // Ended with this program if a run still holds it then (journal#1021).
+        harness_platform_native::children::register(child.id());
         let mut stdin = child.stdin.take().expect("piped above");
         let text = self.stdin(request);
         std::thread::spawn(move || {
@@ -274,6 +276,10 @@ impl Codex {
     fn run_blocking(&self, request: &BackendRequest<'_>, sink: &mut dyn FnMut(Event) -> bool) -> PluginResult<BackendEnd> {
         self.check_signed_in()?;
         STARTED.with(|s| s.borrow_mut().clear());
+        // A run stopped already (a shutdown) starts no delegate (journal#1034).
+        if (request.stopped)() {
+            return Ok(BackendEnd::Stopped);
+        }
         let mut child = self.spawn(request)?;
         *self.running.borrow_mut() = Some(child.id());
         let (tx, lines) = channel();
@@ -305,6 +311,7 @@ impl Codex {
                             Mapped::Event(event) => {
                                 if !sink(event) {
                                     end(&mut child);
+                                    harness_platform_native::children::forget(child.id());
                                     *self.running.borrow_mut() = None;
                                     return Ok(BackendEnd::Stopped);
                                 }
@@ -328,6 +335,7 @@ impl Codex {
                 }
             }
         };
+        harness_platform_native::children::forget(child.id());
         *self.running.borrow_mut() = None;
         result
     }

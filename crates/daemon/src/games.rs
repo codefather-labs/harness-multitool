@@ -242,12 +242,13 @@ impl Games {
             "game_state" => {
                 // The hand now (CON-150), from the hands' databases, the source of truth (CON-149),
                 // not the copy kept. The history is game_history's (CON-151).
+                // The table is its seating and rules; its log is history, game_history's (journal#1030).
                 let engine = hand_db::replay(&dir)?;
-                let mut public = table.public();
-                public["view"] = engine.as_ref().map_or(Value::Null, |e| e.view(None));
                 let mut state = engine.as_ref().map_or(Value::Null, |e| e.view(Some(&me)));
-                let you = state.get_mut("you").map(Value::take).unwrap_or(Value::Null);
-                json!({"table": public, "state": state, "you": you})
+                let you = state.as_object_mut().and_then(|s| s.remove("you")).unwrap_or(Value::Null);
+                let seating = table.public();
+                let table_now = json!({"id": seating["id"], "game": seating["game"], "state": seating["state"], "rules": seating["rules"], "invited": seating["invited"]});
+                json!({"table": table_now, "state": state, "you": you})
             }
             "game_history" => {
                 // The current hand's events, from its own database; earlier hands are no agent's
@@ -449,6 +450,11 @@ mod tests {
         // game_state is the hand now (CON-150), with no history in it.
         let now = games.op("s-bob", "game_state", &json!({"table": id}), &deliver).unwrap();
         assert!(now.get("hand").is_none() && now.get("last_hand").is_none(), "{now}");
+        // journal#1030: no `you` left in state, and the table is its seating and rules only.
+        assert!(now["state"].get("you").is_none(), "{now}");
+        assert!(now["table"].get("view").is_none() && now["table"].get("log").is_none(), "{now}");
+        assert_eq!(now["table"]["id"], id.as_str());
+        assert!(now["table"]["invited"].is_array() && now["table"]["rules"].is_object());
         assert_eq!((now["state"]["still_in_hand"].as_u64(), now["state"]["pot"].as_u64(), now["you"]["in_hand"].as_u64()), (Some(2), Some(40), Some(20)), "{now}");
         assert!(now["state"]["players"][0]["in_hand"].is_u64() && now["you"]["cards"] == bob_view["you"]["cards"]);
         games.op("s-bob", "game_act", &json!({"table": id, "do": "check"}), &deliver).unwrap();
@@ -488,7 +494,9 @@ mod tests {
         assert_eq!(acts[4].1, hand_db::timeout().to_string(), "the rules' timeout for one gone is recorded as such");
         let live = games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None);
         assert_eq!(hand_db::replay(&hands).unwrap().unwrap().view(None), live, "the databases replay to the live game");
-        assert_eq!(state["table"]["view"], live, "game_state answers from the databases");
+        let mut live_no_you = live.clone();
+        live_no_you.as_object_mut().unwrap().remove("you");
+        assert_eq!(state["state"], live_no_you, "game_state answers from the databases");
         // A step that cannot be written is refused, and nothing changes.
         use std::os::unix::fs::PermissionsExt;
         let to_act = live["to_act"].as_str().unwrap().to_string();

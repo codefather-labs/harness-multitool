@@ -319,7 +319,10 @@ fn main() -> Result<()> {
         Command::Preview { name, theme, script, handoff } => {
             // A window: it never hangs on the daemon (CON-132).
             harness_daemon::client::this_is_a_window();
-            preview(&name, &theme, script.as_deref(), handoff.as_deref())
+            let shown = preview(&name, &theme, script.as_deref(), handoff.as_deref());
+            // A window that ran its sessions itself (Local) ends their delegates too (journal#1021).
+            harness_platform_native::children::end_all(std::time::Duration::from_secs(3));
+            shown
         }
         Command::Trace { name, json } => trace(name.as_deref(), json),
         Command::Login { provider } if provider == "claude-code" => claude_code_auth("login"),
@@ -466,6 +469,9 @@ fn main() -> Result<()> {
             daemon.host_conversations(harness_session::remote::DaemonHost::new(&dir, make_host));
             println!("daemon on 127.0.0.1:{}", daemon.port());
             daemon.wait_for_shutdown();
+            // A run still going holds its delegate, and its thread is not unwound at exit: end
+            // them all, so none outlives this daemon (journal#1021).
+            harness_platform_native::children::end_all(std::time::Duration::from_secs(3));
             Ok(())
         }
         Command::Setup { graphics } => {

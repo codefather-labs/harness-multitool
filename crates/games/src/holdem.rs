@@ -143,6 +143,9 @@ impl Seat {
     }
 }
 
+/// A pot: its amount, and the seats that may win it.
+pub type Pot = (u64, Vec<usize>);
+
 /// A table of hold'em.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Holdem {
@@ -384,8 +387,23 @@ impl Holdem {
         events
     }
 
+    /// The pots as they stand mid-round (journal#1030): what is matched, and apart the bet no one
+    /// has called yet, the excess of the one who put in most this round over the next.
+    pub fn matched_pots(&self) -> (Vec<Pot>, Option<(usize, u64)>) {
+        let mut by_round: Vec<usize> = (0..self.seats.len()).filter(|i| !self.seats[*i].out).collect();
+        by_round.sort_by_key(|i| std::cmp::Reverse(self.seats[*i].round));
+        let uncalled = match by_round.as_slice() {
+            [top, next, ..] if self.seats[*top].live() && self.seats[*top].round > self.seats[*next].round => Some((*top, self.seats[*top].round - self.seats[*next].round)),
+            _ => None,
+        };
+        let Some((seat, excess)) = uncalled else { return (self.pots(), None) };
+        let mut matched = self.clone();
+        matched.seats[seat].hand -= excess;
+        (matched.pots(), uncalled)
+    }
+
     /// The pots, main and side, each with who may win it, from what everyone put in.
-    pub fn pots(&self) -> Vec<(u64, Vec<usize>)> {
+    pub fn pots(&self) -> Vec<Pot> {
         let mut levels: Vec<u64> = self.seats.iter().filter(|s| s.hand > 0).map(|s| s.hand).collect();
         levels.sort_unstable();
         levels.dedup();
@@ -574,6 +592,7 @@ impl Game for Holdem {
             roles
         };
         let name = |i: usize| self.seats[i].id.clone();
+        let (matched, uncalled) = self.matched_pots();
         json!({
             "game": "texas_holdem",
             "hand": self.hand_no,
@@ -584,7 +603,8 @@ impl Game for Holdem {
             "board": cards_name(&self.board),
             "board_cards": self.board,
             "pot": self.pot(),
-            "pots": self.pots().into_iter().map(|(amount, who)| json!({"amount": amount, "players": who.into_iter().map(name).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "pots": matched.into_iter().map(|(amount, who)| json!({"amount": amount, "players": who.into_iter().map(name).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "uncalled": uncalled.map(|(seat, amount)| json!({"player": name(seat), "amount": amount})),
             "current_bet": self.current_bet,
             "button": dealt.then(|| name(self.button)),
             "small_blind": dealt.then(|| name(self.sb)),
@@ -693,6 +713,9 @@ mod tests {
         assert_eq!((v["pot"].as_u64(), v["still_in_hand"].as_u64(), v["still_in_game"].as_u64()), (Some(30), Some(3), Some(3)));
         assert_eq!((v["hand"].as_u64(), v["hands_played"].as_u64(), v["max_hands"].as_u64()), (Some(1), Some(0), Some(50)));
         assert_eq!(v["blinds"], json!({"small": 10, "big": 20}));
+        // journal#1030: the pots hold what is matched; BB's extra 10 is a bet not called yet.
+        assert_eq!(v["pots"], json!([{"amount": 20, "players": ["p1", "p2"]}]), "what is in, matched: {v}");
+        assert_eq!(v["uncalled"], json!({"player": "p2", "amount": 10}));
         act(&mut t, "p0", json!({"do": "raise", "amount": 60}));
         act(&mut t, "p1", json!({"do": "call"}));
         act(&mut t, "p2", json!({"do": "fold"}));

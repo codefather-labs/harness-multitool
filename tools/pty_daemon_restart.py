@@ -4,6 +4,7 @@
   conversation;
 - restart during a run: the command says the run was stopped, and the tab answers its next message;
 - stop: no daemon answers; restart with none starts one.
+- the delegate of a run the restart stopped does not outlive its daemon (journal#1021).
 Reads no screen, so it needs no pyte. Needs --features claude-code.
 Usage: tools/pty_daemon_restart.py <absolute path to multitool>"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup  # noqa: F401
@@ -21,7 +22,7 @@ sid = resumed or "sess-" + str(os.getpid())
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid, "model": "fake-model"}}), flush=True)
 for line in sys.stdin:
     text = json.loads(line)["message"]["content"][0]["text"]
-    open({log!r}, "a").write(json.dumps({{"text": text, "resumed": resumed, "session": sid}}) + "\\n")
+    open({log!r}, "a").write(json.dumps({{"text": text, "resumed": resumed, "session": sid, "pid": os.getpid(), "ppid": os.getppid(), "at": time.time()}}) + "\\n")
     if text.endswith("slow"): time.sleep(60)
     print(json.dumps({{"type": "result", "is_error": False, "stop_reason": "end_turn", "session_id": sid, "total_cost_usd": 0.0, "usage": {{}}}}), flush=True)
 ''')
@@ -77,8 +78,20 @@ print("idle restart: pid", old_pid, "->", new_pid, "port", new_port, "kept; conv
 
 type_(fd, "slow"); end = time.time() + 20
 while time.time() < end and not [s for s in seen() if s["text"].endswith("slow")]: pump(0.05)
+print("before the busy restart, at", round(time.time() % 1000, 1))
 out = cli("daemon", "restart"); print(out.stdout.strip())
 assert "1 window's run was stopped" in out.stdout, (out.stdout, out.stderr)
+slow_pid = [s for s in seen() if s["text"].endswith("slow")][0]["pid"]
+def alive(pid):
+    try: os.kill(pid, 0)
+    except ProcessLookupError: return False
+    # A zombie is gone, only not reaped yet.
+    try: return open(f"/proc/{pid}/stat").read().split(")")[1].split()[0] != "Z"
+    except OSError: return False
+end = time.time() + 5
+while time.time() < end and alive(slow_pid): pump(0.1)
+assert not alive(slow_pid), f"the stopped run's delegate {slow_pid} outlived its daemon (journal#1021)"
+print("busy restart: the stopped run's delegate", slow_pid, "is gone")
 pump(6)
 after = say(fd, "after-slow")
 assert after["resumed"] == one["session"], after
@@ -86,6 +99,20 @@ print("busy restart: the run was stopped and said so; the tab answered next, sam
 
 out = cli("daemon", "stop"); print(out.stdout.strip())
 assert "stopped the daemon" in out.stdout and "started" not in out.stdout and not healthy(new_port), out.stdout
+def fakes():
+    found = []
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            try:
+                if fake.encode() in open(f"/proc/{p}/cmdline", "rb").read() and alive(int(p)): found.append(int(p))
+            except OSError: pass
+    return found
+end = time.time() + 10
+while time.time() < end and fakes(): pump(0.1)
+if fakes():
+    for e in seen(): print("seen:", e["text"][-12:].replace("\n", "|"), "pid", e["pid"], "ppid", e["ppid"], round(e["at"] % 1000, 1))
+assert not fakes(), f"delegates outlived the stopped daemon (journal#1021): {fakes()}"
+print("stop: no delegate outlived the daemon")
 os.write(fd, b"\x03"); pump(0.3); os.write(fd, b"\x03"); pump(1.0)   # the window, before it starts another
 fds.remove(fd)
 if healthy(daemon()[1]): cli("daemon", "stop")

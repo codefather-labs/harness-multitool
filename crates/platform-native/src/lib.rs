@@ -1,6 +1,8 @@
 //! The native platform (IF-20..IF-24). Blocking calls behind ready futures: each session's loop
 //! has its own thread, so blocking it blocks nothing else.
 
+pub mod children;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;

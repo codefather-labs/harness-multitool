@@ -399,6 +399,8 @@ impl ClaudeCode {
             let why = if e.kind() == std::io::ErrorKind::NotFound { "it is not installed or not on the PATH".to_string() } else { e.to_string() };
             PluginError::new(format!("could not start {}: {why}", self.binary))
         })?;
+        // Ended with this program if a run still holds it then (journal#1021).
+        harness_platform_native::children::register(child.id());
         let stdin = child.stdin.take().expect("piped above");
         let (tx, lines) = channel();
         let stdout = child.stdout.take().expect("piped above");
@@ -430,6 +432,11 @@ impl ClaudeCode {
             matches!(live.child.try_wait(), Ok(None)) && live.plan_mode == self.program_plans(request) && !request.fork && (request.session.is_none() || live.session.as_deref() == request.session)
         });
         if !goes_on {
+            // A run stopped already (a shutdown) starts no delegate: that would be a model call
+            // with this message, paid for and thrown away (journal#1034).
+            if (request.stopped)() {
+                return Ok(BackendEnd::Stopped);
+            }
             *slot = Some(self.start(request)?);
         }
         let live = slot.as_mut().expect("just set");
@@ -638,6 +645,7 @@ impl Drop for Live {
     /// Asked to end, it ends what it runs in the background; killed, it leaves that running with
     /// nobody knowing of it. So it is asked first.
     fn drop(&mut self) {
+        harness_platform_native::children::forget(self.child.id());
         #[cfg(unix)]
         {
             let asked = std::process::Command::new("kill").args(["-TERM", &self.child.id().to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
