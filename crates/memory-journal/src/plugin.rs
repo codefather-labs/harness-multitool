@@ -144,8 +144,21 @@ impl Memory for JournalMemory {
     fn journal_list(&self, filter: JournalFilter) -> BoxFuture<'_, PluginResult<Vec<JournalRecord>>> {
         let conn = self.conn.borrow();
         let wanted = journal::Filter { category: filter.category, flags: filter.flags, open: filter.open, ..Default::default() };
-        let listed = journal::list(&conn, &wanted, 0, filter.limit.min(journal::MAX_PAGE_SIZE));
-        ready(listed.map(|(_, entries)| entries.into_iter().map(record).collect()).map_err(fail))
+        // The store answers a page of at most MAX_PAGE_SIZE, for a tool's answer to stay small;
+        // this is the interface's own read, which honours its limit page by page (journal#1013).
+        let mut out = Vec::new();
+        while out.len() < filter.limit {
+            let page = match journal::list(&conn, &wanted, out.len(), (filter.limit - out.len()).min(journal::MAX_PAGE_SIZE)) {
+                Ok((_, page)) => page,
+                Err(e) => return ready(Err(fail(e))),
+            };
+            let full = page.len() == journal::MAX_PAGE_SIZE;
+            out.extend(page.into_iter().map(record));
+            if !full {
+                break;
+            }
+        }
+        ready(Ok(out))
     }
 
     fn map_list(&self) -> BoxFuture<'_, PluginResult<Vec<(u64, String)>>> {
@@ -329,6 +342,24 @@ mod tests {
         assert_eq!(chart.nodes.len(), 2);
         assert_eq!(chart.edges.len(), 1);
         assert!(pollster_free(m.map_read(99)).unwrap().is_none());
+    }
+
+    /// journal#1013: journal_list is the interface's own read and honours its limit past the
+    /// store's page of 100, newest first, so a check over every binding entry sees them all.
+    #[test]
+    fn a_list_reads_past_one_page_up_to_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = JournalMemory::open(dir.path(), Path::new("git:github.com/a/b"), "agent").unwrap();
+        for n in 0..130 {
+            let entry = JournalEntry { blocked_by: None, proofs: Vec::new(), body: format!("CON-{n} rule"), category: "specification".into(), tags: vec!["t".into()], flags: vec!["specification".into()], salience: None, feature: None };
+            pollster_free(m.journal_add(entry)).unwrap();
+        }
+        let list = |limit| pollster_free(m.journal_list(JournalFilter { flags: vec!["specification".into()], limit, ..Default::default() })).unwrap();
+        let all = list(500);
+        assert_eq!(all.len(), 130, "every entry, not one page");
+        assert_eq!((all[0].id, all[129].id), (130, 1), "newest first");
+        assert_eq!(list(120).len(), 120);
+        assert_eq!(list(7).iter().map(|e| e.id).collect::<Vec<_>>(), [130, 129, 128, 127, 126, 125, 124]);
     }
 
     /// The plugin's futures are all ready at once; no executor is needed.

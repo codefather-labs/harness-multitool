@@ -240,17 +240,25 @@ impl Games {
                 json!({"table": id, "state": table.state})
             }
             "game_state" => {
-                // Read from the hands' databases, the source of truth (CON-149), not the copy kept.
+                // The hand now (CON-150), from the hands' databases, the source of truth (CON-149),
+                // not the copy kept. The history is game_history's (CON-151).
                 let engine = hand_db::replay(&dir)?;
                 let mut public = table.public();
                 public["view"] = engine.as_ref().map_or(Value::Null, |e| e.view(None));
-                let n = hand_db::last_hand(&dir);
-                json!({
-                    "table": public,
-                    "you": engine.as_ref().map(|e| e.view(Some(&me))["you"].clone()),
-                    "hand": hand_db::events(&dir, n, true),
-                    "last_hand": hand_db::events(&dir, n.saturating_sub(1), true),
-                })
+                let mut state = engine.as_ref().map_or(Value::Null, |e| e.view(Some(&me)));
+                let you = state.get_mut("you").map(Value::take).unwrap_or(Value::Null);
+                json!({"table": public, "state": state, "you": you})
+            }
+            "game_history" => {
+                // The current hand's events, from its own database; earlier hands are no agent's
+                // (CON-151, journal#1018).
+                let hand = hand_db::last_hand(&dir);
+                if hand == 0 {
+                    return Err(format!("table {id} has not started: no hand is being played"));
+                }
+                let events = hand_db::events_for(&dir, hand, &me)?;
+                let ended = events.iter().any(|e| e["kind"] == "hand_ended");
+                json!({"table": id, "hand": hand, "ended": ended, "events": events})
             }
             "game_act" => {
                 let events = step(&dir, table, &me, Step::Act(args))?;
@@ -424,12 +432,25 @@ mod tests {
         }
         games.tick(&deliver);
         assert!(said.borrow().is_empty(), "a silent player is waited for: {:?}", said.borrow());
-        // game_state gives the hand so far, in order (journal#1007).
-        let state = games.op("s-bob", "game_state", &json!({"table": id}), &deliver).unwrap();
-        let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["started", "hand", "acted"], "the table's start is hand 1's: {state}");
-        assert!(state["hand"][2]["text"].as_str().unwrap().contains("ann calls 10"), "{state}");
-        assert!(!state["hand"].to_string().contains("your cards"), "no one's cards in the hand's history");
+        // game_history gives the hand so far, in order, from its database (CON-151): the public
+        // events and the asker's own cards, never another's.
+        let hands_dir = dir.join("games/tables").join(&id);
+        let history = |session: &str| games.op(session, "game_history", &json!({"table": id}), &deliver);
+        let kinds = |h: &Value| h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let bob_history = history("s-bob").unwrap();
+        assert_eq!(kinds(&bob_history), ["hand", "cards", "acted"], "from the deal; no table start, no prompts: {bob_history}");
+        assert_eq!((bob_history["hand"].as_u64(), bob_history["ended"].as_bool()), (Some(1), Some(false)));
+        assert!(bob_history["events"][2]["text"].as_str().unwrap().contains("ann calls 10"), "{bob_history}");
+        let seqs: Vec<i64> = bob_history["events"].as_array().unwrap().iter().map(|e| e["seq"].as_i64().unwrap()).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]) && bob_history["events"][0]["at_ms"].as_i64().unwrap() > 0, "{seqs:?}");
+        let ann_cards = ann_view["you"]["cards"].as_str().unwrap().to_string();
+        let bob_cards = bob_view["you"]["cards"].as_str().unwrap().to_string();
+        assert!(bob_history.to_string().contains(&bob_cards) && !bob_history.to_string().contains(&ann_cards), "only his own cards: {bob_history}");
+        // game_state is the hand now (CON-150), with no history in it.
+        let now = games.op("s-bob", "game_state", &json!({"table": id}), &deliver).unwrap();
+        assert!(now.get("hand").is_none() && now.get("last_hand").is_none(), "{now}");
+        assert_eq!((now["state"]["still_in_hand"].as_u64(), now["state"]["pot"].as_u64(), now["you"]["in_hand"].as_u64()), (Some(2), Some(40), Some(20)), "{now}");
+        assert!(now["state"]["players"][0]["in_hand"].is_u64() && now["you"]["cards"] == bob_view["you"]["cards"]);
         games.op("s-bob", "game_act", &json!({"table": id, "do": "check"}), &deliver).unwrap();
         // After the flop, heads-up, the big blind (bob) acts first: he is told, with what happened.
         assert!(said.borrow().iter().any(|(s, t)| s == "s-bob" && t.contains("bob checks") && t.contains("the flop")), "{:?}", said.borrow());
@@ -440,23 +461,23 @@ mod tests {
         let log = public["log"].to_string();
         assert!(!log.contains("your cards") && !log.contains("you hold"), "a private message in the public log: {log}");
         assert!(!bob_view["table"]["log"].to_string().contains("you hold"));
-        let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
-        let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["started", "hand", "acted", "acted", "board"], "{state}");
+        assert_eq!(kinds(&history("s-ann").unwrap()), ["hand", "cards", "acted", "acted", "board"]);
         // One who leaves is acted for at each of his turns, and the hand ends,
         // and the finished hand stays readable whole while the next one is dealt.
         games.op("s-bob", "game_leave", &json!({"table": id}), &deliver).unwrap();
         // He checked, as the rules do for one gone; ann bets, and at his turn the tick folds him.
         games.op("s-ann", "game_act", &json!({"table": id, "do": "bet", "amount": 40}), &deliver).unwrap();
         games.tick(&deliver);
+        // Only the current hand: hand 1 ended, and the tools now give hand 2 from its own database.
+        let current = history("s-ann").unwrap();
+        assert_eq!((current["hand"].as_u64(), current["ended"].as_bool()), (Some(2), Some(false)));
+        assert_eq!(current["events"][0]["kind"], "hand", "the next hand, from its deal: {current}");
+        assert!(!current.to_string().contains("Hand 1"), "nothing of the hand before: {current}");
+        assert_eq!(hand_db::events(&hands_dir, 1, true).last().unwrap()["kind"], "hand_ended", "hand 1 is whole in its database");
         let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
-        let last: Vec<&str> = state["last_hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(last.first(), Some(&"started"), "{state}");
-        assert_eq!(last.last(), Some(&"hand_ended"), "{state}");
-        assert_eq!(state["hand"][0]["kind"], "hand", "the next hand has begun: {state}");
         // Every hand has its database, the source of truth (CON-149): hand 1 whole with its
         // actions and its private events too, hand 2 begun; replayed, they are the live game.
-        let hands = dir.join("games/tables").join(&id);
+        let hands = hands_dir.clone();
         assert!(hands.join("hand-1.sqlite").exists() && hands.join("hand-2.sqlite").exists());
         let all = hand_db::events(&hands, 1, false);
         assert!(all.iter().any(|e| e["kind"] == "cards" && e["to"] == "ann"), "private events are kept: {all:?}");

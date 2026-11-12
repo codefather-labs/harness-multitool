@@ -195,7 +195,7 @@ impl Tool for AgentSend {
 }
 
 /// The game tools (ADR 0029): each a word to the daemon, which holds the tables.
-pub const GAME_TOOLS: [&str; 6] = ["game_tables", "game_join", "game_decline", "game_state", "game_act", "game_leave"];
+pub const GAME_TOOLS: [&str; 7] = ["game_tables", "game_join", "game_decline", "game_state", "game_history", "game_act", "game_leave"];
 
 pub struct GameTool {
     pub name: &'static str,
@@ -211,7 +211,8 @@ impl Tool for GameTool {
             "game_tables" => ("The game tables you are invited to or sit at, each with its state and what everyone can see.", json!({"type": "object", "properties": {}})),
             "game_join" => ("Join a table you were invited to. The game starts when everyone has answered.", json!({"type": "object", "properties": table, "required": ["table"]})),
             "game_decline" => ("Say no to a table you were invited to.", json!({"type": "object", "properties": table, "required": ["table"]})),
-            "game_state" => ("A table as you may see it: your cards, the board, the pot, the stacks, what you may do and the least you may raise to; and every action of this hand in order, from the deal, with the previous hand whole.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_state" => ("The hand being played now, as you may see it: its street, the board, the pot and the side pots, the button and the blinds, who is to act, how many are still in the hand and in the game, each player's stack and what they have put in this round and this hand; under `you` your cards, your stack, what you have put in, what it is to call, what you may do, the least raise-to and the most you can put in.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_history" => ("What has happened in the hand being played now, in order from the deal: the blinds, every action with its player and amount, every street with its board, and at the end the winners and the cards shown. Your own cards are in it, no one else's. Only the current hand.", json!({"type": "object", "properties": table, "required": ["table"]})),
             "game_act" => (
                 "Act at a table when it is your turn: fold, check, call, bet or raise (`amount` is the total you bet in this round), or all_in. A move that is not legal is refused, saying why.",
                 json!({"type": "object", "properties": {"table": {"type": "string"}, "do": {"type": "string", "enum": ["fold", "check", "call", "bet", "raise", "all_in"]}, "amount": {"type": "integer"}}, "required": ["table", "do"]}),

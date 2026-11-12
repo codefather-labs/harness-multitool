@@ -161,6 +161,11 @@ pub struct Holdem {
     current_bet: u64,
     min_raise: u64,
     over: bool,
+    /// The small and big blinds' seats of this hand, set at its deal (CON-150).
+    #[serde(default)]
+    sb: usize,
+    #[serde(default)]
+    bb: usize,
 }
 
 impl Holdem {
@@ -178,7 +183,7 @@ impl Holdem {
     /// one after the button, then the flop, the turn and the river. For tests.
     pub fn with_deck(players: &[PlayerId], seed: u64, rules: Rules, stacked: Vec<Card>) -> (Holdem, Vec<Event>) {
         let seats = players.iter().map(|id| Seat { id: id.clone(), stack: rules.stack, round: 0, hand: 0, hole: Vec::new(), folded: false, all_in: false, acted: false, out: false }).collect();
-        let mut table = Holdem { rules, seats, seed, hand_no: 0, button: 0, deck: Vec::new(), stacked, board: Vec::new(), street: Street::Preflop, to_act: None, current_bet: 0, min_raise: 0, over: false };
+        let mut table = Holdem { rules, seats, seed, hand_no: 0, button: 0, deck: Vec::new(), stacked, board: Vec::new(), street: Street::Preflop, to_act: None, current_bet: 0, min_raise: 0, over: false, sb: 0, bb: 0 };
         let mut events = vec![Event { to: None, kind: "started".into(), text: format!("A table of Texas hold'em with {} players, stacks of {}, blinds {}/{}.", players.len(), table.rules.stack, table.rules.small_blind, table.rules.big_blind), data: json!({"players": players, "rules": table.rules}) }];
         events.extend(table.start_hand());
         (table, events)
@@ -241,6 +246,7 @@ impl Holdem {
         let heads_up = active.len() == 2;
         let sb = if heads_up { self.button } else { self.next(self.button, false).expect("two players at least") };
         let bb = self.next(sb, false).expect("two players at least");
+        (self.sb, self.bb) = (sb, bb);
         let mut events = Vec::new();
         // Two cards each, from the seat after the button.
         let order: Vec<usize> = {
@@ -548,23 +554,63 @@ impl Game for Holdem {
         self.act(&player, &action).unwrap_or_default()
     }
 
+    /// The hand now (CON-150): what everyone may see, and under `you` what only `player` may.
     fn view(&self, player: Option<&str>) -> Value {
         let me = player.and_then(|p| self.seat_of(p));
+        let dealt = self.hand_no > 0;
+        let role = |i: usize| -> Vec<&str> {
+            let mut roles = Vec::new();
+            if dealt && !self.seats[i].out {
+                if i == self.button {
+                    roles.push("button");
+                }
+                if i == self.sb {
+                    roles.push("small_blind");
+                }
+                if i == self.bb {
+                    roles.push("big_blind");
+                }
+            }
+            roles
+        };
+        let name = |i: usize| self.seats[i].id.clone();
         json!({
             "game": "texas_holdem",
             "hand": self.hand_no,
+            "hands_played": self.hand_no.saturating_sub(if self.over { 0 } else { 1 }),
+            "max_hands": self.rules.max_hands,
+            "blinds": {"small": self.rules.small_blind, "big": self.rules.big_blind},
             "street": self.street,
             "board": cards_name(&self.board),
+            "board_cards": self.board,
             "pot": self.pot(),
+            "pots": self.pots().into_iter().map(|(amount, who)| json!({"amount": amount, "players": who.into_iter().map(name).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "current_bet": self.current_bet,
+            "button": dealt.then(|| name(self.button)),
+            "small_blind": dealt.then(|| name(self.sb)),
+            "big_blind": dealt.then(|| name(self.bb)),
             "to_act": self.to_act(),
+            "still_in_hand": self.seats.iter().filter(|s| s.live()).count(),
+            "still_in_game": self.seats.iter().filter(|s| !s.out).count(),
             "over": self.over,
-            "players": self.seats.iter().map(|s| json!({"player": s.id, "stack": s.stack, "bet": s.round, "folded": s.folded, "all_in": s.all_in, "out": s.out})).collect::<Vec<_>>(),
+            "players": self.seats.iter().enumerate().map(|(i, s)| json!({
+                "player": s.id, "stack": s.stack, "bet": s.round, "in_hand": s.hand,
+                "folded": s.folded, "all_in": s.all_in, "out": s.out, "roles": role(i),
+            })).collect::<Vec<_>>(),
             "you": me.map(|i| json!({
+                "player": self.seats[i].id,
                 "cards": cards_name(&self.seats[i].hole),
+                "cards_list": self.seats[i].hole,
+                "stack": self.seats[i].stack,
+                "bet": self.seats[i].round,
+                "in_hand": self.seats[i].hand,
                 "to_call": self.to_call(i),
                 "legal": if self.to_act == Some(i) { self.legal(i) } else { Vec::new() },
+                "your_turn": self.to_act == Some(i),
                 "min_raise_to": self.current_bet + self.min_raise,
+                "max_to": self.seats[i].stack + self.seats[i].round,
+                "position": role(i),
+                "folded": self.seats[i].folded,
             })),
         })
     }
@@ -633,6 +679,44 @@ mod tests {
     }
     fn act(t: &mut Holdem, p: &str, a: Value) -> Vec<Event> {
         t.act(p, &a).unwrap_or_else(|e| panic!("{p} {a}: {e}"))
+    }
+
+    /// CON-150: the state of the hand tells who is still in, the board, the pots, the roles and
+    /// what each has put in; `you` tells the asker its own, and no one else's cards.
+    #[test]
+    fn the_view_is_the_whole_state_of_the_hand() {
+        let (mut t, _) = Holdem::new(&players(3), 7, Rules::default());
+        let v = t.view(None);
+        // The button p0, p1 small, p2 big, p0 to act; the blinds are in.
+        assert_eq!((v["button"].as_str(), v["small_blind"].as_str(), v["big_blind"].as_str()), (Some("p0"), Some("p1"), Some("p2")));
+        assert_eq!(v["players"][2]["roles"], json!(["big_blind"]));
+        assert_eq!((v["pot"].as_u64(), v["still_in_hand"].as_u64(), v["still_in_game"].as_u64()), (Some(30), Some(3), Some(3)));
+        assert_eq!((v["hand"].as_u64(), v["hands_played"].as_u64(), v["max_hands"].as_u64()), (Some(1), Some(0), Some(50)));
+        assert_eq!(v["blinds"], json!({"small": 10, "big": 20}));
+        act(&mut t, "p0", json!({"do": "raise", "amount": 60}));
+        act(&mut t, "p1", json!({"do": "call"}));
+        act(&mut t, "p2", json!({"do": "fold"}));
+        let v = t.view(None);
+        assert_eq!((v["still_in_hand"].as_u64(), v["still_in_game"].as_u64()), (Some(2), Some(3)));
+        assert_eq!(v["street"], "flop");
+        assert_eq!(v["board_cards"].as_array().unwrap().len(), 3);
+        let in_hand: Vec<u64> = v["players"].as_array().unwrap().iter().map(|p| p["in_hand"].as_u64().unwrap()).collect();
+        assert_eq!(in_hand, [60, 60, 20], "what each has put in this hand");
+        assert_eq!(v["pot"].as_u64(), Some(140));
+        let pots: u64 = v["pots"].as_array().unwrap().iter().map(|p| p["amount"].as_u64().unwrap()).sum();
+        assert_eq!(pots, 140);
+        assert_eq!(v["pots"][0]["players"], json!(["p0", "p1"]), "a folded player can win nothing");
+        // After the flop p1, the small blind, acts first.
+        let me = t.view(Some("p1"));
+        let you = &me["you"];
+        assert_eq!((you["in_hand"].as_u64(), you["bet"].as_u64(), you["stack"].as_u64(), you["to_call"].as_u64()), (Some(60), Some(0), Some(940), Some(0)));
+        assert_eq!((you["your_turn"].as_bool(), you["max_to"].as_u64()), (Some(true), Some(940)));
+        assert_eq!(you["position"], json!(["small_blind"]));
+        assert_eq!(you["cards_list"].as_array().unwrap().len(), 2);
+        for other in ["p0", "p2"] {
+            let theirs = t.view(Some(other))["you"]["cards"].as_str().unwrap().to_string();
+            assert!(!me.to_string().contains(&theirs), "{other}'s cards {theirs} in p1's view");
+        }
     }
 
     #[test]

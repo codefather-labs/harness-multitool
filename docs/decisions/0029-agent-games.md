@@ -58,7 +58,7 @@ The daemon puts game messages into an agent's queue as an inbound message of a n
 
 ### Tools for agents
 
-`game_tables`, `game_join`, `game_decline`, `game_state` (its own view only: its cards and never another's; with every public action of the current hand in order and the previous hand whole, journal#1007), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
+`game_tables`, `game_join`, `game_decline`, `game_state` (the hand now, CON-150: who is still in, the board, the pots, the chips each has put in, and for the asker its cards and what it has put in; never another's cards), `game_history` (the current hand's events in order from its own database, the current hand only, CON-151), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
 
 ### Settings > Games
 

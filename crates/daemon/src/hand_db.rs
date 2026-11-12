@@ -179,3 +179,20 @@ pub fn events(dir: &Path, hand: u32, public_only: bool) -> Vec<Value> {
         })
         .collect()
 }
+
+/// A hand's events in order as `player` may see them (CON-151, journal#1018): what happened in
+/// it from the deal, the public events and its own cards, never another player's. The table's
+/// start and the prompts to act stay in the database but are no part of a hand's history.
+pub fn events_for(dir: &Path, hand: u32, player: &str) -> Result<Vec<Value>, String> {
+    let conn = open(dir, hand)?;
+    let mut q = conn.prepare("SELECT seq, kind, text, data, at_ms FROM events WHERE (to_player IS NULL OR to_player = ?1) AND kind NOT IN ('started', 'your_turn') ORDER BY seq").map_err(|e| e.to_string())?;
+    let rows = q
+        .query_map([player], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?)))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (seq, kind, text, data, at_ms) = row.map_err(|e| e.to_string())?;
+        out.push(json!({"seq": seq, "kind": kind, "text": text, "data": serde_json::from_str::<Value>(&data).unwrap_or(Value::Null), "at_ms": at_ms}));
+    }
+    Ok(out)
+}

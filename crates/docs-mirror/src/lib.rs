@@ -432,6 +432,24 @@ mod tests {
         assert!(found.contains(&format!("journal#{} settled Q-1", settled.id)), "{found}");
     }
 
+    /// journal#1013: a live rule older than a page of newer binding entries is still seen live,
+    /// so its deprecated forerunner is not reported as unreplaced.
+    #[test]
+    fn an_old_live_rule_behind_a_page_of_newer_ones_is_still_live() {
+        let p = project();
+        p.init();
+        p.append("docs/spec/constraints.md", "| **CON-2** | the current rule |\n| **CON-3** | another |\n");
+        let dir = tempfile::tempdir().unwrap();
+        let m = journal(dir.path());
+        add(&m, "CON-2: the first wording.", &["constraint", "deprecated"]);
+        add(&m, "CON-2: the current wording, replaces the first.", &["constraint"]);
+        for n in 0..110 {
+            add(&m, &format!("CON-3: newer rule {n}."), &["constraint"]);
+        }
+        let found = messages(pollster::block_on(p.tree().check_journal(&m)).unwrap());
+        assert!(!found.contains("nothing else states CON-2"), "{found}");
+    }
+
     fn call(name: &str, input: serde_json::Value) -> ToolCall {
         ToolCall { id: "c".into(), name: name.into(), input }
     }

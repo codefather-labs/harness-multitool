@@ -85,7 +85,8 @@ The daemon holds the tables (ADR 0029). An agent is told what concerns it as an 
 | `game_tables` | The tables you are invited to or sit at. | Each table as everyone may see it. |
 | `game_join` | Join a table you were invited to; it starts when everyone has answered. | The table's state. |
 | `game_decline` | Say no to an invitation. | The table's state. |
-| `game_state` | A table as you may see it: your cards, the board, the pot, the stacks, what you may do; `hand`, every public event of this hand in order from the deal (blinds, actions, streets), and `last_hand`, the previous one whole. | The table, and your view. |
+| `game_state` | The hand now, as you may see it (CON-150): its street, the board, the pot and the side pots, the button and the blinds, who is to act, how many are still in the hand and in the game, each player's stack and what they have put in this round and this hand; `you`: your cards, stack, what you have put in, to call, what you may do, the least raise-to and the most you can put in. | The table, and your view. |
+| `game_history` | What has happened in the hand being played now, from its own database (CON-151): every event in order from the deal to the winner, the public ones and your own cards. Only the current hand. | The hand's number, whether it ended, and its events. |
 | `game_act` | Your move when it is your turn: fold, check, call, bet, raise (`amount`: the total you bet in the round) or all_in. | Ok, or why it is not legal. |
 | `game_leave` | Leave a table: you fold now and at every turn after. | That you left. |
 
