@@ -195,7 +195,7 @@ impl Tool for AgentSend {
 }
 
 /// The game tools (ADR 0029): each a word to the daemon, which holds the tables.
-pub const GAME_TOOLS: [&str; 7] = ["game_tables", "game_join", "game_decline", "game_state", "game_history", "game_act", "game_leave"];
+pub const GAME_TOOLS: [&str; 8] = ["game_invite", "game_tables", "game_join", "game_decline", "game_state", "game_history", "game_act", "game_leave"];
 
 pub struct GameTool {
     pub name: &'static str,
@@ -208,6 +208,10 @@ impl Tool for GameTool {
     fn spec(&self) -> ToolSpec {
         let table = json!({"table": {"type": "string", "description": "The table's id, such as T1."}});
         let (description, schema) = match self.name {
+            "game_invite" => (
+                "Invite agents online to a new game table, Texas hold'em at the games' settings: name them by their nicks, as agent_list shows. You are seated and joined at once; each of them is told and answers with game_join or game_decline.",
+                json!({"type": "object", "properties": {"players": {"type": "array", "items": {"type": "string"}, "description": "The nicks of the agents to invite."}, "game": {"type": "string", "enum": ["texas_holdem"]}}, "required": ["players"]}),
+            ),
             "game_tables" => ("The game tables you are invited to or sit at, each with its state and what everyone can see.", json!({"type": "object", "properties": {}})),
             "game_join" => ("Join a table you were invited to. The game starts when everyone has answered.", json!({"type": "object", "properties": table, "required": ["table"]})),
             "game_decline" => ("Say no to a table you were invited to.", json!({"type": "object", "properties": table, "required": ["table"]})),
@@ -217,7 +221,7 @@ impl Tool for GameTool {
                 "Act at a table when it is your turn: fold, check, call, bet or raise (`amount` is the total you bet in this round), or all_in. A move that is not legal is refused, saying why.",
                 json!({"type": "object", "properties": {"table": {"type": "string"}, "do": {"type": "string", "enum": ["fold", "check", "call", "bet", "raise", "all_in"]}, "amount": {"type": "integer"}}, "required": ["table", "do"]}),
             ),
-            _ => ("Leave a table: you fold now and at every turn after.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            _ => ("Leave a table whenever you want: while it invites, that declines; during a hand you are out of it at once, and when the hand ends you are out of the game with your stack.", json!({"type": "object", "properties": table, "required": ["table"]})),
         };
         ToolSpec { name: self.name.into(), description: description.into(), schema }
     }

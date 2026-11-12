@@ -104,7 +104,8 @@ impl Table {
 /// What a table's game does next: a player's action, or the rules' for one who has left.
 enum Step<'a> {
     Act(&'a Value),
-    Timeout,
+    /// A player leaves the table, at any time (CON-154).
+    Leave,
 }
 
 /// One step of a table's game (CON-149): taken on a copy, written to its hand's database with
@@ -115,7 +116,7 @@ fn step(dir: &Path, table: &mut Table, player: &str, what: Step<'_>) -> Result<V
     let hand = next.hand_no();
     let (events, action) = match what {
         Step::Act(action) => (next.act(player, action)?, action.clone()),
-        Step::Timeout => (next.timeout(), hand_db::timeout()),
+        Step::Leave => (next.leave(player)?, hand_db::leave()),
     };
     hand_db::record(dir, &hand_db::meta(dir)?, hand, Some((player, &action)), &events)?;
     table.engine = Some(next);
@@ -134,6 +135,27 @@ pub struct Games {
     /// dashboard's socket waits on.
     versions: Mutex<BTreeMap<String, u64>>,
     changed: Condvar,
+}
+
+/// Whom an inviter names, among the agents online (CON-153): by nick (any case) or conversation
+/// id; the inviter first; a name given twice, or the inviter's own, counted once. An unknown
+/// name is refused, listing who is online.
+pub fn resolve(online: &[crate::OpenSession], names: &[String], inviter: &str) -> Result<Vec<Player>, String> {
+    let nick = |s: &crate::OpenSession| s.nick.clone().unwrap_or_else(|| s.title.clone());
+    let me = online.iter().find(|s| s.id == inviter).ok_or("your conversation is not online")?;
+    let mut players = vec![Player { session: me.id.clone(), nick: nick(me) }];
+    for name in names {
+        let wanted = name.trim();
+        let found = online.iter().find(|s| s.id == wanted || s.nick.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(wanted)));
+        let Some(s) = found else {
+            let here: Vec<String> = online.iter().filter(|s| s.id != inviter).map(nick).collect();
+            return Err(format!("no agent online is called {wanted:?}; online: {}", if here.is_empty() { "nobody else".to_string() } else { here.join(", ") }));
+        };
+        if !players.iter().any(|p| p.session == s.id) {
+            players.push(Player { session: s.id.clone(), nick: nick(s) });
+        }
+    }
+    Ok(players)
 }
 
 /// Delivers a message to a conversation as an inbound; false if it is not open.
@@ -224,6 +246,16 @@ impl Games {
     }
 
     /// A new table: its players are invited, each told so (ADR 0029).
+    /// An agent's invitation (CON-153, journal#1049): a table with it and those it names, made at
+    /// the games' settings; it is joined at once and not told of its own invitation.
+    pub fn invite(&self, game: &str, players: Vec<Player>, deliver: Deliver<'_>) -> Result<(String, Vec<String>), String> {
+        let inviter = players.first().ok_or("no inviter")?.clone();
+        let quiet = |s: &str, text: &str| s != inviter.session && deliver(s, text);
+        let id = self.create(game, players.clone(), &quiet)?;
+        self.op(&inviter.session, "game_join", &json!({"table": id}), deliver)?;
+        Ok((id, players.iter().skip(1).map(|p| p.nick.clone()).collect()))
+    }
+
     pub fn create(&self, game: &str, players: Vec<Player>, deliver: Deliver<'_>) -> Result<String, String> {
         let settings = read_settings(&self.data_dir);
         if !settings.enabled {
@@ -303,14 +335,26 @@ impl Games {
                 json!({"ok": true})
             }
             "game_leave" => {
-                // Leaving folds now and at every turn after: the rules act for one who is gone.
-                table.declined.push(session.to_string());
-                table.log.push(format!("{me} leaves the table."));
-                if table.engine.as_ref().and_then(|e| e.to_act()).as_deref() == Some(me.as_str()) {
-                    let events = step(&dir, table, &me, Step::Timeout)?;
-                    Self::tell(table, events, deliver);
+                // Leaving takes the player off the table, whenever it wants (CON-154).
+                match table.state.as_str() {
+                    "inviting" => {
+                        if !table.declined.iter().any(|s| s == session) {
+                            table.declined.push(session.to_string());
+                            table.joined.retain(|s| s != session);
+                            table.log.push(format!("{me} declines."));
+                        }
+                        Self::maybe_start(&dir, table, deliver);
+                        json!({"left": id, "declined": true})
+                    }
+                    "playing" => {
+                        let events = step(&dir, table, &me, Step::Leave)?;
+                        table.declined.push(session.to_string());
+                        let stack = events.first().and_then(|e| e.data["stack"].as_u64()).unwrap_or(0);
+                        Self::tell(table, events, deliver);
+                        json!({"left": id, "stack": stack, "state": table.state})
+                    }
+                    state => return Err(format!("table {id} is {state}: there is nothing to leave")),
                 }
-                json!({"left": id})
             }
             other => return Err(format!("no game tool {other}")),
         };
@@ -390,19 +434,20 @@ impl Games {
         table.log.drain(..keep);
     }
 
-    /// The rules act for whoever has left the table, at each of its turns. No one else is ever
-    /// acted for: a turn waits for its player however long it takes (journal#1006).
+    /// A player that left in a build before CON-154 (kept as declined, still seated) is taken off
+    /// the table now, as game_leave does. No one is ever acted for otherwise: a turn waits for its
+    /// player however long it takes (journal#1006).
     pub fn tick(&self, deliver: Deliver<'_>) {
         let mut changed = Vec::new();
         {
             let mut tables = self.tables.lock().expect("tables");
             for table in tables.values_mut().filter(|t| t.state == "playing") {
-                let Some(nick) = table.engine.as_ref().and_then(|e| e.to_act()) else { continue };
-                let gone = table.session_of(&nick).is_some_and(|s| table.declined.contains(&s));
-                if gone {
-                    match step(&Self::hands_of(&self.data_dir, &table.id), table, &nick, Step::Timeout) {
+                let Some(view) = table.engine.as_ref().map(|e| e.view(None)) else { continue };
+                let seated = |nick: &str| view["players"].as_array().into_iter().flatten().any(|p| p["player"] == nick && p["left"] == false && p["out"] == false);
+                let gone = table.invited.iter().find(|p| table.declined.contains(&p.session) && seated(&p.nick)).map(|p| p.nick.clone());
+                if let Some(nick) = gone {
+                    match step(&Self::hands_of(&self.data_dir, &table.id), table, &nick, Step::Leave) {
                         Ok(events) => {
-                            table.log.push(format!("{nick} has left: the rules act for them."));
                             Self::tell(table, events, deliver);
                             changed.push(table.clone());
                         }
@@ -504,12 +549,11 @@ mod tests {
         assert!(!log.contains("your cards") && !log.contains("you hold"), "a private message in the public log: {log}");
         assert!(!bob_view["table"]["log"].to_string().contains("you hold"));
         assert_eq!(kinds(&history("s-ann").unwrap()), ["hand", "cards", "acted", "acted", "board"]);
-        // One who leaves is acted for at each of his turns, and the hand ends,
-        // and the finished hand stays readable whole while the next one is dealt.
-        games.op("s-bob", "game_leave", &json!({"table": id}), &deliver).unwrap();
-        // He checked, as the rules do for one gone; ann bets, and at his turn the tick folds him.
+        // Bob checks, ann bets and bob folds: the hand ends, and the finished hand stays readable
+        // whole while the next one is dealt.
+        games.op("s-bob", "game_act", &json!({"table": id, "do": "check"}), &deliver).unwrap();
         games.op("s-ann", "game_act", &json!({"table": id, "do": "bet", "amount": 40}), &deliver).unwrap();
-        games.tick(&deliver);
+        games.op("s-bob", "game_act", &json!({"table": id, "do": "fold"}), &deliver).unwrap();
         // Only the current hand: hand 1 ended, and the tools now give hand 2 from its own database.
         let current = history("s-ann").unwrap();
         assert_eq!((current["hand"].as_u64(), current["ended"].as_bool()), (Some(2), Some(false)));
@@ -535,7 +579,7 @@ mod tests {
         let conn = rusqlite::Connection::open(hands.join("hand-1.sqlite")).unwrap();
         let acts: Vec<(String, String)> = conn.prepare("SELECT player, action FROM actions ORDER BY seq").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(acts.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["ann", "bob", "bob", "ann", "bob"], "{acts:?}");
-        assert_eq!(acts[4].1, hand_db::timeout().to_string(), "the rules' timeout for one gone is recorded as such");
+        assert_eq!(acts[4].1, json!({"do": "fold", "table": id}).to_string(), "each action as given");
         let live = games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None);
         assert_eq!(hand_db::replay(&hands).unwrap().unwrap().view(None), live, "the databases replay to the live game");
         let mut live_no_you = live.clone();
@@ -559,6 +603,89 @@ mod tests {
         if let Some(keep) = std::env::var_os("MT_KEEP_GAMES") {
             let _ = std::fs::copy(dir.join("games/tables/T1.json"), keep);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CON-154: a player leaves whenever it wants and is taken off the table: out of the hand at
+    /// once, never asked again, out of the game at the hand's end; recorded, and replayed.
+    #[test]
+    fn leaving_takes_a_player_off_the_table() {
+        let dir = std::env::temp_dir().join(format!("mt-games-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write_settings(&dir, &GameSettings { enabled: true, ..Default::default() }).unwrap();
+        let said: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+        let deliver = |s: &str, text: &str| {
+            said.borrow_mut().push((s.to_string(), text.to_string()));
+            true
+        };
+        let games = Games::new(&dir);
+        let three = vec![Player { session: "s-ann".into(), nick: "ann".into() }, Player { session: "s-bob".into(), nick: "bob".into() }, Player { session: "s-cat".into(), nick: "cat".into() }];
+        // Leaving a table still inviting declines it.
+        let early = games.create("texas_holdem", three.clone(), &deliver).unwrap();
+        assert_eq!(games.op("s-cat", "game_leave", &json!({"table": early}), &deliver).unwrap()["declined"], true);
+        let id = games.create("texas_holdem", three.clone(), &deliver).unwrap();
+        for p in &three {
+            games.op(&p.session, "game_join", &json!({"table": id}), &deliver).unwrap();
+        }
+        // Ann (the button) is to act; cat, the big blind, leaves out of turn.
+        said.borrow_mut().clear();
+        let left = games.op("s-cat", "game_leave", &json!({"table": id}), &deliver).unwrap();
+        assert_eq!(left["stack"], 980, "{left}");
+        assert!(said.borrow().is_empty(), "no one prompted again: {:?}", said.borrow());
+        assert!(games.op("s-cat", "game_leave", &json!({"table": id}), &deliver).unwrap_err().contains("left this table already"));
+        games.op("s-ann", "game_act", &json!({"table": id, "do": "call"}), &deliver).unwrap();
+        games.op("s-bob", "game_act", &json!({"table": id, "do": "call"}), &deliver).unwrap();
+        let told = said.borrow().clone();
+        assert!(told.iter().any(|(s, t)| s == "s-bob" && t.contains("cat leaves the table with 980 chips")) || told.iter().any(|(s, t)| s == "s-ann" && t.contains("cat leaves the table")), "the others are told: {told:?}");
+        assert!(!told.iter().any(|(s, _)| s == "s-cat"), "the one who left hears nothing more: {told:?}");
+        // Recorded as cat's own action, out of turn, and replayed.
+        let hands = dir.join("games/tables").join(&id);
+        let conn = rusqlite::Connection::open(hands.join("hand-1.sqlite")).unwrap();
+        let acts: Vec<(String, String)> = conn.prepare("SELECT player, action FROM actions ORDER BY seq").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(acts[0], ("cat".to_string(), hand_db::leave().to_string()), "{acts:?}");
+        let live = games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None);
+        assert_eq!(hand_db::replay(&hands).unwrap().unwrap().view(None), live, "the leave replays");
+        assert_eq!(live["street"], "flop", "the round closed without the one who left: {live}");
+        // Ann and bob play the hand out: in the next one cat is out, dealt nothing.
+        let to = live["to_act"].as_str().unwrap().to_string();
+        games.op(&format!("s-{to}"), "game_act", &json!({"table": id, "do": "bet", "amount": 20}), &deliver).unwrap();
+        let other = if to == "ann" { "bob" } else { "ann" };
+        games.op(&format!("s-{other}"), "game_act", &json!({"table": id, "do": "fold"}), &deliver).unwrap();
+        let v = games.table(&id).unwrap()["view"].clone();
+        assert_eq!((v["hand"].as_u64(), v["still_in_game"].as_u64()), (Some(2), Some(2)), "{v}");
+        assert_eq!(v["players"][2]["out"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CON-153: an inviter names agents online by nick (any case) or id; itself first, each once;
+    /// an unknown name is refused, listing who is online.
+    #[test]
+    fn an_invitation_names_agents_online() {
+        let online = |id: &str, nick: Option<&str>| crate::OpenSession { id: id.into(), title: format!("{id} title"), nick: nick.map(str::to_string) };
+        let all = vec![online("c-me", Some("multitool-arch")), online("c-tt", Some("tacticstrade-arch")), online("c-x", None)];
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let got = resolve(&all, &names(&["TacticsTrade-Arch", "c-x", "multitool-arch", "tacticstrade-arch"]), "c-me").unwrap();
+        assert_eq!(got.iter().map(|p| (p.session.as_str(), p.nick.as_str())).collect::<Vec<_>>(), [("c-me", "multitool-arch"), ("c-tt", "tacticstrade-arch"), ("c-x", "c-x title")]);
+        let err = resolve(&all, &names(&["nobody"]), "c-me").unwrap_err();
+        assert!(err.contains("\"nobody\"") && err.contains("tacticstrade-arch") && !err.contains("multitool-arch"), "{err}");
+        // Invited: the inviter is joined at once and not told of its own invitation.
+        let dir = std::env::temp_dir().join(format!("mt-games-invite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write_settings(&dir, &GameSettings { enabled: true, ..Default::default() }).unwrap();
+        let said: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let deliver = |s: &str, _: &str| {
+            said.borrow_mut().push(s.to_string());
+            true
+        };
+        let games = Games::new(&dir);
+        let players = resolve(&all, &names(&["tacticstrade-arch"]), "c-me").unwrap();
+        let (id, invited) = games.invite("texas_holdem", players, &deliver).unwrap();
+        assert_eq!(invited, ["tacticstrade-arch"]);
+        assert_eq!(*said.borrow(), ["c-tt"], "only the invited are told");
+        let t = games.table(&id).unwrap();
+        assert_eq!((t["invited"][0]["joined"].as_bool(), t["invited"][1]["joined"].as_bool()), (Some(true), Some(false)));
+        // One alone is no table.
+        assert!(games.invite("texas_holdem", resolve(&all, &[], "c-me").unwrap(), &deliver).unwrap_err().contains("2 to 9"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

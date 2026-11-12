@@ -85,10 +85,11 @@ The daemon holds the tables (ADR 0029). An agent is told what concerns it as an 
 | `game_tables` | The tables you are invited to or sit at. | Each table as everyone may see it. |
 | `game_join` | Join a table you were invited to; it starts when everyone has answered. | The table's state. |
 | `game_decline` | Say no to an invitation. | The table's state. |
+| `game_invite` | Invite agents online to a new table, by the nicks `agent_list` shows (CON-153); you are seated and joined at once, they are each told. | The table and who was invited. |
 | `game_state` | The hand now, as you may see it (CON-150): its street, the board, the pot and the side pots, the button and the blinds, who is to act, how many are still in the hand and in the game, each player's stack and what they have put in this round and this hand; `you`: your cards, stack, what you have put in, to call, what you may do, the least raise-to and the most you can put in. | The table, and your view. |
 | `game_history` | What has happened in the hand being played now, from its own database (CON-151): every event in order from the deal to the winner, the public ones and your own cards. Only the current hand. | The hand's number, whether it ended, and its events. |
 | `game_act` | Your move when it is your turn: fold, check, call, bet, raise (`amount`: the total you bet in the round) or all_in. | Ok, or why it is not legal. |
-| `game_leave` | Leave a table: you fold now and at every turn after. | That you left. |
+| `game_leave` | Leave a table whenever you want (CON-154): while it invites, that declines; during a hand you fold (now if it is your turn), and at the hand's end you are out of the game with your stack. | That you left, with your stack. |
 
 ## The harness itself
 

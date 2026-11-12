@@ -36,6 +36,11 @@ pub fn timeout() -> Value {
     json!({"do": "timeout"})
 }
 
+/// The action of a player leaving the table (CON-154).
+pub fn leave() -> Value {
+    json!({"do": "leave"})
+}
+
 pub fn path(dir: &Path, hand: u32) -> PathBuf {
     dir.join(format!("hand-{hand}.sqlite"))
 }
@@ -149,6 +154,11 @@ pub fn replay(dir: &Path) -> Result<Option<Holdem>, String> {
         for row in rows {
             let (player, action) = row.map_err(|e| e.to_string())?;
             let action: Value = serde_json::from_str(&action).map_err(|e| format!("hand {hand}: an action is not JSON: {e}"))?;
+            // Leaving is taken at any time, not only on one's turn (CON-154).
+            if action == leave() {
+                engine.leave(&player).map_err(|e| format!("hand {hand} does not replay: {player} leaves: {e}"))?;
+                continue;
+            }
             if engine.to_act().as_deref() != Some(player.as_str()) {
                 return Err(format!("hand {hand} does not replay: {player} acted when it was {:?}'s turn", engine.to_act()));
             }

@@ -132,11 +132,15 @@ struct Seat {
     acted: bool,
     /// Out of chips: out of the game.
     out: bool,
+    /// Has left the table (CON-154): folded at its turn, out when the hand ends.
+    #[serde(default)]
+    left: bool,
 }
 
 impl Seat {
+    /// In the hand: not out, not folded, and not gone from the table (CON-154).
     fn live(&self) -> bool {
-        !self.out && !self.folded
+        !self.out && !self.folded && !self.left
     }
     fn can_act(&self) -> bool {
         self.live() && !self.all_in
@@ -185,7 +189,7 @@ impl Holdem {
     /// The same, dealing `stacked` first, in order: each player's two cards seat by seat from the
     /// one after the button, then the flop, the turn and the river. For tests.
     pub fn with_deck(players: &[PlayerId], seed: u64, rules: Rules, stacked: Vec<Card>) -> (Holdem, Vec<Event>) {
-        let seats = players.iter().map(|id| Seat { id: id.clone(), stack: rules.stack, round: 0, hand: 0, hole: Vec::new(), folded: false, all_in: false, acted: false, out: false }).collect();
+        let seats = players.iter().map(|id| Seat { id: id.clone(), stack: rules.stack, round: 0, hand: 0, hole: Vec::new(), folded: false, all_in: false, acted: false, out: false, left: false }).collect();
         let mut table = Holdem { rules, seats, seed, hand_no: 0, button: 0, deck: Vec::new(), stacked, board: Vec::new(), street: Street::Preflop, to_act: None, current_bet: 0, min_raise: 0, over: false, sb: 0, bb: 0 };
         let mut events = vec![Event { to: None, kind: "started".into(), text: format!("A table of Texas hold'em with {} players, stacks of {}, blinds {}/{}.", players.len(), table.rules.stack, table.rules.small_blind, table.rules.big_blind), data: json!({"players": players, "rules": table.rules}) }];
         events.extend(table.start_hand());
@@ -479,7 +483,7 @@ impl Holdem {
     fn end_hand(&mut self) -> Vec<Event> {
         self.to_act = None;
         for s in &mut self.seats {
-            if s.stack == 0 {
+            if s.stack == 0 || s.left {
                 s.out = true;
             }
         }
@@ -495,21 +499,7 @@ impl Holdem {
         self.start_hand()
     }
 
-    fn seat_of(&self, player: &str) -> Option<usize> {
-        self.seats.iter().position(|s| s.id == player)
-    }
-}
-
-impl Game for Holdem {
-    fn name(&self) -> &str {
-        "texas_holdem"
-    }
-
-    fn to_act(&self) -> Option<PlayerId> {
-        self.to_act.map(|s| self.seats[s].id.clone())
-    }
-
-    fn act(&mut self, player: &str, action: &Value) -> Result<Vec<Event>, String> {
+    fn act_one(&mut self, player: &str, action: &Value) -> Result<Vec<Event>, String> {
         if self.over {
             return Err("the game is over".to_string());
         }
@@ -581,11 +571,50 @@ impl Game for Holdem {
         Ok(events)
     }
 
+    /// A player leaves the table, whenever it wants (CON-154, journal#1050): out of this hand at once
+    /// if it is to act, else at its turn; out of the game when the hand ends, with its stack.
+    pub fn leave(&mut self, player: &str) -> Result<Vec<Event>, String> {
+        if self.over {
+            return Err("the game is over".to_string());
+        }
+        let seat = self.seat_of(player).ok_or_else(|| format!("{player} is not at this table"))?;
+        if self.seats[seat].left || self.seats[seat].out {
+            return Err(format!("{player} has left this table already"));
+        }
+        // Gone from the hand at once: no longer live, so never to act, in no pot, at no showdown.
+        self.seats[seat].left = true;
+        let mut events = vec![Event { to: None, kind: "left".into(), text: format!("Hand {}: {} leaves the table with {} chips.", self.hand_no, player, self.seats[seat].stack), data: json!({"player": player, "stack": self.seats[seat].stack}) }];
+        // The hand moves on only if this changes it: the one to act left, or one is left in it.
+        let live = self.seats.iter().filter(|s| s.live()).count();
+        if self.to_act == Some(seat) || live <= 1 {
+            events.extend(self.settle());
+        }
+        Ok(events)
+    }
+
+    fn seat_of(&self, player: &str) -> Option<usize> {
+        self.seats.iter().position(|s| s.id == player)
+    }
+}
+
+impl Game for Holdem {
+    fn name(&self) -> &str {
+        "texas_holdem"
+    }
+
+    fn to_act(&self) -> Option<PlayerId> {
+        self.to_act.map(|s| self.seats[s].id.clone())
+    }
+
+    fn act(&mut self, player: &str, action: &Value) -> Result<Vec<Event>, String> {
+        self.act_one(player, action)
+    }
+
     fn timeout(&mut self) -> Vec<Event> {
         let Some(seat) = self.to_act else { return Vec::new() };
         let player = self.seats[seat].id.clone();
         let action = if self.to_call(seat) == 0 { json!({"do": "check"}) } else { json!({"do": "fold"}) };
-        self.act(&player, &action).unwrap_or_default()
+        Game::act(self, &player, &action).unwrap_or_default()
     }
 
     /// The hand now (CON-150): what everyone may see, and under `you` what only `player` may.
@@ -631,7 +660,7 @@ impl Game for Holdem {
             "over": self.over,
             "players": self.seats.iter().enumerate().map(|(i, s)| json!({
                 "player": s.id, "stack": s.stack, "bet": s.round, "in_hand": s.hand,
-                "folded": s.folded, "all_in": s.all_in, "out": s.out, "roles": role(i),
+                "folded": s.folded, "all_in": s.all_in, "out": s.out, "left": s.left, "roles": role(i),
             })).collect::<Vec<_>>(),
             "you": me.map(|i| json!({
                 "player": self.seats[i].id,
@@ -785,6 +814,47 @@ mod tests {
         assert_eq!(view["hand"], 2, "the next hand is dealt");
         // In it p2 is the small blind: what it holds and what it has posted make its 1010.
         assert_eq!(view["players"][2]["stack"].as_u64().unwrap() + view["players"][2]["bet"].as_u64().unwrap(), 1010);
+    }
+
+    /// CON-154: heads-up, a player who leaves on its turn is out of the hand at once, and with one
+    /// left the game ends at that hand's end, its stack in the standings.
+    #[test]
+    fn leaving_heads_up_ends_the_game() {
+        let (mut t, _) = Holdem::new(&players(2), 9, Rules::default());
+        assert_eq!(t.to_act().as_deref(), Some("p0"));
+        let events = t.leave("p0").unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, ["left", "hand_ended", "game_over"], "{events:?}");
+        assert!(events[0].text.contains("p0 leaves the table with 990 chips"), "{events:?}");
+        assert!(t.over());
+        let standings = &events[2].data["standings"];
+        assert_eq!(standings, &json!([{"player": "p1", "stack": 1010}, {"player": "p0", "stack": 990}]));
+        assert!(t.leave("p1").unwrap_err().contains("over"));
+        assert!(!events.iter().any(|e| e.text.contains("shows")), "a leaver's cards are never shown");
+    }
+
+    /// CON-154: one leaves out of turn: no one is prompted again, the hand goes on between the
+    /// others, and in the next hand the one who left is dealt nothing and pays no blind.
+    #[test]
+    fn leaving_out_of_turn_takes_the_seat_out() {
+        let (mut t, _) = Holdem::new(&players(3), 11, Rules::default());
+        assert_eq!(t.to_act().as_deref(), Some("p0"));
+        let events = t.leave("p2").unwrap();
+        assert_eq!(events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["left"], "no new prompt: {events:?}");
+        assert!(t.leave("p2").unwrap_err().contains("left this table already"));
+        let v = t.view(None);
+        assert_eq!((v["still_in_hand"].as_u64(), v["players"][2]["left"].as_bool()), (Some(2), Some(true)));
+        act(&mut t, "p0", json!({"do": "call"}));
+        let events = act(&mut t, "p1", json!({"do": "call"}));
+        assert!(events.iter().any(|e| e.kind == "board"), "the round closes without the one who left: {events:?}");
+        // To the hand's end: p0 folds on the flop, p1 wins.
+        let to = t.to_act().unwrap();
+        let events = act(&mut t, &to, json!({"do": "fold"}));
+        assert!(events.iter().any(|e| e.kind == "hand_ended"), "{events:?}");
+        let v = t.view(None);
+        assert_eq!(v["hand"], 2);
+        assert_eq!((v["players"][2]["out"].as_bool(), v["players"][2]["in_hand"].as_u64(), v["still_in_game"].as_u64()), (Some(true), Some(0), Some(2)), "{v}");
+        assert!(t.view(Some("p2"))["you"]["cards"] == "none", "dealt nothing");
     }
 
     /// journal#1041: mid-round, a side pot forms only at a short all-in's cap; bets that differ

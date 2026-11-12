@@ -375,7 +375,17 @@ impl Daemon {
         // An agent's game tool: the daemon holds the tables (ADR 0029).
         if let Some(name) = input["op"].as_str().filter(|n| n.starts_with("game_")) {
             let Some(session) = input["tab"].as_u64().and_then(|tab| host.session_of(window, tab)) else { return (400, json!({"error": "this tab has no conversation yet"})) };
-            return match self.games.op(&session, name, &input, &|s, text| host.deliver_to(s, games::GAME_LABEL, text)) {
+            let deliver = |s: &str, text: &str| host.deliver_to(s, games::GAME_LABEL, text);
+            // An invitation names agents online: the host knows who they are (CON-153).
+            if name == "game_invite" {
+                let names: Vec<String> = input["players"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+                let invited = games::resolve(&host.open_sessions(), &names, &session).and_then(|players| self.games.invite(input["game"].as_str().unwrap_or("texas_holdem"), players, &deliver));
+                return match invited {
+                    Ok((table, invited)) => (200, json!({"table": table, "invited": invited, "joined": true})),
+                    Err(error) => (400, json!({"error": error})),
+                };
+            }
+            return match self.games.op(&session, name, &input, &deliver) {
                 Ok(reply) => (200, reply),
                 Err(error) => (400, json!({"error": error})),
             };
