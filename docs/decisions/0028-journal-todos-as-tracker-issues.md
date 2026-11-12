@@ -1,6 +1,6 @@
 # 0028 — Journal todos become issues in a tracker
 
-- **Status:** proposed · **Asked by:** the project owner, 2026-11-11 (journal#939). The agent drafted the design overnight; the owner's questions are open below.
+- **Status:** accepted (the owner's standing approval, journal#971; the drafts' answers taken). Core built in journal#990: the daemon's queue and worker, GitHub through gh, `multitool journal issues`. The Settings > Journal tab is journal#991. · **Asked by:** the project owner, 2026-11-11 (journal#939).
 - **Specs:** CON-139, CON-140, CON-141, CON-142, CON-143
 
 ## Why

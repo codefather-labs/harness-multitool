@@ -774,6 +774,26 @@ pub fn journal_export(data_dir: &str, root: &str) -> Result<String, String> {
     harness_memory_journal::transfer::export(&std::path::Path::new(data_dir).join("journals"), &key).map_err(|e| format!("{e:#}"))
 }
 
+/// Where a project's tracker settings and queue are (ADR 0028, CON-142), as the daemon has them.
+pub fn tracker_folder(data_dir: &str, root: &str) -> std::path::PathBuf {
+    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
+    harness_daemon::trackers::folder(std::path::Path::new(data_dir), &key)
+}
+
+/// The project's open todos, bugs and bug reports, by id: what is sent when a tracker is turned on.
+pub fn open_todos(data_dir: &str, root: &str) -> Result<Vec<u64>, String> {
+    let memory = project_memory(data_dir, root)?;
+    let filter = |flag: &str| harness_api::JournalFilter { category: None, flags: vec![flag.to_string()], open: Some(true), limit: 10_000 };
+    let mut ids = Vec::new();
+    for flag in ["todo", "bugreport"] {
+        let found = pollster::block_on(harness_api::Memory::journal_list(&memory, filter(flag))).map_err(|e| e.to_string())?;
+        ids.extend(found.into_iter().map(|r| r.id));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// The journal of a project, opened directly: for a look from the command line.
 pub fn project_memory(data_dir: &str, root: &str) -> Result<harness_memory_journal::plugin::JournalMemory, String> {
     let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));

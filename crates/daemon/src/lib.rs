@@ -21,6 +21,7 @@ pub mod memory;
 pub mod socket;
 pub mod stepdebug;
 pub mod telegram;
+pub mod trackers;
 
 /// A window that polled within this long is still there.
 const LISTENING: std::time::Duration = std::time::Duration::from_secs(60);
@@ -287,6 +288,17 @@ impl Daemon {
             instance: uuid::Uuid::new_v4().to_string(),
         });
         socket::serve(daemon.clone(), local, listener);
+        // Journal todos to their trackers, as the queues fill (ADR 0028).
+        {
+            let (data, journals, stopping) = (daemon.data_dir.clone(), daemon.clone(), daemon.clone());
+            std::thread::spawn(move || {
+                trackers::run(
+                    data,
+                    move |root| journals.memory_of(root, "trackers").ok().map(|m| Box::new(TrackerJournal(m)) as Box<dyn trackers::Journal>),
+                    move || stopping.state.lock().map_or(true, |s| s.shutting_down),
+                )
+            });
+        }
         // Every request on a thread of its own: a long poll holds its thread for up to POLL, and every
         // tab of every window keeps one open, so a fixed pool left operations queued behind them for
         // seconds (journal#822).
@@ -754,6 +766,11 @@ impl Daemon {
         self.memory_of(root, "daemon")
     }
 
+    /// Where a project's tracker settings and queue are (CON-142): beside its journal, by its key.
+    pub fn tracker_folder(&self, root: &str) -> PathBuf {
+        trackers::folder(&self.data_dir, &key_for(git_origin(root).as_deref(), Path::new(root)))
+    }
+
     fn memory_of(&self, root: &str, owner: &str) -> Result<JournalMemory, String> {
         let key = key_for(git_origin(root).as_deref(), Path::new(root));
         JournalMemory::open(&self.data_dir.join("journals"), &key, owner)
@@ -765,9 +782,19 @@ impl Daemon {
             return (400, json!({"error": "not a memory request"}));
         };
         self.memory_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let call = request.call.clone();
         let answer = self.memory_of(&request.root, &request.owner).and_then(|store| memory::serve(&store, request.call));
         match answer {
-            Ok(result) => (200, json!({"result": result})),
+            Ok(result) => {
+                // What concerns the project's tracker is queued; the write never waits on it (CON-139).
+                if let Some(action) = trackers::action_of(&call, &result) {
+                    let folder = self.tracker_folder(&request.root);
+                    if trackers::read_settings(&folder).enabled {
+                        let _ = trackers::enqueue(&folder, &trackers::Item { root: request.root.clone(), action });
+                    }
+                }
+                (200, json!({"result": result}))
+            }
             Err(error) => (500, json!({"error": error})),
         }
     }
@@ -879,6 +906,19 @@ pub fn last_port(data_dir: &Path) -> Option<u16> {
 fn off_types(root: &str) -> HashSet<String> {
     let handlers = conditions::read_project(root).map(|p| p.handlers).unwrap_or_default();
     handlers.into_iter().filter(|(_, implementation)| implementation == "off").map(|(kind, _)| kind).collect()
+}
+
+/// A project's journal as the tracker worker reads it.
+struct TrackerJournal(JournalMemory);
+
+impl trackers::Journal for TrackerJournal {
+    fn get(&self, id: u64) -> Option<JournalRecord> {
+        now_ready(self.0.journal_get(id)).ok().flatten()
+    }
+
+    fn branch_root(&self, id: u64) -> Option<u64> {
+        now_ready(self.0.more(harness_api::MemoryOp::JournalBranch { id })).ok()?["root"].as_u64()
+    }
 }
 
 /// The folder's `origin` URL, if it is a repository with one.

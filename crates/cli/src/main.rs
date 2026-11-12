@@ -92,6 +92,31 @@ enum JournalAction {
     },
     /// Print the journal and maps as that stream.
     Export,
+    /// The project's todos as issues in its tracker (ADR 0028): status, on, off, connect, gh-dir, tracker.
+    Issues {
+        #[command(subcommand)]
+        action: IssuesAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum IssuesAction {
+    /// The settings, the connection, the place, and why nothing is sent if it is not.
+    Status,
+    /// Send this project's todos to issues: the open ones now, the rest as they come.
+    On {
+        /// The repository is public, and its issues may be too.
+        #[arg(long)]
+        public: bool,
+    },
+    /// Send nothing more; what was queued is dropped.
+    Off,
+    /// Sign gh in, by its own `gh auth login`, in the project's gh folder.
+    Connect,
+    /// Run gh with this configuration folder, one you already have (an account's); `-` for the project's own.
+    GhDir { path: String },
+    /// The tracker: github, gitlab, asana or clickup (only github is built).
+    Tracker { name: String },
 }
 
 #[derive(Subcommand)]
@@ -322,6 +347,7 @@ fn main() -> Result<()> {
                     }
                 }
                 JournalAction::Export => print!("{}", harness_session::journal_export(&data, &root).map_err(|e| anyhow!(e))?),
+                JournalAction::Issues { action } => journal_issues(&data, &root, action)?,
             }
             Ok(())
         }
@@ -2709,6 +2735,78 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
         }
     }
+}
+
+/// `multitool journal issues` (ADR 0028): a project's tracker settings, per project (CON-142).
+fn journal_issues(data: &str, root: &str, action: IssuesAction) -> Result<()> {
+    use harness_daemon::trackers;
+    let folder = harness_session::tracker_folder(data, root);
+    let mut settings = trackers::read_settings(&folder);
+    let place = harness_daemon::git_origin(root).as_deref().and_then(trackers::github_place);
+    match action {
+        IssuesAction::Status => {}
+        IssuesAction::Tracker { name } => {
+            if !trackers::TRACKERS.contains(&name.as_str()) {
+                bail!("no tracker {name:?}; there are: {}", trackers::TRACKERS.join(", "));
+            }
+            settings.tracker = Some(name);
+            trackers::write_settings(&folder, &settings)?;
+        }
+        IssuesAction::GhDir { path } => {
+            settings.gh_config_dir = (path != "-").then(|| std::path::PathBuf::from(path));
+            trackers::write_settings(&folder, &settings)?;
+        }
+        IssuesAction::Connect => {
+            let dir = trackers::gh_dir(&folder, &settings);
+            std::fs::create_dir_all(&dir)?;
+            let binary = settings.gh_binary.clone().unwrap_or_else(|| "gh".to_string());
+            println!("gh auth login, in {} (GH_CONFIG_DIR)", dir.display());
+            let status = std::process::Command::new(&binary).args(["auth", "login"]).env("GH_CONFIG_DIR", &dir).status().with_context(|| format!("running {binary}"))?;
+            if !status.success() {
+                bail!("gh auth login did not finish");
+            }
+        }
+        IssuesAction::Off => {
+            settings.enabled = false;
+            trackers::write_settings(&folder, &settings)?;
+        }
+        IssuesAction::On { public } => {
+            let tracker = trackers::tracker(&folder, &settings);
+            let place = place.clone().ok_or_else(|| anyhow!("this project has no GitHub remote: git remote get-url origin"))?;
+            tracker.connected().map_err(|e| anyhow!("not connected: {e}. Run `multitool journal issues connect`, or `gh-dir` with an account's gh folder"))?;
+            let visibility = tracker.visibility(&place).map_err(|e| anyhow!("{place}: {e}"))?;
+            if visibility.starts_with("PUBLIC") && !public && !settings.public_ok {
+                bail!("{place} is public: its issues are seen by everyone. Run `multitool journal issues on --public` to send its todos there anyway");
+            }
+            let was = settings.enabled;
+            settings.enabled = true;
+            settings.public_ok |= public;
+            trackers::write_settings(&folder, &settings)?;
+            if !was {
+                let todos = harness_session::open_todos(data, root).map_err(|e| anyhow!(e))?;
+                for id in &todos {
+                    trackers::enqueue(&folder, &trackers::Item { root: root.to_string(), action: trackers::Action::Open { id: *id } })?;
+                }
+                println!("on: {} open todos queued for {place}; the daemon sends them", todos.len());
+            }
+        }
+    }
+    let tracker = trackers::tracker(&folder, &settings);
+    println!("project:  {root}");
+    println!("tracker:  {}{}", tracker.name(), if tracker.name() == "github" { String::new() } else { " (not implemented yet)".to_string() });
+    println!("gh:       {}", trackers::gh_dir(&folder, &settings).display());
+    println!("as:       {}", tracker.connected().unwrap_or_else(|e| format!("not connected ({e})")));
+    println!("place:    {}", place.as_deref().unwrap_or("none: no GitHub remote"));
+    println!("sending:  {}", match trackers::why_not(&settings, place.as_deref(), tracker.as_ref()) {
+        None => "on".to_string(),
+        Some(why) => why,
+    });
+    let queued = std::fs::read_to_string(folder.join("queue.jsonl")).map_or(0, |t| t.lines().count());
+    println!("queued:   {queued}; issues opened: {}", trackers::issues(&folder).len());
+    if let Ok(last) = std::fs::read_to_string(folder.join("last-error.txt")) {
+        println!("last error: {last}");
+    }
+    Ok(())
 }
 
 /// `multitool import`: lists a source's conversations, or brings one in as a session here.
