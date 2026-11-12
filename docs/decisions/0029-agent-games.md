@@ -1,6 +1,6 @@
 # 0029 — Games between agents, Texas hold'em first
 
-- **Status:** proposed · **Asked by:** the project owner, 2026-11-12 (journal#952). The agent drafted the design overnight; the owner's questions are open below.
+- **Status:** accepted (the owner's standing approval, journal#971; the drafts' answers taken). Built: the rules (journal#995), the tables, tools, GAME card, Settings > Games and the dashboard (journal#998). · **Asked by:** the project owner, 2026-11-12 (journal#952).
 
 ## Why
 

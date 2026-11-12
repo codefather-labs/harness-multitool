@@ -1058,6 +1058,7 @@ name = "harness-daemon"
 version = "0.1.0-dev"
 dependencies = [
  "harness-api",
+ "harness-games",
  "harness-memory-journal",
  "libc",
  "pollster",

@@ -53,6 +53,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.journal_issues {
         s.journal = page.clone();
     }
+    if let Some(page) = &w.games {
+        s.games = page.clone();
+    }
     if let Some(page) = &w.profiles {
         s.profiles = page.clone();
     }
@@ -127,7 +130,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION, GAMES_SECTION].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -147,6 +150,7 @@ pub fn sample_settings() -> SettingsView {
         voice: Default::default(),
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
         journal: Default::default(),
+        games: crate::model::GamesPage { texas_holdem: true, ..Default::default() },
         profiles: ProfilesPage::default(),
         auth: AuthPage::default(),
         editing_model: false,
@@ -602,6 +606,34 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
     }
 }
 
+/// The settings section of games between agents (ADR 0029).
+pub const GAMES_SECTION: &str = "Games";
+
+/// Games between agents (ADR 0029): on or off, and which games. Tables are made on the dashboard.
+fn games_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.games;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let rows = [(" Games between agents ", p.enabled), (" Texas hold'em        ", p.texas_holdem)];
+    for (row, (label, on)) in rows.into_iter().enumerate() {
+        let under = focus && p.cursor == row;
+        text(f, r.x, r.y + 1 + row as u16, r.width, vec![Span::styled(label, muted), Span::styled(format!("[{}]", if on { "x" } else { " " }), strong)], if under { t.surface_raised } else { bg });
+    }
+    let notes = [
+        p.status.as_str(),
+        "",
+        "Agents play each other on the daemon: Texas hold'em for now, play money.",
+        "Tables are made on the daemon's dashboard, which invites the agents online:",
+        "`multitool dashboard` prints its address. Each move of an agent is a model turn of its own.",
+        "An agent is told by a GAME card: invited, its turn, a hand's end, the game's end.",
+        "Up and Down choose, Space turns on or off, Ctrl+S saves.",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 4 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+    }
+}
+
 /// The settings section of the project's tracker (ADR 0028).
 pub const JOURNAL_SECTION: &str = "Journal";
 
@@ -1023,6 +1055,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == GAMES_SECTION {
+        games_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == JOURNAL_SECTION {
         journal_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == PROFILES_SECTION {
@@ -1546,6 +1580,26 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
                 open_provider_if_asked(s);
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == GAMES_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.games;
+            match k {
+                Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
+                Key::Up => p.cursor = 0,
+                Key::Down => p.cursor = 1,
+                Key::Char(' ') | Key::Enter => {
+                    if p.cursor == 0 {
+                        p.enabled = !p.enabled;
+                    } else {
+                        p.texas_holdem = !p.texas_holdem;
+                    }
+                }
+                Key::Ctrl('s') => {
+                    p.status = "Saved.".to_string();
+                    w.outbox.push(Outgoing::SaveGames { enabled: p.enabled, texas_holdem: p.texas_holdem });
+                }
+                _ => {}
             }
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == JOURNAL_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
@@ -2840,6 +2894,26 @@ mod tests {
         // Space again turns it off, with no question.
         key(&mut w, Key::Char(' '));
         assert!(!page(&w).enabled && !page(&w).confirming);
+    }
+
+    /// ADR 0029: the Games page turns games and hold'em on or off and sends them on Ctrl+S.
+    #[test]
+    fn the_games_page_turns_games_on_and_saves() {
+        let mut w = Workspace::one(Default::default(), "t");
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == GAMES_SECTION).unwrap();
+        s.focus = SettingsPane::Page;
+        w.overlay = Some(Overlay::Settings(s));
+        let page = |w: &Workspace| match &w.overlay {
+            Some(Overlay::Settings(s)) => s.games.clone(),
+            _ => panic!("no settings"),
+        };
+        assert!(!page(&w).enabled && page(&w).texas_holdem, "off by default, hold'em on");
+        key(&mut w, Key::Char(' '));
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char(' '));
+        key(&mut w, Key::Ctrl('s'));
+        assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveGames { enabled: true, texas_holdem: false })), "{:?}", w.outbox);
     }
 
     /// CON-118: the second row saves its own setting and leaves the first.

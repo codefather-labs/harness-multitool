@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 harness-api = { version = "0.1.0-dev", path = "../api" }
 harness-memory-journal = { version = "0.1.0-dev", path = "../memory-journal" }
+harness-games = { version = "0.1.0-dev", path = "../games" }
 pollster = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -419,6 +419,7 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
         InboundKind::Telegram | InboundKind::Voice { .. } => ("Telegram", t.info, Icon::Send, Tint::Info),
         InboundKind::Agent { .. } => ("Agent", t.agent, Icon::Bot, Tint::Agent),
         InboundKind::Callback { .. } => ("Callback", t.success, Icon::Callback, Tint::Success),
+        InboundKind::Game { .. } => ("Game", t.warning, Icon::Callback, Tint::Accent),
         InboundKind::Reminder { .. } => ("Reminder", t.agent, Icon::Calendar, Tint::Agent),
         InboundKind::System => ("Harness", t.warning, Icon::Bolt, Tint::Agent),
     };

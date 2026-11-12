@@ -886,6 +886,7 @@ fn inbound_style(m: &Inbound, t: &Theme) -> (Color, &'static str, Icon, Tint) {
         InboundKind::Callback { .. } => (t.success, "CALLBACK", Icon::Callback, Tint::Success),
         InboundKind::Reminder { .. } => (t.agent, "REMINDER", Icon::Calendar, Tint::Agent),
         InboundKind::System => (t.warning, "HARNESS", Icon::Bolt, Tint::Agent),
+        InboundKind::Game { .. } => (t.warning, "GAME", Icon::Callback, Tint::Accent),
     }
 }
 

@@ -71,6 +71,8 @@ pub struct Workspace {
     pub memory: Option<MemoryPage>,
     /// The Journal page, the window's project's tracker (ADR 0028).
     pub journal_issues: Option<JournalPage>,
+    /// The Games page (ADR 0029).
+    pub games: Option<GamesPage>,
     /// The profiles, as the running harness reads them (CON-125).
     pub profiles: Option<ProfilesPage>,
     /// The sign-in state as the running harness knows it.
@@ -103,6 +105,8 @@ pub enum Outgoing {
     JournalConnect,
     /// Ask gh who it is and what the repository is, off the window's thread.
     JournalCheck,
+    /// Games between agents on or off, and which games (ADR 0029).
+    SaveGames { enabled: bool, texas_holdem: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -206,6 +210,7 @@ pub struct SettingsView {
     pub voice: VoicePage,
     pub memory: MemoryPage,
     pub journal: JournalPage,
+    pub games: GamesPage,
     pub profiles: ProfilesPage,
     pub auth: AuthPage,
     /// The model name is being typed.
@@ -353,7 +358,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -688,6 +693,8 @@ pub enum InboundKind {
     Reminder { id: u32, every: String },
     /// The harness itself telling the user something; only ever a toast.
     System,
+    /// A game between agents (ADR 0029): drawn as a callback, in its own colour.
+    Game { table: String },
 }
 
 #[derive(Debug, Clone)]
@@ -1064,6 +1071,16 @@ impl VoicePage {
             self.model = first.map_or(String::new(), |m| m.name.clone());
         }
     }
+}
+
+/// The settings' Games page (ADR 0029): games between agents on or off, and which.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GamesPage {
+    pub enabled: bool,
+    pub texas_holdem: bool,
+    /// 0 games on or off, 1 Texas hold'em.
+    pub cursor: usize,
+    pub status: String,
 }
 
 /// The trackers the Journal page offers, and whether each is built (ADR 0028, CON-143).

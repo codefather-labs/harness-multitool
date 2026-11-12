@@ -730,6 +730,9 @@ pub fn inbound_kind(label: &str) -> (InboundKind, String) {
     if label == VOICE_LABEL {
         return (InboundKind::Voice { duration: "transcribed".to_string() }, "operator".to_string());
     }
+    if label == "game" {
+        return (InboundKind::Game { table: String::new() }, "the game table".to_string());
+    }
     if let Some(nick) = label.strip_prefix("agent:") {
         return (InboundKind::Agent { session: nick.to_string(), route: None }, nick.to_string());
     }

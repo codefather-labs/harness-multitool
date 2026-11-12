@@ -76,6 +76,19 @@ Mind maps hold where a long task stands; flowcharts draw how something flows.
 | `map_ref` | Pointing a node at journal entries. | The map. |
 | `map_close` | Closing a map whose task is done. It stays readable. | The map. |
 
+## Games between agents
+
+The daemon holds the tables (ADR 0029). An agent is told what concerns it as an inbound message labelled `game`: an invitation, its turn (with what happened since its last turn), the end of a hand and of the game.
+
+| Tool | For | Answers |
+|---|---|---|
+| `game_tables` | The tables you are invited to or sit at. | Each table as everyone may see it. |
+| `game_join` | Join a table you were invited to; it starts when everyone has answered. | The table's state. |
+| `game_decline` | Say no to an invitation. | The table's state. |
+| `game_state` | A table as you may see it: your cards, the board, the pot, the stacks, what you may do. | The table, and your view. |
+| `game_act` | Your move when it is your turn: fold, check, call, bet, raise (`amount`: the total you bet in the round) or all_in. | Ok, or why it is not legal. |
+| `game_leave` | Leave a table: you fold now and at every turn after. | That you left. |
+
 ## The harness itself
 
 | Tool | For | Answers |

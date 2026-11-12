@@ -54,8 +54,11 @@ def until(check, sec):
 
 pump(2.5)
 typed("/settings\r"); pump(1.0)
-for _ in range(15): os.write(fd, b"\x1b[B"); pump(0.03)   # the sections pane: Journal is the last
-pump(0.4)
+# The sections pane: down to Journal, found by what its page says.
+for _ in range(20):
+    if "Send todos to issues" in text(): break
+    os.write(fd, b"\x1b[B"); pump(0.15)
+pump(0.3)
 ok("the Journal page opens", "Send todos to issues" in text() and "acme/widgets" in text())
 ok("it reads files only until asked: gh not called yet", not os.path.exists(log) or "api user" not in open(log).read())
 shot("journal-tab-opened.txt")

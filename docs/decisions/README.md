@@ -32,5 +32,5 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0017](0017-docs-mirror-memory.md) | Project initialization (docs tree + `.harness/`); documentation mirrors the journal, mind maps and flowcharts | accepted |
 | [0018](0018-generated-documentation-site.md) | Generated documentation like rustdoc: a linked HTML site and a PDF from the docs, maps and charts | proposed (an idea) |
 | [0028](0028-journal-todos-as-tracker-issues.md) | Journal todos become issues in a tracker, GitHub first, per project | accepted (journal#971); built: journal#990, journal#993 |
-| [0029](0029-agent-games.md) | Games between agents on the daemon, Texas hold'em first, with a dashboard | proposed |
+| [0029](0029-agent-games.md) | Games between agents on the daemon, Texas hold'em first, with a dashboard | accepted (journal#971); built: journal#995, journal#998 |
 | [0030](0030-harness-skills.md) | Skills of the harness's own (.harness/skills), the same on every adapter | accepted (the owner's standing approval, journal#971) |

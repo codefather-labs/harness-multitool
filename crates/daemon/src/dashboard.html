@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>multitool · dashboard</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --raised:#1f2430; --line:#2a3040; --text:#e6e9ef; --muted:#8b93a7; --accent:#7aa2f7; --green:#73daca; --red:#f7768e; --gold:#e0af68; --felt:#0f3d2e; --felt2:#145a43; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:18px; padding:14px 22px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+  header h1 span { color:var(--accent); }
+  nav button { background:none; border:0; color:var(--muted); font:inherit; padding:6px 12px; border-radius:8px; cursor:pointer; }
+  nav button.on { color:var(--text); background:var(--raised); }
+  main { padding:22px; max-width:1200px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns: 320px 1fr; gap:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); margin:0 0 12px; }
+  .agent { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; }
+  .agent:hover { background:var(--raised); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); }
+  .muted { color:var(--muted); }
+  button.primary { background:var(--accent); color:#0b0d12; border:0; border-radius:10px; padding:9px 14px; font-weight:600; cursor:pointer; }
+  button.primary:disabled { opacity:.4; cursor:default; }
+  .toggle { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px; background:var(--raised); border-radius:10px; margin-bottom:12px; }
+  .switch { position:relative; width:42px; height:24px; }
+  .switch input { display:none; }
+  .switch span { position:absolute; inset:0; background:#394052; border-radius:24px; transition:.2s; cursor:pointer; }
+  .switch span:before { content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; background:white; border-radius:50%; transition:.2s; }
+  .switch input:checked + span { background:var(--green); }
+  .switch input:checked + span:before { transform:translateX(18px); }
+  .tables .row { display:flex; justify-content:space-between; padding:9px 10px; border-radius:10px; cursor:pointer; }
+  .tables .row:hover, .tables .row.on { background:var(--raised); }
+  .badge { font-size:11px; padding:2px 8px; border-radius:20px; background:#2b3243; color:var(--muted); }
+  .badge.playing { background:#1d3b33; color:var(--green); }
+  .badge.inviting { background:#3b331d; color:var(--gold); }
+  .felt { background:radial-gradient(ellipse at center, var(--felt2) 0%, var(--felt) 70%); border:10px solid #3b2a1a; border-radius:180px; padding:34px 30px; min-height:300px; position:relative; box-shadow: inset 0 0 40px rgba(0,0,0,.5); }
+  .board { display:flex; justify-content:center; gap:8px; margin:22px 0 10px; min-height:74px; }
+  .pc { width:52px; height:72px; background:#fbfbf8; color:#111; border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-weight:700; font-size:20px; box-shadow:0 3px 8px rgba(0,0,0,.4); }
+  .pc.red { color:#c0263b; }
+  .pot { text-align:center; color:var(--gold); font-weight:600; }
+  .seats { display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:20px; }
+  .seat { background:rgba(10,14,20,.75); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:9px 12px; min-width:130px; text-align:center; }
+  .seat.turn { border-color:var(--gold); box-shadow:0 0 14px rgba(224,175,104,.45); }
+  .seat.folded { opacity:.45; }
+  .seat .n { font-weight:600; }
+  .seat .s { color:var(--green); }
+  .seat .b { color:var(--gold); font-size:12px; }
+  .log { margin-top:16px; max-height:260px; overflow:auto; font:12px/1.5 ui-monospace, monospace; color:var(--muted); background:var(--raised); padding:10px 12px; border-radius:10px; }
+  .err { color:var(--red); margin-top:8px; min-height:18px; }
+  label.pick { display:flex; align-items:center; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; }
+  label.pick:hover { background:var(--raised); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>multitool</span> dashboard</h1>
+  <nav><button id="t-overview" class="on">Overview</button><button id="t-games">Games</button></nav>
+  <div class="muted" style="margin-left:auto" id="clock"></div>
+</header>
+<main>
+  <section id="overview">
+    <div class="card"><h2>Agents online</h2><div id="agents" class="muted">…</div></div>
+  </section>
+  <section id="games" hidden>
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>Games</h2>
+          <div class="toggle"><div><b>Games between agents</b><div class="muted">Texas hold'em, play money</div></div><label class="switch"><input type="checkbox" id="enabled"><span></span></label></div>
+          <h2>New table</h2>
+          <div id="pick" class="muted">…</div>
+          <button class="primary" id="create" style="margin-top:10px;width:100%">Invite to a poker table</button>
+          <div class="err" id="err"></div>
+        </div>
+        <div class="card tables" style="margin-top:18px"><h2>Tables</h2><div id="tables" class="muted">none yet</div></div>
+      </div>
+      <div class="card"><h2 id="tt">Table</h2><div id="table" class="muted">Choose a table, or invite agents to a new one.</div></div>
+    </div>
+  </section>
+</main>
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const api = (p, opts) => fetch(`/dashboard/api/${p}${p.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`, opts).then(r => r.json());
+const $ = id => document.getElementById(id);
+let current = location.hash.slice(1) || null;
+if (current) setTimeout(() => tab("games"), 0);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function tab(name) { for (const n of ["overview","games"]) { $(n).hidden = n !== name; $("t-"+n).classList.toggle("on", n === name); } }
+$("t-overview").onclick = () => tab("overview"); $("t-games").onclick = () => tab("games");
+const name = a => a.nick || a.title || a.id;
+async function agents() {
+  const { agents = [] } = await api("agents");
+  $("agents").innerHTML = agents.length ? agents.map(a => `<div class="agent"><span class="dot"></span><b>${esc(name(a))}</b><span class="muted">${esc(a.title)}</span></div>`).join("") : "No agent is online.";
+  const picked = new Set([...document.querySelectorAll("#pick input:checked")].map(i => i.value));
+  $("pick").innerHTML = agents.length ? agents.map(a => `<label class="pick"><input type="checkbox" value="${esc(a.id)}" ${picked.has(a.id) ? "checked" : ""}> ${esc(name(a))}</label>`).join("") : "No agent is online to invite.";
+}
+async function settings() { const s = await api("settings"); $("enabled").checked = !!s.enabled; window._settings = s; }
+$("enabled").onchange = async e => { const s = { ...(window._settings || {}), enabled: e.target.checked }; await api("settings", { method: "POST", body: JSON.stringify(s) }); settings(); };
+$("create").onclick = async () => {
+  const players = [...document.querySelectorAll("#pick input:checked")].map(i => i.value);
+  const r = await api("tables", { method: "POST", body: JSON.stringify({ game: "texas_holdem", players }) });
+  $("err").textContent = r.error || ""; if (r.table) { current = r.table; tables(); }
+};
+const SUIT = { "♠": "", "♣": "", "♥": "red", "♦": "red" };
+const cards = s => (s && s !== "none") ? s.split(" ").map(c => `<div class="pc ${SUIT[c.slice(-1)] || ""}">${esc(c.slice(0,-1).replace("T","10"))}<span>${esc(c.slice(-1))}</span></div>`).join("") : "";
+async function tables() {
+  const { tables = [] } = await api("tables");
+  $("tables").innerHTML = tables.length ? tables.map(t => `<div class="row ${t.id === current ? "on" : ""}" data-id="${esc(t.id)}"><span><b>${esc(t.id)}</b> <span class="muted">${esc(t.invited.map(p => p.nick).join(", "))}</span></span><span class="badge ${esc(t.state)}">${esc(t.state)}</span></div>`).join("") : "none yet";
+  document.querySelectorAll("#tables .row").forEach(r => r.onclick = () => { current = r.dataset.id; tables(); });
+  if (current) show(tables.find(t => t.id === current));
+}
+function show(t) {
+  if (!t) return;
+  $("tt").textContent = `Table ${t.id} · Texas hold'em · ${t.state}`;
+  const v = t.view;
+  if (!v) { $("table").innerHTML = `<div class="muted">Waiting for answers: ${t.invited.map(p => `${esc(p.nick)} ${p.joined ? "✓" : p.declined ? "✗" : "…"}`).join(", ")}</div>`; return; }
+  const seats = v.players.map(p => `<div class="seat ${p.player === v.to_act ? "turn" : ""} ${p.folded || p.out ? "folded" : ""}"><div class="n">${esc(p.player)}</div><div class="s">${p.stack}</div><div class="b">${p.bet ? "bet " + p.bet : p.all_in ? "all in" : p.folded ? "folded" : p.out ? "out" : "&nbsp;"}</div></div>`).join("");
+  $("table").innerHTML = `<div class="felt"><div class="pot">Hand ${v.hand} · ${esc(v.street)} · pot ${v.pot}</div><div class="board">${cards(v.board)}</div><div class="seats">${seats}</div></div><div class="log">${t.log.map(esc).join("<br>")}</div>`;
+}
+async function tick() { $("clock").textContent = new Date().toLocaleTimeString(); try { await Promise.all([agents(), tables()]); } catch (e) { $("err").textContent = "the daemon does not answer"; } }
+settings(); tick(); setInterval(tick, 1500);
+</script>
+</body>
+</html>

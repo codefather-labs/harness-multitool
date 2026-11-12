@@ -198,6 +198,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The address of the daemon's dashboard (ADR 0029): agents online and games between them.
+    Dashboard,
     /// The daemon: the single entry point of callbacks (the terminal UI starts it when needed).
     Daemon {
         /// The port on localhost; by default one is picked.
@@ -334,6 +336,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Import { source, id } => import_conversation(&source, id.as_deref()),
+        Command::Dashboard => {
+            let data = config::data_dir()?;
+            let text = std::fs::read_to_string(harness_daemon::address_path(&data)).map_err(|_| anyhow!("no daemon is running: start multitool, or `multitool daemon`"))?;
+            let address: harness_daemon::Address = serde_json::from_str(&text)?;
+            println!("http://127.0.0.1:{}/dashboard?token={}", address.port, address.admin);
+            println!("Open it in a browser on this machine. The token lets whoever has it see and start games: keep it to yourself.");
+            Ok(())
+        }
         Command::Journal { action } => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let data = config::data_dir()?.to_string_lossy().into_owned();
@@ -800,6 +810,7 @@ impl Live {
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
@@ -897,6 +908,7 @@ impl Live {
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
         state
     }
@@ -1190,6 +1202,7 @@ impl Live {
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
@@ -1401,6 +1414,7 @@ impl Live {
         w.auth = Some(self.auth_page(None));
         w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &w.overlay {
             let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
             let mut fresh = frontend_tui::overlay::settings_for(w);
@@ -2068,12 +2082,28 @@ impl Live {
                     w.profiles = Some(self.profiles_page(status));
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
                     show_profiles(w);
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::Login } else { ClaudeStep::Logout })),
                 Outgoing::ProfileClaudeSwitch { name } => self.terminal_wanted = Some((name, ClaudeStep::Switch)),
                 Outgoing::ProfileCodex { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::CodexLogin } else { ClaudeStep::CodexLogout })),
                 Outgoing::JournalCheck => self.check_journal_issues("Checking gh...".to_string()),
+                Outgoing::SaveGames { enabled, texas_holdem } => {
+                    let said = config::data_dir().map_err(|e| e.to_string()).and_then(|data| {
+                        let settings = harness_daemon::games::GameSettings { enabled, texas_holdem, ..harness_daemon::games::read_settings(&data) };
+                        harness_daemon::games::write_settings(&data, &settings).map_err(|e| e.to_string())
+                    });
+                    let page = games_page(match said {
+                        Ok(()) => format!("Saved: games are {}.", if enabled { "on: make a table on the dashboard (`multitool dashboard`)" } else { "off" }),
+                        Err(e) => format!("Not saved: {e}"),
+                    });
+                    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        let cursor = s.games.cursor;
+                        s.games = frontend_tui::model::GamesPage { cursor, ..page.clone() };
+                    }
+                    w.games = Some(page);
+                }
                 Outgoing::JournalConnect => {
                     if let Ok(data) = config::data_dir() {
                         let folder = harness_session::tracker_folder(&data.to_string_lossy(), &self.root);
@@ -2188,6 +2218,7 @@ impl Live {
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveMapLimit { limit } => {
@@ -2200,6 +2231,7 @@ impl Live {
                     }
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveSearchPage { limit } => {
@@ -2212,6 +2244,7 @@ impl Live {
                     }
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::DownloadVoiceModel { model } => {
@@ -2256,6 +2289,7 @@ impl Live {
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::StartVoiceTest { model, device } => {
@@ -2282,6 +2316,7 @@ impl Live {
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
+            w.games = Some(games_page(String::new()));
             w.profiles = Some(self.profiles_page(String::new()));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
@@ -2814,6 +2849,12 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
         }
     }
+}
+
+/// The Games page, from the daemon's games settings (ADR 0029).
+fn games_page(status: String) -> frontend_tui::model::GamesPage {
+    let settings = config::data_dir().map(|data| harness_daemon::games::read_settings(&data)).unwrap_or_default();
+    frontend_tui::model::GamesPage { enabled: settings.enabled, texas_holdem: settings.texas_holdem, status, ..Default::default() }
 }
 
 /// The Journal page of a project (ADR 0028). With `check`, gh is asked who it is and what the

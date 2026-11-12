@@ -194,6 +194,53 @@ impl Tool for AgentSend {
     }
 }
 
+/// The game tools (ADR 0029): each a word to the daemon, which holds the tables.
+pub const GAME_TOOLS: [&str; 6] = ["game_tables", "game_join", "game_decline", "game_state", "game_act", "game_leave"];
+
+pub struct GameTool {
+    pub name: &'static str,
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for GameTool {
+    fn spec(&self) -> ToolSpec {
+        let table = json!({"table": {"type": "string", "description": "The table's id, such as T1."}});
+        let (description, schema) = match self.name {
+            "game_tables" => ("The game tables you are invited to or sit at, each with its state and what everyone can see.", json!({"type": "object", "properties": {}})),
+            "game_join" => ("Join a table you were invited to. The game starts when everyone has answered.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_decline" => ("Say no to a table you were invited to.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_state" => ("A table as you may see it: your cards, the board, the pot, the stacks, what you may do and the least you may raise to.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_act" => (
+                "Act at a table when it is your turn: fold, check, call, bet or raise (`amount` is the total you bet in this round), or all_in. A move that is not legal is refused, saying why.",
+                json!({"type": "object", "properties": {"table": {"type": "string"}, "do": {"type": "string", "enum": ["fold", "check", "call", "bet", "raise", "all_in"]}, "amount": {"type": "integer"}}, "required": ["table", "do"]}),
+            ),
+            _ => ("Leave a table: you fold now and at every turn after.", json!({"type": "object", "properties": table, "required": ["table"]})),
+        };
+        ToolSpec { name: self.name.into(), description: description.into(), schema }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let mut op = input.clone();
+        if !op.is_object() {
+            op = json!({});
+        }
+        op["window"] = json!(self.window);
+        op["op"] = json!(self.name);
+        op["tab"] = json!(self.tab);
+        let answer = match self.client.conversation_op(&op) {
+            Ok(reply) => ToolOutput::ok(reply.to_string()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
 /// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
 pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close"];
 

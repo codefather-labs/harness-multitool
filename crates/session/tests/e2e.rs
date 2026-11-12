@@ -78,7 +78,19 @@ fn hermetic_factory(settings: Settings, root: String, data_dir: std::path::PathB
     harness_session::with_host(settings, root, data_dir, host)
 }
 
+/// A test's own folder. Folders of runs whose process is gone are removed first: the test harness
+/// has no hook after the last test, so at most the last run's are left on the disk.
 fn temp_dir(name: &str) -> String {
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    SWEPT.call_once(|| {
+        for entry in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let Some(pid) = file.strip_prefix("harness-e2e-").and_then(|rest| rest.rsplit('-').next()).and_then(|p| p.parse::<u32>().ok()) else { continue };
+            if pid != std::process::id() && !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
     let dir = std::env::temp_dir().join(format!("harness-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

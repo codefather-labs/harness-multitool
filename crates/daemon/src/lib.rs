@@ -22,6 +22,7 @@ pub mod socket;
 pub mod stepdebug;
 pub mod telegram;
 pub mod trackers;
+pub mod games;
 
 /// A window that polled within this long is still there.
 const LISTENING: std::time::Duration = std::time::Duration::from_secs(60);
@@ -201,6 +202,8 @@ pub struct Daemon {
     /// This daemon, apart from any other: a client knows by it that the daemon was replaced, even
     /// by one in the same process.
     instance: String,
+    /// Games between agents (ADR 0029).
+    games: games::Games,
 }
 
 /// Where a running daemon says how to reach it.
@@ -286,8 +289,21 @@ impl Daemon {
             channels_stopped: std::sync::atomic::AtomicBool::new(false),
             local: Mutex::new(Some(local.clone())),
             instance: uuid::Uuid::new_v4().to_string(),
+            games: games::Games::new(data_dir),
         });
         socket::serve(daemon.clone(), local, listener);
+        // A game's player who does not act in time is acted for (ADR 0029).
+        {
+            let daemon = daemon.clone();
+            std::thread::spawn(move || {
+                while !daemon.stopping() {
+                    std::thread::sleep(Duration::from_secs(5));
+                    if let Some(host) = daemon.conversations.lock().expect("conversations").clone() {
+                        daemon.games.tick(&|session, text| host.deliver_to(session, games::GAME_LABEL, text));
+                    }
+                }
+            });
+        }
         // Journal todos to their trackers, as the queues fill (ADR 0028).
         {
             let (data, journals, stopping) = (daemon.data_dir.clone(), daemon.clone(), daemon.clone());
@@ -354,6 +370,14 @@ impl Daemon {
         let Some(host) = self.host() else { return (503, json!({"error": "this daemon runs no conversations"})) };
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
         let Some(window) = input["window"].as_str() else { return (400, json!({"error": "window is required"})) };
+        // An agent's game tool: the daemon holds the tables (ADR 0029).
+        if let Some(name) = input["op"].as_str().filter(|n| n.starts_with("game_")) {
+            let Some(session) = input["tab"].as_u64().and_then(|tab| host.session_of(window, tab)) else { return (400, json!({"error": "this tab has no conversation yet"})) };
+            return match self.games.op(&session, name, &input, &|s, text| host.deliver_to(s, games::GAME_LABEL, text)) {
+                Ok(reply) => (200, reply),
+                Err(error) => (400, json!({"error": error})),
+            };
+        }
         match host.op(window, &input) {
             Ok(reply) => (200, reply),
             Err(error) => (400, json!({"error": error})),
@@ -482,6 +506,48 @@ impl Daemon {
         self.local.lock().ok().and_then(|l| l.as_ref().map(|s| s.connections())).unwrap_or(0)
     }
 
+    /// The dashboard's page and API (ADR 0029): agents online, the game tables, the games' settings.
+    fn dashboard(&self, method: &str, path: &str, body: &str) -> (u16, &'static str, String) {
+        const JSON: &str = "application/json";
+        let host = self.conversations.lock().expect("conversations").clone();
+        let deliver = |s: &str, text: &str| host.as_ref().is_some_and(|h| h.deliver_to(s, games::GAME_LABEL, text));
+        let json = |status: u16, v: Value| (status, JSON, v.to_string());
+        match (method, path) {
+            ("GET", "/dashboard") | ("GET", "/dashboard/") => (200, "text/html; charset=utf-8", DASHBOARD.to_string()),
+            ("GET", "/dashboard/api/agents") => {
+                let agents: Vec<Value> = host.as_ref().map(|h| h.open_sessions()).unwrap_or_default().into_iter().map(|s| json!({"id": s.id, "title": s.title, "nick": s.nick})).collect();
+                json(200, json!({"agents": agents}))
+            }
+            ("GET", "/dashboard/api/tables") => json(200, json!({"tables": self.games.list()})),
+            ("GET", p) if p.starts_with("/dashboard/api/tables/") => match self.games.table(&p["/dashboard/api/tables/".len()..]) {
+                Some(table) => json(200, table),
+                None => json(404, json!({"error": "no such table"})),
+            },
+            ("POST", "/dashboard/api/tables") => {
+                let Ok(input) = serde_json::from_str::<Value>(body) else { return json(400, json!({"error": "not JSON"})) };
+                let open = host.as_ref().map(|h| h.open_sessions()).unwrap_or_default();
+                let mut players = Vec::new();
+                for id in input["players"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    let Some(s) = open.iter().find(|s| s.id == id) else { return json(400, json!({"error": format!("{id} is not online")})) };
+                    players.push(games::Player { session: s.id.clone(), nick: s.nick.clone().unwrap_or_else(|| s.title.clone()) });
+                }
+                match self.games.create(input["game"].as_str().unwrap_or("texas_holdem"), players, &deliver) {
+                    Ok(id) => json(200, json!({"table": id})),
+                    Err(e) => json(400, json!({"error": e})),
+                }
+            }
+            ("GET", "/dashboard/api/settings") => json(200, serde_json::to_value(games::read_settings(&self.data_dir)).unwrap_or_default()),
+            ("POST", "/dashboard/api/settings") => match serde_json::from_str::<games::GameSettings>(body) {
+                Ok(settings) => match games::write_settings(&self.data_dir, &settings) {
+                    Ok(()) => json(200, json!({"ok": true})),
+                    Err(e) => json(500, json!({"error": e.to_string()})),
+                },
+                Err(e) => json(400, json!({"error": e.to_string()})),
+            },
+            _ => json(404, json!({"error": "no such route"})),
+        }
+    }
+
     pub fn admin_token(&self) -> &str {
         &self.admin
     }
@@ -495,6 +561,14 @@ impl Daemon {
         let mut body = String::new();
         if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
             body.clear();
+        }
+        // The dashboard (ADR 0029): a page and its API, for whoever has the daemon's token.
+        if path == "/dashboard" || path.starts_with("/dashboard/") {
+            let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or_default();
+            let (status, kind, text) = if token == self.admin { self.dashboard(&method, path, &body) } else { (401, "text/plain", "the dashboard needs the daemon's token: `multitool dashboard` prints its address".to_string()) };
+            let response = tiny_http::Response::from_string(text).with_status_code(status).with_header(tiny_http::Header::from_bytes(&b"content-type"[..], kind.as_bytes()).expect("a valid header"));
+            let _ = request.respond(response);
+            return;
         }
         // Over HTTP only what comes from outside: callbacks, and the health check. Windows, session
         // servers and the command line talk over the local socket (CON-130).
@@ -907,6 +981,9 @@ fn off_types(root: &str) -> HashSet<String> {
     let handlers = conditions::read_project(root).map(|p| p.handlers).unwrap_or_default();
     handlers.into_iter().filter(|(_, implementation)| implementation == "off").map(|(kind, _)| kind).collect()
 }
+
+/// The dashboard's page: one file, no build step (ADR 0029).
+const DASHBOARD: &str = include_str!("dashboard.html");
 
 /// A project's journal as the tracker worker reads it.
 struct TrackerJournal(JournalMemory);

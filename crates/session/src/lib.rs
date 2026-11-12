@@ -508,6 +508,12 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         if let (Some(client), Some(window)) = (harness_daemon::client::Client::find(&data_dir), host.window.clone()) {
             selection.tools.extend(["agent_list".to_string(), "agent_send".to_string()]);
             selection.tools.extend(host_tools::MODE_TOOLS.iter().map(|name| name.to_string()));
+            // Games between agents (ADR 0029): the daemon holds the tables.
+            selection.tools.extend(host_tools::GAME_TOOLS.iter().map(|name| name.to_string()));
+            for name in host_tools::GAME_TOOLS {
+                let (client, window) = (client.clone(), window.clone());
+                registry.tool(name, move |_| Ok(Rc::new(host_tools::GameTool { name, client: client.clone(), window: window.clone(), tab })));
+            }
             for name in host_tools::MODE_TOOLS {
                 let (client, window) = (client.clone(), window.clone());
                 registry.tool(name, move |_| Ok(Rc::new(host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab })));
