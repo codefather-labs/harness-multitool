@@ -801,6 +801,7 @@ mod tests {
         let rewound = format.pull(root, &id, &pulled.cursor).unwrap();
         assert!(rewound.rewound);
         assert_eq!(said(&rewound.entries), ["other way"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CON-78: a live program named in the provider's record holds a conversation; a dead one does not.
@@ -816,6 +817,7 @@ mod tests {
         assert_eq!(format.held_by("c2", None), None);
         assert_eq!(format.held_by("c3", None), None);
         assert_eq!(format.held_by("c1", Some(std::process::id())), None, "its own process does not count");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CON-144: a whole read reports its bytes as it goes, at least every 200 ms, the last at the end.

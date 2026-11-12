@@ -119,5 +119,6 @@ mod tests {
         let copy = import(&dir, other, &out, false).unwrap();
         assert_eq!((copy.new, copy.maps), (2, 1));
         assert_eq!(export(&dir, other).unwrap().lines().count(), out.lines().count());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

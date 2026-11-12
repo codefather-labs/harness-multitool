@@ -568,6 +568,7 @@ mod tests {
         let absolute = root.join("gone.png");
         let err = check_proofs(&with_files(&[absolute.to_str().unwrap()]), "/nonexistent-root").unwrap_err();
         assert!(err.to_string().contains("gone.png"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -578,6 +579,7 @@ mod tests {
         assert!(check_proofs(&with_files(&["proofs/out.txt"]), root.to_str().unwrap()).is_ok());
         let file = root.join("proofs/out.txt");
         assert!(check_proofs(&with_files(&[file.to_str().unwrap()]), "/nonexistent-root").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The owner's rule: a proof with no file needs no path, and its words are not read as one.
@@ -626,6 +628,8 @@ mod tests {
         assert!(refused.to_string().contains("over the 50 MB"), "{refused}");
         assert!(place_proofs(&with_files(&["missing.txt"]), r).is_err(), "a missing file is still refused");
         assert_eq!(place_proofs(&json!({"proof": ["words only"]}), r).unwrap(), json!({"proof": ["words only"]}));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// A model gave `proof_file` as one string: the check held for nothing, and the proof was lost.

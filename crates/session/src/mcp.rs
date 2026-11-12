@@ -233,6 +233,7 @@ mod tests {
         assert!(replies[3]["result"]["content"][0]["text"].as_str().unwrap().contains("written over mcp"), "{}", replies[3]);
         assert_eq!(replies[4]["error"]["code"], -32602);
         assert_eq!(replies[5]["error"]["code"], -32601);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CON-114 over MCP: the server's own limit refuses the add past it, and the map keeps its nodes.
@@ -258,5 +259,6 @@ mod tests {
         assert_eq!(replies[2]["result"]["isError"], true, "{}", replies[2]);
         let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("holds 2 nodes") && text.contains("limit is 2"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
