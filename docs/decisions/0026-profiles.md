@@ -1,6 +1,6 @@
 # 0026 — Profiles: every setting, and each window's sign-in
 
-- **Status:** proposed · **Decided by:** the project owner, 2026-11-10
+- **Status:** accepted, built (journal#747 to journal#750, CON-120 to CON-127, CON-145) · **Decided by:** the project owner, 2026-11-10
 - **Specs:** CON-120, CON-121, CON-122, CON-123, CON-124, CON-125, CON-126; keeps CON-56, CON-87, INV-6
 
 ## Decision

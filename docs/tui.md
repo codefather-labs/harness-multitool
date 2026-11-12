@@ -20,6 +20,17 @@ multitool daemon stop           # stop it and start none
 
 **Text first.** Text mode is the primary target: the owner works in Ptyxis (VTE), which draws no pictures, so every screen must read well without them. The design targets text mode: every picture has a text form drawn in the same cells — the logo as half-block pixel art, icons as glyphs, mind maps as box-drawing cards and arrows. Terminals with a graphics protocol (kitty, WezTerm, Ghostty; sixel where enabled) get pictures instead, made from SVG for the cells they cover. A protocol forced with `--graphics` is used only when the terminal answers a graphics query; others keep the text forms.
 
+## Profiles
+
+A profile is a separate set of the harness's settings and sign-ins ([ADR 0026](decisions/0026-profiles.md)): its provider, model and keys, its own Claude Code sign-in, ChatGPT sign-in and Codex sign-in, each in a folder of its own under `~/.harness/profiles/<name>/` (`profile.toml`, `claude/`, `chatgpt/`, `codex/`). Conversations are not the profile's: they belong to the daemon, and every profile sees the same ones (CON-126). Moving a window to another profile moves its tabs too (CON-127).
+
+What the user set up in Claude Code and Codex reaches a delegate on every profile (CON-145): plugins, skills, agents, commands, hooks, rules and instructions are linked into the profile's folders, settings are shared without their sign-in keys, and the user's MCP servers are passed along. A sign-in is never copied: each profile signs in for itself.
+
+- **Settings > Profiles**: the list, with Add, Edit, Delete and Use. Enter on a line is Use: the window and the next start run on it. The card under the cursor shows its folder and accounts (CON-125).
+- **Settings > Provider**: signs the current profile in or out. Claude Code is signed in only by the unmodified `claude auth login` in the profile's own folder; the harness never reads, stores or passes on a Claude.ai token (CON-123, CON-56). The line shows the account's email and plan.
+- From the command line: `multitool profile list`, `multitool profile add <name>` (a clean profile: defaults, no key, no sign-in), `multitool login claude-code|codex|chatgpt` and `multitool logout ...` for the current profile, and `--profile <name>` for one run only, as autostart wants it.
+- `default` runs Claude Code on the user's own folder until its own is signed in (CON-120, CON-122).
+
 ## A session
 
 Choose the provider and the model in the configuration (`config.toml` in the OS's config directory, see `multitool setup`):
