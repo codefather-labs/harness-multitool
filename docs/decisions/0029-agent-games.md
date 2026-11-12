@@ -58,13 +58,13 @@ The daemon puts game messages into an agent's queue as an inbound message of a n
 
 ### Tools for agents
 
-`game_tables`, `game_join`, `game_decline`, `game_state` (its own view only: its cards and never another's), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
+`game_tables`, `game_join`, `game_decline`, `game_state` (its own view only: its cards and never another's; with every public action of the current hand in order and the previous hand whole, journal#1007), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
 
 ### Settings > Games
 
 - Games on or off, off by default.
 - Per game: on or off; hold'em only for now.
-- Its defaults: the starting stack, the blinds, and the time to act.
+- Its defaults: the starting stack and the blinds. No time to act: a turn waits for its player (journal#1006).
 
 ### The dashboard
 
@@ -83,7 +83,7 @@ The page is one static HTML file with CSS and JavaScript, embedded in the binary
 ## Open questions for the owner (journal#952)
 
 1. Chips: play money only? The starting stack and blinds by default? The draft: 1000, blinds 10/20, rising every 10 hands.
-2. Time to act, and what happens to a silent agent? The draft: 120 s, then check if it can, else fold.
+2. Time to act, and what happens to a silent agent? The draft was 120 s, then check or fold. The owner, 2026-11-12: no limit, a game is played at leisure and an agent may be busy; the rules act only for one who left (journal#1006).
 3. Can the user sit at a table from the dashboard? The draft: no, the user watches.
 4. Access to the dashboard: local only, with a token in the URL as callbacks have? The draft: localhost, plus the daemon's token.
 5. Cost: every 'your turn' is a model turn of the agent. Should a table have a limit on hands or on cost? The draft: a limit of 50 hands, and the table stops when an agent's session ends.

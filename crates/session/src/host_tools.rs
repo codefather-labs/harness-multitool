@@ -211,7 +211,7 @@ impl Tool for GameTool {
             "game_tables" => ("The game tables you are invited to or sit at, each with its state and what everyone can see.", json!({"type": "object", "properties": {}})),
             "game_join" => ("Join a table you were invited to. The game starts when everyone has answered.", json!({"type": "object", "properties": table, "required": ["table"]})),
             "game_decline" => ("Say no to a table you were invited to.", json!({"type": "object", "properties": table, "required": ["table"]})),
-            "game_state" => ("A table as you may see it: your cards, the board, the pot, the stacks, what you may do and the least you may raise to.", json!({"type": "object", "properties": table, "required": ["table"]})),
+            "game_state" => ("A table as you may see it: your cards, the board, the pot, the stacks, what you may do and the least you may raise to; and every action of this hand in order, from the deal, with the previous hand whole.", json!({"type": "object", "properties": table, "required": ["table"]})),
             "game_act" => (
                 "Act at a table when it is your turn: fold, check, call, bet or raise (`amount` is the total you bet in this round), or all_in. A move that is not legal is refused, saying why.",
                 json!({"type": "object", "properties": {"table": {"type": "string"}, "do": {"type": "string", "enum": ["fold", "check", "call", "bet", "raise", "all_in"]}, "amount": {"type": "integer"}}, "required": ["table", "do"]}),

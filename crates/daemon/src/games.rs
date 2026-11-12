@@ -15,8 +15,6 @@ use serde_json::{Value, json};
 
 /// The label of a game's inbound messages, drawn as a callback card of its own colour.
 pub const GAME_LABEL: &str = "game";
-/// How long an agent has to act before the rules act for it, in seconds, by default.
-pub const TURN_SECONDS: u64 = 120;
 
 /// The games' settings (Settings > Games, the dashboard): off until turned on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,20 +25,15 @@ pub struct GameSettings {
     pub texas_holdem: bool,
     #[serde(default)]
     pub rules: Rules,
-    #[serde(default = "turn")]
-    pub turn_seconds: u64,
 }
 
 fn yes() -> bool {
     true
 }
-fn turn() -> u64 {
-    TURN_SECONDS
-}
 
 impl Default for GameSettings {
     fn default() -> Self {
-        GameSettings { enabled: false, texas_holdem: true, rules: Rules::default(), turn_seconds: TURN_SECONDS }
+        GameSettings { enabled: false, texas_holdem: true, rules: Rules::default() }
     }
 }
 
@@ -75,8 +68,16 @@ pub struct Table {
     pub log: Vec<String>,
     /// What each player has not been told yet: told with their next turn.
     pub pending: BTreeMap<String, Vec<String>>,
-    /// When the player to act was asked, in ms since the epoch.
+    /// When the player to act was asked, in ms since the epoch: shown, never a deadline. A game
+    /// is played at leisure and an agent may be busy, so no turn has a time limit (journal#1006).
     pub asked_ms: u64,
+    /// The current hand's public events in order, from its deal (journal#1007): what game_state
+    /// gives a player so it can follow the whole hand.
+    #[serde(default)]
+    pub hand: Vec<Value>,
+    /// The previous hand's, whole, to its end: the next hand is dealt the moment one ends.
+    #[serde(default)]
+    pub last_hand: Vec<Value>,
     pub created_ms: u64,
     pub rules: Rules,
     pub seed: u64,
@@ -163,7 +164,7 @@ impl Games {
         let mut tables = self.tables.lock().expect("tables");
         let id = format!("T{}", tables.len() + 1);
         let rules = settings.rules.clone();
-        let table = Table { id: id.clone(), game: game.to_string(), invited: players.clone(), joined: Vec::new(), declined: Vec::new(), state: "inviting".into(), engine: None, log: Vec::new(), pending: BTreeMap::new(), asked_ms: 0, created_ms: now_ms(), rules: rules.clone(), seed: now_ms() };
+        let table = Table { id: id.clone(), game: game.to_string(), invited: players.clone(), joined: Vec::new(), declined: Vec::new(), state: "inviting".into(), engine: None, log: Vec::new(), pending: BTreeMap::new(), asked_ms: 0, hand: Vec::new(), last_hand: Vec::new(), created_ms: now_ms(), rules: rules.clone(), seed: now_ms() };
         let names: Vec<&str> = players.iter().map(|p| p.nick.as_str()).collect();
         for p in &players {
             deliver(&p.session, &format!("You are invited to a poker table {id}: Texas hold'em with {}, stacks of {}, blinds {}/{}, play money. Join it with game_join (table {id}), or say no with game_decline. It starts when everyone has answered.", names.join(", "), rules.stack, rules.small_blind, rules.big_blind));
@@ -201,7 +202,7 @@ impl Games {
             }
             "game_state" => {
                 let view = table.engine.as_ref().map(|e| e.view(Some(&me)));
-                json!({"table": table.public(), "you": view.map(|v| v["you"].clone())})
+                json!({"table": table.public(), "you": view.map(|v| v["you"].clone()), "hand": table.hand, "last_hand": table.last_hand})
             }
             "game_act" => {
                 let engine = table.engine.as_mut().ok_or_else(|| format!("table {id} has not started"))?;
@@ -256,6 +257,15 @@ impl Games {
             // The log is everyone's: a player's own cards and turn are theirs alone.
             if event.to.is_none() {
                 table.log.push(event.text.clone());
+                if event.kind == "hand" {
+                    let done = std::mem::take(&mut table.hand);
+                    if !done.is_empty() {
+                        table.last_hand = done;
+                    }
+                }
+                if matches!(event.kind.as_str(), "hand" | "acted" | "board" | "hand_ended") {
+                    table.hand.push(json!({"kind": event.kind, "text": event.text, "data": event.data}));
+                }
             }
             let everyone: Vec<String> = table.invited.iter().filter(|p| table.joined.contains(&p.session)).map(|p| p.session.clone()).collect();
             match (event.kind.as_str(), &event.to) {
@@ -293,19 +303,19 @@ impl Games {
         table.log.drain(..keep);
     }
 
-    /// The rules act for whoever has been asked longer than the turn allows, or has left.
+    /// The rules act for whoever has left the table, at each of its turns. No one else is ever
+    /// acted for: a turn waits for its player however long it takes (journal#1006).
     pub fn tick(&self, deliver: Deliver<'_>) {
-        let turn_ms = read_settings(&self.data_dir).turn_seconds.saturating_mul(1000);
         let mut changed = Vec::new();
         {
             let mut tables = self.tables.lock().expect("tables");
             for table in tables.values_mut().filter(|t| t.state == "playing") {
                 let Some(nick) = table.engine.as_ref().and_then(|e| e.to_act()) else { continue };
                 let gone = table.session_of(&nick).is_some_and(|s| table.declined.contains(&s));
-                if gone || now_ms().saturating_sub(table.asked_ms) > turn_ms {
+                if gone {
                     let Some(engine) = table.engine.as_mut() else { continue };
                     let events = engine.timeout();
-                    table.log.push(format!("{nick} did not act in time{}.", if gone { " (left)" } else { "" }));
+                    table.log.push(format!("{nick} has left: the rules act for them."));
                     Self::tell(table, events, deliver);
                     changed.push(table.clone());
                 }
@@ -339,7 +349,7 @@ mod tests {
         };
         let games = Games::new(&dir);
         assert!(games.create("texas_holdem", players(), &deliver).unwrap_err().contains("games are off"));
-        write_settings(&dir, &GameSettings { enabled: true, turn_seconds: 0, ..Default::default() }).unwrap();
+        write_settings(&dir, &GameSettings { enabled: true, ..Default::default() }).unwrap();
         let id = games.create("texas_holdem", players(), &deliver).unwrap();
         assert_eq!(said.borrow().iter().filter(|(_, t)| t.contains("You are invited to a poker table T1")).count(), 2);
         assert!(games.op("s-eve", "game_join", &json!({"table": id}), &deliver).unwrap_err().contains("not at table"));
@@ -361,10 +371,20 @@ mod tests {
         let told = said.borrow().clone();
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(told[0].0 == "s-bob" && told[0].1.contains("Since your last turn: ") && told[0].1.contains("ann calls 10.") && told[0].1.contains("Your turn"), "{}", told[0].1);
-        // Bob is silent: the rules check for him.
+        // Bob is silent: no time limit, the rules never act for him while he sits (journal#1006).
         said.borrow_mut().clear();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        if let Some(t) = games.tables.lock().unwrap().get_mut(&id) {
+            t.asked_ms = 0;
+        }
         games.tick(&deliver);
+        assert!(said.borrow().is_empty(), "a silent player is waited for: {:?}", said.borrow());
+        // game_state gives the hand so far, in order (journal#1007).
+        let state = games.op("s-bob", "game_state", &json!({"table": id}), &deliver).unwrap();
+        let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["hand", "acted"], "{state}");
+        assert!(state["hand"][1]["text"].as_str().unwrap().contains("ann calls 10"), "{state}");
+        assert!(!state["hand"].to_string().contains("your cards"), "no one's cards in the hand's history");
+        games.op("s-bob", "game_act", &json!({"table": id, "do": "check"}), &deliver).unwrap();
         // After the flop, heads-up, the big blind (bob) acts first: he is told, with what happened.
         assert!(said.borrow().iter().any(|(s, t)| s == "s-bob" && t.contains("bob checks") && t.contains("the flop")), "{:?}", said.borrow());
         // The dashboard, and any agent through game_state, sees no one's cards: not in the view,
@@ -374,6 +394,20 @@ mod tests {
         let log = public["log"].to_string();
         assert!(!log.contains("your cards") && !log.contains("you hold"), "a private message in the public log: {log}");
         assert!(!bob_view["table"]["log"].to_string().contains("you hold"));
+        let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
+        let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["hand", "acted", "acted", "board"], "{state}");
+        // One who leaves is acted for at each of his turns, and the hand ends,
+        // and the finished hand stays readable whole while the next one is dealt.
+        games.op("s-bob", "game_leave", &json!({"table": id}), &deliver).unwrap();
+        // He checked, as the rules do for one gone; ann bets, and at his turn the tick folds him.
+        games.op("s-ann", "game_act", &json!({"table": id, "do": "bet", "amount": 40}), &deliver).unwrap();
+        games.tick(&deliver);
+        let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
+        let last: Vec<&str> = state["last_hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(last.first(), Some(&"hand"), "{state}");
+        assert_eq!(last.last(), Some(&"hand_ended"), "{state}");
+        assert_eq!(state["hand"][0]["kind"], "hand", "the next hand has begun: {state}");
         // A table is kept on disk, and comes back with the daemon.
         assert_eq!(Games::new(&dir).table(&id).unwrap()["state"], "playing");
         // For a picture of the dashboard: the table's file, kept where asked.
