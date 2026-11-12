@@ -118,6 +118,43 @@ static USERS_CLAUDE_VAR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::
 /// `CODEX_HOME` as this process found it, the user's own Codex folder when set (journal#913).
 static USERS_CODEX_VAR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
 
+/// The user's own `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, as the first multitool of a chain found
+/// them, empty when unset (journal#1025). A multitool sets its profile's in its own environment,
+/// which every multitool started from it inherits (a reloaded window, a daemon, one an agent
+/// runs): these tell it the user's own all the same.
+pub const OWN_CLAUDE_VAR: &str = "MULTITOOL_OWN_CLAUDE_CONFIG_DIR";
+pub const OWN_CODEX_VAR: &str = "MULTITOOL_OWN_CODEX_HOME";
+
+/// The user's own value: the marker when there is one (empty: none), else the plain variable.
+/// A folder inside the harness's own profiles (`profiles`) is a profile's, never the user's: a
+/// multitool from before the markers set it, and its children inherited it.
+pub fn own_value(marker: Option<std::ffi::OsString>, plain: Option<std::ffi::OsString>, profiles: &std::path::Path) -> Option<std::ffi::OsString> {
+    let own = match marker {
+        Some(m) => Some(m),
+        None => plain,
+    };
+    let a_profiles = |v: &std::ffi::OsString| !profiles.as_os_str().is_empty() && std::path::Path::new(v).starts_with(profiles);
+    own.filter(|v| !v.is_empty() && !a_profiles(v))
+}
+
+fn profiles_root() -> PathBuf {
+    root().map(|r| r.join("profiles")).unwrap_or_default()
+}
+
+fn own_var(marker: &str, plain: &str) -> Option<std::ffi::OsString> {
+    own_value(std::env::var_os(marker), std::env::var_os(plain), &profiles_root())
+}
+
+/// The markers to set before this process sets its profile's variables: the ones not set yet,
+/// with the value the environment has now (journal#1025).
+pub fn own_markers() -> Vec<(&'static str, std::ffi::OsString)> {
+    [(OWN_CLAUDE_VAR, "CLAUDE_CONFIG_DIR"), (OWN_CODEX_VAR, "CODEX_HOME")]
+        .into_iter()
+        .filter(|(marker, _)| std::env::var_os(marker).is_none())
+        .map(|(marker, plain)| (marker, own_value(None, std::env::var_os(plain), &profiles_root()).unwrap_or_default()))
+        .collect()
+}
+
 /// Whether the profiles' root is the user's own, not one set apart by MULTITOOL_HOME.
 fn root_is_users() -> bool {
     std::env::var_os("MULTITOOL_HOME").is_none_or(|d| d.is_empty())
@@ -177,8 +214,8 @@ pub fn select(name: &str) -> Result<()> {
         return Err(anyhow!("no profile {name:?}; the profiles are: {}", names.join(", ")));
     }
     let _ = USERS_CLAUDE.set(users_claude_dir()?);
-    let _ = USERS_CLAUDE_VAR.set(std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()));
-    let _ = USERS_CODEX_VAR.set(std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()));
+    let _ = USERS_CLAUDE_VAR.set(own_var(OWN_CLAUDE_VAR, "CLAUDE_CONFIG_DIR"));
+    let _ = USERS_CODEX_VAR.set(own_var(OWN_CODEX_VAR, "CODEX_HOME"));
     *CURRENT.write().map_err(|_| anyhow!("the profile lock is poisoned"))? = Some(name.to_string());
     Ok(())
 }
@@ -220,7 +257,7 @@ pub fn users_claude_dir() -> Result<PathBuf> {
     if let Some(dir) = USERS_CLAUDE.get() {
         return Ok(dir.clone());
     }
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+    if let Some(dir) = own_var(OWN_CLAUDE_VAR, "CLAUDE_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
     Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".claude"))
@@ -234,10 +271,14 @@ pub fn codex_dir(name: &str) -> Result<PathBuf> {
 
 /// The user's own Codex folder: `CODEX_HOME` as this process found it, else `~/.codex`.
 pub fn users_codex_dir() -> Result<PathBuf> {
-    if let Some(Some(dir)) = USERS_CODEX_VAR.get() {
-        return Ok(PathBuf::from(dir));
+    // Noted at the start: the user had one, or none (then not the profile's, set since).
+    if let Some(noted) = USERS_CODEX_VAR.get() {
+        return match noted {
+            Some(dir) => Ok(PathBuf::from(dir)),
+            None => Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".codex")),
+        };
     }
-    if let Some(dir) = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
+    if let Some(dir) = own_var(OWN_CODEX_VAR, "CODEX_HOME") {
         return Ok(PathBuf::from(dir));
     }
     Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".codex"))
@@ -307,7 +348,7 @@ pub const USERS_CLAUDE_JSON_VAR: &str = "MULTITOOL_USERS_CLAUDE_JSON";
 /// The user's own `.claude.json`, where Claude Code keeps their MCP servers: in their
 /// CLAUDE_CONFIG_DIR when they set one, else in the home folder.
 pub fn users_claude_json() -> Result<PathBuf> {
-    let own = USERS_CLAUDE_VAR.get().cloned().unwrap_or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()));
+    let own = USERS_CLAUDE_VAR.get().cloned().unwrap_or_else(|| own_var(OWN_CLAUDE_VAR, "CLAUDE_CONFIG_DIR"));
     match own {
         Some(dir) => Ok(PathBuf::from(dir).join(".claude.json")),
         None => Ok(dirs::home_dir().ok_or_else(|| anyhow!("this OS reports no home directory"))?.join(".claude.json")),
@@ -864,6 +905,26 @@ pub fn graphics() -> Graphics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// journal#1025: the user's own folder survives a multitool started by a multitool, and a
+    /// profile's folder is never taken for it.
+    #[test]
+    fn the_users_own_folder_is_the_markers_and_never_a_profiles() {
+        use std::ffi::OsString;
+        let profiles = std::path::Path::new("/h/.harness/profiles");
+        let profile = || Some(OsString::from("/h/.harness/profiles/work/claude"));
+        // The bug: a child inherits the profile's CLAUDE_CONFIG_DIR. The marker says the user had none.
+        assert_eq!(own_value(Some(OsString::new()), profile(), profiles), None);
+        // The marker says the user's own folder.
+        assert_eq!(own_value(Some("/h/mine".into()), profile(), profiles), Some("/h/mine".into()));
+        // No marker: the plain variable, as the user set it.
+        assert_eq!(own_value(None, Some("/h/mine".into()), profiles), Some("/h/mine".into()));
+        // No marker and a profile's folder (a chain from before the markers): not the user's.
+        assert_eq!(own_value(None, profile(), profiles), None);
+        assert_eq!(own_value(None, None, profiles), None);
+        // Where no profiles folder is known, nothing is filtered.
+        assert_eq!(own_value(None, Some("/h/mine".into()), std::path::Path::new("")), Some("/h/mine".into()));
+    }
 
     /// A fresh folder of its own for a test.
     struct Temp(std::path::PathBuf);

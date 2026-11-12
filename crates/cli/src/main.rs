@@ -301,6 +301,12 @@ fn main() -> Result<()> {
         Some(name) => name,
         None => config::starting()?,
     };
+    // The user's own folders, for every multitool started from this one, before this profile's
+    // are set (journal#1025).
+    for (marker, value) in config::own_markers() {
+        // SAFETY: first thing in main, before any thread is started.
+        unsafe { std::env::set_var(marker, value) };
+    }
     config::select(&profile)?;
     for (name, dir) in config::sign_in_environment()? {
         // SAFETY: first thing in main, before any thread is started. This process's environment is
