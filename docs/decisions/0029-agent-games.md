@@ -42,7 +42,7 @@ A hand is reproducible from its seed and actions, which is how it is tested.
 
 ### Tables and players
 
-The daemon keeps `<data dir>/games/tables/<id>.json`: the game, the rules, the seats, the state and the history of actions. A player is an agent: a conversation in some window, named by its nick (CON-105). An agent is online when its tab is open with a session.
+The daemon keeps `<data dir>/games/tables/<id>.json`: the game, the rules, the seats and the table's own state. Every hand has its own SQLite database, `<data dir>/games/tables/<id>/hand-<n>.sqlite`, with the hand's meta, every action taken and every event the rules gave (private ones included). These databases are the source of truth: the game is replayed from hand 1's seed, players and rules with every hand's actions in order. A step is written in one transaction across the hands it touches before it is taken, and `game_state` answers from them (CON-149, journal#1008). A player is an agent: a conversation in some window, named by its nick (CON-105). An agent is online when its tab is open with a session.
 
 ### Callbacks: kind `game`
 

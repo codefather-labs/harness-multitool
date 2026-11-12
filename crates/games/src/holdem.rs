@@ -165,6 +165,11 @@ pub struct Holdem {
 
 impl Holdem {
     /// A table for these players; the first hand is dealt at once.
+    /// The hand being played, from 1; 0 before the first is dealt.
+    pub fn hand_no(&self) -> u32 {
+        self.hand_no
+    }
+
     pub fn new(players: &[PlayerId], seed: u64, rules: Rules) -> (Holdem, Vec<Event>) {
         Self::with_deck(players, seed, rules, Vec::new())
     }

@@ -10,6 +10,8 @@ use std::sync::Mutex;
 
 use harness_games::holdem::{Holdem, Rules};
 use harness_games::{Event, Game};
+
+use crate::hand_db;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -63,6 +65,9 @@ pub struct Table {
     pub declined: Vec<String>,
     /// inviting, playing, over, cancelled.
     pub state: String,
+    /// The game as its hands' databases have it (CON-149): never saved here, rebuilt from them
+    /// when the daemon starts, changed only by a step written there first.
+    #[serde(skip)]
     pub engine: Option<Holdem>,
     /// What happened, as told, the last 300.
     pub log: Vec<String>,
@@ -71,13 +76,6 @@ pub struct Table {
     /// When the player to act was asked, in ms since the epoch: shown, never a deadline. A game
     /// is played at leisure and an agent may be busy, so no turn has a time limit (journal#1006).
     pub asked_ms: u64,
-    /// The current hand's public events in order, from its deal (journal#1007): what game_state
-    /// gives a player so it can follow the whole hand.
-    #[serde(default)]
-    pub hand: Vec<Value>,
-    /// The previous hand's, whole, to its end: the next hand is dealt the moment one ends.
-    #[serde(default)]
-    pub last_hand: Vec<Value>,
     pub created_ms: u64,
     pub rules: Rules,
     pub seed: u64,
@@ -103,6 +101,27 @@ impl Table {
     }
 }
 
+/// What a table's game does next: a player's action, or the rules' for one who has left.
+enum Step<'a> {
+    Act(&'a Value),
+    Timeout,
+}
+
+/// One step of a table's game (CON-149): taken on a copy, written to its hand's database with
+/// what it set off, and only then made the table's. A write that fails refuses the step.
+fn step(dir: &Path, table: &mut Table, player: &str, what: Step<'_>) -> Result<Vec<Event>, String> {
+    let engine = table.engine.as_ref().ok_or_else(|| format!("table {} has not started", table.id))?;
+    let mut next = engine.clone();
+    let hand = next.hand_no();
+    let (events, action) = match what {
+        Step::Act(action) => (next.act(player, action)?, action.clone()),
+        Step::Timeout => (next.timeout(), hand_db::timeout()),
+    };
+    hand_db::record(dir, &hand_db::meta(dir)?, hand, Some((player, &action)), &events)?;
+    table.engine = Some(next);
+    Ok(events)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -121,12 +140,31 @@ impl Games {
         let mut tables = BTreeMap::new();
         if let Ok(files) = std::fs::read_dir(data_dir.join("games").join("tables")) {
             for file in files.flatten() {
-                if let Some(table) = std::fs::read_to_string(file.path()).ok().and_then(|t| serde_json::from_str::<Table>(&t).ok()) {
+                if let Some(mut table) = std::fs::read_to_string(file.path()).ok().and_then(|t| serde_json::from_str::<Table>(&t).ok()) {
+                    // The game comes back from its hands' databases, the source of truth.
+                    if matches!(table.state.as_str(), "playing" | "over") {
+                        match hand_db::replay(&Self::hands_of(data_dir, &table.id)) {
+                            Ok(Some(engine)) => table.engine = Some(engine),
+                            Ok(None) => {
+                                table.state = "damaged".into();
+                                table.log.push("The table's hands' databases are missing: it cannot go on.".into());
+                            }
+                            Err(e) => {
+                                table.state = "damaged".into();
+                                table.log.push(format!("The table's hands' databases do not replay: {e}."));
+                            }
+                        }
+                    }
                     tables.insert(table.id.clone(), table);
                 }
             }
         }
         Games { data_dir: data_dir.to_path_buf(), tables: Mutex::new(tables) }
+    }
+
+    /// The folder of a table's hands' databases.
+    fn hands_of(data_dir: &Path, table: &str) -> PathBuf {
+        data_dir.join("games").join("tables").join(table)
     }
 
     fn save(&self, table: &Table) {
@@ -164,7 +202,7 @@ impl Games {
         let mut tables = self.tables.lock().expect("tables");
         let id = format!("T{}", tables.len() + 1);
         let rules = settings.rules.clone();
-        let table = Table { id: id.clone(), game: game.to_string(), invited: players.clone(), joined: Vec::new(), declined: Vec::new(), state: "inviting".into(), engine: None, log: Vec::new(), pending: BTreeMap::new(), asked_ms: 0, hand: Vec::new(), last_hand: Vec::new(), created_ms: now_ms(), rules: rules.clone(), seed: now_ms() };
+        let table = Table { id: id.clone(), game: game.to_string(), invited: players.clone(), joined: Vec::new(), declined: Vec::new(), state: "inviting".into(), engine: None, log: Vec::new(), pending: BTreeMap::new(), asked_ms: 0, created_ms: now_ms(), rules: rules.clone(), seed: now_ms() };
         let names: Vec<&str> = players.iter().map(|p| p.nick.as_str()).collect();
         for p in &players {
             deliver(&p.session, &format!("You are invited to a poker table {id}: Texas hold'em with {}, stacks of {}, blinds {}/{}, play money. Join it with game_join (table {id}), or say no with game_decline. It starts when everyone has answered.", names.join(", "), rules.stack, rules.small_blind, rules.big_blind));
@@ -187,6 +225,7 @@ impl Games {
             return Err(format!("you are not at table {id}"));
         }
         let me = table.nick_of(session);
+        let dir = Self::hands_of(&self.data_dir, id);
         let answer = match name {
             "game_join" | "game_decline" => {
                 if table.state != "inviting" {
@@ -197,16 +236,24 @@ impl Games {
                     list.push(session.to_string());
                 }
                 table.log.push(format!("{me} {}.", if name == "game_join" { "joins" } else { "declines" }));
-                Self::maybe_start(table, deliver);
+                Self::maybe_start(&dir, table, deliver);
                 json!({"table": id, "state": table.state})
             }
             "game_state" => {
-                let view = table.engine.as_ref().map(|e| e.view(Some(&me)));
-                json!({"table": table.public(), "you": view.map(|v| v["you"].clone()), "hand": table.hand, "last_hand": table.last_hand})
+                // Read from the hands' databases, the source of truth (CON-149), not the copy kept.
+                let engine = hand_db::replay(&dir)?;
+                let mut public = table.public();
+                public["view"] = engine.as_ref().map_or(Value::Null, |e| e.view(None));
+                let n = hand_db::last_hand(&dir);
+                json!({
+                    "table": public,
+                    "you": engine.as_ref().map(|e| e.view(Some(&me))["you"].clone()),
+                    "hand": hand_db::events(&dir, n, true),
+                    "last_hand": hand_db::events(&dir, n.saturating_sub(1), true),
+                })
             }
             "game_act" => {
-                let engine = table.engine.as_mut().ok_or_else(|| format!("table {id} has not started"))?;
-                let events = engine.act(&me, args)?;
+                let events = step(&dir, table, &me, Step::Act(args))?;
                 Self::tell(table, events, deliver);
                 json!({"ok": true})
             }
@@ -214,10 +261,8 @@ impl Games {
                 // Leaving folds now and at every turn after: the rules act for one who is gone.
                 table.declined.push(session.to_string());
                 table.log.push(format!("{me} leaves the table."));
-                if let Some(engine) = table.engine.as_mut()
-                    && engine.to_act().as_deref() == Some(me.as_str())
-                {
-                    let events = engine.timeout();
+                if table.engine.as_ref().and_then(|e| e.to_act()).as_deref() == Some(me.as_str()) {
+                    let events = step(&dir, table, &me, Step::Timeout)?;
                     Self::tell(table, events, deliver);
                 }
                 json!({"left": id})
@@ -231,7 +276,7 @@ impl Games {
     }
 
     /// Everyone has answered: two or more who joined play; fewer, and it is called off.
-    fn maybe_start(table: &mut Table, deliver: Deliver<'_>) {
+    fn maybe_start(dir: &Path, table: &mut Table, deliver: Deliver<'_>) {
         if table.joined.len() + table.declined.len() < table.invited.len() {
             return;
         }
@@ -244,6 +289,12 @@ impl Games {
             return;
         }
         let (engine, events) = Holdem::new(&players, table.seed, table.rules.clone());
+        let meta = hand_db::Meta { table: table.id.clone(), game: table.game.clone(), seed: table.seed, players, rules: table.rules.clone() };
+        if let Err(e) = hand_db::record(dir, &meta, 1, None, &events) {
+            // Not started: the next answer to the table tries again.
+            table.log.push(format!("The table could not start: {e}."));
+            return;
+        }
         table.engine = Some(engine);
         table.state = "playing".into();
         Self::tell(table, events, deliver);
@@ -257,15 +308,6 @@ impl Games {
             // The log is everyone's: a player's own cards and turn are theirs alone.
             if event.to.is_none() {
                 table.log.push(event.text.clone());
-                if event.kind == "hand" {
-                    let done = std::mem::take(&mut table.hand);
-                    if !done.is_empty() {
-                        table.last_hand = done;
-                    }
-                }
-                if matches!(event.kind.as_str(), "hand" | "acted" | "board" | "hand_ended") {
-                    table.hand.push(json!({"kind": event.kind, "text": event.text, "data": event.data}));
-                }
             }
             let everyone: Vec<String> = table.invited.iter().filter(|p| table.joined.contains(&p.session)).map(|p| p.session.clone()).collect();
             match (event.kind.as_str(), &event.to) {
@@ -313,11 +355,15 @@ impl Games {
                 let Some(nick) = table.engine.as_ref().and_then(|e| e.to_act()) else { continue };
                 let gone = table.session_of(&nick).is_some_and(|s| table.declined.contains(&s));
                 if gone {
-                    let Some(engine) = table.engine.as_mut() else { continue };
-                    let events = engine.timeout();
-                    table.log.push(format!("{nick} has left: the rules act for them."));
-                    Self::tell(table, events, deliver);
-                    changed.push(table.clone());
+                    match step(&Self::hands_of(&self.data_dir, &table.id), table, &nick, Step::Timeout) {
+                        Ok(events) => {
+                            table.log.push(format!("{nick} has left: the rules act for them."));
+                            Self::tell(table, events, deliver);
+                            changed.push(table.clone());
+                        }
+                        // Tried again at the next tick; nothing was taken.
+                        Err(e) => eprintln!("multitool daemon: table {}: {e}", table.id),
+                    }
                 }
             }
         }
@@ -381,8 +427,8 @@ mod tests {
         // game_state gives the hand so far, in order (journal#1007).
         let state = games.op("s-bob", "game_state", &json!({"table": id}), &deliver).unwrap();
         let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["hand", "acted"], "{state}");
-        assert!(state["hand"][1]["text"].as_str().unwrap().contains("ann calls 10"), "{state}");
+        assert_eq!(kinds, ["started", "hand", "acted"], "the table's start is hand 1's: {state}");
+        assert!(state["hand"][2]["text"].as_str().unwrap().contains("ann calls 10"), "{state}");
         assert!(!state["hand"].to_string().contains("your cards"), "no one's cards in the hand's history");
         games.op("s-bob", "game_act", &json!({"table": id, "do": "check"}), &deliver).unwrap();
         // After the flop, heads-up, the big blind (bob) acts first: he is told, with what happened.
@@ -396,7 +442,7 @@ mod tests {
         assert!(!bob_view["table"]["log"].to_string().contains("you hold"));
         let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
         let kinds: Vec<&str> = state["hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["hand", "acted", "acted", "board"], "{state}");
+        assert_eq!(kinds, ["started", "hand", "acted", "acted", "board"], "{state}");
         // One who leaves is acted for at each of his turns, and the hand ends,
         // and the finished hand stays readable whole while the next one is dealt.
         games.op("s-bob", "game_leave", &json!({"table": id}), &deliver).unwrap();
@@ -405,11 +451,37 @@ mod tests {
         games.tick(&deliver);
         let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
         let last: Vec<&str> = state["last_hand"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-        assert_eq!(last.first(), Some(&"hand"), "{state}");
+        assert_eq!(last.first(), Some(&"started"), "{state}");
         assert_eq!(last.last(), Some(&"hand_ended"), "{state}");
         assert_eq!(state["hand"][0]["kind"], "hand", "the next hand has begun: {state}");
-        // A table is kept on disk, and comes back with the daemon.
-        assert_eq!(Games::new(&dir).table(&id).unwrap()["state"], "playing");
+        // Every hand has its database, the source of truth (CON-149): hand 1 whole with its
+        // actions and its private events too, hand 2 begun; replayed, they are the live game.
+        let hands = dir.join("games/tables").join(&id);
+        assert!(hands.join("hand-1.sqlite").exists() && hands.join("hand-2.sqlite").exists());
+        let all = hand_db::events(&hands, 1, false);
+        assert!(all.iter().any(|e| e["kind"] == "cards" && e["to"] == "ann"), "private events are kept: {all:?}");
+        assert_eq!(all.first().unwrap()["kind"], "started");
+        let conn = rusqlite::Connection::open(hands.join("hand-1.sqlite")).unwrap();
+        let acts: Vec<(String, String)> = conn.prepare("SELECT player, action FROM actions ORDER BY seq").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(acts.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["ann", "bob", "bob", "ann", "bob"], "{acts:?}");
+        assert_eq!(acts[4].1, hand_db::timeout().to_string(), "the rules' timeout for one gone is recorded as such");
+        let live = games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None);
+        assert_eq!(hand_db::replay(&hands).unwrap().unwrap().view(None), live, "the databases replay to the live game");
+        assert_eq!(state["table"]["view"], live, "game_state answers from the databases");
+        // A step that cannot be written is refused, and nothing changes.
+        use std::os::unix::fs::PermissionsExt;
+        let to_act = live["to_act"].as_str().unwrap().to_string();
+        let session = if to_act == "ann" { "s-ann" } else { "s-bob" };
+        std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let refused = games.op(session, "game_act", &json!({"table": id, "do": "fold"}), &deliver);
+        std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(refused.as_ref().is_err_and(|e| e.contains("could not be written")), "{refused:?}");
+        assert_eq!(games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None), live, "a refused step changes nothing");
+        // A table is kept on disk, and comes back with the daemon: its game from the databases.
+        let again = Games::new(&dir);
+        assert_eq!(again.table(&id).unwrap()["state"], "playing");
+        assert_eq!(again.table(&id).unwrap()["view"], live, "the engine is rebuilt from the databases");
+        assert!(!std::fs::read_to_string(dir.join("games/tables").join(format!("{id}.json"))).unwrap().contains("\"engine\""), "the engine is not kept in the table's file");
         // For a picture of the dashboard: the table's file, kept where asked.
         if let Some(keep) = std::env::var_os("MT_KEEP_GAMES") {
             let _ = std::fs::copy(dir.join("games/tables/T1.json"), keep);

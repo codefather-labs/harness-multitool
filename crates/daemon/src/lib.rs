@@ -23,6 +23,7 @@ pub mod stepdebug;
 pub mod telegram;
 pub mod trackers;
 pub mod games;
+pub mod hand_db;
 
 /// A window that polled within this long is still there.
 const LISTENING: std::time::Duration = std::time::Duration::from_secs(60);
