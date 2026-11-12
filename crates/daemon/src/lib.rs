@@ -224,6 +224,9 @@ pub struct Address {
     pub protocol: u32,
 }
 
+/// How often a daemon checks that its folder still publishes it (CON-155).
+pub const ADDRESS_CHECK: Duration = Duration::from_secs(5);
+
 pub fn address_path(data_dir: &Path) -> PathBuf {
     data_dir.join("daemon").join("address.json")
 }
@@ -302,6 +305,25 @@ impl Daemon {
                     std::thread::sleep(Duration::from_secs(5));
                     if let Some(host) = daemon.conversations.lock().expect("conversations").clone() {
                         daemon.games.tick(&|session, text| host.deliver_to(session, games::GAME_LABEL, text));
+                    }
+                }
+            });
+        }
+        // It serves its folder only while it is the daemon the folder publishes (CON-155): one whose
+        // folder was removed, or whose address another daemon took, stops as a /shutdown would
+        // instead of living on with nothing to serve (journal#1095). Two misses in a row, since
+        // the address is written in place and one read can catch it half written.
+        {
+            let daemon = daemon.clone();
+            std::thread::spawn(move || {
+                let mut misses = 0;
+                while !daemon.stopping() {
+                    std::thread::sleep(ADDRESS_CHECK);
+                    let ours = std::fs::read_to_string(address_path(&daemon.data_dir)).ok().and_then(|text| serde_json::from_str::<Address>(&text).ok()).is_some_and(|a| a.admin == daemon.admin);
+                    misses = if ours { 0 } else { misses + 1 };
+                    if misses >= 2 && !daemon.stopping() {
+                        let _ = daemon.route("POST", "/shutdown", "", "{}", true);
+                        daemon.stop_local();
                     }
                 }
             });
