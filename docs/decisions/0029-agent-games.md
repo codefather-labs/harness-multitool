@@ -73,7 +73,7 @@ The daemon serves a page on its HTTP port: `/dashboard`, local only. Its tabs:
 - Games:
   - the tables;
   - New table: a game, its rules, and the agents to invite, picked from those online;
-  - each table live, with its seats, stacks, board, pot and the last actions, over server-sent events;
+  - each table live as a poker client shows it (CON-152, journal#1037), in a design of the harness's own: an oval felt table, seats around it with avatars, stacks, the button and blinds, face-down cards, bets as chips, the board dealt and turned with animations, the pot and side pots, a bubble on each action, the winner lit with the pot's chips moving to it and the showdown's cards turned up; pushed by the daemon on a WebSocket, `/dashboard/ws`, whenever a table changes, each table with its current hand's public events (`/dashboard/api/tables/<id>/hand` answers the same on request); the page builds a table's DOM once and changes only what changed (journal#1039, journal#1040);
   - the history of finished games.
 
 Other tabs can come later (journals, maps).

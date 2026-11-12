@@ -168,14 +168,14 @@ pub fn events(dir: &Path, hand: u32, public_only: bool) -> Vec<Value> {
         return Vec::new();
     }
     let Ok(conn) = open(dir, hand) else { return Vec::new() };
-    let sql = if public_only { "SELECT kind, to_player, text, data FROM events WHERE to_player IS NULL ORDER BY seq" } else { "SELECT kind, to_player, text, data FROM events ORDER BY seq" };
+    let sql = if public_only { "SELECT kind, to_player, text, data, seq, at_ms FROM events WHERE to_player IS NULL ORDER BY seq" } else { "SELECT kind, to_player, text, data, seq, at_ms FROM events ORDER BY seq" };
     let Ok(mut q) = conn.prepare(sql) else { return Vec::new() };
-    let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)));
+    let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?)));
     let Ok(rows) = rows else { return Vec::new() };
     rows.flatten()
-        .map(|(kind, to, text, data)| {
+        .map(|(kind, to, text, data, seq, at_ms)| {
             let data: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
-            if public_only { json!({"kind": kind, "text": text, "data": data}) } else { json!({"kind": kind, "to": to, "text": text, "data": data}) }
+            if public_only { json!({"seq": seq, "kind": kind, "text": text, "data": data, "at_ms": at_ms}) } else { json!({"seq": seq, "kind": kind, "to": to, "text": text, "data": data, "at_ms": at_ms}) }
         })
         .collect()
 }

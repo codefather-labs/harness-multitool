@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 use harness_games::holdem::{Holdem, Rules};
 use harness_games::{Event, Game};
@@ -130,6 +130,10 @@ fn now_ms() -> u64 {
 pub struct Games {
     data_dir: PathBuf,
     tables: Mutex<BTreeMap<String, Table>>,
+    /// Each table's version, raised on every change, and the signal of one (journal#1040): what the
+    /// dashboard's socket waits on.
+    versions: Mutex<BTreeMap<String, u64>>,
+    changed: Condvar,
 }
 
 /// Delivers a message to a conversation as an inbound; false if it is not open.
@@ -159,7 +163,8 @@ impl Games {
                 }
             }
         }
-        Games { data_dir: data_dir.to_path_buf(), tables: Mutex::new(tables) }
+        let versions = tables.keys().map(|id| (id.clone(), 1)).collect();
+        Games { data_dir: data_dir.to_path_buf(), tables: Mutex::new(tables), versions: Mutex::new(versions), changed: Condvar::new() }
     }
 
     /// The folder of a table's hands' databases.
@@ -167,7 +172,24 @@ impl Games {
         data_dir.join("games").join("tables").join(table)
     }
 
+    /// The tables' versions now.
+    pub fn versions(&self) -> BTreeMap<String, u64> {
+        self.versions.lock().expect("versions").clone()
+    }
+
+    /// Waits until the versions differ from `seen`, or `timeout` passes; answers them as they are.
+    pub fn wait_change(&self, seen: &BTreeMap<String, u64>, timeout: std::time::Duration) -> BTreeMap<String, u64> {
+        let guard = self.versions.lock().expect("versions");
+        let (guard, _) = self.changed.wait_timeout_while(guard, timeout, |now| now == seen).expect("versions");
+        guard.clone()
+    }
+
     fn save(&self, table: &Table) {
+        {
+            let mut versions = self.versions.lock().expect("versions");
+            *versions.entry(table.id.clone()).or_insert(0) += 1;
+        }
+        self.changed.notify_all();
         let dir = self.data_dir.join("games").join("tables");
         if std::fs::create_dir_all(&dir).is_ok()
             && let Ok(text) = serde_json::to_string(table)
@@ -185,6 +207,20 @@ impl Games {
 
     pub fn table(&self, id: &str) -> Option<Value> {
         self.tables.lock().expect("tables").get(id).map(Table::public)
+    }
+
+    /// What a watcher of the dashboard sees of a table's play (CON-152): the current hand's public
+    /// events, and the previous hand's from its end, so a showdown stays on view while the next
+    /// hand is dealt. Never a player's cards before they are shown.
+    pub fn hand_feed(&self, id: &str) -> Option<Value> {
+        if !self.tables.lock().expect("tables").contains_key(id) {
+            return None;
+        }
+        let dir = Self::hands_of(&self.data_dir, id);
+        let hand = hand_db::last_hand(&dir);
+        let events: Vec<Value> = hand_db::events(&dir, hand, true).into_iter().filter(|e| e["kind"] != "started").collect();
+        let previous: Vec<Value> = hand_db::events(&dir, hand.saturating_sub(1), true).into_iter().skip_while(|e| e["kind"] != "hand_ended").collect();
+        Some(json!({"table": id, "hand": hand, "events": events, "previous": previous}))
     }
 
     /// A new table: its players are invited, each told so (ADR 0029).
@@ -479,6 +515,14 @@ mod tests {
         assert_eq!((current["hand"].as_u64(), current["ended"].as_bool()), (Some(2), Some(false)));
         assert_eq!(current["events"][0]["kind"], "hand", "the next hand, from its deal: {current}");
         assert!(!current.to_string().contains("Hand 1"), "nothing of the hand before: {current}");
+        // The dashboard's feed (CON-152): the current hand's public events with their seq, and the
+        // previous hand from its end; no one's cards.
+        let feed = games.hand_feed(&id).unwrap();
+        assert_eq!((feed["hand"].as_u64(), feed["events"][0]["kind"].as_str()), (Some(2), Some("hand")), "{feed}");
+        assert!(feed["events"][0]["seq"].is_i64());
+        assert_eq!(feed["previous"][0]["kind"], "hand_ended", "{feed}");
+        assert!(!feed.to_string().contains("\"cards\""), "no one's cards: {feed}");
+        assert!(games.hand_feed("T9").is_none());
         assert_eq!(hand_db::events(&hands_dir, 1, true).last().unwrap()["kind"], "hand_ended", "hand 1 is whole in its database");
         let state = games.op("s-ann", "game_state", &json!({"table": id}), &deliver).unwrap();
         // Every hand has its database, the source of truth (CON-149): hand 1 whole with its
@@ -516,6 +560,50 @@ mod tests {
             let _ = std::fs::copy(dir.join("games/tables/T1.json"), keep);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// For a look at the dashboard (CON-152): with MT_DASHBOARD_FIXTURE set to a daemon's data
+    /// folder, makes tables there in the states the table view draws, and keeps them. Skipped
+    /// otherwise.
+    #[test]
+    fn dashboard_fixture() {
+        let Some(dir) = std::env::var_os("MT_DASHBOARD_FIXTURE").map(std::path::PathBuf::from) else { return };
+        let deliver = |_: &str, _: &str| true;
+        write_settings(&dir, &GameSettings { enabled: true, ..Default::default() }).unwrap();
+        let games = Games::new(&dir);
+        let seat = |names: &[&str]| names.iter().map(|n| Player { session: format!("s-{n}"), nick: n.to_string() }).collect::<Vec<_>>();
+        let start = |players: Vec<Player>| {
+            let id = games.create("texas_holdem", players.clone(), &deliver).unwrap();
+            for p in &players {
+                games.op(&p.session, "game_join", &json!({"table": id}), &deliver).unwrap();
+            }
+            id
+        };
+        let act = |id: &str, what: Value| {
+            let state = games.table(id).unwrap();
+            let to = state["view"]["to_act"].as_str().unwrap().to_string();
+            let mut args = what;
+            args["table"] = json!(id);
+            games.op(&format!("s-{to}"), "game_act", &args, &deliver).unwrap();
+        };
+        // T1: two players on the flop, a bet in front of one.
+        let t1 = start(seat(&["multitool-arch", "tacticstrade-arch"]));
+        act(&t1, json!({"do": "raise", "amount": 60}));
+        act(&t1, json!({"do": "call"}));
+        act(&t1, json!({"do": "check"}));
+        act(&t1, json!({"do": "bet", "amount": 80}));
+        // T2: six players preflop, a raise and a fold.
+        let t2 = start(seat(&["ann", "bob", "carol", "dave", "eve", "frank"]));
+        act(&t2, json!({"do": "raise", "amount": 60}));
+        act(&t2, json!({"do": "fold"}));
+        act(&t2, json!({"do": "call"}));
+        // T3: two players checked down to a showdown; the next hand is dealt.
+        let t3 = start(seat(&["north", "south"]));
+        act(&t3, json!({"do": "call"}));
+        for _ in 0..7 {
+            act(&t3, json!({"do": "check"}));
+        }
+        println!("tables {t1} {t2} {t3}");
     }
 
     #[test]

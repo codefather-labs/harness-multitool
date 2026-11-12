@@ -24,6 +24,7 @@ pub mod telegram;
 pub mod trackers;
 pub mod games;
 pub mod hand_db;
+pub mod ws;
 
 /// A window that polled within this long is still there.
 const LISTENING: std::time::Duration = std::time::Duration::from_secs(60);
@@ -472,6 +473,11 @@ impl Daemon {
         }
     }
 
+    /// The game tables (ADR 0029).
+    pub fn games(&self) -> &games::Games {
+        &self.games
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -520,6 +526,10 @@ impl Daemon {
                 json(200, json!({"agents": agents}))
             }
             ("GET", "/dashboard/api/tables") => json(200, json!({"tables": self.games.list()})),
+            ("GET", p) if p.starts_with("/dashboard/api/tables/") && p.ends_with("/hand") => match self.games.hand_feed(&p["/dashboard/api/tables/".len()..p.len() - "/hand".len()]) {
+                Some(feed) => json(200, feed),
+                None => json(404, json!({"error": "no such table"})),
+            },
             ("GET", p) if p.starts_with("/dashboard/api/tables/") => match self.games.table(&p["/dashboard/api/tables/".len()..]) {
                 Some(table) => json(200, table),
                 None => json(404, json!({"error": "no such table"})),
@@ -549,6 +559,56 @@ impl Daemon {
         }
     }
 
+    /// The dashboard's feed on one socket (journal#1039, journal#1040): every table at once, then
+    /// each table again whenever it changes, and the agents online when they change. It ends when
+    /// the page goes (a write fails) or the daemon stops.
+    fn dashboard_feed(&self, mut stream: Box<dyn tiny_http::ReadWrite + Send>) {
+        let agents_now = || {
+            let host = self.conversations.lock().expect("conversations").clone();
+            let agents: Vec<Value> = host.as_ref().map(|h| h.open_sessions()).unwrap_or_default().into_iter().map(|s| json!({"id": s.id, "title": s.title, "nick": s.nick})).collect();
+            json!({"type": "agents", "agents": agents})
+        };
+        let mut seen: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        let mut pinged = std::time::Instant::now();
+        let hello = json!({"type": "hello", "settings": games::read_settings(&self.data_dir)});
+        let mut sent_agents = agents_now();
+        if ws::send_text(&mut *stream, &hello.to_string()).and_then(|_| ws::send_text(&mut *stream, &sent_agents.to_string())).is_err() {
+            return;
+        }
+        loop {
+            if self.stopping() {
+                let _ = stream.write_all(&ws::frame(0x8, &[]));
+                return;
+            }
+            // At once when a table changed (every table, the first time); else after 5 s.
+            let versions = self.games.wait_change(&seen, std::time::Duration::from_secs(5));
+            for (id, version) in &versions {
+                if seen.get(id) == Some(version) {
+                    continue;
+                }
+                let (Some(table), Some(feed)) = (self.games.table(id), self.games.hand_feed(id)) else { continue };
+                if ws::send_text(&mut *stream, &json!({"type": "table", "table": table, "feed": feed}).to_string()).is_err() {
+                    return;
+                }
+            }
+            seen = versions;
+            let agents = agents_now();
+            if agents != sent_agents {
+                if ws::send_text(&mut *stream, &agents.to_string()).is_err() {
+                    return;
+                }
+                sent_agents = agents;
+            }
+            // A page gone quietly is found by the next write.
+            if pinged.elapsed() > std::time::Duration::from_secs(15) {
+                if stream.write_all(&ws::frame(0x9, b"")).and_then(|_| stream.flush()).is_err() {
+                    return;
+                }
+                pinged = std::time::Instant::now();
+            }
+        }
+    }
+
     pub fn admin_token(&self) -> &str {
         &self.admin
     }
@@ -560,12 +620,25 @@ impl Daemon {
         let bearer = request.headers().iter().find(|h| h.field.equiv("authorization")).map(|h| h.value.as_str().trim_start_matches("Bearer ").to_string());
         let admin = bearer.as_deref() == Some(self.admin.as_str());
         let mut body = String::new();
-        if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
+        // An upgrade has no body: its reader would wait for the connection to close.
+        let upgrade = request.headers().iter().any(|h| h.field.equiv("upgrade"));
+        if !upgrade && std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
             body.clear();
         }
         // The dashboard (ADR 0029): a page and its API, for whoever has the daemon's token.
         if path == "/dashboard" || path.starts_with("/dashboard/") {
             let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or_default();
+            // Its feed: a WebSocket the daemon pushes on (journal#1039).
+            if path == "/dashboard/ws" && method == "GET" && token == self.admin {
+                let Some(key) = request.headers().iter().find(|h| h.field.equiv("sec-websocket-key")).map(|h| h.value.as_str().to_string()) else {
+                    let _ = request.respond(tiny_http::Response::from_string("a WebSocket is asked for here").with_status_code(400));
+                    return;
+                };
+                let response = tiny_http::Response::empty(101).with_header(tiny_http::Header::from_bytes(&b"Sec-WebSocket-Accept"[..], ws::accept(&key).as_bytes()).expect("a valid header"));
+                let stream = request.upgrade("websocket", response);
+                self.dashboard_feed(stream);
+                return;
+            }
             let (status, kind, text) = if token == self.admin { self.dashboard(&method, path, &body) } else { (401, "text/plain", "the dashboard needs the daemon's token: `multitool dashboard` prints its address".to_string()) };
             let response = tiny_http::Response::from_string(text).with_status_code(status).with_header(tiny_http::Header::from_bytes(&b"content-type"[..], kind.as_bytes()).expect("a valid header"));
             let _ = request.respond(response);

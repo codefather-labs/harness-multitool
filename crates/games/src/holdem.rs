@@ -396,10 +396,23 @@ impl Holdem {
             [top, next, ..] if self.seats[*top].live() && self.seats[*top].round > self.seats[*next].round => Some((*top, self.seats[*top].round - self.seats[*next].round)),
             _ => None,
         };
-        let Some((seat, excess)) = uncalled else { return (self.pots(), None) };
-        let mut matched = self.clone();
-        matched.seats[seat].hand -= excess;
-        (matched.pots(), uncalled)
+        let put: Vec<u64> = (0..self.seats.len()).map(|i| self.seats[i].hand - uncalled.filter(|(s, _)| *s == i).map_or(0, |(_, e)| e)).collect();
+        // A side pot forms only at a live all-in player's cap (journal#1041); the last is uncapped.
+        let mut caps: Vec<u64> = (0..self.seats.len()).filter(|i| self.seats[*i].live() && self.seats[*i].all_in).map(|i| put[i]).collect();
+        caps.sort_unstable();
+        caps.dedup();
+        caps.push(u64::MAX);
+        let mut pots: Vec<Pot> = Vec::new();
+        let mut below = 0;
+        for cap in caps {
+            let amount: u64 = put.iter().map(|h| (*h).min(cap) - (*h).min(below)).sum();
+            let eligible: Vec<usize> = (0..self.seats.len()).filter(|i| self.seats[*i].live() && !(self.seats[*i].all_in && put[*i] < cap)).collect();
+            if amount > 0 {
+                pots.push((amount, eligible));
+            }
+            below = cap;
+        }
+        (pots, uncalled)
     }
 
     /// The pots, main and side, each with who may win it, from what everyone put in.
@@ -428,12 +441,15 @@ impl Holdem {
         let mut events = Vec::new();
         let mut winners_all: Vec<Value> = Vec::new();
         let mut shown = Vec::new();
+        // What each shows, for a program too: the dashboard turns these cards up (CON-152).
+        let mut shown_data = Vec::new();
         for i in 0..self.seats.len() {
             if self.seats[i].live() {
                 let mut cards = self.seats[i].hole.clone();
                 cards.extend(&self.board);
                 let rank = best(&cards);
                 shown.push(format!("{} shows {} ({})", self.seats[i].id, cards_name(&self.seats[i].hole), rank.name()));
+                shown_data.push(json!({"player": self.seats[i].id, "cards": cards_name(&self.seats[i].hole), "cards_list": self.seats[i].hole, "hand": rank.name()}));
             }
         }
         for (amount, eligible) in self.pots() {
@@ -455,7 +471,7 @@ impl Holdem {
             }
         }
         let said: Vec<String> = winners_all.iter().map(|w| format!("{} wins {} with {}", w["player"].as_str().unwrap_or_default(), w["won"], w["with"].as_str().unwrap_or_default())).collect();
-        events.push(Event { to: None, kind: "hand_ended".into(), text: format!("Hand {}, the showdown: the board is {}; {}. {}.", self.hand_no, cards_name(&self.board), shown.join("; "), said.join("; ")), data: json!({"hand": self.hand_no, "board": self.board, "winners": winners_all}) });
+        events.push(Event { to: None, kind: "hand_ended".into(), text: format!("Hand {}, the showdown: the board is {}; {}. {}.", self.hand_no, cards_name(&self.board), shown.join("; "), said.join("; ")), data: json!({"hand": self.hand_no, "board": self.board, "winners": winners_all, "shown": shown_data}) });
         events.extend(self.end_hand());
         events
     }
@@ -714,7 +730,7 @@ mod tests {
         assert_eq!((v["hand"].as_u64(), v["hands_played"].as_u64(), v["max_hands"].as_u64()), (Some(1), Some(0), Some(50)));
         assert_eq!(v["blinds"], json!({"small": 10, "big": 20}));
         // journal#1030: the pots hold what is matched; BB's extra 10 is a bet not called yet.
-        assert_eq!(v["pots"], json!([{"amount": 20, "players": ["p1", "p2"]}]), "what is in, matched: {v}");
+        assert_eq!(v["pots"], json!([{"amount": 20, "players": ["p0", "p1", "p2"]}]), "what is in, matched: {v}");
         assert_eq!(v["uncalled"], json!({"player": "p2", "amount": 10}));
         act(&mut t, "p0", json!({"do": "raise", "amount": 60}));
         act(&mut t, "p1", json!({"do": "call"}));
@@ -771,6 +787,27 @@ mod tests {
         assert_eq!(view["players"][2]["stack"].as_u64().unwrap() + view["players"][2]["bet"].as_u64().unwrap(), 1010);
     }
 
+    /// journal#1041: mid-round, a side pot forms only at a short all-in's cap; bets that differ
+    /// only because the round goes on are one pot.
+    #[test]
+    fn side_pots_form_only_at_an_all_in() {
+        let (mut t, _) = Holdem::new(&players(3), 5, Rules::default());
+        // p1 has only 50 in all; p0 raises to 100, p1 goes all in for 50, p2 (big blind) to act.
+        t.seats[1].stack = 50 - t.seats[1].hand;
+        act(&mut t, "p0", json!({"do": "raise", "amount": 100}));
+        let v = t.view(None);
+        assert_eq!(v["pots"].as_array().unwrap().len(), 1, "no side pot without an all-in: {v}");
+        act(&mut t, "p1", json!({"do": "all_in"}));
+        let v = t.view(None);
+        // In: p0 100, p1 50 all in, p2 20. p0's 50 above the next bet is not called yet; the rest,
+        // all under p1's cap, is one pot all three can win.
+        assert_eq!(v["uncalled"], json!({"player": "p0", "amount": 50}), "{v}");
+        assert_eq!(v["pots"], json!([{"amount": 120, "players": ["p0", "p1", "p2"]}]), "{v}");
+        act(&mut t, "p2", json!({"do": "call"}));
+        let v = t.view(None);
+        assert_eq!(v["pots"], json!([{"amount": 150, "players": ["p0", "p1", "p2"]}, {"amount": 100, "players": ["p0", "p2"]}]), "a side pot at p1's cap: {v}");
+    }
+
     /// Three players all in with different stacks: a main pot and a side pot, won by different hands.
     #[test]
     fn side_pots_go_to_the_best_hand_each_can_win() {
@@ -790,6 +827,10 @@ mod tests {
         // Main pot 300 (100 x 3) to p1's aces; side pot 400 (200 x 2) to p2's kings; p0's extra 700 back.
         let won: Vec<(String, u64)> = ended.data["winners"].as_array().unwrap().iter().map(|w| (w["player"].as_str().unwrap().to_string(), w["won"].as_u64().unwrap())).collect();
         assert_eq!(won, [("p1".to_string(), 300), ("p2".to_string(), 400), ("p0".to_string(), 700)]);
+        // CON-152: the shown cards are in the data too, for the dashboard to turn up.
+        let shown = ended.data["shown"].as_array().unwrap();
+        assert_eq!(shown.len(), 3, "{shown:?}");
+        assert!(shown.iter().all(|s| s["cards_list"].as_array().unwrap().len() == 2 && s["hand"].is_string() && s["player"].is_string()));
         assert!(t.over(), "one hand only");
         let over = events.iter().find(|e| e.kind == "game_over").unwrap();
         assert!(over.text.contains("1. p0 (700)") && over.text.contains("2. p2 (400)") && over.text.contains("3. p1 (300)"), "{}", over.text);
