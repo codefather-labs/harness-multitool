@@ -304,6 +304,15 @@ impl Codex {
         });
         let mut mapper = Mapper::new(request.turn, &self.model);
         let mut ended: Option<Result<(), String>> = None;
+        // The conversation this run is in, and its rollout's folder: a turn's usage is read from
+        // there, the last request's, not the turn's sum (journal#1078).
+        let mut thread: Option<String> = request.session.map(str::to_string);
+        let environment = self.environment.clone();
+        let rollouts = conversations::CodexConversations::from_lookup(&|name| match &environment {
+            Some(base) => base.get(name).cloned(),
+            None => std::env::var(name).ok(),
+        })
+        .ok();
         let result = loop {
             if (request.stopped)() {
                 end(&mut child);
@@ -313,7 +322,16 @@ impl Codex {
                 Ok(line) => {
                     for mapped in mapper.line(&line) {
                         match mapped {
-                            Mapped::Event(event) => {
+                            Mapped::Event(mut event) => {
+                                match &mut event {
+                                    Event::BackendSession { id } => thread = Some(id.clone()),
+                                    Event::TurnFinished { usage, .. } => {
+                                        if let Some(last) = thread.as_deref().and_then(|t| rollouts.as_ref()?.last_request_usage(t)) {
+                                            *usage = last;
+                                        }
+                                    }
+                                    _ => {}
+                                }
                                 if !sink(event) {
                                     end(&mut child);
                                     harness_platform_native::children::forget(child.id());

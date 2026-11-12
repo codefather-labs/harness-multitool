@@ -73,6 +73,27 @@ impl CodexConversations {
         Ok(path)
     }
 
+    /// The last model request's usage in conversation `id`, from its rollout's last token_count
+    /// (journal#1078). `codex exec` gives a turn's usage summed over all its requests, while the
+    /// context's fill is the last request's alone. None when there is no such file or event yet.
+    pub fn last_request_usage(&self, id: &str) -> Option<Usage> {
+        let path = self.file(id).ok()??;
+        let mut file = File::open(path).ok()?;
+        // The last event is near the end: the tail is enough, however long the conversation.
+        let len = file.seek(SeekFrom::End(0)).ok()?;
+        file.seek(SeekFrom::Start(len.saturating_sub(256 * 1024))).ok()?;
+        let lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
+        lines.iter().rev().find_map(|line| {
+            let v: Value = serde_json::from_str(line).ok()?;
+            let last = &v["payload"]["info"]["last_token_usage"];
+            if v["type"] != "event_msg" || v["payload"]["type"] != "token_count" || !last.is_object() {
+                return None;
+            }
+            let n = |key: &str| last[key].as_u64().unwrap_or(0);
+            Some(Usage { input: n("input_tokens").saturating_sub(n("cached_input_tokens")), output: n("output_tokens") + n("reasoning_output_tokens"), cache_read: n("cached_input_tokens"), cache_write: 0 })
+        })
+    }
+
     fn existing(&self, id: &str) -> PluginResult<PathBuf> {
         self.file(id)?.ok_or_else(|| PluginError::new(format!("no {NAME} conversation {id} in {}", self.sessions().display())))
     }
@@ -546,6 +567,28 @@ fn millis(stamp: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// journal#1078: a turn of five requests sums to 126666 input tokens, while its context at the
+    /// end is the last request's 34976; the last is what is answered.
+    #[test]
+    fn the_last_requests_usage_is_read_from_the_rollout() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = dir.path().join("sessions/2026/11/12");
+        std::fs::create_dir_all(&day).unwrap();
+        let tc = |last: (u64, u64, u64), total: (u64, u64)| json!({"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": last.0, "cached_input_tokens": last.1, "output_tokens": last.2, "reasoning_output_tokens": 0}, "total_token_usage": {"input_tokens": total.0, "cached_input_tokens": total.1}, "model_context_window": 475000}}}).to_string();
+        let lines = [
+            json!({"type": "session_meta", "payload": {"id": "T1", "cwd": "/r"}}).to_string(),
+            tc((15028, 12288, 63), (15028, 12288)),
+            tc((25735, 16000, 64), (56903, 40576)),
+            json!({"type": "event_msg", "payload": {"type": "token_count", "info": null}}).to_string(),
+            tc((34976, 34688, 5), (126666, 100864)),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "DONE"}]}}).to_string(),
+        ];
+        std::fs::write(day.join("rollout-2026-11-12T21-05-35-T1.jsonl"), lines.join("\n") + "\n").unwrap();
+        let c = CodexConversations::new(dir.path());
+        assert_eq!(c.last_request_usage("T1"), Some(Usage { input: 34976 - 34688, output: 5, cache_read: 34688, cache_write: 0 }));
+        assert_eq!(c.last_request_usage("T2"), None, "no rollout, no answer");
+    }
     use std::io::Write;
 
     fn line(ordinal: Option<u64>, kind: &str, payload: Value) -> String {
