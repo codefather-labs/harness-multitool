@@ -62,6 +62,11 @@ esac
 
     let todo = now(memory.journal_add(entry("Ship the widget\nmore words", &["todo"]))).unwrap();
     until("the todo opened an issue", &|c| c.contains("issue create --repo acme/widgets --title journal#1: Ship the widget"));
+    // gh logs the call before it answers; the map is written after the answer: wait for it.
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end && !trackers::issues(&folder).contains_key(&todo.id) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(trackers::issues(&folder).get(&todo.id), Some(&7));
     let built = now(memory.journal_add(entry(&format!("Implements journal#{}: the widget is built", todo.id), &["unverified"]))).unwrap();
     until("the implementation commented on it", &|c| c.contains(&format!("issue comment 7 --repo acme/widgets --body-file -|**journal#{}**", built.id)));

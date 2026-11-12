@@ -39,6 +39,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/toast [text]", "notification toast"),
     ("/tab [name]", "open a session tab"),
     ("/tabs", "list the open tabs with their adapters and models"),
+    ("/skills", "the harness's skills here: the project's and yours (.harness/skills)"),
     ("/clear", "empty the transcript"),
     ("/exit, /quit", "close the harness (also Ctrl+C twice)"),
 ];
@@ -628,6 +629,15 @@ fn command(w: &mut Workspace, cmd: &str) {
                 .collect();
             w.view_mut().transcript.push(Item::Tips { label: "TABS".into(), lines: rows });
         }
+        "skills" => {
+            // ADR 0030: the harness's own skills, as an agent's skill_list sees them.
+            let lines = match &w.skills {
+                None => vec!["The skills are listed in a live window, where the project is known.".to_string()],
+                Some(list) if list.is_empty() => vec!["No skills here: add one as .harness/skills/<name>/SKILL.md, in the project or in ~/.harness.".to_string()],
+                Some(list) => list.iter().map(|(name, description, from)| format!("{name:<24} {from:<8} {description}")).collect(),
+            };
+            w.view_mut().transcript.push(Item::Tips { label: "SKILLS".into(), lines });
+        }
         "clear" => v.transcript.clear(),
         _ => v.transcript.push(Item::Tips { label: "UNKNOWN COMMAND".into(), lines: vec![format!("/{name} - /help lists the commands")] }),
     }
@@ -797,6 +807,19 @@ mod tests {
         }
         w.view_mut().composer.text = String::new();
         assert_eq!(submit(&mut w), Sent::Nothing);
+    }
+
+    /// ADR 0030: /skills lists what the window was given, and says what to do when there is none.
+    #[test]
+    fn slash_skills_lists_the_harness_skills() {
+        let mut w = Workspace::one(Default::default(), "t");
+        w.skills = Some(vec![("deploy".into(), "Ship this project".into(), "project".into())]);
+        send(&mut w, "/skills");
+        let shown = format!("{:?}", w.view().transcript.last());
+        assert!(shown.contains("SKILLS") && shown.contains("deploy") && shown.contains("Ship this project"), "{shown}");
+        w.skills = Some(Vec::new());
+        send(&mut w, "/skills");
+        assert!(format!("{:?}", w.view().transcript.last()).contains("No skills here"));
     }
 
     /// CON-107: /tabs lists each tab in order with its own adapter and model, marks the active

@@ -124,6 +124,7 @@ Plain text in the composer becomes a USER turn. Commands publish the other items
 | `/tool read\|edit\|cat\|tg\|a2a\|journal\|fail\|run` | a tool call: plain row, diff, numbered output, Telegram send, agent send, journal write, failure, running |
 | `/hook start\|compact\|block\|fail\|timeout\|run` · `/hooks` | hooks firing on a loop event (session start and compaction run `fact-check-cognitive-protocol.sh` and `harness-lookup.sh`) · every hook outcome |
 | `/toast [text]` · `/tab [name]` · `/clear` | a toast · a new session tab · an empty transcript |
+| `/skills` | the harness's skills here, the project's and the user's (`.harness/skills`, ADR 0030) |
 | `/tabs` | a TABS card: one row per open tab, in order, with its title, its own ADAPTER and MODEL (a dash when none is set), the active tab marked (CON-107; local, no model request) |
 | `/exit`, `/quit`, `/q` | quit |
 | `/help`, `/?` | the list of commands |

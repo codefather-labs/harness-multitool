@@ -603,6 +603,7 @@ pub fn session_tabs() -> AppState {
         memory: None,
         journal_issues: None,
         games: None,
+        skills: None,
         profiles: None,
         auth: None,
     };

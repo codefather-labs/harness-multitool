@@ -73,6 +73,8 @@ pub struct Workspace {
     pub journal_issues: Option<JournalPage>,
     /// The Games page (ADR 0029).
     pub games: Option<GamesPage>,
+    /// The harness's skills here, for /skills (ADR 0030): name, description, project or user.
+    pub skills: Option<Vec<(String, String, String)>>,
     /// The profiles, as the running harness reads them (CON-125).
     pub profiles: Option<ProfilesPage>,
     /// The sign-in state as the running harness knows it.
@@ -358,7 +360,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {

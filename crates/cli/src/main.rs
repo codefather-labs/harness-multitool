@@ -811,6 +811,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
             w.auth = Some(self.auth_page(w.auth.clone()));
             self.fetch_models();
@@ -909,6 +910,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
         state
     }
@@ -1203,6 +1205,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
             if w.auth.is_none() {
                 w.auth = Some(self.auth_page(None));
@@ -1415,6 +1418,7 @@ impl Live {
         w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &w.overlay {
             let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
             let mut fresh = frontend_tui::overlay::settings_for(w);
@@ -2083,6 +2087,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
                     show_profiles(w);
                 }
                 Outgoing::ProfileClaude { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::Login } else { ClaudeStep::Logout })),
@@ -2219,6 +2224,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveMapLimit { limit } => {
@@ -2232,6 +2238,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::SaveSearchPage { limit } => {
@@ -2245,6 +2252,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::DownloadVoiceModel { model } => {
@@ -2290,6 +2298,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
                 Outgoing::StartVoiceTest { model, device } => {
@@ -2317,6 +2326,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
                 }
