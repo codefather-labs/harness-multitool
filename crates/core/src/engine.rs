@@ -264,6 +264,8 @@ impl Engine {
 
     /// Takes what is queued into the conversation. True if anything came.
     async fn take_queued(&self) -> bool {
+        // A mode the user changed meanwhile goes ahead of what was said after it (journal#1083).
+        self.apply_pending_modes().await;
         let mut any = false;
         loop {
             let Some(message) = self.inbox.lock().expect("inbox").pop_front() else { return any };
@@ -927,8 +929,19 @@ impl Engine {
         woke
     }
 
+    /// A mode the user changed while a run was on, applied before a message queued after it is
+    /// taken (journal#1083): at a run's start, and when a run takes in what was queued. Mid-turn,
+    /// next_message does the same.
+    async fn apply_pending_modes(&self) {
+        let changes: Vec<ModeChange> = self.modes.lock().expect("modes").drain(..).collect();
+        for change in changes {
+            self.set_mode(change).await;
+        }
+    }
+
     /// The turn an agent backend began by itself, as a run: no message starts it.
     pub async fn run_woken(&self) -> RunEnd {
+        self.apply_pending_modes().await;
         let told = self.told_later.take();
         if !told.is_empty() {
             return self.run_inbound(harness_api::HARNESS_LABEL, &told.join("\n\n")).await;
@@ -949,6 +962,7 @@ impl Engine {
     }
 
     async fn run_event(&self, event: Event, text: &str, protocol: Option<&Protocol>) -> RunEnd {
+        self.apply_pending_modes().await;
         // CON-78: one writer to a form. Nothing is taken in that could not go on.
         let own = self.parts.backend.as_ref().and_then(|b| b.own_process());
         if let Some((format, link)) = self.form()

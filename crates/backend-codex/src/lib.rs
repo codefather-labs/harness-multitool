@@ -155,7 +155,14 @@ pub struct Codex {
     running: std::cell::RefCell<Option<u32>>,
     /// Its sign-in, checked once before its first run (journal#976).
     signed_in: std::cell::Cell<bool>,
+    /// The plan mode each thread was last told of in this process (journal#1085).
+    told_plan: std::cell::RefCell<std::collections::HashMap<String, bool>>,
 }
+
+/// What places the harness's folders and so its daemon. Codex gives an MCP server only HOME and
+/// PATH of its environment (journal#1084), so the harness's own servers get these by name. They are
+/// paths: nothing secret goes on a command line, which other processes can read.
+const SERVER_VARS: [&str; 3] = ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "MULTITOOL_HOME"];
 
 impl Codex {
     /// Settings: `binary` (default `codex`), `sandbox` (default `workspace-write`), `permissions`
@@ -171,6 +178,7 @@ impl Codex {
             mcp: None,
             running: Default::default(),
             signed_in: Default::default(),
+            told_plan: Default::default(),
         }
     }
 
@@ -212,6 +220,11 @@ impl Codex {
                 // given for this run: their tools run unasked, as the Claude Code delegate's do. The
                 // user's own servers, from their config.toml, keep the approval they set.
                 args.extend(["-c".to_string(), format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\"")]);
+                for var in SERVER_VARS {
+                    if let Some(value) = self.var(var) {
+                        args.extend(["-c".to_string(), format!("mcp_servers.{name}.env.{var}={}", Value::from(value))]);
+                    }
+                }
             }
         }
         if let Some(session) = request.session {
@@ -221,11 +234,27 @@ impl Codex {
         args
     }
 
+    /// A variable of the environment it runs with, if set and not empty.
+    fn var(&self, name: &str) -> Option<String> {
+        match &self.environment {
+            Some(base) => base.get(name).cloned(),
+            None => std::env::var(name).ok(),
+        }
+        .filter(|v| !v.is_empty())
+    }
+
     /// What goes on stdin: the prompt, with what the harness adds to Codex's instructions before
-    /// the first message of a conversation (Codex has no option for that).
+    /// the first message of a conversation (Codex has no option for that). A thread resumed in
+    /// another plan mode than it was last told of here, or first resumed in this process, is told
+    /// of it and given the instructions as they stand now: its own history still has the old ones,
+    /// and it would keep to them (journal#1085).
     fn stdin(&self, request: &BackendRequest<'_>) -> String {
-        match (request.system, request.session) {
-            (Some(system), None) if !system.is_empty() => format!("{system}\n\n{}", request.prompt),
+        match (request.system.filter(|s| !s.is_empty()), request.session) {
+            (Some(system), None) => format!("{system}\n\n{}", request.prompt),
+            (Some(system), Some(thread)) if self.told_plan.borrow().get(thread) != Some(&request.plan_mode) => {
+                let mode = if request.plan_mode { "on" } else { "off: what was said of plan mode before no longer holds" };
+                format!("[from the harness] Plan mode is {mode}. The harness's instructions as they stand now:\n{system}\n\n{}", request.prompt)
+            }
             _ => request.prompt.to_string(),
         }
     }
@@ -246,6 +275,9 @@ impl Codex {
         harness_platform_native::children::register(child.id());
         let mut stdin = child.stdin.take().expect("piped above");
         let text = self.stdin(request);
+        if let Some(thread) = request.session {
+            self.told_plan.borrow_mut().insert(thread.to_string(), request.plan_mode);
+        }
         std::thread::spawn(move || {
             let _ = stdin.write_all(text.as_bytes());
         });
@@ -324,7 +356,12 @@ impl Codex {
                         match mapped {
                             Mapped::Event(mut event) => {
                                 match &mut event {
-                                    Event::BackendSession { id } => thread = Some(id.clone()),
+                                    Event::BackendSession { id } => {
+                                        if request.system.is_some_and(|s| !s.is_empty()) {
+                                            self.told_plan.borrow_mut().insert(id.clone(), request.plan_mode);
+                                        }
+                                        thread = Some(id.clone());
+                                    }
                                     Event::TurnFinished { usage, .. } => {
                                         if let Some(last) = thread.as_deref().and_then(|t| rollouts.as_ref()?.last_request_usage(t)) {
                                             *usage = last;
@@ -474,7 +511,21 @@ mod tests {
         assert!(next.windows(3).any(|w| w == ["resume", "t1", "-"]), "{next:?}");
         assert!(next.windows(2).any(|w| w == ["-s", "read-only"]), "plan mode changes nothing: {next:?}");
         assert_eq!(c.stdin(&request(None, false, &never, &none)), "note\n\nsecret prompt", "the harness's note before the first message");
-        assert_eq!(c.stdin(&request(Some("t1"), false, &never, &none)), "secret prompt");
+        // journal#1085: a resumed thread is told of its plan mode once here, then of a change only.
+        let told = c.stdin(&request(Some("t1"), false, &never, &none));
+        assert!(told.starts_with("[from the harness] Plan mode is off") && told.ends_with("note\n\nsecret prompt"), "{told}");
+        c.told_plan.borrow_mut().insert("t1".into(), false);
+        assert_eq!(c.stdin(&request(Some("t1"), false, &never, &none)), "secret prompt", "unchanged: the prompt alone");
+        let on = c.stdin(&request(Some("t1"), true, &never, &none));
+        assert!(on.starts_with("[from the harness] Plan mode is on.") && on.contains("note"), "{on}");
+        // journal#1084: the harness's servers find their daemon where this run's environment says.
+        let env: std::collections::BTreeMap<String, String> = [("XDG_DATA_HOME", "/d"), ("MULTITOOL_HOME", "/h"), ("MULTITOOL_TELEGRAM_TOKEN", "t0k")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let placed = Codex::new("m", "/r", &json!({})).with_environment(env.into()).with_mcp(r#"{"mcpServers":{"harness":{"command":"/bin/mt"},"mode":{"command":"/bin/mt"}}}"#.into()).args(&request(None, false, &never, &none));
+        for name in ["harness", "mode"] {
+            assert!(placed.iter().any(|a| a == &format!(r#"mcp_servers.{name}.env.XDG_DATA_HOME="/d""#)), "{placed:?}");
+            assert!(placed.iter().any(|a| a == &format!(r#"mcp_servers.{name}.env.MULTITOOL_HOME="/h""#)), "{placed:?}");
+        }
+        assert!(!placed.iter().any(|a| a.contains("XDG_CONFIG_HOME") || a.contains("t0k") || a.contains("TELEGRAM")), "only what is set, and no secret: {placed:?}");
         let skip = Codex::new("m", "/r", &json!({"permissions": "skip"})).args(&request(None, false, &never, &none));
         assert!(skip.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox") && !skip.iter().any(|a| a == "-s"), "{skip:?}");
     }

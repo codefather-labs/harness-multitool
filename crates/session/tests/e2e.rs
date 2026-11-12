@@ -1101,6 +1101,36 @@ fn a_message_sent_during_a_run_is_woven_in_at_the_next_step() {
     }
 }
 
+/// journal#1083: the user switches plan mode while a run is on, then says something. The run takes
+/// the message in before its next turn, and the mode goes ahead of it. (Switched on here: in plan
+/// mode no tool asks, so no prompt would come up mid-run to switch it off at.)
+#[test]
+fn plan_mode_switched_during_a_run_goes_ahead_of_the_message_after_it() {
+    let root = temp_dir("plan-mid");
+    let data = temp_dir("plan-mid-data");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("m1", "shell", json!({"command": "cargo --version"}))), "Running."),
+        anthropic_turn(None, "In plan mode."),
+    ]);
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.into()), root);
+    let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.plan(1, true);
+        s.prompt(1, "now plan it".to_string());
+    });
+    let order: Vec<String> = entries.iter().filter_map(|e| match &e.event {
+        Event::PlanMode { on, .. } => Some(format!("plan {on}")),
+        Event::UserMessage { text } => Some(text.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(order, ["first", "plan true", "now plan it"]);
+    let requests: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()).collect();
+    assert_eq!(requests.len(), 2, "one run, no extra one");
+    assert!(!requests[0]["system"].as_str().unwrap().contains("PLAN MODE"));
+    assert!(requests[1]["system"].as_str().unwrap().contains("PLAN MODE"), "the turn after the message is in plan mode");
+}
+
 #[test]
 fn a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_at_once() {
     let root = temp_dir("queue2");

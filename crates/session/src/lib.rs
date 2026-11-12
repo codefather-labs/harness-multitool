@@ -1089,9 +1089,11 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            if handle.running.load(Ordering::SeqCst) {
-                self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::StepDebug(on));
-            }
+            // Always queued too: a run may start on its own (after a turn, to bring a form in line)
+            // before this Input is read, and a message that joins that run would otherwise go
+            // ahead of the change. A run drains the queue before it takes a message; the Input,
+            // read between runs, clears it (journal#1083).
+            self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::StepDebug(on));
             let _ = handle.prompts.send(Input::StepDebug(on));
         }
     }
@@ -1102,9 +1104,11 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
-            if handle.running.load(Ordering::SeqCst) {
-                self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::Plan(on));
-            }
+            // Always queued too: a run may start on its own (after a turn, to bring a form in line)
+            // before this Input is read, and a message that joins that run would otherwise go
+            // ahead of the change. A run drains the queue before it takes a message; the Input,
+            // read between runs, clears it (journal#1083).
+            self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::Plan(on));
             let _ = handle.prompts.send(Input::Plan(on));
         }
     }
