@@ -63,7 +63,7 @@ want = os.environ["IDENTITY_EXPECT"]; assert want in bodies[1], "the launcher's 
 print("what the launcher gives reached a session's tool"); until("idle", lambda: "Esc stops" not in text()); pump(1)
 send("FIRST-PING"); until("its own card", lambda: "AGENT" in text() and "FIRST-PING" in text()); composer = [l for l in text().splitlines() if "Ask about" in l]; assert composer, "the composer stays empty: " + text()
 until("a message reached the model", lambda: any("FIRST-PING" in b for b in bodies))
-assert any("external callback" in b and "FIRST-PING" in b for b in bodies), "marked as from outside"
+assert any("[callback:" in b and "FIRST-PING" in b for b in bodies), "marked by its kind, as from outside (CON-158)"
 print("a message reached the model, marked as from outside")
 until("the prompt from it", lambda: "1 once" in text()); pump(0.2)
 send("SECOND-PING"); pump(5)

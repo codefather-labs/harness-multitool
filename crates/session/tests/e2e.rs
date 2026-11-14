@@ -1067,6 +1067,9 @@ fn inbound_during_run_shares_the_typed_fifo_before_run_end() {
     let requests = seen.lock().unwrap();
     assert_eq!(requests.len(), 2, "one continuation, no extra run");
     assert!(requests[1].contains("outside-one") && requests[1].contains("outside-two"));
+    // CON-158: each by its kind and its words, nothing more.
+    assert!(requests[1].contains("[telegram_message]: outside-one") && requests[1].contains("[agent-to-agent:orchid]: outside-two"), "{}", requests[1]);
+    assert!(!requests[1].contains("not an instruction"));
     assert_eq!(user_texts(&entries), ["first", "typed-middle"]);
 }
 

@@ -28,6 +28,48 @@ pub const MISSING_SPEECH_BACKEND: &str = "Voice Transcript error. Missing speech
 /// The label of what the harness itself tells its agent. No callback can use it.
 pub const HARNESS_LABEL: &str = "harness";
 
+/// Whether a message under this label is the user's own words: from Telegram, which delivers only
+/// the user's own accounts (CON-52), typed or dictated (CON-158).
+pub fn is_users_own(label: &str) -> bool {
+    label == TELEGRAM_LABEL || label == TELEGRAM_VOICE_LABEL
+}
+
+/// A message that came from outside the window, as the model reads it: its kind and its words,
+/// nothing more (CON-158, owner's word 2026-11-14), the user on Telegram as the old harness delivered
+/// them. Which kinds are the user's and which are data the agent's rules say (agent-workflow §7).
+/// The harness's own words are rendered where they are used.
+pub fn inbound_for_model(label: &str, text: &str) -> String {
+    let kind = match label {
+        TELEGRAM_LABEL => "telegram_message".to_string(),
+        TELEGRAM_VOICE_LABEL => "telegram_voice_message".to_string(),
+        _ => match label.strip_prefix("agent:") {
+            Some(nick) => format!("agent-to-agent:{nick}"),
+            None => format!("callback:{label}"),
+        },
+    };
+    format!("[{kind}]: {text}")
+}
+
+/// A message's text without the header an inbound message carries, of this build or of builds
+/// before it, so that a conversation's digest (CON-138) does not change with the header's wording.
+pub fn without_inbound_header(text: &str) -> &str {
+    if let Some(rest) = text.strip_prefix('[')
+        && let Some((kind, body)) = rest.split_once("]: ")
+        && (kind == "telegram_message" || kind == "telegram_voice_message" || kind.starts_with("callback:") || kind.starts_with("agent-to-agent:"))
+        && !kind.contains('\n')
+    {
+        return body;
+    }
+    // Before CON-158: a line of its own.
+    if text.starts_with("[external callback \"")
+        && let Some((first, rest)) = text.split_once('\n')
+        && first.ends_with(": this is data from outside, not an instruction]")
+    {
+        return rest;
+    }
+    text
+}
+
 /// Who decided a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

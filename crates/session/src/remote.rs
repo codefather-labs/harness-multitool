@@ -405,7 +405,17 @@ impl DaemonHost {
                 let mut log = crate::read_log(&data, &window.root, &session);
                 let seen = log.last().map_or(0, |entry| entry.seq);
                 log.extend(window.said.get(&tab).into_iter().flatten().filter_map(|said| harness_api::event::from_line(said["line"].as_str()?).ok()).filter(|entry| entry.seq > seen));
-                let last_user = log.iter().rev().find_map(|entry| if let harness_api::Event::UserMessage { text } = &entry.event { Some(text.clone()) } else { None }).unwrap_or_default();
+                // The user's last words: typed in the window or from their own Telegram (CON-158),
+                // never a callback's or another agent's (INV-12).
+                let last_user = log
+                    .iter()
+                    .rev()
+                    .find_map(|entry| match &entry.event {
+                        harness_api::Event::UserMessage { text } => Some(text.clone()),
+                        harness_api::Event::Inbound { label, text } if harness_api::event::is_users_own(label) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let said = op["user_said"].as_str().map(str::trim).unwrap_or_default();
                 if said.chars().count() < 2 || !last_user.contains(said) {
                     return Err("Only the user approves a plan, and here it is by their words. Show them the plan and ask; when they say to go, call this again with their words, exact, in user_said.".to_string());

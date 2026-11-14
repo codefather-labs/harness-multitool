@@ -146,7 +146,8 @@ impl ToolOutput {
 /// passed over, so a run goes on across them; tool calls and results never count, because a
 /// program's stream and its form record one turn's calls differently, and a form joins messages
 /// of one role into one. A user message counts by its last paragraph, since what the harness sends
-/// a delegate may come before the user's words, after a blank line (journal#934).
+/// a delegate may come before the user's words, after a blank line (journal#934), and without the
+/// header an inbound message carries, whatever its wording (CON-158).
 pub fn conversation_digest(messages: &[Message]) -> Vec<u64> {
     let mut runs: Vec<(Role, Vec<&str>)> = Vec::new();
     for message in messages {
@@ -155,7 +156,7 @@ pub fn conversation_digest(messages: &[Message]) -> Vec<u64> {
             continue;
         }
         let texts: Vec<&str> = match message.role {
-            Role::User => texts.iter().map(|t| t.rsplit("\n\n").next().unwrap_or(t).trim()).collect(),
+            Role::User => texts.iter().map(|t| crate::event::without_inbound_header(t.rsplit("\n\n").next().unwrap_or(t).trim()).trim()).collect(),
             Role::Assistant => texts,
         };
         match runs.last_mut() {
