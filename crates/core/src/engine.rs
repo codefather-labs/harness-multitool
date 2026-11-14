@@ -45,10 +45,12 @@ pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>);
 pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<harness_api::PendingMessage>>>;
 
 /// A mode changed from outside a run that is going on (journal#603).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModeChange {
     Plan(bool),
     StepDebug(bool),
+    /// A nick set from outside the engine, as an agent's set_nick through its window (journal#816).
+    Nick(String),
 }
 
 /// Mode changes waiting for the run to read them.
@@ -455,6 +457,13 @@ impl Engine {
 
     /// The user named the agent: a bad name shows as an error, and nothing changes.
     /// Something for the user to read: in the log and on screen, not in what the model is sent.
+    /// What the agent is told with its next message, starting no run: a reminder, as a hook's
+    /// (journal#456).
+    pub async fn remind(&self, hook: &str, text: &str) {
+        self.emit(Event::HookRan { point: HookPointKind::UserPromptSubmit, hook: hook.to_string(), outcome: HookOutcome::Reminder { lines: vec![text.to_string()] }, detail: None });
+        let _ = self.flush().await;
+    }
+
     pub async fn notice(&self, label: &str, text: &str) {
         self.emit(Event::Notice { label: label.to_string(), text: text.to_string() });
         let _ = self.flush().await;
@@ -481,6 +490,7 @@ impl Engine {
         match change {
             ModeChange::Plan(on) => self.set_plan_mode(on, "user").await,
             ModeChange::StepDebug(on) => self.set_step_debug(on, "user").await,
+            ModeChange::Nick(name) => self.set_agent_name_by_user(&name).await,
         }
     }
 

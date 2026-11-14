@@ -22,6 +22,13 @@ const ERROR_WAIT: Duration = Duration::from_secs(5);
 const MAX_HELD: usize = 20;
 /// The Bot API gives bots files up to this size.
 const MAX_FILE: u64 = 20 * 1024 * 1024;
+/// What an agent may send (CON-159, journal#1128): the Bot API's limits.
+pub const MAX_PHOTO: u64 = 10 * 1024 * 1024;
+pub const MAX_DOCUMENT: u64 = 50 * 1024 * 1024;
+pub const MAX_FILES: usize = 10;
+const MAX_CAPTION: usize = 1024;
+/// How long a file the user sent is kept (CON-160).
+const KEEP_RECEIVED: Duration = Duration::from_secs(30 * 24 * 3600);
 
 pub struct Config {
     pub base_url: String,
@@ -156,7 +163,26 @@ impl Requester {
     fn call(&self, method: &str, body: &Value) -> Answer {
         let url = format!("{}/bot{}/{method}", self.base_url, self.token.expose());
         // Without this the real Bot API does not read the body at all.
-        let mut response = match self.agent.post(&url).header("content-type", "application/json").send(body.to_string()) {
+        let response = self.agent.post(&url).header("content-type", "application/json").send(body.to_string());
+        self.answer(response)
+    }
+
+    /// One file with its fields, as multipart/form-data (CON-159). Built here: the bytes go as they
+    /// are, the fields as text, under a boundary the file cannot hold by chance.
+    fn upload(&self, method: &str, fields: &[(&str, String)], field: &str, path: &Path) -> Answer {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => return Answer::Failed(format!("reading {}: {e}", path.display())),
+        };
+        let name = path.file_name().map_or("file".to_string(), |n| n.to_string_lossy().replace(['"', '\r', '\n'], "_"));
+        let (boundary, body) = multipart(fields, field, &name, &bytes);
+        let url = format!("{}/bot{}/{method}", self.base_url, self.token.expose());
+        let response = self.agent.post(&url).header("content-type", &format!("multipart/form-data; boundary={boundary}")).send(&body[..]);
+        self.answer(response)
+    }
+
+    fn answer(&self, response: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Answer {
+        let mut response = match response {
             Ok(response) => response,
             Err(e) => return Answer::Failed(self.clean(&format!("reaching Telegram: {e}"))),
         };
@@ -186,11 +212,91 @@ impl Requester {
             Answer::Failed(message) => return Err(message),
         };
         let url = format!("{}/file/bot{}/{path}", self.base_url, self.token.expose());
-        let mut response = self.agent.get(&url).call().map_err(|e| self.clean(&format!("fetching the note: {e}")))?;
+        let mut response = self.agent.get(&url).call().map_err(|e| self.clean(&format!("fetching the file: {e}")))?;
         if !response.status().is_success() {
-            return Err(format!("fetching the note: Telegram answered {}", response.status().as_u16()));
+            return Err(format!("fetching the file: Telegram answered {}", response.status().as_u16()));
         }
-        response.body_mut().with_config().limit(MAX_FILE).read_to_vec().map_err(|e| self.clean(&format!("fetching the note: {e}")))
+        response.body_mut().with_config().limit(MAX_FILE).read_to_vec().map_err(|e| self.clean(&format!("fetching the file: {e}")))
+    }
+}
+
+/// A multipart/form-data body: the text fields, then one file. Answers the boundary and the body.
+pub fn multipart(fields: &[(&str, String)], field: &str, name: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+    let mut boundary = format!("harness-{:016x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
+    while bytes.windows(boundary.len()).any(|w| w == boundary.as_bytes()) {
+        boundary.push('x');
+    }
+    let mut body = Vec::with_capacity(bytes.len() + 512);
+    for (key, value) in fields {
+        body.extend(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n").as_bytes());
+    }
+    body.extend(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
+    body.extend_from_slice(bytes);
+    body.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (boundary, body)
+}
+
+/// Whether a file goes as a photo: a picture Telegram shows as one, within its size (CON-159).
+pub fn as_photo(path: &Path, size: u64) -> bool {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") && size <= MAX_PHOTO
+}
+
+/// The files an agent asked to send, checked before anything goes: none missing, no folder, none
+/// too big, not too many (CON-159).
+pub fn check_files(files: &[PathBuf]) -> Result<Vec<(PathBuf, u64)>, String> {
+    if files.len() > MAX_FILES {
+        return Err(format!("at most {MAX_FILES} files at once, not {}", files.len()));
+    }
+    files
+        .iter()
+        .map(|path| {
+            let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if !meta.is_file() {
+                return Err(format!("{} is not a file", path.display()));
+            }
+            if meta.len() > MAX_DOCUMENT {
+                return Err(format!("{} is {} MB: Telegram takes at most {} MB", path.display(), meta.len() / (1024 * 1024), MAX_DOCUMENT / (1024 * 1024)));
+            }
+            Ok((path.clone(), meta.len()))
+        })
+        .collect()
+}
+
+/// Where the files the user sends are kept (CON-160).
+fn received_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("telegram").join("files")
+}
+
+/// Files the user sent longer ago than KEEP_RECEIVED go.
+fn sweep_received(data_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(received_dir(data_dir)) else { return };
+    for entry in entries.flatten() {
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > KEEP_RECEIVED);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// A file the user sent, fetched and kept: the line the agent reads for it.
+fn receive(daemon: &Daemon, requester: &Requester, id: i64, file_id: &str, name: &str, kind: &str) -> String {
+    let fetched = requester.fetch_file(file_id).and_then(|bytes| {
+        let dir = received_dir(&daemon.data_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let safe: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect();
+        let path = dir.join(format!("{id}-{safe}"));
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok((path, bytes.len()))
+    });
+    match fetched {
+        Ok((path, size)) => format!("attached: {} ({kind}, {} KB)", path.display(), size.div_ceil(1024)),
+        Err(reason) => format!("attached: {name} could not be fetched: {reason}"),
     }
 }
 
@@ -223,6 +329,7 @@ fn save_kept(daemon: &Daemon) {
 pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
     let current = || daemon.telegram_generation.load(Ordering::SeqCst) == generation;
     let Some(requester) = daemon.telegram.lock().expect("telegram").as_ref().map(Channel::request) else { return };
+    sweep_received(&daemon.data_dir);
     let mut kept = load_kept(&daemon.data_dir);
     // Update numbers are a bot's own: another bot starts from its beginning. The id is public.
     let bot = requester.token.expose().split(':').next().unwrap_or_default().to_string();
@@ -312,10 +419,31 @@ fn take(daemon: &Arc<Daemon>, requester: &Requester, update: &Value, id: i64, al
     let Some(chat) = message["chat"]["id"].as_i64() else { return true };
     let key: Key = (chat, message["message_thread_id"].as_i64());
     daemon.with_channel(|c| c.reply_to = Some(key));
+    // A picture or a file, with its caption: fetched and kept, the agent told where (CON-160).
+    let photo = message["photo"].as_array().and_then(|sizes| sizes.last()).and_then(|p| p["file_id"].as_str());
+    let document = message["document"]["file_id"].as_str();
+    if photo.is_some() || document.is_some() {
+        let mut lines = vec![message["caption"].as_str().unwrap_or_default().to_string()];
+        if let Some(file) = photo {
+            lines.push(receive(daemon, requester, id, file, "photo.jpg", "photo"));
+        }
+        if let Some(file) = document {
+            let name = message["document"]["file_name"].as_str().unwrap_or("file");
+            let kind = message["document"]["mime_type"].as_str().unwrap_or("document");
+            if message["document"]["file_size"].as_u64().is_some_and(|size| size > MAX_FILE) {
+                say(daemon, requester, key, &format!("{name} is over {} MB, which a bot cannot fetch: send it another way.", MAX_FILE / (1024 * 1024)), None);
+                lines.push(format!("attached: {name} could not be fetched: over {} MB", MAX_FILE / (1024 * 1024)));
+            } else {
+                lines.push(receive(daemon, requester, id, file, name, kind));
+            }
+        }
+        let text = lines.join("\n").trim().to_string();
+        return route(daemon, requester, key, &format!("telegram-{id}"), TELEGRAM_LABEL, &text);
+    }
     let Some(text) = message["text"].as_str() else {
         match message["voice"]["file_id"].as_str() {
             Some(file) => voice(daemon, requester, key, id, file),
-            None => say(daemon, requester, key, "Only text and voice messages reach an agent here.", None),
+            None => say(daemon, requester, key, "Only text, voice, pictures and files reach an agent here.", None),
         }
         return true;
     };
@@ -504,6 +632,25 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
     let _ = requester.call("answerCallbackQuery", &json!({"callback_query_id": query["id"]}));
     let (Some(data), Some(chat)) = (query["data"].as_str(), query["message"]["chat"]["id"].as_i64()) else { return };
     let key: Key = (chat, query["message"]["message_thread_id"].as_i64());
+    // A plan's buttons (CON-161): 'plan:y:<session>' approves, 'plan:n:<session>' does not.
+    if let Some(rest) = data.strip_prefix("plan:") {
+        let (yes, session) = match rest.split_once(':') {
+            Some(("y", session)) => (true, session),
+            Some(("n", session)) => (false, session),
+            _ => return,
+        };
+        let outcome = daemon.conversations().ok_or("no conversations are hosted here".to_string()).and_then(|host| host.approve_plan(session, yes));
+        if outcome.is_ok() {
+            // The buttons go: the answer is given.
+            let _ = requester.call("editMessageReplyMarkup", &json!({"chat_id": chat, "message_id": query["message"]["message_id"], "reply_markup": {"inline_keyboard": []}}));
+        }
+        let said = match outcome {
+            Ok(text) => text,
+            Err(why) => format!("Nothing changed: {why}"),
+        };
+        say(daemon, requester, key, &said, None);
+        return;
+    }
     let Some(id) = data.strip_prefix("switch:") else { return };
     let open = daemon.conversations().map_or_else(Vec::new, |h| h.open_sessions());
     match open.iter().find(|s| s.id == id) {
@@ -531,38 +678,88 @@ fn say(daemon: &Daemon, requester: &Requester, key: Key, text: &str, keyboard: O
     daemon.with_channel(|c| c.say_error = if let Answer::Failed(message) = answer { Some(message) } else { None });
 }
 
+/// A delegate's plan for the user to approve with a press (CON-161): into its session's chat.
+/// `title` is the caller's: this runs while the host may hold its windows, so it asks it nothing.
+pub(crate) fn ask_plan(daemon: &Daemon, session: &str, title: &str, plan: &str) -> Result<(), String> {
+    let (requester, target) = {
+        let channel = daemon.telegram.lock().expect("telegram");
+        let channel = channel.as_ref().ok_or("the Telegram channel is off")?;
+        (channel.request(), channel.key_of(session).or(channel.reply_target()))
+    };
+    let key = target.ok_or("no chat to send the plan to yet")?;
+    let plan: String = plan.chars().take(3500).collect();
+    let text = format!("📋 План агента {title} ждёт одобрения:\n\n{plan}");
+    let (yes, no) = (format!("plan:y:{session}"), format!("plan:n:{session}"));
+    if yes.len() > 64 {
+        say(daemon, &requester, key, &format!("{text}\n\n(Кнопок нет: у этой сессии слишком длинный id. Ответь словами.)"), None);
+        return Ok(());
+    }
+    let keyboard = json!({"inline_keyboard": [[{"text": "✅ Одобрить", "callback_data": yes}, {"text": "✏️ Изменить", "callback_data": no}]]});
+    let mut body = json!({"chat_id": key.0, "text": text, "reply_markup": keyboard});
+    if let Some(topic) = key.1 {
+        body["message_thread_id"] = json!(topic);
+    }
+    waited(|| requester.call("sendMessage", &body)).map(|_| ())
+}
+
 /// The agent's reply: to the chat its session is bound to, else that of the last allowed message,
 /// else the configured one.
-pub(crate) fn send(daemon: &Daemon, text: &str, session: Option<&str>) -> Result<usize, String> {
+pub(crate) fn send(daemon: &Daemon, text: &str, files: &[PathBuf], session: Option<&str>) -> Result<usize, String> {
     let (requester, target) = {
         let channel = daemon.telegram.lock().expect("telegram");
         let channel = channel.as_ref().ok_or("the Telegram channel is off")?;
         (channel.request(), session.and_then(|id| channel.key_of(id)).or(channel.reply_target()))
     };
     let (chat, thread) = target.ok_or("no chat to reply to yet: nobody allowed has written and no chat is configured")?;
+    // Every file is checked before anything goes (CON-159).
+    let files = check_files(files)?;
     let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
+    if chars.is_empty() && files.is_empty() {
         return Err("nothing to send".to_string());
     }
-    let parts: Vec<String> = chars.chunks(MAX_TEXT).map(|part| part.iter().collect()).collect();
-    for part in &parts {
-        let mut body = json!({"chat_id": chat, "text": part});
-        if let Some(thread) = thread {
-            body["message_thread_id"] = json!(thread);
-        }
-        let mut answer = requester.call("sendMessage", &body);
-        if let Answer::Wait(seconds) = answer {
-            if seconds > MAX_SEND_WAIT_S {
-                return Err(format!("Telegram asks to wait {seconds} s before sending"));
+    // A text that fits rides on the first file as its caption; otherwise it goes first, alone.
+    let caption = (!files.is_empty() && !chars.is_empty() && chars.len() <= MAX_CAPTION).then(|| text.to_string());
+    let mut sent = 0;
+    if caption.is_none() {
+        for part in chars.chunks(MAX_TEXT) {
+            let mut body = json!({"chat_id": chat, "text": part.iter().collect::<String>()});
+            if let Some(thread) = thread {
+                body["message_thread_id"] = json!(thread);
             }
-            std::thread::sleep(Duration::from_secs(seconds));
-            answer = requester.call("sendMessage", &body);
-        }
-        match answer {
-            Answer::Result(_) => {}
-            Answer::Wait(seconds) => return Err(format!("Telegram asks to wait {seconds} s before sending")),
-            Answer::Failed(message) => return Err(message),
+            waited(|| requester.call("sendMessage", &body))?;
+            sent += 1;
         }
     }
-    Ok(parts.len())
+    for (i, (path, size)) in files.iter().enumerate() {
+        let (method, field) = if as_photo(path, *size) { ("sendPhoto", "photo") } else { ("sendDocument", "document") };
+        let mut fields = vec![("chat_id", chat.to_string())];
+        if let Some(thread) = thread {
+            fields.push(("message_thread_id", thread.to_string()));
+        }
+        if i == 0
+            && let Some(caption) = &caption
+        {
+            fields.push(("caption", caption.clone()));
+        }
+        waited(|| requester.upload(method, &fields, field, path))?;
+        sent += 1;
+    }
+    Ok(sent)
+}
+
+/// One call, waiting once if Telegram asks to and the wait is short.
+fn waited(mut call: impl FnMut() -> Answer) -> Result<Value, String> {
+    let mut answer = call();
+    if let Answer::Wait(seconds) = answer {
+        if seconds > MAX_SEND_WAIT_S {
+            return Err(format!("Telegram asks to wait {seconds} s before sending"));
+        }
+        std::thread::sleep(Duration::from_secs(seconds));
+        answer = call();
+    }
+    match answer {
+        Answer::Result(value) => Ok(value),
+        Answer::Wait(seconds) => Err(format!("Telegram asks to wait {seconds} s before sending")),
+        Answer::Failed(message) => Err(message),
+    }
 }

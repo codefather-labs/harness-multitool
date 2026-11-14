@@ -1134,6 +1134,31 @@ fn plan_mode_switched_during_a_run_goes_ahead_of_the_message_after_it() {
     assert!(requests[1]["system"].as_str().unwrap().contains("PLAN MODE"), "the turn after the message is in plan mode");
 }
 
+/// journal#816 (journal#1131): a nick set during a run, as an agent's set_nick does through its
+/// window, is the agent's name from the run's next step, not only after the run.
+#[test]
+fn a_nick_set_during_a_run_takes_hold_at_its_next_step() {
+    let root = temp_dir("nick-mid");
+    let data = temp_dir("nick-mid-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("n1", "shell", json!({"command": "cargo --version"}))), "Running."),
+        anthropic_turn(None, "Named."),
+    ]);
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
+    let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.into()), root);
+    let (entries, _) = drive_acting(&mut sessions, "first", Answer::AllowOnce, |s| {
+        s.nick(1, "orchid".to_string());
+        s.prompt(1, "next".to_string());
+    });
+    let order: Vec<String> = entries.iter().filter_map(|e| match &e.event {
+        Event::AgentName { name, .. } => Some(format!("name {name}")),
+        Event::UserMessage { text } => Some(text.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(order, ["first", "name orchid", "next"]);
+}
+
 #[test]
 fn a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_at_once() {
     let root = temp_dir("queue2");

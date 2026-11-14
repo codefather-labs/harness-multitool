@@ -97,7 +97,14 @@ const INSTRUCTIONS: &str = "The harness you run under: its project journal, maps
 fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     let client = Client::find(&serving.data_dir);
     let memory: Rc<dyn Memory> = match &client {
-        Some(client) => Rc::new(harness_daemon::memory::DaemonMemory::new(client.clone(), serving.data_dir.clone(), &serving.root, "multitool")),
+        Some(client) => {
+            let memory = harness_daemon::memory::DaemonMemory::new(client.clone(), serving.data_dir.clone(), &serving.root, "multitool");
+            // What this tab's agent writes is noted as its session's (journal#456).
+            Rc::new(match &serving.window {
+                Some((window, tab)) => memory.for_tab(window, *tab),
+                None => memory,
+            })
+        }
         None => Rc::new(crate::project_memory(&serving.data_dir.to_string_lossy(), &serving.root)?),
     };
     let mut out: Vec<Rc<dyn Tool>> = Vec::new();

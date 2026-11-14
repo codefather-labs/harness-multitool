@@ -17,6 +17,12 @@ pub struct Request {
     pub root: String,
     pub owner: String,
     pub call: Call,
+    /// The window and tab the call comes from, when it is a session's: what it writes is noted as
+    /// that session's, to be told when what blocks it is gone (journal#456).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,18 +73,25 @@ pub struct DaemonMemory {
     client: Client,
     root: String,
     owner: String,
+    writer: Option<(String, u64)>,
 }
 
 impl DaemonMemory {
     /// `_data_dir` is where the daemon was found; the client finds it again there by itself.
     pub fn new(client: Client, _data_dir: PathBuf, root: &str, owner: &str) -> DaemonMemory {
-        DaemonMemory { client, root: root.to_string(), owner: owner.to_string() }
+        DaemonMemory { client, root: root.to_string(), owner: owner.to_string(), writer: None }
+    }
+
+    /// The window and tab this memory writes for (journal#456).
+    pub fn for_tab(mut self, window: &str, tab: u64) -> DaemonMemory {
+        self.writer = Some((window.to_string(), tab));
+        self
     }
 
     /// One call. It waits while the daemon is away and goes once it is back (CON-131); a call that
     /// was out when the connection dropped fails and is not sent again, so nothing is applied twice.
     fn call<T: DeserializeOwned>(&self, call: Call) -> PluginResult<T> {
-        let request = Request { root: self.root.clone(), owner: self.owner.clone(), call };
+        let request = Request { root: self.root.clone(), owner: self.owner.clone(), call, window: self.writer.as_ref().map(|w| w.0.clone()), tab: self.writer.as_ref().map(|w| w.1) };
         match self.client.memory(&request) {
             Ok(value) => serde_json::from_value(value).map_err(|e| PluginError::new(format!("the daemon's answer: {e}"))),
             Err(CallError::Failed(message) | CallError::Stale(message)) => Err(PluginError::new(format!("the memory daemon: {message}"))),

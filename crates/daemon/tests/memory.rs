@@ -89,3 +89,53 @@ fn a_call_made_while_the_daemon_is_away_waits_and_goes_once() {
     assert_eq!(now(memory.journal_search("swap")).unwrap().len(), 2, "each applied once");
     let _daemon = starter.join().unwrap();
 }
+
+/// journal#456 (journal#1132): what a session writes is noted as its own, and when what blocks it
+/// closes, that session is told with its next message; the one closing it is not told again.
+#[test]
+fn a_released_entry_is_told_to_the_session_that_wrote_it() {
+    use std::sync::{Arc, Mutex};
+    struct Host(Mutex<Vec<(String, String)>>);
+    impl ConversationHost for Host {
+        fn op(&self, _window: &str, _op: &serde_json::Value) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn events(&self, _window: &str, _after: u64, _wait: std::time::Duration) -> Vec<serde_json::Value> {
+            Vec::new()
+        }
+        fn stats(&self) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+        fn close(&self, _only_if_idle: bool) -> bool {
+            true
+        }
+        fn session_of(&self, window: &str, tab: u64) -> Option<String> {
+            Some(format!("{window}-{tab}"))
+        }
+        fn remind(&self, session: &str, _hook: &str, text: &str) -> bool {
+            self.0.lock().unwrap().push((session.to_string(), text.to_string()));
+            true
+        }
+    }
+    let (data, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let host = Arc::new(Host(Mutex::new(Vec::new())));
+    daemon.host_conversations(host.clone());
+    let client = Client::find(data.path()).unwrap();
+    let root_path = root.path().to_string_lossy().into_owned();
+    let a = DaemonMemory::new(client.clone(), data.path().to_path_buf(), &root_path, "multitool").for_tab("w", 1);
+    let b = DaemonMemory::new(client.clone(), data.path().to_path_buf(), &root_path, "multitool").for_tab("w", 2);
+    let blocker = now(b.journal_add(entry("which schema?", &["question"]))).unwrap();
+    let mut waiting = entry("the migration", &["todo"]);
+    waiting.blocked_by = Some(blocker.id);
+    let waiting = now(a.journal_add(waiting)).unwrap();
+    // B's own entry, blocked by A's: closing it must not tell B about itself.
+    let mut own = entry("B's follow-up", &["todo"]);
+    own.blocked_by = Some(blocker.id);
+    now(b.journal_add(own)).unwrap();
+    now(b.journal_close(blocker.id, "the second one")).unwrap();
+    let told = host.0.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].0, "w-1");
+    assert!(told[0].1.contains(&format!("journal#{} is free now", waiting.id)), "{told:?}");
+}

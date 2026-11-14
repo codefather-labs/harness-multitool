@@ -695,6 +695,8 @@ enum Input {
     Nick(String),
     /// For the user to read; no run.
     Notice { label: String, text: String },
+    /// For the agent, with its next message; no run (journal#456).
+    Remind { hook: String, text: String },
     /// Its place in an orchestra.
     Role { role: Option<String>, master: Option<String>, task: Option<u64> },
 }
@@ -1079,6 +1081,8 @@ impl Sessions {
             self.start(tab, None);
         }
         if let Some(handle) = self.handles.get(&tab) {
+            // Queued too, as a mode is: a run going on takes it at its next step (journal#816).
+            self.modes.entry(tab).or_default().lock().expect("modes").push_back(harness_core::ModeChange::Nick(name.clone()));
             let _ = handle.prompts.send(Input::Nick(name));
         }
     }
@@ -1136,6 +1140,13 @@ impl Sessions {
         }
         if let Some(handle) = self.handles.get(&tab) {
             let _ = handle.prompts.send(Input::Notice { label, text });
+        }
+    }
+
+    /// Something the agent is told with its next message, starting no run (journal#456).
+    pub fn remind(&mut self, tab: u64, hook: String, text: String) {
+        if let Some(handle) = self.handles.get(&tab) {
+            let _ = handle.prompts.send(Input::Remind { hook, text });
         }
     }
 
@@ -1260,6 +1271,8 @@ impl Sessions {
                     continue;
                 }
                 if let Input::Nick(name) = &input {
+                    // Between runs this is the last word on the name: nicks a run left unread are older.
+                    modes.lock().expect("modes").retain(|change| !matches!(change, harness_core::ModeChange::Nick(_)));
                     pollster::block_on(engine.set_agent_name_by_user(name));
                     continue;
                 }
@@ -1274,6 +1287,12 @@ impl Sessions {
                     }
                     continue;
                 }
+                if let Input::Remind { hook, text } = &input {
+                    if !retired_here.load(Ordering::SeqCst) {
+                        pollster::block_on(engine.remind(hook, text));
+                    }
+                    continue;
+                }
                 if let Input::Notice { label, text } = &input {
                     if !retired_here.load(Ordering::SeqCst) {
                         pollster::block_on(engine.notice(label, text));
@@ -1281,7 +1300,7 @@ impl Sessions {
                     continue;
                 }
                 let end = match input {
-                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) | Input::Notice { .. } | Input::Role { .. } => unreachable!("handled above"),
+                    Input::Plan(_) | Input::StepDebug(_) | Input::Nick(_) | Input::Notice { .. } | Input::Remind { .. } | Input::Role { .. } => unreachable!("handled above"),
                     Input::Next => {
                         let next = {
                             let mut inbox = inbox.lock().expect("inbox");

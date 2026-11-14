@@ -112,6 +112,16 @@ pub trait ConversationHost: Send + Sync {
     fn notify(&self, _session: &str, _label: &str, _text: &str) -> bool {
         false
     }
+    /// The user's answer to a plan sent to them on Telegram (CON-161): approved, the session leaves
+    /// plan mode and its agent is told; not, it is told to ask what to change. What the chat is told.
+    fn approve_plan(&self, _session: &str, _yes: bool) -> Result<String, String> {
+        Err("no conversations are hosted here".to_string())
+    }
+    /// Something the agent of this session is told with its next message, starting no run of its
+    /// own (journal#456). False if it is not open.
+    fn remind(&self, _session: &str, _hook: &str, _text: &str) -> bool {
+        false
+    }
     /// The session behind a window's tab.
     fn session_of(&self, _window: &str, _tab: u64) -> Option<String> {
         None
@@ -493,14 +503,30 @@ impl Daemon {
     }
 
     fn telegram_send(&self, body: &str) -> (u16, Value) {
-        let Some(text) = serde_json::from_str::<Value>(body).ok().and_then(|v| v["text"].as_str().map(str::to_string)) else {
-            return (400, json!({"error": "text is required"}));
-        };
         let input = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+        let text = input["text"].as_str().unwrap_or_default().to_string();
+        // Pictures and files with it (CON-159): absolute paths, the session's tool resolved them.
+        let files: Vec<PathBuf> = input["files"].as_array().map(|list| list.iter().filter_map(|f| f.as_str().map(PathBuf::from)).collect()).unwrap_or_default();
+        if text.is_empty() && files.is_empty() {
+            return (400, json!({"error": "text or files are required"}));
+        }
         // The session asking, if it says: it answers where it is bound.
         let session = input["window"].as_str().zip(input["tab"].as_u64()).and_then(|(window, tab)| self.conversations.lock().expect("conversations").as_ref()?.session_of(window, tab));
-        match telegram::send(self, &text, session.as_deref()) {
+        match telegram::send(self, &text, &files, session.as_deref()) {
             Ok(parts) => (200, json!({"parts": parts})),
+            Err(error) => (500, json!({"error": error})),
+        }
+    }
+
+    /// A plan for the user to approve on Telegram (CON-161).
+    fn telegram_plan(&self, body: &str) -> (u16, Value) {
+        let input = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+        let (Some(session), Some(plan)) = (input["session"].as_str(), input["plan"].as_str()) else {
+            return (400, json!({"error": "session and plan are required"}));
+        };
+        let title = input["title"].as_str().unwrap_or(session);
+        match telegram::ask_plan(self, session, title, plan) {
+            Ok(()) => (200, json!({"ok": true})),
             Err(error) => (500, json!({"error": error})),
         }
     }
@@ -707,10 +733,11 @@ impl Daemon {
             ("POST", "/memory") if admin => self.memory_op(&body),
             ("GET", "/stats") if admin => (200, self.stats()),
             ("POST", "/telegram/send") if admin => self.telegram_send(&body),
+            ("POST", "/telegram/plan") if admin => self.telegram_plan(&body),
             ("POST", "/telegram/reload") if admin => self.reload_telegram(),
             ("POST", "/window/step-debug") if admin => self.set_step_debug(&body),
             ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
-            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") | ("POST", "/telegram/reload") => (401, json!({"error": "bad token"})),
+            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") | ("POST", "/telegram/plan") | ("POST", "/telegram/reload") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 let only_if_idle = serde_json::from_str::<Value>(&body).is_ok_and(|b| b["if_idle"] == true);
                 let host = self.conversations.lock().expect("conversations").clone();
@@ -963,9 +990,39 @@ impl Daemon {
         };
         self.memory_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let call = request.call.clone();
-        let answer = self.memory_of(&request.root, &request.owner).and_then(|store| memory::serve(&store, request.call));
+        let store = match self.memory_of(&request.root, &request.owner) {
+            Ok(store) => store,
+            Err(error) => return (500, json!({"error": error})),
+        };
+        // The session asking, when it says which: what it writes is noted as its own (journal#456).
+        let host = self.conversations();
+        let writer = request.window.as_deref().zip(request.tab).and_then(|(window, tab)| host.as_ref()?.session_of(window, tab));
+        let answer = memory::serve(&store, request.call);
         match answer {
             Ok(result) => {
+                if let (memory::Call::JournalAdd { .. }, Some(session), Some(id)) = (&call, &writer, result["id"].as_u64()) {
+                    let _ = store.set_session(id, session);
+                }
+                let closed = match &call {
+                    memory::Call::JournalClose { id, .. } => Some(*id),
+                    memory::Call::More { more: harness_api::MemoryOp::JournalAbandon { id, .. } } => Some(*id),
+                    _ => None,
+                };
+                if let (Some(closed), Some(host)) = (closed, &host) {
+                    let dropped = !matches!(call, memory::Call::JournalClose { .. });
+                    for free in store.released_by(closed) {
+                        let Some(author) = store.session_of(free) else { continue };
+                        if writer.as_deref() == Some(author.as_str()) {
+                            continue;
+                        }
+                        let text = if dropped {
+                            format!("journal#{free} no longer waits for journal#{closed}, which was dropped, not solved: re-read journal#{free} before working on it.")
+                        } else {
+                            format!("journal#{free} is free now: journal#{closed}, which blocked it, is closed.")
+                        };
+                        host.remind(&author, "journal-released", &text);
+                    }
+                }
                 // What concerns the project's tracker is queued; the write never waits on it (CON-139).
                 if let Some(action) = trackers::action_of(&call, &result) {
                     let folder = self.tracker_folder(&request.root);

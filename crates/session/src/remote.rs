@@ -417,9 +417,7 @@ impl DaemonHost {
                     })
                     .unwrap_or_default();
                 let said = op["user_said"].as_str().map(str::trim).unwrap_or_default();
-                if said.chars().count() < 2 || !last_user.contains(said) {
-                    return Err("Only the user approves a plan, and here it is by their words. Show them the plan and ask; when they say to go, call this again with their words, exact, in user_said.".to_string());
-                }
+                let approved = said.chars().count() >= 2 && last_user.contains(said);
                 let entered = log.iter().rposition(|entry| matches!(&entry.event, harness_api::Event::ToolRequested { call, .. } if call.name.ends_with("plan_enter"))).unwrap_or(0);
                 let called = |tool: &str| log[entered..].iter().any(|entry| matches!(&entry.event, harness_api::Event::ToolRequested { call, .. } if call.name.ends_with(tool)));
                 let missing: Vec<&str> = ["journal_add", "mindmap_new", "flowchart_new"].into_iter().filter(|tool| !called(tool)).collect();
@@ -431,6 +429,19 @@ impl DaemonHost {
                 let calls = log[entered..].iter().filter_map(|entry| if let harness_api::Event::ToolRequested { call, .. } = &entry.event { Some((call.name.as_str(), &call.input)) } else { None });
                 if let Some(lacks) = harness_core::plan::plan_lacks(calls, task) {
                     return Err(lacks);
+                }
+                if !approved {
+                    // A plan that holds up goes to the user's Telegram as well, with a button to
+                    // approve it (CON-161). A slave's plan is its master's, not the user's.
+                    let slave = self.orchestra.lock().expect("orchestra").slaves.contains_key(&session);
+                    let plan = op["plan"].as_str().unwrap_or_default();
+                    let title = self.name_of(window, &session);
+                    let sent = !slave && !plan.trim().is_empty() && harness_daemon::client::Client::find(&self.data_dir).is_some_and(|client| client.telegram_plan(&session, &title, plan).is_ok());
+                    return Err(if sent {
+                        "Only the user approves a plan, and here it is by their words or by the button sent with your plan to their Telegram. Show them the plan and ask, then end your turn and wait. If they press approve there, you are told so and plan mode is off; if they say to go in words, call this again with their words, exact, in user_said.".to_string()
+                    } else {
+                        "Only the user approves a plan, and here it is by their words. Show them the plan and ask; when they say to go, call this again with their words, exact, in user_said.".to_string()
+                    });
                 }
                 {
                     let mut orchestra = self.orchestra.lock().expect("orchestra");
@@ -1130,6 +1141,40 @@ impl ConversationHost for DaemonHost {
         for window in windows.values_mut().filter(|w| !w.closed) {
             if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
                 window.sessions.notice(tab, label.to_string(), text.to_string());
+                self.wake.notify_all();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn approve_plan(&self, session: &str, yes: bool) -> Result<String, String> {
+        let mut windows = self.windows.lock().expect("windows");
+        let window = windows.values_mut().filter(|w| !w.closed).find(|w| w.sessions.open().iter().any(|(_, s)| s == session)).ok_or("that session is not open any more")?;
+        let tab = window.sessions.open().into_iter().find(|(_, s)| s == session).map(|(tab, _)| tab).ok_or("that session is not open any more")?;
+        if !self.orchestra.lock().expect("orchestra").planning.contains(session) {
+            return Err("that session is not in plan mode".to_string());
+        }
+        if yes {
+            {
+                let mut orchestra = self.orchestra.lock().expect("orchestra");
+                orchestra.planning.remove(session);
+                self.save_orchestra(&orchestra);
+            }
+            window.sessions.plan(tab, false);
+            window.sessions.inbound(tab, harness_api::TELEGRAM_LABEL.to_string(), "✅ План одобрен в Telegram. Plan mode is off: go ahead with the plan.".to_string());
+        } else {
+            window.sessions.inbound(tab, harness_api::TELEGRAM_LABEL.to_string(), "✏️ План не одобрен: спроси, что изменить.".to_string());
+        }
+        self.wake.notify_all();
+        Ok(if yes { "✅ План одобрен: агент выходит из режима плана.".to_string() } else { "✏️ План не одобрен: агент спросит, что изменить.".to_string() })
+    }
+
+    fn remind(&self, session: &str, hook: &str, text: &str) -> bool {
+        let mut windows = self.windows.lock().expect("windows");
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
+                window.sessions.remind(tab, hook.to_string(), text.to_string());
                 self.wake.notify_all();
                 return true;
             }
@@ -1919,6 +1964,23 @@ fn run_end_word(lines: &[String]) -> String {
 #[cfg(test)]
 mod read_agent_tests {
     use super::*;
+
+    /// journal#561: a master reading its agent mid-run sees the run so far, which reaches the log
+    /// only when the run ends; and nothing twice once it has.
+    #[test]
+    fn a_read_mid_run_shows_the_run_so_far() {
+        let data = std::env::temp_dir().join(format!("mt-read-agent-{}", std::process::id()));
+        let line = |seq: u64, event: harness_api::Event| json!({"line": harness_api::event::to_line(&harness_api::LogEntry { seq, at_ms: 0, event })});
+        let call = harness_api::ToolCall { id: "c1".into(), name: "Write".into(), input: json!({"file_path": "a.txt"}) };
+        let live = vec![
+            line(1, harness_api::Event::UserMessage { text: "build it".into() }),
+            line(2, harness_api::Event::ToolRequested { call, capabilities: vec![] }),
+            line(3, harness_api::Event::TextDelta { text: "writing".into() }),
+        ];
+        let read = read_agent(&data.to_string_lossy(), "/r", "s1", &live);
+        assert_eq!(read, ["user: build it", "call Write: {\"file_path\":\"a.txt\"}", "said: writing"].map(String::from).to_vec(), "{read:?}");
+        let _ = std::fs::remove_dir_all(&data);
+    }
 
     /// CON-144: a move's progress crosses the daemon's socket whole, and to the tab it is for.
     #[test]

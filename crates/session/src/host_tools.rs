@@ -66,26 +66,43 @@ impl Tool for TelegramSend {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "telegram_send".into(),
-            description: "Send a message to the operator on Telegram, to the chat or topic bound to this conversation or else the one they last wrote from. They cannot see your normal answer there, so use it to answer a message that came from Telegram. Asks permission like any outward action. Answers how many messages it took.".into(),
-            schema: json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
+            description: "Send a message to the operator on Telegram, to the chat or topic bound to this conversation or else the one they last wrote from. They cannot see your normal answer there, so use it to answer a message that came from Telegram. Attach pictures and files with `files`: paths relative to the project or absolute, up to 10; a .png, .jpg, .jpeg or .webp up to 10 MB is shown as a photo, anything else up to 50 MB goes as a document, and the text is the first one's caption when it is short. Asks permission like any outward action. Answers how many messages it took.".into(),
+            schema: json!({"type": "object", "properties": {"text": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}, "description": "Pictures or files to send with the text: paths relative to the project or absolute."}}}),
         }
     }
 
-    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
-        Ok(vec![Capability::Command("send a Telegram message".into())])
+    fn capabilities(&self, input: &Value) -> Result<Vec<Capability>, String> {
+        let files = telegram_files(input);
+        if files.is_empty() {
+            return Ok(vec![Capability::Command("send a Telegram message".into())]);
+        }
+        // The prompt names what goes out (CON-159).
+        Ok(vec![Capability::Command(format!("send a Telegram message with {}", files.join(", ")))])
     }
 
-    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
-        let answer = match (input["text"].as_str(), harness_daemon::client::Client::find(&self.data_dir)) {
-            (None, _) => ToolOutput::error("text is required".to_string()),
-            (_, None) => ToolOutput::error("the daemon is not running".to_string()),
-            (Some(text), Some(client)) => match client.telegram_send(text, self.from.as_ref().map(|f| (f.0.as_str(), f.1))) {
+    fn execute<'a>(&'a self, input: &'a Value, cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let text = input["text"].as_str().unwrap_or_default();
+        // A path is the project's when relative; every file is checked before anything goes.
+        let files: Vec<std::path::PathBuf> = telegram_files(input).iter().map(|f| {
+            let path = std::path::Path::new(f);
+            if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(&cx.root).join(path) }
+        }).collect();
+        let answer = match (text.is_empty() && files.is_empty(), harness_daemon::telegram::check_files(&files), harness_daemon::client::Client::find(&self.data_dir)) {
+            (true, _, _) => ToolOutput::error("text or files are required".to_string()),
+            (_, Err(why), _) => ToolOutput::error(format!("nothing was sent: {why}")),
+            (_, _, None) => ToolOutput::error("the daemon is not running".to_string()),
+            (_, Ok(_), Some(client)) => match client.telegram_send(text, &files, self.from.as_ref().map(|f| (f.0.as_str(), f.1))) {
                 Ok(parts) => ToolOutput::ok(format!("sent, in {parts} message(s)")),
                 Err(error) => ToolOutput::error(error),
             },
         };
         Box::pin(std::future::ready(answer))
     }
+}
+
+/// The files a telegram_send asks to send, as given.
+fn telegram_files(input: &Value) -> Vec<String> {
+    input["files"].as_array().map(|list| list.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
 /// The contract of a debug router (CON-27).

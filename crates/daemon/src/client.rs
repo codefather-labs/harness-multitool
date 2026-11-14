@@ -457,8 +457,13 @@ impl Client {
     }
 
     /// Sends to the operator; `from`, a window and its tab, answers where that session is bound.
-    pub fn telegram_send(&self, text: &str, from: Option<(&str, u64)>) -> Result<u64, String> {
-        let (_, body) = self.request("POST", "/telegram/send", "", &json!({"text": text, "window": from.map(|f| f.0), "tab": from.map(|f| f.1)}).to_string())?;
+    /// A plan for the user to approve on Telegram with buttons (CON-161).
+    pub fn telegram_plan(&self, session: &str, title: &str, plan: &str) -> Result<(), String> {
+        self.request("POST", "/telegram/plan", "", &json!({"session": session, "title": title, "plan": plan}).to_string()).map(|_| ())
+    }
+
+    pub fn telegram_send(&self, text: &str, files: &[std::path::PathBuf], from: Option<(&str, u64)>) -> Result<u64, String> {
+        let (_, body) = self.request("POST", "/telegram/send", "", &json!({"text": text, "files": files, "window": from.map(|f| f.0), "tab": from.map(|f| f.1)}).to_string())?;
         match body["error"].as_str() {
             Some(error) => Err(error.to_string()),
             None => Ok(body["parts"].as_u64().unwrap_or(0)),

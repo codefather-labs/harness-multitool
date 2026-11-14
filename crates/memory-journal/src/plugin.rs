@@ -76,6 +76,26 @@ fn ready<'a, T: 'a>(value: T) -> BoxFuture<'a, T> {
 }
 
 impl JournalMemory {
+    /// Notes the session that wrote entry `id`, once: who to tell when what blocks it is gone
+    /// (journal#456).
+    pub fn set_session(&self, id: u64, session: &str) -> Result<(), String> {
+        self.conn
+            .borrow()
+            .execute("UPDATE entries SET session_id = ?1 WHERE id = ?2 AND session_id IS NULL", rusqlite::params![session, id as i64])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// The session that wrote entry `id`, if one was noted.
+    pub fn session_of(&self, id: u64) -> Option<String> {
+        self.conn.borrow().query_row("SELECT session_id FROM entries WHERE id = ?1", [id as i64], |r| r.get::<_, Option<String>>(0)).ok().flatten()
+    }
+
+    /// What closing `id` set free: open entries that waited only for it (CON-91).
+    pub fn released_by(&self, id: u64) -> Vec<u64> {
+        journal::released_by(&self.conn.borrow(), id as i64).map(|ids| ids.into_iter().map(|i| i as u64).collect()).unwrap_or_default()
+    }
+
     /// Opens the journal of `key` under `dir`, creating it when new.
     pub fn open(dir: &Path, key: &Path, owner: &str) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
