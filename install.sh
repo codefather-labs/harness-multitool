@@ -2,8 +2,9 @@
 # ============================================================================
 # harness-multitool installer (Linux and macOS)
 # ============================================================================
-# Builds the harness from source and puts it on your PATH. No releases exist yet,
-# so a Rust toolchain is needed.
+# Builds the harness from source, puts it on your PATH, runs its daemon as a user
+# service, and sets up Claude Code's rules and hook for it (CON-162). No releases
+# exist yet, so a Rust toolchain is needed.
 #
 #   ./install.sh --local                  from this checkout
 #   curl -fsSL <raw url>/install.sh | bash  from a temporary clone
@@ -20,10 +21,22 @@ LINK_DIR="$HOME/.local/bin"
 # The one line this installer may add to a shell's profile, and how it finds it again.
 PATH_MARK="# harness-multitool: multitool on PATH"
 
+CLAUDE_DIR="$HOME/.claude"
+SERVICE="multitool-daemon"
+SYSTEMD_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$SERVICE.service"
+LAUNCH_AGENT="dev.multitool.daemon"
+LAUNCH_PLIST="$HOME/Library/LaunchAgents/$LAUNCH_AGENT.plist"
+# What the agent setup put in place, one path a line, for --uninstall to take back.
+MANIFEST="$DATA_HOME/installed-claude-files"
+HOOK_NAME="harness-selfcheck-reminder.sh"
+
 ASSUME_YES=false
 LOCAL_MODE=false
 WITH_CLAUDE_CODE=true
 UNINSTALL=false
+WITH_SERVICE=true
+WITH_AGENT_SETUP=true
+BUILD=true
 
 if [ -t 1 ]; then BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; NC=$'\033[0m'; else BOLD=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; NC=""; fi
 log_info()  { echo "${BLUE}[INFO]${NC} $1"; }
@@ -42,7 +55,11 @@ OPTIONS:
   --yes              Skip confirmation prompts
   --local            Build this checkout instead of cloning
   --no-claude-code   Without Claude Code as an adapter
-  --uninstall        Remove the binary and its link, and keep your data
+  --no-service       Do not run the daemon as a user service
+  --no-agent-setup   Do not install Claude Code's rules and hook
+  --no-build         With --local: install the build already in target/release
+  --uninstall        Remove the binary, its link, the service and the agent setup;
+                     keep your data and the backups
   --help             Show this help
 
 WHAT GETS INSTALLED:
@@ -51,6 +68,11 @@ WHAT GETS INSTALLED:
   if $LINK_DIR is not on your PATH, and you agree: one line in your shell's
   profile that puts it there (zsh ~/.zshrc, bash ~/.bashrc or on macOS
   ~/.bash_profile, fish ~/.config/fish/conf.d, other shells ~/.profile)
+  the daemon as a user service: $SYSTEMD_UNIT (Linux),
+  or $LAUNCH_PLIST (macOS); with neither, it is started in the background
+  $CLAUDE_DIR/rules/project-journal.md, cognitive-self-check.md and
+  $CLAUDE_DIR/hooks/$HOOK_NAME, its UserPromptSubmit entry merged into
+  $CLAUDE_DIR/settings.json; a file there that differs is backed up first
 HELP
 }
 
@@ -59,6 +81,9 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=true ;;
     --local) LOCAL_MODE=true ;;
     --no-claude-code) WITH_CLAUDE_CODE=false ;;
+    --no-service) WITH_SERVICE=false ;;
+    --no-agent-setup) WITH_AGENT_SETUP=false ;;
+    --no-build) BUILD=false ;;
     --uninstall) UNINSTALL=true ;;
     --help|-h) print_help; exit 0 ;;
     *) log_error "unknown option: $1"; print_help >&2; exit 2 ;;
@@ -127,7 +152,163 @@ remove_from_path() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# The daemon as a user service (CON-162)
+# ---------------------------------------------------------------------------
+has_user_systemd() {
+  [ "$(uname -s)" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+
+# A daemon not run by the service makes way for the service's: one daemon a machine.
+stop_running_daemon() {
+  if "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1; then
+    log_info "stopping the daemon that runs now, so the service runs the only one"
+    "$BIN_DIR/multitool" daemon stop >/dev/null 2>&1 || true
+  fi
+}
+
+install_service() {
+  if has_user_systemd; then
+    stop_running_daemon
+    mkdir -p "$(dirname "$SYSTEMD_UNIT")"
+    # PATH as it is now: the daemon starts claude and codex, and a service's own PATH is bare.
+    cat > "$SYSTEMD_UNIT" <<UNIT
+[Unit]
+Description=harness-multitool daemon
+After=network-online.target
+
+[Service]
+ExecStart=$BIN_DIR/multitool daemon
+ExecStop=$BIN_DIR/multitool daemon stop
+Restart=on-failure
+RestartSec=3
+Environment=PATH=$PATH
+
+[Install]
+WantedBy=default.target
+UNIT
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$SERVICE" >/dev/null 2>&1 || { log_error "systemctl --user enable --now $SERVICE failed: see systemctl --user status $SERVICE"; return 1; }
+    log_ok "the daemon runs as the user service $SERVICE"
+    if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
+      if confirm "Keep the daemon running after you log out and start it at boot (loginctl enable-linger $(id -un))?"; then
+        loginctl enable-linger "$(id -un)" && log_ok "linger is on: the daemon starts at boot"
+      else
+        log_info "linger left off: the daemon starts when you log in"
+      fi
+    fi
+  elif [ "$(uname -s)" = Darwin ]; then
+    stop_running_daemon
+    mkdir -p "$(dirname "$LAUNCH_PLIST")"
+    cat > "$LAUNCH_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LAUNCH_AGENT</string>
+  <key>ProgramArguments</key><array><string>$BIN_DIR/multitool</string><string>daemon</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PATH</string></dict>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$(id -u)/$LAUNCH_AGENT" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$LAUNCH_PLIST" && log_ok "the daemon runs as the LaunchAgent $LAUNCH_AGENT"
+  else
+    log_warn "no user service manager here: the daemon is started in the background, and does not come back after a reboot"
+    "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1 || (setsid "$BIN_DIR/multitool" daemon >/dev/null 2>&1 < /dev/null &)
+  fi
+}
+
+uninstall_service() {
+  if [ -f "$SYSTEMD_UNIT" ]; then
+    systemctl --user disable --now "$SERVICE" >/dev/null 2>&1 || true
+    rm -f "$SYSTEMD_UNIT"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    log_ok "removed the user service $SERVICE"
+  fi
+  if [ -f "$LAUNCH_PLIST" ]; then
+    launchctl bootout "gui/$(id -u)/$LAUNCH_AGENT" >/dev/null 2>&1 || true
+    rm -f "$LAUNCH_PLIST"
+    log_ok "removed the LaunchAgent $LAUNCH_AGENT"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Claude Code's agent setup (CON-162): the harness's rules and self-check hook
+# ---------------------------------------------------------------------------
+# A file of the user's that differs is kept beside it before it is replaced.
+put_file() {
+  local from="$1" to="$2"
+  mkdir -p "$(dirname "$to")"
+  if [ -f "$to" ] && ! cmp -s "$from" "$to"; then
+    cp -p "$to" "$to.before-multitool-$(date +%Y%m%d%H%M%S)"
+    log_info "backed up $to"
+  fi
+  cmp -s "$from" "$to" 2>/dev/null || cp "$from" "$to"
+  grep -qxF "$to" "$MANIFEST" 2>/dev/null || echo "$to" >> "$MANIFEST"
+  log_ok "$to"
+}
+
+# Adds the hook's UserPromptSubmit entry to settings.json, or takes it out: the rest is left as it is.
+settings_hook() {
+  local action="$1" settings="$CLAUDE_DIR/settings.json" hook="$CLAUDE_DIR/hooks/$HOOK_NAME"
+  if ! command -v python3 >/dev/null 2>&1; then
+    [ "$action" = add ] && log_warn "no python3 to edit $settings: add a UserPromptSubmit hook running $hook yourself" >&2
+    return 0
+  fi
+  [ "$action" = remove ] && [ ! -f "$settings" ] && return 0
+  python3 - "$action" "$settings" "$hook" <<'PY'
+import json, os, shutil, sys, time
+action, path, hook = sys.argv[1:]
+settings = json.load(open(path)) if os.path.exists(path) else {}
+groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
+present = any(h.get("command") == hook for g in groups for h in g.get("hooks", []))
+if action == "add" and not present:
+    groups.append({"hooks": [{"type": "command", "command": hook}]})
+elif action == "remove" and present:
+    for g in groups:
+        g["hooks"] = [h for h in g.get("hooks", []) if h.get("command") != hook]
+    settings["hooks"]["UserPromptSubmit"] = [g for g in groups if g["hooks"]]
+    if not settings["hooks"]["UserPromptSubmit"]:
+        del settings["hooks"]["UserPromptSubmit"]
+else:
+    sys.exit(0)
+if os.path.exists(path):
+    shutil.copy2(path, path + ".before-multitool-" + time.strftime("%Y%m%d%H%M%S"))
+tmp = path + ".tmp"
+open(tmp, "w").write(json.dumps(settings, indent=2) + "\n")
+os.replace(tmp, path)
+print("changed")
+PY
+}
+
+agent_setup() {
+  local src="$1/assets/claude"
+  [ -d "$src" ] || { log_warn "no assets/claude in the source: Claude Code's agent setup skipped"; return 0; }
+  mkdir -p "$DATA_HOME"
+  put_file "$src/rules/project-journal.md" "$CLAUDE_DIR/rules/project-journal.md"
+  put_file "$src/rules/cognitive-self-check.md" "$CLAUDE_DIR/rules/cognitive-self-check.md"
+  put_file "$src/hooks/$HOOK_NAME" "$CLAUDE_DIR/hooks/$HOOK_NAME"
+  chmod 755 "$CLAUDE_DIR/hooks/$HOOK_NAME"
+  if [ "$(settings_hook add)" = changed ]; then log_ok "$CLAUDE_DIR/settings.json: the self-check hook added"; else log_ok "$CLAUDE_DIR/settings.json: the self-check hook is there"; fi
+}
+
+agent_unsetup() {
+  if [ "$(settings_hook remove)" = changed ]; then log_ok "took the self-check hook out of $CLAUDE_DIR/settings.json"; fi
+  [ -f "$MANIFEST" ] || return 0
+  local file
+  while IFS= read -r file; do
+    if [ -n "$file" ] && [ -f "$file" ]; then rm -f "$file"; log_ok "removed $file"; fi
+  done < "$MANIFEST"
+  rm -f "$MANIFEST"
+  log_info "kept the backups beside them (*.before-multitool-*): restore one by renaming it"
+}
+
 uninstall() {
+  uninstall_service
+  agent_unsetup
   local link="$LINK_DIR/multitool"
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$BIN_DIR/multitool" ]; then
     rm -f "$link"
@@ -198,7 +379,7 @@ if [ "$UNINSTALL" = true ]; then
   exit 0
 fi
 
-ensure_build_deps
+if [ "$BUILD" = true ]; then ensure_build_deps; fi
 src="$(source_dir)"
 
 features=()
@@ -208,8 +389,13 @@ if [ ${#features[@]} -gt 0 ]; then
   args+=(--features "$(IFS=,; echo "${features[*]}")")
 fi
 
-log_info "building: cargo ${args[*]}"
-(cd "$src" && cargo "${args[@]}")
+if [ "$BUILD" = true ]; then
+  log_info "building: cargo ${args[*]}"
+  (cd "$src" && cargo "${args[@]}")
+else
+  [ "$LOCAL_MODE" = true ] && [ -x "$src/target/release/multitool" ] || { log_error "--no-build needs --local and a build in target/release"; exit 1; }
+  log_info "not building: installing $src/target/release/multitool as it is"
+fi
 
 # Beside the old one and moved over it, so a running harness keeps its file.
 mkdir -p "$BIN_DIR" "$LINK_DIR"
@@ -233,9 +419,27 @@ else
   status=1
 fi
 ensure_on_path
+if [ "$WITH_SERVICE" = true ]; then install_service || status=1; fi
+if [ "$WITH_AGENT_SETUP" = true ]; then agent_setup "$src"; fi
+
+# What works, before saying it does (CON-162).
+echo ""
+log_info "checking the install"
+check() { if eval "$2" >/dev/null 2>&1; then log_ok "$1"; else log_error "$1: no"; status=1; fi; }
+check "multitool runs" "\"$BIN_DIR/multitool\" --version"
+if [ "$WITH_SERVICE" = true ]; then
+  for _ in $(seq 1 30); do "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1 && break; sleep 0.5; done
+  check "the daemon answers" "\"$BIN_DIR/multitool\" daemon --status"
+  if [ -f "$SYSTEMD_UNIT" ]; then check "the service $SERVICE is active" "systemctl --user is-active $SERVICE"; fi
+fi
+if [ "$WITH_AGENT_SETUP" = true ] && [ -d "$src/assets/claude" ]; then
+  check "the rules are in $CLAUDE_DIR/rules" "[ -f \"$CLAUDE_DIR/rules/project-journal.md\" ] && [ -f \"$CLAUDE_DIR/rules/cognitive-self-check.md\" ]"
+  check "the self-check hook runs" "echo '{}' | \"$CLAUDE_DIR/hooks/$HOOK_NAME\""
+  check "settings.json calls it" "grep -qF \"$CLAUDE_DIR/hooks/$HOOK_NAME\" \"$CLAUDE_DIR/settings.json\""
+fi
 
 echo ""
-echo "${BOLD}harness-multitool installed.${NC}"
+if [ "$status" -eq 0 ]; then echo "${BOLD}harness-multitool installed.${NC}"; else echo "${BOLD}harness-multitool installed, with the problems above.${NC}"; fi
 echo ""
 echo "  multitool                     open it; s opens the settings"
 echo "  Settings, Provider            choose an adapter and sign in"

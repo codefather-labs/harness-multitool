@@ -2657,11 +2657,56 @@ fn daemon_restart(start: bool) -> Result<()> {
     if !start {
         return Ok(());
     }
-    let program = harness_daemon::own_program()?;
-    let new = harness_daemon::client::Client::find_or_start(&dir, &program).map_err(|e| anyhow!(e))?;
+    // Installed as a user service (CON-162): the service starts it, so one daemon runs, the one
+    // the system brings back after a reboot. The old one was stopped above, cleanly, its
+    // delegates ended (CON-128); a clean exit does not make the service restart it by itself.
+    let new = match start_service() {
+        Some(Ok(())) => {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                if let Some(client) = harness_daemon::client::Client::find(&dir).filter(|c| c.stats().is_ok()) {
+                    break client;
+                }
+                if std::time::Instant::now() > until {
+                    bail!("the service was started, and no daemon answered in 15 s: see `systemctl --user status {SERVICE}`");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        Some(Err(why)) => bail!("the daemon's service would not start: {why}"),
+        None => {
+            let program = harness_daemon::own_program()?;
+            harness_daemon::client::Client::find_or_start(&dir, &program).map_err(|e| anyhow!(e))?
+        }
+    };
     let pid = new.stats().ok().and_then(|s| s["pid"].as_u64()).map_or("?".to_string(), |p| p.to_string());
     println!("started the daemon (pid {pid}, port {}): open windows reopen their conversations in it", new.port());
     Ok(())
+}
+
+/// The daemon's user service, as install.sh names it (CON-162).
+const SERVICE: &str = "multitool-daemon";
+#[cfg(target_os = "macos")]
+const LAUNCH_AGENT: &str = "dev.multitool.daemon";
+
+/// Starts the daemon through its user service, when one is installed: None when there is none.
+fn start_service() -> Option<Result<(), String>> {
+    let home = dirs::home_dir()?;
+    let run = |program: &str, args: &[&str]| -> Result<(), String> {
+        let status = std::process::Command::new(program).args(args).status().map_err(|e| format!("{program}: {e}"))?;
+        if status.success() { Ok(()) } else { Err(format!("`{program} {}` ended with {status}", args.join(" "))) }
+    };
+    if cfg!(target_os = "linux") && home.join(".config/systemd/user").join(format!("{SERVICE}.service")).exists() {
+        return Some(run("systemctl", &["--user", "start", SERVICE]));
+    }
+    #[cfg(target_os = "macos")]
+    if home.join("Library/LaunchAgents").join(format!("{LAUNCH_AGENT}.plist")).exists() {
+        use std::os::unix::fs::MetadataExt;
+        // The user whose home it is: the one launchd's gui domain is named by.
+        let uid = std::fs::metadata(&home).map(|m| m.uid()).ok()?;
+        return Some(run("launchctl", &["kickstart", &format!("gui/{uid}/{LAUNCH_AGENT}")]));
+    }
+    None
 }
 
 /// Why this window could not have its conversations in the daemon, to say once on screen.
