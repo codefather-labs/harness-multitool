@@ -20,7 +20,7 @@ On a fresh context window (session start, resume, after compaction), and before 
 
 Read by category and tag, not by paging through everything.
 
-An entry you rely on is evidence: cite it as `journal#<id>` (under `### Verified facts` when you emit a `## Facts` block). An entry is what an earlier session believed — if the code now says otherwise, the code wins, and that contradiction is itself a finding to journal.
+An entry you rely on is evidence: cite it as `journal#<id>`. An entry is what an earlier session believed — if the code now says otherwise, the code wins, and that contradiction is itself a finding to journal.
 
 ## Write — as you work
 

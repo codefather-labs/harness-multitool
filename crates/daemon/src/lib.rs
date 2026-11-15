@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub mod client;
+pub mod service;
 pub mod conditions;
 pub mod memory;
 pub mod socket;

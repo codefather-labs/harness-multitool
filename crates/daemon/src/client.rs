@@ -55,8 +55,12 @@ pub type OnConnect = Arc<dyn Fn(&Client, bool) + Send + Sync>;
 
 /// Starts the daemon detached: it outlives whoever started it, and is nobody's child to wait for.
 #[cfg(unix)]
-fn start_daemon(program: &Path) -> std::io::Result<()> {
+fn start_daemon(program: &Path, data_dir: &Path) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
+    // A daemon run by a user service is started by it, never beside it (journal#1181).
+    if let Some(kind) = crate::service::installed_for(data_dir) {
+        return crate::service::start(kind).map_err(std::io::Error::other);
+    }
     // Through a shell that ends at once and is waited for here, so the daemon is never left
     // defunct under a window that goes on for days.
     // In a session of its own (journal#956): no controlling terminal, so nothing it or its programs
@@ -72,7 +76,7 @@ fn start_daemon(program: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn start_daemon(program: &Path) -> std::io::Result<()> {
+fn start_daemon(program: &Path, _data_dir: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     let mut command = std::process::Command::new(program);
@@ -254,7 +258,7 @@ impl Client {
             return Err("a daemon of another protocol holds this data directory".to_string());
         }
         if !socket_answers(data_dir) {
-            start_daemon(program).map_err(|e| format!("starting the daemon: {e}"))?;
+            start_daemon(program, data_dir).map_err(|e| format!("starting the daemon: {e}"))?;
         }
         // A new daemon may wait up to 10 s for its last port to be let go (journal#1054).
         let end = Instant::now() + Duration::from_secs(15);
@@ -626,7 +630,7 @@ fn keep_connected(weak: Weak<Inner>) {
                 && !socket_answers(dir)
                 && (freed || other_protocol(dir).is_none())
             {
-                let _ = start_daemon(&program);
+                let _ = start_daemon(&program, dir);
                 inner.link.lock().expect("link").down_since = Some(Instant::now());
                 // The one just started is connected to as soon as it listens, not a try later.
                 let end = Instant::now() + Duration::from_secs(3);
