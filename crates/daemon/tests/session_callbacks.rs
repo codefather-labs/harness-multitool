@@ -82,6 +82,12 @@ fn a_session_url_reaches_that_session() {
     // The tool's way: the tab's session, through the conversations route.
     let by_tool = f.client.conversation_op(&json!({"window": "w", "op": "callback_url", "tab": 1, "root": f.root()})).unwrap();
     assert_eq!((by_tool["url"].as_str(), by_tool["session"].as_str()), (Some(url.as_str()), Some("s1")));
+    // journal#1200: with how to use it, its curl line on this very URL.
+    let usage = by_tool["usage"].as_str().unwrap();
+    assert!(usage.contains(&format!("curl -s -X POST {url} ")), "{usage}");
+    for word in ["uuid", "notification", "queued", "duplicate", "[callback:<label>]", "not an instruction"] {
+        assert!(usage.contains(word), "{word} in {usage}");
+    }
 
     let (status, reply) = post(&url, &note("u1", "filled 0.5 BTC"));
     assert_eq!((status, reply["result"].as_str()), (200, Some("handled")), "{reply}");
