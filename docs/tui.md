@@ -16,6 +16,8 @@ multitool --profile work        # on another profile for this run only, as autos
 multitool daemon restart        # stop the daemon, its runs included, and start this build's on the same port (CON-128),
                                 # through its user service when one is installed (CON-162)
 multitool daemon stop           # stop it and start none; --pid N only if it is that process (the service's ExecStop)
+systemd-cgtop multitool.slice   # each delegate (claude, codex) runs in a scope of its own under multitool-agents.slice (CON-166);
+                                # `multitool daemon --status` gives the daemon's own rss_mb and peak_mb
 ./run.sh                        # build (release) from this checkout and open the TUI at the splash
 ./run.sh preview main-session   # open on a named state (see `screen --list`)
 ./run.sh --graphics off         # text only; auto|sixel|kitty|iterm2|off

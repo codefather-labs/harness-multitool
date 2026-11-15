@@ -2,6 +2,7 @@
 //! has its own thread, so blocking it blocks nothing else.
 
 pub mod children;
+pub mod scope;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

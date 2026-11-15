@@ -526,7 +526,7 @@ impl Daemon {
 
     fn stats(&self) -> Value {
         let telegram = self.telegram.lock().expect("telegram").as_ref().map_or(json!({"on": false}), telegram::Channel::status);
-        json!({"conversations": self.conversations.lock().expect("conversations").as_ref().map_or(Value::Null, |h| h.stats()), "memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count(), "socket_clients": self.socket_clients(), "protocol": socket::PROTOCOL, "build": build_id()})
+        json!({"conversations": self.conversations.lock().expect("conversations").as_ref().map_or(Value::Null, |h| h.stats()), "memory_ops": self.memory_ops.load(std::sync::atomic::Ordering::Relaxed), "pid": std::process::id(), "port": self.port, "telegram": telegram, "step_debug_windows": self.state.lock().expect("daemon state").windows.values().filter(|w| w.step_debug).count(), "socket_clients": self.socket_clients(), "protocol": socket::PROTOCOL, "build": build_id(), "rss_mb": own_memory_mb("VmRSS"), "peak_mb": own_memory_mb("VmHWM")})
     }
 
     /// The session's mode, from its log. Kept in the windows file, so a restart holds it.
@@ -1303,6 +1303,15 @@ The reply: {{\"result\": \"handled\"}} when it reached you; \"queued\" while thi
 \n\
 To check it: callback_check sends a test to this URL and shows what the URL has seen, with each callback's outcome and what waits."
     )
+}
+
+/// This process's own memory in MB, from /proc/self/status (Linux; null elsewhere): the daemon's
+/// alone, apart from the delegates in their scopes (CON-166).
+fn own_memory_mb(field: &str) -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with(field))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024)
 }
 
 /// The end of the trigger log, at most its last 4 MB: what a check of the recent entries needs.

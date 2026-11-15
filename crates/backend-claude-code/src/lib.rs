@@ -6,7 +6,7 @@
 pub mod conversations;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
@@ -371,7 +371,8 @@ impl ClaudeCode {
 
     /// Its process for this run: the one it has if that can go on, or a new one from its form.
     fn start(&self, request: &BackendRequest<'_>) -> PluginResult<Live> {
-        let mut command = Command::new(&self.binary);
+        // In a scope of its own where systemd can make one (CON-166).
+        let mut command = harness_platform_native::scope::agent_command(&self.binary, "claude");
         let mut args = self.args(request);
         if let Some(file) = self.user_servers_file() {
             args.extend(["--mcp-config".to_string(), file.to_string_lossy().into_owned()]);
@@ -382,6 +383,7 @@ impl ClaudeCode {
         if let Some(base) = &self.environment {
             command.env_clear();
             command.envs(base.iter());
+            harness_platform_native::scope::keep_bus(&mut command, base);
         }
         let names: Vec<String> = match &self.environment {
             Some(base) => base.keys().cloned().collect(),

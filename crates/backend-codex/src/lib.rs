@@ -260,12 +260,14 @@ impl Codex {
     }
 
     fn spawn(&self, request: &BackendRequest<'_>) -> PluginResult<Child> {
-        let mut command = Command::new(&self.binary);
+        // In a scope of its own where systemd can make one (CON-166).
+        let mut command = harness_platform_native::scope::agent_command(&self.binary, "codex");
         command.args(self.args(request)).current_dir(&self.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Only where the user signed in passes from the window: its environment, CODEX_HOME in it.
         if let Some(base) = &self.environment {
             command.env_clear();
             command.envs(base.iter());
+            harness_platform_native::scope::keep_bus(&mut command, base);
         }
         let mut child = command.spawn().map_err(|e| {
             let why = if e.kind() == std::io::ErrorKind::NotFound { "it is not installed or not on the PATH".to_string() } else { e.to_string() };
