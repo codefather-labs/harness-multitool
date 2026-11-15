@@ -183,6 +183,41 @@ impl Tool for CallbackUrl {
     }
 }
 
+/// An agent checks its own callbacks (CON-165): a test to its URL, and what the URL has seen.
+pub struct CallbackCheck {
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for CallbackCheck {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "callback_check".into(),
+            description: "Check this session's callbacks. By default it sends a test notification to your own callback URL over HTTP, as an app would, and answers the reply (handled, or queued while this conversation is not open); the test then reaches you as [callback:callback-check]: ..., which proves the whole path. send false only reads. It also answers what your URL has seen: its last log entries (last, 10 by default, 50 at most), each with time, uuid, type and outcome (handled, queued, duplicate, rejected, no_handler, failed, dropped, expired), and what waits for you. Use it when an app says it sent something and nothing came. callback_url gives the URL and how to use it.".into(),
+            schema: json!({"type": "object", "properties": {"send": {"type": "boolean", "description": "Send a test notification first; true by default."}, "last": {"type": "integer", "description": "How many recent entries, 10 by default, 50 at most."}}}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let mut op = json!({"window": self.window, "op": "callback_check", "tab": self.tab, "root": cx.root});
+        for key in ["send", "last"] {
+            if !input[key].is_null() {
+                op[key] = input[key].clone();
+            }
+        }
+        let answer = match self.client.conversation_op(&op) {
+            Ok(reply) => ToolOutput::ok(reply.to_string()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
 /// The conversations on this machine (CON-99).
 pub struct AgentList {
     pub client: harness_daemon::client::Client,

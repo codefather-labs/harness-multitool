@@ -1060,6 +1060,7 @@ name = "harness-daemon"
 version = "0.1.0-dev"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "harness-api",
  "harness-games",
  "harness-memory-journal",

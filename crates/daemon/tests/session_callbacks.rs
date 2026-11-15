@@ -141,3 +141,47 @@ fn a_session_not_open_gets_it_later() {
     assert_eq!(post(&url, &note("q3", "third")).1["result"], "handled");
     assert_eq!(f.host.got.lock().unwrap().len(), 3);
 }
+
+/// CON-165: callback_check sends a real test to the session's own URL and shows what it has seen,
+/// this session's alone and with no token.
+#[test]
+fn an_agent_checks_its_callbacks() {
+    let f = fixture();
+    f.host.open.lock().unwrap().push("s1".into());
+    let check = |op: Value| f.client.conversation_op(&op).unwrap();
+    let base = json!({"window": "w", "op": "callback_check", "tab": 1, "root": f.root()});
+    // Another session's traffic, which s1 must not see.
+    let other = f.client.session_callback("s2", &f.root()).unwrap();
+    post(&other, &note("o1", "for s2"));
+
+    let first = check(base.clone());
+    let sent = &first["sent"];
+    assert_eq!((sent["status"].as_u64(), sent["reply"]["result"].as_str()), (Some(200), Some("handled")), "{first}");
+    let got = f.host.got.lock().unwrap().clone();
+    assert!(got.iter().any(|(s, label, text)| s == "s1" && label == "callback-check" && text.contains("callback_check")), "{got:?}");
+    let recent = first["recent"].as_array().unwrap();
+    assert_eq!(recent.last().unwrap()["uuid"], sent["uuid"], "{first}");
+    assert_eq!(recent.last().unwrap()["outcome"], "handled");
+    assert!(recent.last().unwrap()["at"].as_str().unwrap().ends_with("UTC"));
+    assert!(recent.iter().all(|e| e["uuid"] != "o1"), "another session's entries stay out");
+    let token = first["url"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
+    assert!(!first["recent"].to_string().contains(&token), "no token in what it read");
+
+    // Only reading: nothing is sent.
+    let before = f.host.got.lock().unwrap().len();
+    let read = check({ let mut op = base.clone(); op["send"] = json!(false); op });
+    assert!(read["sent"].is_null());
+    assert_eq!(f.host.got.lock().unwrap().len(), before);
+
+    // Closed: the test waits, and the queue says so.
+    f.host.open.lock().unwrap().clear();
+    let closed = check(base.clone());
+    assert_eq!(closed["sent"]["reply"]["result"], "queued", "{closed}");
+    assert_eq!(closed["waiting"]["count"], 1);
+    // last is capped at 50.
+    for n in 0..60 {
+        post(&f.client.session_callback("s1", &f.root()).unwrap(), &note(&format!("m{n}"), "x"));
+    }
+    let many = check({ let mut op = base; op["send"] = json!(false); op["last"] = json!(500); op });
+    assert_eq!(many["recent"].as_array().unwrap().len(), 50);
+}
