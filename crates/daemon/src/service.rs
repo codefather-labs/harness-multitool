@@ -104,6 +104,16 @@ pub fn restart(kind: Kind) -> Result<(), String> {
     }
 }
 
+/// A restart asked of the daemon by itself (CON-167): systemd is told and the call returns at
+/// once, so the daemon can answer first and is then stopped by its own ExecStop.
+pub fn restart_detached(kind: Kind) -> Result<(), String> {
+    match kind {
+        Kind::Systemd => run("systemctl", &["--user", "--no-block", "restart", UNIT]),
+        Kind::Launchd => run("launchctl", &["kickstart", "-k", &gui_domain()?]),
+        Kind::Task => Err("a restart from Telegram is not done on Windows yet: run `multitool daemon restart`".to_string()),
+    }
+}
+
 /// Whether the service has its daemon running now.
 pub fn active(kind: Kind) -> bool {
     match kind {

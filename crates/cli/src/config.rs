@@ -65,6 +65,10 @@ pub struct Telegram {
     pub chat: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// The command that opens a terminal window, the multitool command put after it (CON-167);
+    /// none: the first of xdg-terminal-exec, ptyxis, gnome-terminal, x-terminal-emulator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -885,6 +889,7 @@ pub fn telegram() -> Option<harness_daemon::telegram::Config> {
         chat: file.chat,
         poll_timeout_s: 25,
         transcriber: transcriber(),
+        terminal: file.terminal,
     })
 }
 

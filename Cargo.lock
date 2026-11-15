@@ -1064,6 +1064,7 @@ dependencies = [
  "harness-api",
  "harness-games",
  "harness-memory-journal",
+ "harness-platform-native",
  "libc",
  "pollster",
  "rusqlite",

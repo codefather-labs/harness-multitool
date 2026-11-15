@@ -19,6 +19,15 @@ struct Cli {
     /// the one last chosen with Use in the settings, else `default`.
     #[arg(long, global = true)]
     profile: Option<String>,
+    /// Work in this folder, as if started there: a terminal opened from Telegram names it (CON-167).
+    #[arg(long, global = true)]
+    dir: Option<PathBuf>,
+    /// Open this conversation in a tab at once, with no start page (CON-167).
+    #[arg(long, conflicts_with = "new")]
+    resume: Option<String>,
+    /// Open a new session tab at once, with no start page (CON-167).
+    #[arg(long)]
+    new: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -300,6 +309,9 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(dir) = &cli.dir {
+        std::env::set_current_dir(dir).with_context(|| format!("--dir {}", dir.display()))?;
+    }
     // Every start: the profiles are made or moved in first (CON-120), then this run's is chosen.
     // --profile for this run only (autostart); else the one last chosen in the settings (CON-127).
     let profile = match cli.profile {
@@ -319,7 +331,17 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var(name, dir) };
     }
     // Bare `multitool` opens the start page, as run.sh does (journal#780).
-    let command = cli.command.unwrap_or(Command::Preview { name: "splash".into(), theme: "dark".into(), script: None, handoff: None });
+    // --resume and --new: one tab at once, as a reload hands its tabs over (CON-167).
+    let opened = match (&cli.resume, cli.new) {
+        (Some(session), _) => Some(Some(session.clone())),
+        (None, true) => Some(None),
+        (None, false) => None,
+    };
+    let command = match (cli.command, opened) {
+        (Some(command), _) => command,
+        (None, Some(session)) => Command::Preview { name: "splash".into(), theme: "dark".into(), script: None, handoff: Some(one_tab_handoff(session)?) },
+        (None, None) => Command::Preview { name: "splash".into(), theme: "dark".into(), script: None, handoff: None },
+    };
     match command {
         Command::Preview { name, theme, script, handoff } => {
             // A window: it never hangs on the daemon (CON-132).
@@ -2716,6 +2738,22 @@ fn daemon_restart(start: bool, only_pid: Option<u32>) -> Result<()> {
     let pid = new.stats().ok().and_then(|s| s["pid"].as_u64()).map_or("?".to_string(), |p| p.to_string());
     println!("started the daemon (pid {pid}, port {}): open windows reopen their conversations in it", new.port());
     Ok(())
+}
+
+/// A hand-off of one tab, for `--resume <session>` (its conversation) or `--new` (none yet).
+fn one_tab_handoff(session: Option<String>) -> Result<PathBuf> {
+    let handoff = reload::Handoff {
+        active: 0,
+        theme: "dark".into(),
+        tabs: vec![reload::TabHandoff { title: if session.is_some() { "resumed".into() } else { "new".into() }, session, window: None, url: None, scroll: 0, draft: String::new() }],
+        tell: None,
+        installed: false,
+    };
+    let dir = config::data_dir()?.join("opened");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("handoff-{}.json", std::process::id()));
+    std::fs::write(&path, serde_json::to_string(&handoff)?)?;
+    Ok(path)
 }
 
 /// The toast of a plan answered on Telegram (CON-163, journal#1188).

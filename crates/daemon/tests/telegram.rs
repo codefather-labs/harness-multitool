@@ -114,7 +114,7 @@ fn update(id: i64, user: i64, text: &str) -> Value {
 }
 
 fn config(url: &str, allowed: &[i64]) -> Config {
-    Config { base_url: url.into(), token: Secret::new(TOKEN), allowed_users: allowed.to_vec(), chat: None, poll_timeout_s: 0, transcriber: None }
+    Config { base_url: url.into(), token: Secret::new(TOKEN), allowed_users: allowed.to_vec(), chat: None, poll_timeout_s: 0, transcriber: None, terminal: None }
 }
 
 struct World {
@@ -282,6 +282,7 @@ struct FakeHost {
     got: Mutex<Vec<(String, String)>>,
     notices: Mutex<Vec<(String, String)>>,
     plans: Mutex<Vec<(String, bool)>>,
+    reloads: Mutex<u32>,
 }
 
 impl ConversationHost for FakeHost {
@@ -309,6 +310,10 @@ impl ConversationHost for FakeHost {
     fn open_sessions(&self) -> Vec<OpenSession> {
         self.open.lock().unwrap().clone()
     }
+    fn reload_all(&self) -> usize {
+        *self.reloads.lock().unwrap() += 1;
+        self.open.lock().unwrap().len()
+    }
     fn deliver_to(&self, session: &str, _: &str, text: &str) -> bool {
         let open = self.open.lock().unwrap().iter().any(|s| s.id == session);
         if open {
@@ -332,7 +337,7 @@ impl ConversationHost for FakeHost {
 }
 
 fn session(id: &str, title: &str) -> OpenSession {
-    OpenSession { id: id.into(), title: title.into(), nick: None }
+    OpenSession { id: id.into(), title: title.into(), nick: None, ..Default::default() }
 }
 
 fn message(id: i64, chat: i64, topic: Option<i64>, text: &str) -> Value {
@@ -456,7 +461,7 @@ fn another_poller_is_named() {
 
 #[test]
 fn a_nick_finds_a_session_and_is_set_from_its_chat() {
-    let named = |id: &str, nick: &str| OpenSession { id: id.into(), title: nick.into(), nick: Some(nick.into()) };
+    let named = |id: &str, nick: &str| OpenSession { id: id.into(), title: nick.into(), nick: Some(nick.into()), ..Default::default() };
     let w = bound_world(
         vec![named("a", "orchid"), named("b", "orchid-two")],
         vec![message(1, 7, Some(10), "/nick nobody"), message(2, 7, Some(10), "/switch ORCHID"), message(3, 7, Some(10), "for orchid"), message(4, 7, Some(10), "/nick lily"), message(5, 7, Some(10), "/nick")],
@@ -669,4 +674,57 @@ fn a_plan_answered_in_the_window_is_said_on_telegram() {
     let before = w.fake.lock().unwrap().edits.len();
     w.client.telegram_plan_done("s1", false).unwrap();
     assert_eq!(w.fake.lock().unwrap().edits.len(), before);
+}
+
+/// CON-167: /reload, /open, /new and /restart from Telegram. A closed conversation opens in a new
+/// window (a fake terminal that records what it was given), an open one is switched to.
+#[test]
+fn the_harness_is_run_from_telegram() {
+    let (url, fake) = fake_api();
+    let (r1, r2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (root1, root2) = (r1.path().to_string_lossy().into_owned(), r2.path().to_string_lossy().into_owned());
+    let tools = tempfile::tempdir().unwrap();
+    let record = tools.path().join("asked");
+    std::fs::write(tools.path().join("term.sh"), format!("printf '%s\\n' \"$PWD\" \"$@\" >> {}\n", record.display())).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    // s2 was open once, in another project, and is closed now.
+    std::fs::create_dir_all(data.path().join("daemon")).unwrap();
+    std::fs::write(data.path().join("daemon/known.json"), json!([{"session": "s2", "root": root2, "title": "beta", "nick": null, "last_open_ms": 1}]).to_string()).unwrap();
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let host = Arc::new(FakeHost::default());
+    *host.open.lock().unwrap() = vec![OpenSession { root: root1.clone(), ..session("s1", "alpha") }];
+    daemon.host_conversations(host.clone());
+    daemon.start_telegram(Config { terminal: Some(format!("sh {}", tools.path().join("term.sh").display())), ..config(&url, &[42]) });
+    fake.lock().unwrap().updates = vec![message(1, -100, None, "/reload"), message(2, -100, None, "/open")];
+    until("reloaded", || *host.reloads.lock().unwrap() == 1 && said(&fake).iter().any(|t| t.contains("Reloading 1 window")));
+    until("the list", || said(&fake).iter().any(|t| t.contains("alpha · open") && t.contains("beta · closed")));
+    let list = fake.lock().unwrap().sent.iter().find(|b| b["text"].as_str().unwrap_or_default().contains("beta · closed")).cloned().unwrap();
+    let buttons: Vec<String> = list["reply_markup"]["inline_keyboard"].as_array().unwrap().iter().map(|row| row[0]["callback_data"].as_str().unwrap().to_string()).collect();
+    assert_eq!(buttons, ["o:0", "o:1"], "the open one first, as the one open most lately");
+    // The closed one: a window in its own root, resuming it.
+    fake.lock().unwrap().updates.push(tap(3, 42, -100, "o:1"));
+    until("the window was asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--resume")));
+    let asked = std::fs::read_to_string(&record).unwrap();
+    let lines: Vec<&str> = asked.lines().collect();
+    assert!(lines.ends_with(&["--dir", root2.as_str(), "--resume", "s2"]), "{asked}");
+    assert_eq!(lines[0], root2, "started in the conversation's own folder");
+    until("told", || said(&fake).iter().any(|t| t.contains("Opening beta in a new window")));
+    // The open one: this chat goes to it.
+    fake.lock().unwrap().updates.push(tap(4, 42, -100, "o:0"));
+    until("switched", || said(&fake).iter().any(|t| t.contains("now goes to alpha")));
+    // /new in a project.
+    fake.lock().unwrap().updates.extend([message(5, -100, None, "/new")]);
+    until("projects", || said(&fake).iter().any(|t| t.contains("which project")));
+    fake.lock().unwrap().updates.push(tap(6, 42, -100, "n:1"));
+    until("a new session asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--new")));
+    assert!(std::fs::read_to_string(&record).unwrap().contains(&format!("--dir\n{root2}\n--new")));
+    // /restart: no, then yes with no service here.
+    fake.lock().unwrap().updates.extend([message(7, -100, None, "/restart"), tap(8, 42, -100, "restart:n"), tap(9, 42, -100, "restart:y"), tap(10, 666, -100, "o:1"), tap(11, 42, -100, "o:9")]);
+    until("not restarted", || said(&fake).iter().any(|t| t == "Not restarted."));
+    until("no service", || said(&fake).iter().any(|t| t.contains("does not run as a service")));
+    until("a stale button", || said(&fake).iter().any(|t| t.contains("That list is old")));
+    assert_eq!(std::fs::read_to_string(&record).unwrap().matches("--resume").count(), 1, "a stranger's press opened nothing");
+    // The register now holds both, s1 with its root.
+    let known = std::fs::read_to_string(data.path().join("daemon/known.json")).unwrap();
+    assert!(known.contains("\"s1\"") && known.contains(&root1.replace('\\', "\\\\")), "{known}");
 }

@@ -39,6 +39,9 @@ pub struct Config {
     pub poll_timeout_s: u64,
     /// What turns a voice note into words; none when speech is off.
     pub transcriber: Option<Transcriber>,
+    /// The command that opens a terminal window for /open and /new (CON-167); none: the first
+    /// one found.
+    pub terminal: Option<String>,
 }
 
 /// A voice note's bytes to its words.
@@ -92,7 +95,22 @@ pub(crate) struct Channel {
     /// Plans waiting for approval, by session: their message, to edit when answered (CON-163).
     /// Not kept on disk: a restarted daemon has no pending plan, as it has no run.
     plans: std::collections::HashMap<String, PlanMessage>,
+    /// What a chat's last /open or /new listed, for its buttons' short numbers (CON-167): a
+    /// session id or a root may not fit Telegram's 64 bytes of a button.
+    picks: std::collections::HashMap<Key, (std::time::Instant, Vec<Pick>)>,
 }
+
+/// One thing a button of /open or /new stands for.
+#[derive(Clone)]
+enum Pick {
+    /// A known conversation: its id, root and title.
+    Conversation { session: String, root: String, title: String },
+    /// A project to start a new session in.
+    Project(String),
+}
+
+/// How long a list's buttons stay good.
+const PICKS_LIVE: Duration = Duration::from_secs(600);
 
 /// A plan's message on Telegram: where it is and what it said.
 #[derive(Clone)]
@@ -112,7 +130,7 @@ impl Channel {
     pub(crate) fn new(config: Config) -> Channel {
         let timeout = Duration::from_secs(config.poll_timeout_s + 10);
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).build().into();
-        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default() }
+        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default(), picks: Default::default() }
     }
 
     pub(crate) fn status(&self) -> Value {
@@ -363,6 +381,10 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "whoami", "description": "The session this chat goes to"},
             {"command": "nick", "description": "Name the session of this chat"},
             {"command": "id", "description": "Your Telegram user id"},
+            {"command": "open", "description": "Known conversations: switch, or open a closed one"},
+            {"command": "new", "description": "A new session in a project, in a new window"},
+            {"command": "reload", "description": "Reload every open window"},
+            {"command": "restart", "description": "Restart the daemon"},
         ]}),
     );
     while current() && !daemon.channels_stopped.load(Ordering::Relaxed) {
@@ -587,6 +609,17 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
             };
             say(daemon, requester, key, &what, None);
         }
+        "/reload" => {
+            let asked = daemon.conversations().map_or(0, |host| host.reload_all());
+            let what = if asked == 0 { "No window is open.".to_string() } else { format!("Reloading {asked} window(s): each swaps when its run is at a safe point.") };
+            say(daemon, requester, key, &what, None);
+        }
+        "/restart" => {
+            let buttons = json!({"inline_keyboard": [[{"text": "✅ Restart", "callback_data": "restart:y"}, {"text": "✖ No", "callback_data": "restart:n"}]]});
+            say(daemon, requester, key, "Restart the daemon? The runs going on now stop; the windows reopen their conversations.", Some(buttons));
+        }
+        "/open" => open_list(daemon, requester, key),
+        "/new" => new_list(daemon, requester, key),
         "/switch" if rest.is_empty() => say(daemon, requester, key, &list(), keyboard(&open)),
         "/switch" => match choose(&open, &rest) {
             Ok(session) => switch(daemon, requester, key, &session),
@@ -663,11 +696,138 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
         }
         return;
     }
+    if let Some(answer) = data.strip_prefix("restart:") {
+        let _ = requester.call("editMessageReplyMarkup", &json!({"chat_id": chat, "message_id": query["message"]["message_id"], "reply_markup": {"inline_keyboard": []}}));
+        if answer != "y" {
+            say(daemon, requester, key, "Not restarted.", None);
+            return;
+        }
+        restart(daemon, requester, key);
+        return;
+    }
+    if let Some((kind, n)) = data.split_once(':').filter(|(k, _)| matches!(*k, "o" | "n"))
+        && let Ok(n) = n.parse::<usize>()
+    {
+        picked(daemon, requester, key, kind, n);
+        return;
+    }
     let Some(id) = data.strip_prefix("switch:") else { return };
     let open = daemon.conversations().map_or_else(Vec::new, |h| h.open_sessions());
     match open.iter().find(|s| s.id == id) {
         Some(session) => switch(daemon, requester, key, session),
         None => say(daemon, requester, key, "That session is not open any more.", keyboard(&open)),
+    }
+}
+
+/// The daemon restarts through its service, after saying so (CON-167).
+fn restart(daemon: &Daemon, requester: &Requester, key: Key) {
+    let Some(kind) = crate::service::installed_for(&daemon.data_dir) else {
+        say(daemon, requester, key, "The daemon does not run as a service here, so it cannot restart itself: run `multitool daemon restart`.", None);
+        return;
+    };
+    say(daemon, requester, key, "Restarting the daemon. The windows reconnect by themselves.", None);
+    std::thread::spawn(move || {
+        // The answer goes out first.
+        std::thread::sleep(Duration::from_millis(800));
+        if let Err(e) = crate::service::restart_detached(kind) {
+            eprintln!("restart from Telegram: {e}");
+        }
+    });
+}
+
+/// Keeps what a chat's list shows, for its buttons.
+fn keep_picks(daemon: &Daemon, key: Key, picks: Vec<Pick>) {
+    daemon.with_channel(|c| {
+        c.picks.retain(|_, (at, _)| at.elapsed() < PICKS_LIVE);
+        c.picks.insert(key, (std::time::Instant::now(), picks));
+    });
+}
+
+/// /open: the known conversations by project, the one open most lately first (CON-167).
+fn open_list(daemon: &Daemon, requester: &Requester, key: Key) {
+    let open = daemon.note_known();
+    let known = crate::known::load(&daemon.data_dir.join("daemon"));
+    if known.is_empty() {
+        say(daemon, requester, key, "No conversation is known yet: one is, once it has been open in a window.", None);
+        return;
+    }
+    let shown: Vec<&crate::known::Known> = known.iter().take(20).collect();
+    let mut lines = vec!["Conversations (newest first):".to_string()];
+    let mut rows = Vec::new();
+    let mut picks = Vec::new();
+    for (n, k) in shown.iter().enumerate() {
+        let is_open = open.iter().any(|s| s.id == k.session);
+        let mark = if is_open { "open" } else { "closed" };
+        lines.push(format!("{}. {} · {} · {mark}", n + 1, k.project(), k.title));
+        let verb = if is_open { "Switch here" } else { "Open" };
+        rows.push(json!([{"text": format!("{} {}. {}", verb, n + 1, short(&k.title, 28)), "callback_data": format!("o:{n}")}]));
+        picks.push(Pick::Conversation { session: k.session.clone(), root: k.root.clone(), title: k.title.clone() });
+    }
+    keep_picks(daemon, key, picks);
+    say(daemon, requester, key, &lines.join("
+"), Some(json!({"inline_keyboard": rows})));
+}
+
+/// /new: the known projects, for a new session in a new window (CON-167).
+fn new_list(daemon: &Daemon, requester: &Requester, key: Key) {
+    daemon.note_known();
+    let mut roots: Vec<String> = Vec::new();
+    for k in crate::known::load(&daemon.data_dir.join("daemon")) {
+        if !roots.contains(&k.root) {
+            roots.push(k.root);
+        }
+    }
+    if roots.is_empty() {
+        say(daemon, requester, key, "No project is known yet: one is, once a conversation has been open in it.", None);
+        return;
+    }
+    roots.truncate(20);
+    let rows: Vec<Value> = roots.iter().enumerate().map(|(n, root)| json!([{"text": short(&project_name(root), 40), "callback_data": format!("n:{n}")}])).collect();
+    keep_picks(daemon, key, roots.into_iter().map(Pick::Project).collect());
+    say(daemon, requester, key, "A new session in which project?", Some(json!({"inline_keyboard": rows})));
+}
+
+fn project_name(root: &str) -> String {
+    Path::new(root).file_name().and_then(|n| n.to_str()).unwrap_or(root).to_string()
+}
+
+fn short(text: &str, most: usize) -> String {
+    if text.chars().count() <= most { text.to_string() } else { format!("{}…", text.chars().take(most - 1).collect::<String>()) }
+}
+
+/// A button of /open or /new pressed: switch to an open conversation, or open a window.
+fn picked(daemon: &Daemon, requester: &Requester, key: Key, kind: &str, n: usize) {
+    let pick = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.picks.get(&key).filter(|(at, _)| at.elapsed() < PICKS_LIVE).and_then(|(_, picks)| picks.get(n).cloned()));
+    let terminal = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.config.terminal.clone());
+    let Some(pick) = pick else {
+        say(daemon, requester, key, "That list is old: ask again with /open or /new.", None);
+        return;
+    };
+    match (kind, pick) {
+        ("o", Pick::Conversation { session, root, title }) => {
+            let open = daemon.conversations().map_or_else(Vec::new, |h| h.open_sessions());
+            if let Some(found) = open.iter().find(|s| s.id == session) {
+                switch(daemon, requester, key, found);
+                return;
+            }
+            let what = match crate::terminal::open(terminal.as_deref(), &root, &["--resume", &session]) {
+                Ok(how) => {
+                    let bound = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.key_of(&session)).is_some();
+                    let topic = if bound { " Its chat goes to it again once it is open." } else { "" };
+                    format!("Opening {title} in a new window ({how}).{topic}")
+                }
+                Err(why) => format!("Could not open {title}: {why}"),
+            };
+            say(daemon, requester, key, &what, None);
+        }
+        ("n", Pick::Project(root)) => {
+            let what = match crate::terminal::open(terminal.as_deref(), &root, &["--new"]) {
+                Ok(how) => format!("Opening a new session in {} ({how}).", project_name(&root)),
+                Err(why) => format!("Could not open a window in {}: {why}", project_name(&root)),
+            };
+            say(daemon, requester, key, &what, None);
+        }
+        _ => say(daemon, requester, key, "That list is old: ask again with /open or /new.", None),
     }
 }
 

@@ -1186,7 +1186,7 @@ impl ConversationHost for DaemonHost {
                 if !out.iter().any(|s: &harness_daemon::OpenSession| s.id == session) {
                     let nick = self.nicks.lock().expect("nicks").get(&session).cloned();
                     let title = nick.clone().unwrap_or_else(|| crate::title_of(&data, &window.root, &session));
-                    out.push(harness_daemon::OpenSession { title, nick, id: session });
+                    out.push(harness_daemon::OpenSession { title, nick, id: session, root: window.root.clone() });
                 }
             }
         }
@@ -1256,6 +1256,17 @@ impl ConversationHost for DaemonHost {
 
     fn session_of(&self, window: &str, tab: u64) -> Option<String> {
         self.windows.lock().expect("windows").get(window)?.sessions.session_of(tab).map(str::to_string)
+    }
+
+    fn reload_all(&self) -> usize {
+        let mut windows = self.windows.lock().expect("windows");
+        let mut asked = 0;
+        for window in windows.values_mut().filter(|w| !w.closed) {
+            window.say(json!({"kind": "reload"}));
+            asked += 1;
+        }
+        self.wake.notify_all();
+        asked
     }
 
     fn rename(&self, session: &str, nick: &str) -> bool {

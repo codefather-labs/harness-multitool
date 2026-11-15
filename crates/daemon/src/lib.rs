@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 
 pub mod client;
 pub mod service;
+pub mod known;
+pub mod terminal;
 pub mod session_callbacks;
 pub mod conditions;
 pub mod memory;
@@ -120,6 +122,10 @@ pub trait ConversationHost: Send + Sync {
     fn open_sessions(&self) -> Vec<OpenSession> {
         Vec::new()
     }
+    /// Asks every open window to reload at its next safe point (CON-167); answers how many.
+    fn reload_all(&self) -> usize {
+        0
+    }
     /// A message for this session as an inbound. False if it is not open.
     fn deliver_to(&self, _session: &str, _label: &str, _text: &str) -> bool {
         false
@@ -152,13 +158,15 @@ pub trait ConversationHost: Send + Sync {
 pub type TelegramSource = Arc<dyn Fn() -> Option<telegram::Config> + Send + Sync>;
 
 /// A session open in a window.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OpenSession {
     pub id: String,
     /// What a person knows it by.
     pub title: String,
     /// The name it goes by, if it has one.
     pub nick: Option<String>,
+    /// The project folder of the window it is open in (CON-167).
+    pub root: String,
 }
 
 /// The path to run this program by. A rebuild puts a new file at that path, after which the OS
@@ -342,6 +350,8 @@ impl Daemon {
                     }
                     // What waited for a session goes once it is open (CON-164).
                     daemon.flush_sessions();
+                    // The register of conversations, from the ones open now (CON-167).
+                    daemon.note_known();
                 }
             });
         }
@@ -982,6 +992,13 @@ impl Daemon {
             json!({"count": queue.map_or(0, |q| q.len()), "oldest_age_s": queue.and_then(|q| q.front()).map(|q| now_ms().saturating_sub(q.at_ms) / 1000)})
         };
         json!({"url": url, "sent": sent, "recent": recent, "waiting": waiting})
+    }
+
+    /// Notes the conversations open now in the register (CON-167), and answers them.
+    pub fn note_known(&self) -> Vec<OpenSession> {
+        let open = self.conversations.lock().expect("conversations").clone().map(|h| h.open_sessions()).unwrap_or_default();
+        known::note(&self.data_dir.join("daemon"), &open, now_ms());
+        open
     }
 
     /// Every session with something waiting, and what waited too long goes (CON-164).

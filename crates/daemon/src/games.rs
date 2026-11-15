@@ -689,7 +689,7 @@ mod tests {
     /// an unknown name is refused, listing who is online.
     #[test]
     fn an_invitation_names_agents_online() {
-        let online = |id: &str, nick: Option<&str>| crate::OpenSession { id: id.into(), title: format!("{id} title"), nick: nick.map(str::to_string) };
+        let online = |id: &str, nick: Option<&str>| crate::OpenSession { id: id.into(), title: format!("{id} title"), nick: nick.map(str::to_string), ..Default::default() };
         let all = vec![online("c-me", Some("multitool-arch")), online("c-tt", Some("tacticstrade-arch")), online("c-x", None)];
         let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let got = resolve(&all, &names(&["TacticsTrade-Arch", "c-x", "multitool-arch", "tacticstrade-arch"]), "c-me").unwrap();

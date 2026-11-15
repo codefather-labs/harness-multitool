@@ -73,6 +73,19 @@ fn found(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(program).is_file()))
 }
 
+/// The command to start a terminal window with (CON-167): in a scope of its own, so that the
+/// daemon that opened it, and its restarts, do not take it down; else the program itself.
+pub fn window_command(program: &str) -> Command {
+    if !available() || !found(program) {
+        return Command::new(program);
+    }
+    let mut command = Command::new("systemd-run");
+    command.args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no"]);
+    command.arg(format!("--unit={}", unit_name("window").replacen("multitool-agent-window", "multitool-window", 1)));
+    command.args(["--", program]);
+    command
+}
+
 /// After an `env_clear`, what systemd-run needs to reach the user manager, from this process,
 /// unless the given environment has it already.
 pub fn keep_bus(command: &mut Command, given: &std::collections::BTreeMap<String, String>) {
