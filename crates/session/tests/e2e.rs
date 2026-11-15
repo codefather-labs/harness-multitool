@@ -2264,3 +2264,44 @@ fn rollout(codex_dir: &str, id: &str) -> std::path::PathBuf {
     }
     panic!("no rollout {id}")
 }
+
+/// CON-164: a hosted session's system prompt names its own callback URL, and the conversation
+/// keeps it when it is opened again in another window's tab.
+#[test]
+fn a_session_is_told_its_own_callback_url() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("own-url");
+    let data = temp_dir("own-url-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(None, "Hello."), anthropic_turn(None, "Again.")]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let settings = settings(&url, "k");
+    let open = || SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings, Default::default()).unwrap());
+    let wait_end = |link: &SessionLink| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if link.drain().into_iter().any(|m| matches!(m, FromSession::Ended { .. })) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    };
+    let mut link = open();
+    link.prompt(1, "hi".to_string());
+    assert!(wait_end(&link));
+    let session = link.session_of(1).unwrap();
+    let own = client.session_callback(&session, &root).unwrap();
+    assert!(seen.lock().unwrap()[0].contains(&own), "the prompt names {own}");
+    drop(link);
+
+    // Opened again in another window: the same URL in its prompt.
+    let mut again = open();
+    let _ = again.resume(3, &session);
+    again.prompt(3, "again".to_string());
+    assert!(wait_end(&again));
+    assert!(seen.lock().unwrap().last().unwrap().contains(&own));
+    assert_eq!(client.session_callback(&session, &root).unwrap(), own);
+}

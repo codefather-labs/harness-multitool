@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 pub mod client;
 pub mod service;
+pub mod session_callbacks;
 pub mod conditions;
 pub mod memory;
 pub mod socket;
@@ -76,6 +77,20 @@ struct Window {
     off: HashSet<String>,
     /// What this project chose: standard type -> implementation; and what is switched off.
     project: conditions::ProjectCallbacks,
+    /// A session's own URL (CON-164): what it brings goes to that conversation wherever it is open.
+    session: Option<String>,
+}
+
+impl Window {
+    fn new(id: String, root: String, session: Option<String>) -> (Window, Option<String>) {
+        // A broken conditions file does not cost the window; the agent hears about it.
+        let (conditions, problem) = match conditions::load(&root) {
+            Ok(armed) => (armed, None),
+            Err(message) => (Vec::new(), Some(message)),
+        };
+        let window = Window { id, off: off_types(&root), project: conditions::read_project(&root).unwrap_or_default(), root, events: Vec::new(), instances: HashMap::new(), step_debug: false, cycles: HashMap::new(), conditions, session };
+        (window, problem)
+    }
 }
 
 struct State {
@@ -217,6 +232,8 @@ pub struct Daemon {
     instance: String,
     /// Games between agents (ADR 0029).
     games: games::Games,
+    /// Each session's own callback URL and what waits for it (CON-164).
+    sessions: Mutex<session_callbacks::Store>,
 }
 
 /// Where a running daemon says how to reach it.
@@ -271,6 +288,7 @@ impl Daemon {
         let server = Arc::new(tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| format!("binding a port: {e}"))?);
         let port = server.server_addr().to_ip().map(|a| a.port()).ok_or("the server has no port")?;
 
+        let sessions = session_callbacks::Store::load(&dir);
         let log_path = dir.join("triggers.jsonl");
         let seen = std::fs::read_to_string(&log_path)
             .unwrap_or_default()
@@ -292,7 +310,8 @@ impl Daemon {
             conversations: Mutex::new(None),
             handlers,
             // Numbered from the clock: a window listening across a restart still sees new events.
-            state: Mutex::new(State { polled: HashMap::new(), windows: restore_windows(&dir), seen, next_seq: now_ms(), shutting_down: false }),
+            state: Mutex::new(State { polled: HashMap::new(), windows: restore_windows(&dir, &sessions), seen, next_seq: now_ms(), shutting_down: false }),
+            sessions: Mutex::new(sessions),
             wake: Condvar::new(),
             admin,
             data_dir: data_dir.to_path_buf(),
@@ -314,9 +333,15 @@ impl Daemon {
             std::thread::spawn(move || {
                 while !daemon.stopping() {
                     std::thread::sleep(Duration::from_secs(5));
+                    // A daemon asked to stop during the sleep acts for no one: its successor does.
+                    if daemon.stopping() {
+                        break;
+                    }
                     if let Some(host) = daemon.conversations.lock().expect("conversations").clone() {
                         daemon.games.tick(&|session, text| host.deliver_to(session, games::GAME_LABEL, text));
                     }
+                    // What waited for a session goes once it is open (CON-164).
+                    daemon.flush_sessions();
                 }
             });
         }
@@ -405,6 +430,12 @@ impl Daemon {
         let Some(host) = self.host() else { return (503, json!({"error": "this daemon runs no conversations"})) };
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
         let Some(window) = input["window"].as_str() else { return (400, json!({"error": "window is required"})) };
+        // An agent's own callback URL (CON-164).
+        if input["op"] == "callback_url" {
+            let Some(session) = input["tab"].as_u64().and_then(|tab| host.session_of(window, tab)) else { return (400, json!({"error": "this tab has no conversation yet"})) };
+            let Some(root) = input["root"].as_str().filter(|r| !r.is_empty()) else { return (400, json!({"error": "root is required"})) };
+            return (200, json!({"url": self.session_url(&session, root), "session": session}));
+        }
         // An agent's game tool: the daemon holds the tables (ADR 0029).
         if let Some(name) = input["op"].as_str().filter(|n| n.starts_with("game_")) {
             let Some(session) = input["tab"].as_u64().and_then(|tab| host.session_of(window, tab)) else { return (400, json!({"error": "this tab has no conversation yet"})) };
@@ -746,6 +777,14 @@ impl Daemon {
             ("POST", "/telegram/send") if admin => self.telegram_send(&body),
             ("POST", "/telegram/plan") if admin => self.telegram_plan(&body),
             ("POST", "/telegram/plan_done") if admin => self.telegram_plan_done(&body),
+            ("POST", "/session/callback") if admin => match serde_json::from_str::<Value>(&body) {
+                Ok(input) => match (input["session"].as_str().filter(|s| !s.is_empty()), input["root"].as_str().filter(|r| !r.is_empty())) {
+                    (Some(session), Some(root)) => (200, json!({"url": self.session_url(session, root), "session": session})),
+                    _ => (400, json!({"error": "session and root are required"})),
+                },
+                Err(_) => (400, json!({"error": "not JSON"})),
+            },
+            ("POST", "/session/callback") => (401, json!({"error": "bad token"})),
             ("POST", "/telegram/reload") if admin => self.reload_telegram(),
             ("POST", "/window/step-debug") if admin => self.set_step_debug(&body),
             ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
@@ -773,12 +812,7 @@ impl Daemon {
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "not JSON"})) };
         let Some(root) = input["root"].as_str() else { return (400, json!({"error": "root is required"})) };
         let id = uuid::Uuid::new_v4().to_string();
-        // A broken conditions file does not cost the window; the agent hears about it.
-        let (armed, problem) = match conditions::load(root) {
-            Ok(armed) => (armed, None),
-            Err(message) => (Vec::new(), Some(message)),
-        };
-        let window = Window { id: id.clone(), root: root.to_string(), events: Vec::new(), instances: HashMap::new(), step_debug: false, cycles: HashMap::new(), conditions: armed, off: off_types(root), project: conditions::read_project(root).unwrap_or_default() };
+        let (window, problem) = Window::new(id.clone(), root.to_string(), None);
         {
             let mut state = self.state.lock().expect("daemon state");
             state.windows.insert(id.clone(), window);
@@ -836,48 +870,134 @@ impl Daemon {
         }
     }
 
-    fn deliver(&self, window: &str, event: WindowEvent) {
+    /// Answers true when the event waits for its session to open (CON-164).
+    fn deliver(&self, window: &str, event: WindowEvent) -> bool {
         let mut state = self.state.lock().expect("daemon state");
+        // A session's URL: to that conversation, with no lock held while the host takes its own.
+        if let Some(session) = state.windows.get(window).and_then(|w| w.session.clone()) {
+            drop(state);
+            return match event {
+                WindowEvent::Notification { uuid, label, text } => self.deliver_to_session(&session, session_callbacks::Queued { at_ms: now_ms(), uuid, label, text }),
+                // A card for a window has no window here: the entry is written all the same.
+                _ => false,
+            };
+        }
         let seq = state.next_seq;
         state.next_seq += 1;
         if let Some(w) = state.windows.get_mut(window) {
             w.events.push(Numbered { seq, event });
         }
         self.wake.notify_all();
+        false
+    }
+
+    /// The URL of a session's own (CON-164), its token made the first time; a token's record
+    /// carries the session's project as it is now.
+    pub fn session_url(&self, session: &str, root: &str) -> String {
+        let (token, changed) = {
+            let mut store = self.sessions.lock().expect("session callbacks");
+            let made = store.token_for(session, root);
+            if made.1 {
+                store.save();
+            }
+            made
+        };
+        let mut state = self.state.lock().expect("daemon state");
+        if changed || !state.windows.contains_key(&token) {
+            let (window, _) = Window::new(token.clone(), root.to_string(), Some(session.to_string()));
+            state.windows.insert(token.clone(), window);
+        }
+        format!("http://127.0.0.1:{}/callback/{token}", self.port)
+    }
+
+    /// To the session if it is open; otherwise, or while older ones wait, kept in order. True
+    /// when it waits.
+    fn deliver_to_session(&self, session: &str, queued: session_callbacks::Queued) -> bool {
+        {
+            let mut store = self.sessions.lock().expect("session callbacks");
+            if let Some(dropped) = store.push(session, queued) {
+                self.trigger_log(&dropped.uuid, "notification", session, "dropped", "more than 500 waited for the session");
+            }
+            store.save();
+        }
+        self.flush_session(session)
+    }
+
+    /// Delivers what waits for a session, oldest first, while it is open. True when something
+    /// still waits.
+    fn flush_session(&self, session: &str) -> bool {
+        let Some(host) = self.conversations.lock().expect("conversations").clone() else { return true };
+        loop {
+            // Taken out under the store's lock, delivered with no lock held, put back if not.
+            let next = self.sessions.lock().expect("session callbacks").entries.get_mut(session).and_then(|e| e.queue.pop_front());
+            let Some(next) = next else {
+                self.sessions.lock().expect("session callbacks").save();
+                return false;
+            };
+            if !host.deliver_to(session, &next.label, &next.text) {
+                let mut store = self.sessions.lock().expect("session callbacks");
+                if let Some(entry) = store.entries.get_mut(session) {
+                    entry.queue.push_front(next);
+                }
+                store.save();
+                return true;
+            }
+        }
+    }
+
+    /// Every session with something waiting, and what waited too long goes (CON-164).
+    pub fn flush_sessions(&self) {
+        let (waiting, gone) = {
+            let mut store = self.sessions.lock().expect("session callbacks");
+            let gone = store.expire(now_ms());
+            if !gone.is_empty() {
+                store.save();
+            }
+            (store.waiting(), gone)
+        };
+        for (session, q) in gone {
+            self.trigger_log(&q.uuid, "notification", &session, "expired", "waited 7 days for the session");
+        }
+        for session in waiting {
+            self.flush_session(&session);
+        }
     }
 
     fn callback(&self, window: &str, body: &str) -> (u16, Value) {
-        let (root, id) = {
+        let (root, id, of_session) = {
             let state = self.state.lock().expect("daemon state");
             match state.windows.get(window) {
-                Some(w) => (w.root.clone(), w.id.clone()),
+                Some(w) => (w.root.clone(), w.id.clone(), w.session.clone()),
                 None => return (401, json!({"error": "no such window"})),
             }
         };
+        // A session's token is as secret as a window id; the log names the session (CON-164).
+        let shown = of_session.as_ref().map_or_else(|| id.clone(), |s| format!("session:{s}"));
+        let of_session = of_session.is_some();
         let Ok(input) = serde_json::from_str::<Value>(body) else { return (400, json!({"error": "the body must be JSON"})) };
         let (Some(uuid), Some(kind)) = (input["uuid"].as_str().filter(|s| !s.is_empty()), input["type"].as_str().filter(|s| !s.is_empty())) else {
-            self.trigger_log(input["uuid"].as_str().unwrap_or(""), input["type"].as_str().unwrap_or(""), &id, "rejected", "uuid and type are required");
+            self.trigger_log(input["uuid"].as_str().unwrap_or(""), input["type"].as_str().unwrap_or(""), &shown, "rejected", "uuid and type are required");
             return (400, json!({"error": "a callback needs uuid and type"}));
         };
         if !self.state.lock().expect("daemon state").seen.insert(uuid.to_string()) {
-            self.trigger_log(uuid, kind, &id, "duplicate", "");
+            self.trigger_log(uuid, kind, &shown, "duplicate", "");
             return (200, json!({"result": "duplicate"}));
         }
         let off = self.state.lock().expect("daemon state").windows.get(window).is_some_and(|w| w.off.contains(kind));
         if off {
             self.forget(uuid);
-            self.trigger_log(uuid, kind, &id, "no_handler", "switched off");
+            self.trigger_log(uuid, kind, &shown, "no_handler", "switched off");
             return (400, json!({"error": format!("the type {kind} is switched off in this project")}));
         }
         if let Some(handler) = self.custom_handler(window, kind) {
             return match self.run_handler(&id, handler, uuid, kind, input.clone()) {
                 Ok(name) => {
-                    self.trigger_log(uuid, kind, &id, "handled", &name);
+                    self.trigger_log(uuid, kind, &shown, "handled", &name);
                     (200, json!({"result": "handled", "handler": name}))
                 }
                 Err(message) => {
                     self.forget(uuid);
-                    self.trigger_log(uuid, kind, &id, "failed", &message);
+                    self.trigger_log(uuid, kind, &shown, "failed", &message);
                     (400, json!({"error": message}))
                 }
             };
@@ -886,8 +1006,14 @@ impl Daemon {
         let handled = match kind {
             _ if disabled_custom => {
                 self.forget(uuid);
-                self.trigger_log(uuid, kind, &id, "no_handler", "switched off");
+                self.trigger_log(uuid, kind, &shown, "no_handler", "switched off");
                 return (400, json!({"error": format!("the type {kind} is switched off in this project")}));
+            }
+            // Step-debug belongs to a tab (CON-164).
+            "flowstate_update" if of_session => {
+                self.forget(uuid);
+                self.trigger_log(uuid, kind, &shown, "rejected", "flowstate_update goes to a tab's URL");
+                return (400, json!({"error": "flowstate_update goes to a tab's callback URL, not a session's"}));
             }
             "notification" => self.notification(&id, uuid, &input),
             "journal" => self.journal(&id, &root, &input),
@@ -895,19 +1021,23 @@ impl Daemon {
             _ if self.has_condition(&id, kind) => self.signal(&id, uuid, kind, &input),
             _ => {
                 self.forget(uuid);
-                self.trigger_log(uuid, kind, &id, "no_handler", "");
+                self.trigger_log(uuid, kind, &shown, "no_handler", "");
                 return (400, json!({"error": format!("no handler for the type {kind}")}));
             }
         };
         match handled {
+            Ok(result) if result["queued"] == true => {
+                self.trigger_log(uuid, kind, &shown, "queued", "the session is not open");
+                (200, json!({"result": "queued", "handler": kind}))
+            }
             Ok(result) => {
-                self.trigger_log(uuid, kind, &id, "handled", "");
+                self.trigger_log(uuid, kind, &shown, "handled", "");
                 (200, json!({"result": "handled", "handler": kind, "detail": result}))
             }
             Err(message) => {
                 // A callback that failed may be sent again.
                 self.forget(uuid);
-                self.trigger_log(uuid, kind, &id, "failed", &message);
+                self.trigger_log(uuid, kind, &shown, "failed", &message);
                 (400, json!({"error": message}))
             }
         }
@@ -977,8 +1107,8 @@ impl Daemon {
                 rest.to_string()
             }
         };
-        self.deliver(window, WindowEvent::Notification { uuid: uuid.to_string(), label, text });
-        Ok(json!({}))
+        let queued = self.deliver(window, WindowEvent::Notification { uuid: uuid.to_string(), label, text });
+        Ok(if queued { json!({"queued": true}) } else { json!({}) })
     }
 
     fn memory(&self, root: &str) -> Result<JournalMemory, String> {
@@ -1120,30 +1250,27 @@ impl Daemon {
 
 /// Windows are kept in a file, so callback URLs survive a daemon's restart.
 fn save_windows(dir: &Path, windows: &HashMap<String, Window>) {
-    let list: Vec<Value> = windows.values().map(|w| json!({"id": w.id, "root": w.root, "step_debug": w.step_debug})).collect();
+    // A session's URL is kept with its session's (CON-164).
+    let list: Vec<Value> = windows.values().filter(|w| w.session.is_none()).map(|w| json!({"id": w.id, "root": w.root, "step_debug": w.step_debug})).collect();
     let _ = write_private(&dir.join("windows.json"), &Value::Array(list).to_string());
 }
 
-fn restore_windows(dir: &Path) -> HashMap<String, Window> {
+fn restore_windows(dir: &Path, sessions: &session_callbacks::Store) -> HashMap<String, Window> {
     let text = std::fs::read_to_string(dir.join("windows.json")).unwrap_or_default();
     let list: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
-    list.iter()
+    let mut windows: HashMap<String, Window> = list
+        .iter()
         .filter_map(|w| {
             let (id, root) = (w["id"].as_str()?.to_string(), w["root"].as_str()?.to_string());
-            let window = Window {
-                id: id.clone(),
-                conditions: conditions::load(&root).unwrap_or_default(),
-                off: off_types(&root),
-                project: conditions::read_project(&root).unwrap_or_default(),
-                root,
-                events: Vec::new(),
-                instances: HashMap::new(),
-                step_debug: w["step_debug"] == true,
-                cycles: HashMap::new(),
-            };
+            let (mut window, _) = Window::new(id.clone(), root, None);
+            window.step_debug = w["step_debug"] == true;
             Some((id, window))
         })
-        .collect()
+        .collect();
+    for (session, entry) in &sessions.entries {
+        windows.insert(entry.token.clone(), Window::new(entry.token.clone(), entry.root.clone(), Some(session.clone())).0);
+    }
+    windows
 }
 
 /// The port a daemon last used here: a restart keeps the callback URLs the same.

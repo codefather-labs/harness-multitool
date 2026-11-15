@@ -1181,7 +1181,7 @@ impl Live {
             Some(name) => {
                 harness_scenarios::setup(name).ok_or_else(|| anyhow!("unknown scenario {name:?} (run `multitool trace` for the list)"))?;
                 let name = name.to_string();
-                let factory: harness_session::Factory = std::sync::Arc::new(move |_| Ok(harness_scenarios::parts(harness_scenarios::setup(&name).expect("checked above"))));
+                let factory: harness_session::Factory = std::sync::Arc::new(move |_, _| Ok(harness_scenarios::parts(harness_scenarios::setup(&name).expect("checked above"))));
                 (factory, "scripted".into(), "scripted-1".into(), 200_000)
             }
             None => {

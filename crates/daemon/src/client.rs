@@ -471,6 +471,15 @@ impl Client {
         self.request("POST", "/telegram/plan_done", "", &json!({"session": session, "approved": approved}).to_string()).map(|_| ())
     }
 
+    /// The session's own callback URL (CON-164), made the first time it is asked for.
+    pub fn session_callback(&self, session: &str, root: &str) -> Result<String, String> {
+        let (_, body) = self.request("POST", "/session/callback", "", &json!({"session": session, "root": root}).to_string())?;
+        match (body["url"].as_str(), body["error"].as_str()) {
+            (Some(url), _) => Ok(url.to_string()),
+            (None, error) => Err(error.unwrap_or("no URL").to_string()),
+        }
+    }
+
     pub fn telegram_send(&self, text: &str, files: &[std::path::PathBuf], from: Option<(&str, u64)>) -> Result<u64, String> {
         let (_, body) = self.request("POST", "/telegram/send", "", &json!({"text": text, "files": files, "window": from.map(|f| f.0), "tab": from.map(|f| f.1)}).to_string())?;
         match body["error"].as_str() {
