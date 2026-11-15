@@ -36,6 +36,7 @@ WITH_CLAUDE_CODE=true
 UNINSTALL=false
 WITH_SERVICE=true
 WITH_AGENT_SETUP=true
+WITH_LINGER=true
 BUILD=true
 
 if [ -t 1 ]; then BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; NC=$'\033[0m'; else BOLD=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; NC=""; fi
@@ -56,6 +57,7 @@ OPTIONS:
   --local            Build this checkout instead of cloning
   --no-claude-code   Without Claude Code as an adapter
   --no-service       Do not run the daemon as a user service
+  --no-linger        Do not enable linger (Linux): the service then stops when you log out
   --no-agent-setup   Do not install Claude Code's rules and hook
   --no-build         With --local: install the build already in target/release
   --uninstall        Remove the binary, its link, the service and the agent setup;
@@ -82,6 +84,7 @@ while [ $# -gt 0 ]; do
     --local) LOCAL_MODE=true ;;
     --no-claude-code) WITH_CLAUDE_CODE=false ;;
     --no-service) WITH_SERVICE=false ;;
+    --no-linger) WITH_LINGER=false ;;
     --no-agent-setup) WITH_AGENT_SETUP=false ;;
     --no-build) BUILD=false ;;
     --uninstall) UNINSTALL=true ;;
@@ -190,11 +193,12 @@ UNIT
     systemctl --user daemon-reload
     systemctl --user enable --now "$SERVICE" >/dev/null 2>&1 || { log_error "systemctl --user enable --now $SERVICE failed: see systemctl --user status $SERVICE"; return 1; }
     log_ok "the daemon runs as the user service $SERVICE"
-    if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
-      if confirm "Keep the daemon running after you log out and start it at boot (loginctl enable-linger $(id -un))?"; then
-        loginctl enable-linger "$(id -un)" && log_ok "linger is on: the daemon starts at boot"
+    # Linger keeps the user's services running after logout and starts them at boot (CON-162).
+    if [ "$WITH_LINGER" = true ] && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
+      if loginctl enable-linger "$(id -un)" 2>/dev/null; then
+        log_ok "linger is on: the daemon runs after you log out and starts at boot"
       else
-        log_info "linger left off: the daemon starts when you log in"
+        log_warn "could not enable linger: run loginctl enable-linger $(id -un), or the daemon stops when you log out"
       fi
     fi
   elif [ "$(uname -s)" = Darwin ]; then
@@ -431,6 +435,7 @@ if [ "$WITH_SERVICE" = true ]; then
   for _ in $(seq 1 30); do "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1 && break; sleep 0.5; done
   check "the daemon answers" "\"$BIN_DIR/multitool\" daemon --status"
   if [ -f "$SYSTEMD_UNIT" ]; then check "the service $SERVICE is active" "systemctl --user is-active $SERVICE"; fi
+  if [ -f "$SYSTEMD_UNIT" ] && [ "$WITH_LINGER" = true ]; then check "linger is on" "[ \"\$(loginctl show-user \"\$(id -un)\" -p Linger --value)\" = yes ]"; fi
 fi
 if [ "$WITH_AGENT_SETUP" = true ] && [ -d "$src/assets/claude" ]; then
   check "the rules are in $CLAUDE_DIR/rules" "[ -f \"$CLAUDE_DIR/rules/project-journal.md\" ] && [ -f \"$CLAUDE_DIR/rules/cognitive-self-check.md\" ]"
