@@ -31,6 +31,7 @@ pub fn sample_permission() -> PermissionView {
         policy: "approval required · shell:execute".into(),
         choice: 0,
         tab: None,
+        call_id: String::new(),
         locked: false,
     }
 }

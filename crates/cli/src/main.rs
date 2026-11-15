@@ -2485,6 +2485,16 @@ impl Live {
                         self.asks.push_back(view);
                     }
                 }
+                FromSession::AskWithdrawn { tab, call_id } => {
+                    // Answered elsewhere (CON-163): its card goes, shown or queued, and a key
+                    // pressed now answers nothing of it.
+                    withdraw_ask(&mut w.overlay, &mut self.asks, tab, &call_id);
+                    if let Some(a) = w.tabs.iter_mut().find(|t| t.id == tab).and_then(|t| t.view.activity.as_mut())
+                        && a.state == "Waiting for your answer"
+                    {
+                        a.state = "Answered on Telegram".to_string();
+                    }
+                }
                 FromSession::Ended { tab, end } => {
                     if self.rebind_after.contains(&tab) && self.sessions.rebind(tab) {
                         self.rebind_after.remove(&tab);
@@ -2683,6 +2693,17 @@ fn daemon_restart(start: bool) -> Result<()> {
     println!("started the daemon (pid {pid}, port {}): open windows reopen their conversations in it", new.port());
     Ok(())
 }
+
+/// A question answered elsewhere (CON-163): its card goes, shown or queued, and the next queued
+/// one shows in its place. Nothing else is touched.
+fn withdraw_ask(overlay: &mut Option<frontend_tui::model::Overlay>, asks: &mut std::collections::VecDeque<frontend_tui::model::PermissionView>, tab: u64, call_id: &str) {
+    let it = |v: &frontend_tui::model::PermissionView| v.tab == Some(tab) && v.call_id == call_id;
+    asks.retain(|v| !it(v));
+    if matches!(overlay, Some(frontend_tui::model::Overlay::Permission(v)) if it(v)) {
+        *overlay = asks.pop_front().map(frontend_tui::model::Overlay::Permission);
+    }
+}
+
 
 /// The daemon's user service, as install.sh names it (CON-162).
 const SERVICE: &str = "multitool-daemon";
@@ -2918,7 +2939,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
                 println!("ended: {end:?}");
                 return Ok(());
             }
-            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
         }
@@ -3510,4 +3531,29 @@ fn graphics_terminal() -> bool {
         // GNOME Terminal and other VTE terminals answer the query (sixel when enabled).
         || !env("VTE_VERSION").is_empty()
         || ["WezTerm", "ghostty", "iTerm.app", "rio"].contains(&program.as_str())
+}
+
+#[cfg(test)]
+mod withdraw_tests {
+    use super::*;
+    use frontend_tui::model::{Overlay, PermissionView};
+
+    fn card(tab: u64, call_id: &str) -> PermissionView {
+        PermissionView { tab: Some(tab), call_id: call_id.to_string(), ..frontend_tui::overlay::sample_permission() }
+    }
+
+    /// CON-163: a card answered elsewhere goes, shown or queued; the next shows; others stay.
+    #[test]
+    fn a_withdrawn_card_goes_and_no_other() {
+        let mut overlay = Some(Overlay::Permission(card(1, "plan-ask-7")));
+        let mut asks: std::collections::VecDeque<PermissionView> = [card(2, "c9"), card(1, "plan-ask-8")].into_iter().collect();
+        withdraw_ask(&mut overlay, &mut asks, 1, "plan-ask-8");
+        assert!(matches!(&overlay, Some(Overlay::Permission(v)) if v.call_id == "plan-ask-7"), "the shown one is another call");
+        assert_eq!(asks.iter().map(|v| v.call_id.as_str()).collect::<Vec<_>>(), ["c9"], "the queued one went");
+        withdraw_ask(&mut overlay, &mut asks, 1, "plan-ask-7");
+        assert!(matches!(&overlay, Some(Overlay::Permission(v)) if v.call_id == "c9"), "the next queued shows");
+        assert!(asks.is_empty());
+        withdraw_ask(&mut overlay, &mut asks, 3, "c9");
+        assert!(overlay.is_some(), "another tab's call id withdraws nothing");
+    }
 }

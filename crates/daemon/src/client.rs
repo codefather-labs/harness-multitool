@@ -462,6 +462,11 @@ impl Client {
         self.request("POST", "/telegram/plan", "", &json!({"session": session, "title": title, "plan": plan}).to_string()).map(|_| ())
     }
 
+    /// A plan answered in the window: its Telegram message follows (CON-163).
+    pub fn telegram_plan_done(&self, session: &str, approved: bool) -> Result<(), String> {
+        self.request("POST", "/telegram/plan_done", "", &json!({"session": session, "approved": approved}).to_string()).map(|_| ())
+    }
+
     pub fn telegram_send(&self, text: &str, files: &[std::path::PathBuf], from: Option<(&str, u64)>) -> Result<u64, String> {
         let (_, body) = self.request("POST", "/telegram/send", "", &json!({"text": text, "files": files, "window": from.map(|f| f.0), "tab": from.map(|f| f.1)}).to_string())?;
         match body["error"].as_str() {

@@ -531,6 +531,16 @@ impl Daemon {
         }
     }
 
+    /// A plan answered in the window: its Telegram message follows (CON-163).
+    fn telegram_plan_done(&self, body: &str) -> (u16, Value) {
+        let input = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+        let Some(session) = input["session"].as_str() else { return (400, json!({"error": "session is required"})) };
+        match telegram::plan_done(self, session, input["approved"] == true) {
+            Ok(()) => (200, json!({"ok": true})),
+            Err(error) => (500, json!({"error": error})),
+        }
+    }
+
     /// The game tables (ADR 0029).
     pub fn games(&self) -> &games::Games {
         &self.games
@@ -734,10 +744,11 @@ impl Daemon {
             ("GET", "/stats") if admin => (200, self.stats()),
             ("POST", "/telegram/send") if admin => self.telegram_send(&body),
             ("POST", "/telegram/plan") if admin => self.telegram_plan(&body),
+            ("POST", "/telegram/plan_done") if admin => self.telegram_plan_done(&body),
             ("POST", "/telegram/reload") if admin => self.reload_telegram(),
             ("POST", "/window/step-debug") if admin => self.set_step_debug(&body),
             ("POST", "/window/step-debug") => (401, json!({"error": "bad token"})),
-            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") | ("POST", "/telegram/plan") | ("POST", "/telegram/reload") => (401, json!({"error": "bad token"})),
+            ("POST", "/memory") | ("GET", "/stats") | ("POST", "/telegram/send") | ("POST", "/telegram/plan") | ("POST", "/telegram/plan_done") | ("POST", "/telegram/reload") => (401, json!({"error": "bad token"})),
             ("POST", "/shutdown") if admin => {
                 let only_if_idle = serde_json::from_str::<Value>(&body).is_ok_and(|b| b["if_idle"] == true);
                 let host = self.conversations.lock().expect("conversations").clone();

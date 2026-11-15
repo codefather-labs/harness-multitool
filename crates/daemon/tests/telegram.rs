@@ -97,7 +97,7 @@ fn fake_api() -> (String, Arc<Mutex<Fake>>) {
             } else {
                 if path.ends_with("/sendMessage") {
                     s.sent.push(body);
-                } else if path.ends_with("/editMessageReplyMarkup") {
+                } else if path.ends_with("/editMessageReplyMarkup") || path.ends_with("/editMessageText") {
                     s.edits.push(body);
                 }
                 json!({"ok": true, "result": {"message_id": 1}})
@@ -286,7 +286,12 @@ struct FakeHost {
 
 impl ConversationHost for FakeHost {
     fn approve_plan(&self, session: &str, yes: bool) -> Result<String, String> {
-        self.plans.lock().unwrap().push((session.to_string(), yes));
+        let mut plans = self.plans.lock().unwrap();
+        // As the host does: one answer decides; after it, a plan no longer waits.
+        if plans.iter().any(|(s, _)| s == session) {
+            return Err("уже решено".to_string());
+        }
+        plans.push((session.to_string(), yes));
         Ok(if yes { "approved".to_string() } else { "not approved".to_string() })
     }
     fn op(&self, _: &str, _: &Value) -> Result<Value, String> {
@@ -623,8 +628,9 @@ fn a_picture_the_user_sends_reaches_the_agent_as_a_file() {
     assert_eq!(fake.lock().unwrap().files_asked, 1, "the stranger's picture was never fetched");
 }
 
-/// CON-161 (journal#1140): a delegate's plan goes to the user with buttons; the user's press
-/// answers it, the buttons go, and a stranger's press does nothing.
+/// CON-161 (journal#1140), CON-163 (journal#1178): a delegate's plan goes to the user with
+/// buttons; the user's press decides it, the message says so and loses its buttons, a stranger's
+/// press does nothing, and a late press changes nothing.
 #[test]
 fn a_plan_is_approved_with_a_press() {
     let w = bound_world(vec![session("s1", "alpha")], vec![message(1, -100, Some(7), "hi")]);
@@ -638,10 +644,29 @@ fn a_plan_is_approved_with_a_press() {
     w.fake.lock().unwrap().updates.extend([tap(2, 666, -100, "plan:y:s1"), tap(3, 42, -100, "plan:y:s1")]);
     until("the press is answered", || !w.host.plans.lock().unwrap().is_empty());
     assert_eq!(*w.host.plans.lock().unwrap(), [("s1".to_string(), true)], "the stranger's press did nothing");
-    until("the buttons go", || !w.fake.lock().unwrap().edits.is_empty());
-    assert_eq!(w.fake.lock().unwrap().edits[0]["reply_markup"]["inline_keyboard"], json!([]));
-    until("the chat is told", || said(&w.fake).iter().any(|t| t == "approved"));
+    until("the message says so", || !w.fake.lock().unwrap().edits.is_empty());
+    let edit = w.fake.lock().unwrap().edits[0].clone();
+    assert_eq!(edit["reply_markup"]["inline_keyboard"], json!([]), "the buttons go");
+    assert!(edit["text"].as_str().unwrap().contains("build it") && edit["text"].as_str().unwrap().ends_with("✅ Одобрено в Telegram"), "{edit}");
+    // A late press: decided already, nothing changes.
     w.fake.lock().unwrap().updates.push(tap(4, 42, -100, "plan:n:s1"));
-    until("not approved", || w.host.plans.lock().unwrap().len() == 2);
-    assert_eq!(w.host.plans.lock().unwrap()[1], ("s1".to_string(), false));
+    until("told it is decided", || said(&w.fake).iter().any(|t| t.contains("уже решено")));
+    assert_eq!(w.host.plans.lock().unwrap().len(), 1);
+}
+
+/// CON-163 (journal#1178): a plan answered in the window, its Telegram message follows.
+#[test]
+fn a_plan_answered_in_the_window_is_said_on_telegram() {
+    let w = bound_world(vec![session("s1", "alpha")], vec![message(1, -100, Some(7), "hi")]);
+    until("bound", || !w.host.got.lock().unwrap().is_empty());
+    w.client.telegram_plan("s1", "alpha", "the plan").unwrap();
+    w.client.telegram_plan_done("s1", true).unwrap();
+    let edit = w.fake.lock().unwrap().edits.last().cloned().expect("the message was edited");
+    assert_eq!((edit["chat_id"].as_i64(), edit["message_id"].as_i64()), (Some(-100), Some(1)), "the plan's own message");
+    assert!(edit["text"].as_str().unwrap().ends_with("✅ Одобрено в терминале"), "{edit}");
+    assert_eq!(edit["reply_markup"]["inline_keyboard"], json!([]));
+    // Done once: a second time there is nothing to edit.
+    let before = w.fake.lock().unwrap().edits.len();
+    w.client.telegram_plan_done("s1", false).unwrap();
+    assert_eq!(w.fake.lock().unwrap().edits.len(), before);
 }

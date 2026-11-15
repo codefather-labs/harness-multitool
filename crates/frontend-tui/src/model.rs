@@ -187,6 +187,8 @@ pub struct PermissionView {
     pub choice: usize,
     /// The tab of the running session that asks; `None` for the debug sample.
     pub tab: Option<u64>,
+    /// The call it asks about: what an ask answered elsewhere is withdrawn by (CON-163).
+    pub call_id: String,
     /// Just opened: only Deny answers yet. A prompt can open at any moment, started by a callback
     /// or a channel, and keys meant for the composer must not approve it.
     pub locked: bool,

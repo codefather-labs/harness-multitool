@@ -624,15 +624,18 @@ pub fn permission(tab: u64, call: &LogCall, capabilities: &[Capability], workdir
             Capability::Memory => "write to memory".to_string(),
         })
         .collect();
+    // A plan waiting for approval reads as one, not as a tool (CON-163).
+    let plan = call.name.ends_with("plan_exit");
     PermissionView {
         tool: call.name.clone(),
-        summary: format!("The agent wants to use the tool {}.", call.name),
+        summary: if plan { "The agent asks you to approve its plan: approve leaves plan mode and starts the work, deny keeps planning. It is asked on Telegram too; the first answer decides.".to_string() } else { format!("The agent wants to use the tool {}.", call.name) },
         command: summary(&call.input),
         workdir: workdir.to_string(),
         scope: if needs.is_empty() { "nothing declared".into() } else { needs.join(" · ") },
         policy: "approval required".into(),
         choice: 0,
         tab: Some(tab),
+        call_id: call.id.clone(),
         locked: true,
     }
 }

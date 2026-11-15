@@ -114,7 +114,7 @@ fn drive(sessions: &mut Sessions, prompts: &[&str], answer: Answer) -> (Vec<LogE
                     break;
                 }
                 FromSession::Unavailable { message, .. } => panic!("{message}"),
-                FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+                FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
                 FromSession::Queued { .. } => {}
                 FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
             }
@@ -590,7 +590,7 @@ fn drive_task(sessions: &mut Sessions, text: &str, steps: &[&str]) -> (Vec<LogEn
             FromSession::Ask { tab, .. } => sessions.answer(tab, Answer::Deny),
             FromSession::Ended { end, .. } => return (entries, format!("{end:?}")),
             FromSession::Unavailable { message, .. } => panic!("{message}"),
-            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
@@ -1032,7 +1032,7 @@ fn drive_acting(sessions: &mut Sessions, first: &str, answer: Answer, at_prompt:
             }
             Some(FromSession::Ended { end, .. }) => ends.push(format!("{end:?}")),
             Some(FromSession::Unavailable { message, .. }) => panic!("{message}"),
-            Some(FromSession::Synced { .. } | FromSession::Progress { .. }) => {}
+            Some(FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. }) => {}
             Some(FromSession::Queued { .. }) => {}
             None => return (entries, ends),
             Some(FromSession::Spawn { .. } | FromSession::CloseTab { .. }) => {}
@@ -1208,7 +1208,7 @@ fn a_rebind_keeps_the_queue_and_delivers_it_once() {
                 }
             }
             FromSession::Unavailable { message, .. } => panic!("{message}"),
-            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
@@ -1237,7 +1237,7 @@ fn two_tabs_have_their_own_queues() {
             }
             FromSession::Ended { .. } => {}
             FromSession::Unavailable { message, .. } => panic!("{message}"),
-            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
@@ -1273,7 +1273,7 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
             }
             FromSession::Ended { .. } => ends += 1,
             FromSession::Unavailable { message, .. } => panic!("{message}"),
-            FromSession::Synced { .. } | FromSession::Progress { .. } => {}
+            FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Queued { .. } => {}
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
@@ -1456,6 +1456,67 @@ fn a_conversation_brought_in_goes_on_with_another_provider_and_valid_history() {
     let at = messages.iter().position(|m| m["content"].to_string().contains("\"tool_use\"")).unwrap();
     assert_eq!(messages[at + 1]["content"][0]["type"], "tool_result", "the cut-off call is answered, first thing: {sent}");
     assert_eq!(messages[at + 1]["content"][0]["tool_use_id"], "old1");
+}
+
+/// CON-163 (journal#1178): the native loop's plan card, answered on Telegram first, is withdrawn
+/// from the window, and the plan is approved.
+#[test]
+fn a_plan_card_answered_on_telegram_is_withdrawn_and_approves() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("plan-card");
+    let data = temp_dir("plan-card-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("c1", "mode__plan_enter", json!({}))), "Planning."),
+        anthropic_turn(Some(("c2", "journal_add", json!({"body": "Change a.txt.", "category": "decision", "tags": ["plan"]}))), "Noting."),
+        anthropic_turn(Some(("c3", "mindmap_add", json!({"map": 1, "text": "the work", "refs": [1]}))), ""),
+        anthropic_turn(Some(("c4", "flowchart_add", json!({"map": 2, "text": "a branch", "kind": "process"}))), ""),
+        anthropic_turn(Some(("c5", "mode__plan_exit", json!({"plan": "Change a.txt."}))), "Asking."),
+        anthropic_turn(None, "Building now."),
+    ]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    let host = DaemonHost::new(std::path::Path::new(&data), make_host);
+    daemon.host_conversations(host.clone());
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let mut s = settings(&url, "k");
+    s.plan_first = Some("off".into());
+    let mut link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &s, Default::default()).unwrap());
+    let mut entries = Vec::new();
+    let mut card = None;
+    link.prompt(1, "plan the change".to_string());
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while card.is_none() && std::time::Instant::now() < deadline {
+        for message in link.drain() {
+            match message {
+                FromSession::Entry { entry, .. } => entries.push(entry),
+                FromSession::Ask { tab, call, .. } if call.name.ends_with("plan_exit") => card = Some((tab, call.id)),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (tab, call_id) = card.expect("the plan's card reached the window");
+    let session = harness_daemon::ConversationHost::open_sessions(&*host).into_iter().next().expect("open").id;
+    // The press on Telegram, as the daemon's button handler makes it.
+    let said = harness_daemon::ConversationHost::approve_plan(&*host, &session, true).unwrap();
+    assert!(said.contains("Одобрено в Telegram"), "{said}");
+    let mut withdrawn = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && !entries.iter().any(|e| matches!(&e.event, Event::TurnFinished { .. }) && entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: false, .. }))) {
+        for message in link.drain() {
+            match message {
+                FromSession::Entry { entry, .. } => entries.push(entry),
+                FromSession::AskWithdrawn { tab, call_id } => withdrawn = Some((tab, call_id)),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(withdrawn, Some((tab, call_id)), "the window's card is withdrawn");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: false, .. })), "plan mode is off");
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolDecision { id, allowed: true, .. } if id == "c5")), "plan_exit was approved");
+    // Decided: a second press changes nothing.
+    assert!(harness_daemon::ConversationHost::approve_plan(&*host, &session, false).unwrap_err().contains("уже решено"));
 }
 
 /// ADR 0024: a conversation run by the daemon, its window a client with the same operations.

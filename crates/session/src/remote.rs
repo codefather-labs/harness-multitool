@@ -57,6 +57,7 @@ fn to_wire(message: &FromSession) -> Value {
         FromSession::Unavailable { tab, message } => json!({"kind": "unavailable", "tab": tab, "message": message}),
         FromSession::Synced { tab, error } => json!({"kind": "synced", "tab": tab, "error": error}),
         FromSession::Progress { tab, progress } => json!({"kind": "progress", "tab": tab, "progress": progress}),
+        FromSession::AskWithdrawn { tab, call_id } => json!({"kind": "ask_withdrawn", "tab": tab, "call_id": call_id}),
     }
 }
 
@@ -72,6 +73,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
         "unavailable" => Some(FromSession::Unavailable { tab, message: value["message"].as_str()?.to_string() }),
         "synced" => Some(FromSession::Synced { tab, error: value["error"].as_str().map(str::to_string) }),
         "progress" => Some(FromSession::Progress { tab, progress: serde_json::from_value(value["progress"].clone()).ok()? }),
+        "ask_withdrawn" => Some(FromSession::AskWithdrawn { tab, call_id: value["call_id"].as_str()?.to_string() }),
         _ => None,
     }
 }
@@ -80,7 +82,7 @@ fn tab_of(message: &FromSession) -> u64 {
     match message {
         FromSession::Queued { tab, .. } => *tab,
         FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } => *tab,
-        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } | FromSession::Progress { tab, .. } => *tab,
+        FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } | FromSession::Progress { tab, .. } | FromSession::AskWithdrawn { tab, .. } => *tab,
     }
 }
 
@@ -126,6 +128,8 @@ struct Window {
     closed: bool,
     /// Tabs whose prompt nobody has answered yet, with the prompt.
     asking: HashMap<u64, Value>,
+    /// Delegates' plans waiting for approval, by tab (CON-163): answered here or on Telegram.
+    plan_asks: HashMap<u64, PlanAsk>,
     /// Runs of this window that another window has taken over: tab -> (window, its tab).
     handed: HashMap<u64, (String, u64)>,
     /// This window's tabs showing a run that another window started.
@@ -200,6 +204,18 @@ impl Window {
 
 /// The daemon's side: every conversation of every window runs here, and its log is written here.
 /// One permission request of a slave's program.
+/// A delegate's plan shown in the window as a card (CON-163).
+#[derive(Clone)]
+struct PlanAsk {
+    session: String,
+    call_id: String,
+}
+
+/// Whether a prompt said to a window is a plan's (the native loop's plan_exit, CON-163).
+fn is_plan_ask(asked: &Value) -> bool {
+    asked["call"]["name"].as_str().is_some_and(|name| name.ends_with("plan_exit"))
+}
+
 struct ProgramAsk {
     id: u64,
     tab: u64,
@@ -436,9 +452,20 @@ impl DaemonHost {
                     let slave = self.orchestra.lock().expect("orchestra").slaves.contains_key(&session);
                     let plan = op["plan"].as_str().unwrap_or_default();
                     let title = self.name_of(window, &session);
+                    if !slave && !plan.trim().is_empty() {
+                        // A card in the window as well (CON-163), once while one is waiting.
+                        if !window.plan_asks.contains_key(&tab) {
+                            let id = self.next_ask.fetch_add(1, Ordering::SeqCst);
+                            let call_id = format!("plan-ask-{id}");
+                            let call = harness_api::ToolCall { id: call_id.clone(), name: "mode__plan_exit".to_string(), input: json!({"plan": plan}) };
+                            let capabilities = vec![harness_api::Capability::Command("leave plan mode and start the work".into())];
+                            window.say(json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}));
+                            window.plan_asks.insert(tab, PlanAsk { session: session.clone(), call_id });
+                        }
+                    }
                     let sent = !slave && !plan.trim().is_empty() && harness_daemon::client::Client::find(&self.data_dir).is_some_and(|client| client.telegram_plan(&session, &title, plan).is_ok());
-                    return Err(if sent {
-                        "Only the user approves a plan, and here it is by their words or by the button sent with your plan to their Telegram. Show them the plan and ask, then end your turn and wait. If they press approve there, you are told so and plan mode is off; if they say to go in words, call this again with their words, exact, in user_said.".to_string()
+                    return Err(if !slave && !plan.trim().is_empty() {
+                        format!("Only the user approves a plan, and here it is by their words or by their answer to the card shown in their window{}. Show them the plan and ask, then end your turn and wait. When they answer there you are told so, and plan mode is off if they approved; if they say to go in words, call this again with their words, exact, in user_said.", if sent { " and on their Telegram" } else { "" })
                     } else {
                         "Only the user approves a plan, and here it is by their words. Show them the plan and ask; when they say to go, call this again with their words, exact, in user_said.".to_string()
                     });
@@ -710,6 +737,37 @@ impl DaemonHost {
     }
 
     /// What a conversation goes by, for other agents.
+    /// A delegate's plan decided, by a press on Telegram or the window's card (CON-161, CON-163):
+    /// approved, its session leaves plan mode; either way its agent is told, as the user's words.
+    fn decide_plan(&self, window: &mut Window, tab: u64, session: &str, yes: bool, from_telegram: bool) {
+        if yes {
+            {
+                let mut orchestra = self.orchestra.lock().expect("orchestra");
+                orchestra.planning.remove(session);
+                self.save_orchestra(&orchestra);
+            }
+            window.sessions.plan(tab, false);
+        }
+        let place = if from_telegram { "в Telegram" } else { "в терминале" };
+        let text = if yes { format!("✅ План одобрен {place}. Plan mode is off: go ahead with the plan.") } else { format!("✏️ План не одобрен {place}: спроси, что изменить.") };
+        if from_telegram {
+            window.sessions.inbound(tab, harness_api::TELEGRAM_LABEL.to_string(), text);
+        } else {
+            window.sessions.prompt(tab, text);
+        }
+    }
+
+    /// Telegram's message of a plan answered in the window says so and loses its buttons
+    /// (CON-163). Off this thread: the daemon is asked over its socket.
+    fn plan_done(&self, session: &str, approved: bool) {
+        let (data, session) = (self.data_dir.clone(), session.to_string());
+        std::thread::spawn(move || {
+            if let Some(client) = harness_daemon::client::Client::find(&data) {
+                let _ = client.telegram_plan_done(&session, approved);
+            }
+        });
+    }
+
     fn name_of(&self, window: &Window, session: &str) -> String {
         self.nicks.lock().expect("nicks").get(session).cloned().unwrap_or_else(|| crate::title_of(&self.data_dir.to_string_lossy(), &window.root, session))
     }
@@ -873,6 +931,17 @@ impl DaemonHost {
                             waiting_word.push((slave, format!("asks your permission: {} {}\nAnswer with mode__agent_answer: once, always or deny.", call.name, call.input)));
                         } else {
                             window.asking.insert(*tab, to_wire(message));
+                            // The native loop's plan is asked on Telegram too (CON-163).
+                            if call.name.ends_with("plan_exit")
+                                && let Some(session) = window.sessions.session_of(*tab).map(str::to_string)
+                            {
+                                let (data, title, plan) = (self.data_dir.clone(), self.name_of(window, &session), call.input["plan"].as_str().unwrap_or_default().to_string());
+                                std::thread::spawn(move || {
+                                    if let Some(client) = harness_daemon::client::Client::find(&data) {
+                                        let _ = client.telegram_plan(&session, &title, &plan);
+                                    }
+                                });
+                            }
                         }
                     }
                     FromSession::Entry { tab, entry } => {
@@ -899,7 +968,7 @@ impl DaemonHost {
                         }
                     }
                     FromSession::Queued { .. } => {},
-                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
+                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::AskWithdrawn { .. } => {}
                 }
             }
             if window.closed {
@@ -954,6 +1023,7 @@ impl DaemonHost {
             FromSession::Progress { progress, .. } => FromSession::Progress { tab, progress },
             FromSession::Spawn { nick, provider, model, task, .. } => FromSession::Spawn { tab, nick, provider, model, task },
             FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
+            FromSession::AskWithdrawn { call_id, .. } => FromSession::AskWithdrawn { tab, call_id },
         };
         let mut said = false;
         if let (FromSession::Entry { .. }, Some(source)) = (&retabbed, windows.get_mut(from)) {
@@ -1094,7 +1164,7 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), plan_asks: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
@@ -1152,22 +1222,24 @@ impl ConversationHost for DaemonHost {
         let mut windows = self.windows.lock().expect("windows");
         let window = windows.values_mut().filter(|w| !w.closed).find(|w| w.sessions.open().iter().any(|(_, s)| s == session)).ok_or("that session is not open any more")?;
         let tab = window.sessions.open().into_iter().find(|(_, s)| s == session).map(|(tab, _)| tab).ok_or("that session is not open any more")?;
-        if !self.orchestra.lock().expect("orchestra").planning.contains(session) {
-            return Err("that session is not in plan mode".to_string());
-        }
-        if yes {
-            {
-                let mut orchestra = self.orchestra.lock().expect("orchestra");
-                orchestra.planning.remove(session);
-                self.save_orchestra(&orchestra);
-            }
-            window.sessions.plan(tab, false);
-            window.sessions.inbound(tab, harness_api::TELEGRAM_LABEL.to_string(), "✅ План одобрен в Telegram. Plan mode is off: go ahead with the plan.".to_string());
+        // A delegate's card (CON-163): the press decides, and the card goes from the window.
+        if let Some(ask) = window.plan_asks.get(&tab).filter(|ask| ask.session == session).cloned() {
+            window.plan_asks.remove(&tab);
+            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": ask.call_id}));
+            self.decide_plan(window, tab, session, yes, true);
+        // The native loop's own card: its plan_exit gets the answer, and the card goes.
+        } else if let Some(asked) = window.asking.get(&tab).filter(|asked| is_plan_ask(asked)).cloned() {
+            window.asking.remove(&tab);
+            window.sessions.answer(tab, if yes { Answer::AllowOnce } else { Answer::Deny });
+            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": asked["call"]["id"]}));
+        // Planning with no card (a daemon restarted since it asked): as CON-161 did.
+        } else if self.orchestra.lock().expect("orchestra").planning.contains(session) {
+            self.decide_plan(window, tab, session, yes, true);
         } else {
-            window.sessions.inbound(tab, harness_api::TELEGRAM_LABEL.to_string(), "✏️ План не одобрен: спроси, что изменить.".to_string());
+            return Err("уже решено: этот план больше не ждёт одобрения".to_string());
         }
         self.wake.notify_all();
-        Ok(if yes { "✅ План одобрен: агент выходит из режима плана.".to_string() } else { "✏️ План не одобрен: агент спросит, что изменить.".to_string() })
+        Ok(if yes { "✅ Одобрено в Telegram: агент выходит из режима плана.".to_string() } else { "✏️ Не одобрено в Telegram: агент спросит, что изменить.".to_string() })
     }
 
     fn remind(&self, session: &str, hook: &str, text: &str) -> bool {
@@ -1345,6 +1417,23 @@ impl ConversationHost for DaemonHost {
             return Self::on_followed(&mut windows, id, tab, name, op);
         }
         let window = windows.get_mut(id).ok_or("this window is not open here")?;
+        // The answer to a plan's card (CON-163): it decides here, and Telegram's message follows.
+        if name == "answer"
+            && let Some(ask) = window.plan_asks.remove(&tab)
+        {
+            let yes = !matches!(answer_from_json(&op["answer"]), Answer::Deny);
+            self.decide_plan(window, tab, &ask.session, yes, false);
+            self.plan_done(&ask.session, yes);
+            self.wake.notify_all();
+            return Ok(json!({"ok": true}));
+        }
+        // The native loop's plan answered here: Telegram's message follows (CON-163).
+        if name == "answer"
+            && window.asking.get(&tab).is_some_and(is_plan_ask)
+            && let Some(session) = window.sessions.session_of(tab).map(str::to_string)
+        {
+            self.plan_done(&session, !matches!(answer_from_json(&op["answer"]), Answer::Deny));
+        }
         // An answer to the program's own request (journal#814) is that request's, not the loop's.
         if name == "answer" && window.sessions.session_of(tab).is_some() && !window.sessions.running(tab) {
             // What a program that has stopped asked is no one's to answer now.

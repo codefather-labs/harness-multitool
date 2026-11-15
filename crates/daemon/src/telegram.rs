@@ -89,6 +89,17 @@ pub(crate) struct Channel {
     last_error: Option<String>,
     /// What the channel's own last word met; gone with the next that goes through.
     say_error: Option<String>,
+    /// Plans waiting for approval, by session: their message, to edit when answered (CON-163).
+    /// Not kept on disk: a restarted daemon has no pending plan, as it has no run.
+    plans: std::collections::HashMap<String, PlanMessage>,
+}
+
+/// A plan's message on Telegram: where it is and what it said.
+#[derive(Clone)]
+struct PlanMessage {
+    chat: i64,
+    message_id: i64,
+    text: String,
 }
 
 pub enum Answer {
@@ -101,7 +112,7 @@ impl Channel {
     pub(crate) fn new(config: Config) -> Channel {
         let timeout = Duration::from_secs(config.poll_timeout_s + 10);
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).build().into();
-        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None }
+        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default() }
     }
 
     pub(crate) fn status(&self) -> Value {
@@ -640,15 +651,16 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
             _ => return,
         };
         let outcome = daemon.conversations().ok_or("no conversations are hosted here".to_string()).and_then(|host| host.approve_plan(session, yes));
-        if outcome.is_ok() {
-            // The buttons go: the answer is given.
-            let _ = requester.call("editMessageReplyMarkup", &json!({"chat_id": chat, "message_id": query["message"]["message_id"], "reply_markup": {"inline_keyboard": []}}));
+        // The message says how it was decided and loses its buttons: decided now, or before.
+        let kept = daemon.telegram.lock().expect("telegram").as_mut().and_then(|c| c.plans.remove(session));
+        let plan = kept.unwrap_or(PlanMessage { chat, message_id: query["message"]["message_id"].as_i64().unwrap_or_default(), text: query["message"]["text"].as_str().unwrap_or_default().to_string() });
+        match outcome {
+            Ok(_) => close_plan(requester, &plan, if yes { "✅ Одобрено в Telegram" } else { "✏️ Не одобрено в Telegram" }),
+            Err(why) => {
+                let _ = requester.call("editMessageReplyMarkup", &json!({"chat_id": chat, "message_id": query["message"]["message_id"], "reply_markup": {"inline_keyboard": []}}));
+                say(daemon, requester, key, &format!("Ничего не изменилось: {why}"), None);
+            }
         }
-        let said = match outcome {
-            Ok(text) => text,
-            Err(why) => format!("Nothing changed: {why}"),
-        };
-        say(daemon, requester, key, &said, None);
         return;
     }
     let Some(id) = data.strip_prefix("switch:") else { return };
@@ -699,7 +711,31 @@ pub(crate) fn ask_plan(daemon: &Daemon, session: &str, title: &str, plan: &str) 
     if let Some(topic) = key.1 {
         body["message_thread_id"] = json!(topic);
     }
-    waited(|| requester.call("sendMessage", &body)).map(|_| ())
+    let sent = waited(|| requester.call("sendMessage", &body))?;
+    // Kept, so an answer in the window can say so here (CON-163).
+    if let Some(message_id) = sent["message_id"].as_i64() {
+        daemon.with_channel(|c| {
+            c.plans.insert(session.to_string(), PlanMessage { chat: key.0, message_id, text: text.clone() });
+        });
+    }
+    Ok(())
+}
+
+/// A plan's message, once the plan is decided: it says where and how, and has no buttons.
+fn close_plan(requester: &Requester, plan: &PlanMessage, outcome: &str) {
+    let _ = requester.call("editMessageText", &json!({"chat_id": plan.chat, "message_id": plan.message_id, "text": format!("{}\n\n{outcome}", plan.text), "reply_markup": {"inline_keyboard": []}}));
+}
+
+/// A plan decided in the window (CON-163): its Telegram message follows.
+pub(crate) fn plan_done(daemon: &Daemon, session: &str, approved: bool) -> Result<(), String> {
+    let (requester, plan) = {
+        let mut channel = daemon.telegram.lock().expect("telegram");
+        let channel = channel.as_mut().ok_or("the Telegram channel is off")?;
+        (channel.request(), channel.plans.remove(session))
+    };
+    let Some(plan) = plan else { return Ok(()) };
+    close_plan(&requester, &plan, if approved { "✅ Одобрено в терминале" } else { "✏️ Не одобрено в терминале" });
+    Ok(())
 }
 
 /// The agent's reply: to the chat its session is bound to, else that of the last allowed message,
