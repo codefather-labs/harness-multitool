@@ -57,7 +57,7 @@ fn to_wire(message: &FromSession) -> Value {
         FromSession::Unavailable { tab, message } => json!({"kind": "unavailable", "tab": tab, "message": message}),
         FromSession::Synced { tab, error } => json!({"kind": "synced", "tab": tab, "error": error}),
         FromSession::Progress { tab, progress } => json!({"kind": "progress", "tab": tab, "progress": progress}),
-        FromSession::AskWithdrawn { tab, call_id } => json!({"kind": "ask_withdrawn", "tab": tab, "call_id": call_id}),
+        FromSession::AskWithdrawn { tab, call_id, approved } => json!({"kind": "ask_withdrawn", "tab": tab, "call_id": call_id, "approved": approved}),
     }
 }
 
@@ -73,7 +73,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
         "unavailable" => Some(FromSession::Unavailable { tab, message: value["message"].as_str()?.to_string() }),
         "synced" => Some(FromSession::Synced { tab, error: value["error"].as_str().map(str::to_string) }),
         "progress" => Some(FromSession::Progress { tab, progress: serde_json::from_value(value["progress"].clone()).ok()? }),
-        "ask_withdrawn" => Some(FromSession::AskWithdrawn { tab, call_id: value["call_id"].as_str()?.to_string() }),
+        "ask_withdrawn" => Some(FromSession::AskWithdrawn { tab, call_id: value["call_id"].as_str()?.to_string(), approved: value["approved"].as_bool().unwrap_or(true) }),
         _ => None,
     }
 }
@@ -1023,7 +1023,7 @@ impl DaemonHost {
             FromSession::Progress { progress, .. } => FromSession::Progress { tab, progress },
             FromSession::Spawn { nick, provider, model, task, .. } => FromSession::Spawn { tab, nick, provider, model, task },
             FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
-            FromSession::AskWithdrawn { call_id, .. } => FromSession::AskWithdrawn { tab, call_id },
+            FromSession::AskWithdrawn { call_id, approved, .. } => FromSession::AskWithdrawn { tab, call_id, approved },
         };
         let mut said = false;
         if let (FromSession::Entry { .. }, Some(source)) = (&retabbed, windows.get_mut(from)) {
@@ -1225,13 +1225,13 @@ impl ConversationHost for DaemonHost {
         // A delegate's card (CON-163): the press decides, and the card goes from the window.
         if let Some(ask) = window.plan_asks.get(&tab).filter(|ask| ask.session == session).cloned() {
             window.plan_asks.remove(&tab);
-            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": ask.call_id}));
+            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": ask.call_id, "approved": yes}));
             self.decide_plan(window, tab, session, yes, true);
         // The native loop's own card: its plan_exit gets the answer, and the card goes.
         } else if let Some(asked) = window.asking.get(&tab).filter(|asked| is_plan_ask(asked)).cloned() {
             window.asking.remove(&tab);
             window.sessions.answer(tab, if yes { Answer::AllowOnce } else { Answer::Deny });
-            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": asked["call"]["id"]}));
+            window.say(json!({"kind": "ask_withdrawn", "tab": tab, "call_id": asked["call"]["id"], "approved": yes}));
         // Planning with no card (a daemon restarted since it asked): as CON-161 did.
         } else if self.orchestra.lock().expect("orchestra").planning.contains(session) {
             self.decide_plan(window, tab, session, yes, true);
@@ -2127,5 +2127,21 @@ mod read_agent_tests {
         let brief = brief_input(&json!({"plan": "x".repeat(5000), "user_said": "теперь давай реализуем", "proof": [".harness/run.log"]}));
         assert!(brief.contains("теперь давай реализуем") && brief.contains(".harness/run.log"), "{brief}");
         assert!(brief.chars().count() < 400, "{}", brief.chars().count());
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    /// journal#1188: ask_withdrawn carries the answer; a daemon of before, without it, means approved.
+    #[test]
+    fn ask_withdrawn_carries_its_answer() {
+        for approved in [true, false] {
+            let wire = to_wire(&FromSession::AskWithdrawn { tab: 3, call_id: "plan-ask-1".into(), approved });
+            assert!(matches!(from_wire(&wire), Some(FromSession::AskWithdrawn { tab: 3, call_id, approved: a }) if call_id == "plan-ask-1" && a == approved), "{wire}");
+        }
+        let old = json!({"kind": "ask_withdrawn", "tab": 3, "call_id": "plan-ask-1"});
+        assert!(matches!(from_wire(&old), Some(FromSession::AskWithdrawn { approved: true, .. })));
     }
 }

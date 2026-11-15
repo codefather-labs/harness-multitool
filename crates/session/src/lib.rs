@@ -681,8 +681,9 @@ pub enum FromSession {
     /// How far the work of bringing this tab's conversation in line has got (CON-144): not logged.
     Progress { tab: u64, progress: harness_api::platform::progress::Progress },
     /// The daemon's word to a window: the question `call_id` of this tab was answered elsewhere
-    /// (a plan approved on Telegram, CON-163). Its card goes, and nothing answers it later.
-    AskWithdrawn { tab: u64, call_id: String },
+    /// (a plan answered on Telegram, CON-163). Its card goes, and nothing answers it later;
+    /// `approved` is that answer, for the window's toast (journal#1188).
+    AskWithdrawn { tab: u64, call_id: String, approved: bool },
 }
 
 /// What a session's next run starts from.

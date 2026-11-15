@@ -1506,13 +1506,13 @@ fn a_plan_card_answered_on_telegram_is_withdrawn_and_approves() {
         for message in link.drain() {
             match message {
                 FromSession::Entry { entry, .. } => entries.push(entry),
-                FromSession::AskWithdrawn { tab, call_id } => withdrawn = Some((tab, call_id)),
+                FromSession::AskWithdrawn { tab, call_id, approved } => withdrawn = Some((tab, call_id, approved)),
                 _ => {}
             }
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(withdrawn, Some((tab, call_id)), "the window's card is withdrawn");
+    assert_eq!(withdrawn, Some((tab, call_id, true)), "the window's card is withdrawn, saying it was approved");
     assert!(entries.iter().any(|e| matches!(&e.event, Event::PlanMode { on: false, .. })), "plan mode is off");
     assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolDecision { id, allowed: true, .. } if id == "c5")), "plan_exit was approved");
     // Decided: a second press changes nothing.

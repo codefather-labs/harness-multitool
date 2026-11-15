@@ -2485,14 +2485,15 @@ impl Live {
                         self.asks.push_back(view);
                     }
                 }
-                FromSession::AskWithdrawn { tab, call_id } => {
+                FromSession::AskWithdrawn { tab, call_id, approved } => {
                     // Answered elsewhere (CON-163): its card goes, shown or queued, and a key
-                    // pressed now answers nothing of it.
+                    // pressed now answers nothing of it; a toast says how (journal#1188).
                     withdraw_ask(&mut w.overlay, &mut self.asks, tab, &call_id);
+                    w.toast = Some(frontend_tui::model::Toast { kind: frontend_tui::model::InboundKind::System, from: "telegram".into(), text: withdrawn_toast(approved).to_string() });
                     if let Some(a) = w.tabs.iter_mut().find(|t| t.id == tab).and_then(|t| t.view.activity.as_mut())
                         && a.state == "Waiting for your answer"
                     {
-                        a.state = "Answered on Telegram".to_string();
+                        a.state = if approved { "Approved on Telegram" } else { "Rejected on Telegram" }.to_string();
                     }
                 }
                 FromSession::Ended { tab, end } => {
@@ -2706,6 +2707,11 @@ fn daemon_restart(start: bool) -> Result<()> {
 
 /// A question answered elsewhere (CON-163): its card goes, shown or queued, and the next queued
 /// one shows in its place. Nothing else is touched.
+/// The toast of a plan answered on Telegram (CON-163, journal#1188).
+fn withdrawn_toast(approved: bool) -> &'static str {
+    if approved { "✅ План одобрен в Telegram" } else { "✏️ План не одобрен в Telegram" }
+}
+
 fn withdraw_ask(overlay: &mut Option<frontend_tui::model::Overlay>, asks: &mut std::collections::VecDeque<frontend_tui::model::PermissionView>, tab: u64, call_id: &str) {
     let it = |v: &frontend_tui::model::PermissionView| v.tab == Some(tab) && v.call_id == call_id;
     asks.retain(|v| !it(v));
@@ -3540,5 +3546,12 @@ mod withdraw_tests {
         assert!(asks.is_empty());
         withdraw_ask(&mut overlay, &mut asks, 3, "c9");
         assert!(overlay.is_some(), "another tab's call id withdraws nothing");
+    }
+
+    /// journal#1188: the toast says the answer given on Telegram.
+    #[test]
+    fn the_toast_says_the_answer() {
+        assert_eq!(withdrawn_toast(true), "✅ План одобрен в Telegram");
+        assert_eq!(withdrawn_toast(false), "✏️ План не одобрен в Telegram");
     }
 }
