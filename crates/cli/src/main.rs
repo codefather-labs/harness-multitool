@@ -29,7 +29,12 @@ enum DaemonAction {
     /// same port when it is free; open windows reopen their conversations in it (CON-128).
     Restart,
     /// Stops the running daemon, its runs included, and starts none (CON-128).
-    Stop,
+    Stop {
+        /// Only if the running daemon is this process: the service's ExecStop names its own, so
+        /// that stopping the service never stops a daemon it does not run (journal#1193).
+        #[arg(long)]
+        pid: Option<u32>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -450,7 +455,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Run { prompt, yes, verify, task, plan, step_debug } => run_once(&prompt, yes, plan, step_debug, (task || !verify.is_empty()).then_some(verify)),
-        Command::Daemon { action: Some(action), .. } => daemon_restart(matches!(action, DaemonAction::Restart)),
+        Command::Daemon { action: Some(DaemonAction::Restart), .. } => daemon_restart(true, None),
+        Command::Daemon { action: Some(DaemonAction::Stop { pid }), .. } => daemon_restart(false, pid),
         Command::Daemon { status: true, .. } => {
             let client = harness_daemon::client::Client::find(&config::data_dir()?).ok_or_else(|| anyhow!("no daemon is running"))?;
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
@@ -2647,13 +2653,20 @@ fn show_profiles(w: &mut frontend_tui::model::Workspace) {
 /// not its own (CON-120).
 /// `multitool daemon restart|stop` (CON-128): stops the daemon this data directory has, whatever
 /// it is doing, and with `start` starts the installed build's, which takes the port it had.
-fn daemon_restart(start: bool) -> Result<()> {
+fn daemon_restart(start: bool, only_pid: Option<u32>) -> Result<()> {
     let dir = config::data_dir()?;
     let running = harness_daemon::client::Client::find(&dir);
     let old = running.as_ref().map(|old| {
         let stats = old.stats().unwrap_or_default();
         (stats["pid"].as_u64().map_or("?".to_string(), |p| p.to_string()), stats["conversations"]["busy"].as_u64().unwrap_or(0), old.port())
     });
+    // The service's stop: another daemon holding the folder is not the service's to stop.
+    if let (Some(want), Some((pid, ..))) = (only_pid, &old)
+        && *pid != want.to_string()
+    {
+        println!("the daemon running is pid {pid}, not {want}: left as it is");
+        return Ok(());
+    }
     let runs = |busy: u64| match busy {
         0 => "no run was going on".to_string(),
         1 => "1 window's run was stopped".to_string(),
@@ -2705,13 +2718,13 @@ fn daemon_restart(start: bool) -> Result<()> {
     Ok(())
 }
 
-/// A question answered elsewhere (CON-163): its card goes, shown or queued, and the next queued
-/// one shows in its place. Nothing else is touched.
 /// The toast of a plan answered on Telegram (CON-163, journal#1188).
 fn withdrawn_toast(approved: bool) -> &'static str {
     if approved { "✅ План одобрен в Telegram" } else { "✏️ План не одобрен в Telegram" }
 }
 
+/// A question answered elsewhere (CON-163): its card goes, shown or queued, and the next queued
+/// one shows in its place. Nothing else is touched.
 fn withdraw_ask(overlay: &mut Option<frontend_tui::model::Overlay>, asks: &mut std::collections::VecDeque<frontend_tui::model::PermissionView>, tab: u64, call_id: &str) {
     let it = |v: &frontend_tui::model::PermissionView| v.tab == Some(tab) && v.call_id == call_id;
     asks.retain(|v| !it(v));

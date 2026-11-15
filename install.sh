@@ -163,16 +163,25 @@ has_user_systemd() {
 }
 
 # A daemon not run by the service makes way for the service's: one daemon a machine.
+# macOS: the LaunchAgent takes over from a daemon that runs now (launchd starts it at bootstrap).
 stop_running_daemon() {
   if "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1; then
-    log_info "stopping the daemon that runs now, so the service runs the only one"
+    log_info "stopping the daemon that runs now, so the LaunchAgent runs the only one"
     "$BIN_DIR/multitool" daemon stop >/dev/null 2>&1 || true
   fi
 }
 
+# The daemon that runs now makes way for the service's in one step: `daemon restart` stops it and
+# restarts the service right after, so no window has a gap to start one of its own (journal#1193).
+# It ends every run of that daemon, this installer's own caller's too when an agent runs it: an
+# agent runs this from a transient unit (systemd-run --user --unit=...), which outlives its run.
+move_to_service() {
+  log_info "the daemon now runs as the service $SERVICE"
+  "$BIN_DIR/multitool" daemon restart >/dev/null 2>&1 || systemctl --user start "$SERVICE" >/dev/null 2>&1 || { log_error "the service would not start: see systemctl --user status $SERVICE"; return 1; }
+}
+
 install_service() {
   if has_user_systemd; then
-    stop_running_daemon
     mkdir -p "$(dirname "$SYSTEMD_UNIT")"
     # PATH as it is now: the daemon starts claude and codex, and a service's own PATH is bare.
     cat > "$SYSTEMD_UNIT" <<UNIT
@@ -182,7 +191,7 @@ After=network-online.target
 
 [Service]
 ExecStart=$BIN_DIR/multitool daemon
-ExecStop=$BIN_DIR/multitool daemon stop
+ExecStop=$BIN_DIR/multitool daemon stop --pid \$MAINPID
 Restart=on-failure
 RestartSec=3
 Environment=PATH=$PATH
@@ -191,7 +200,8 @@ Environment=PATH=$PATH
 WantedBy=default.target
 UNIT
     systemctl --user daemon-reload
-    systemctl --user enable --now "$SERVICE" >/dev/null 2>&1 || { log_error "systemctl --user enable --now $SERVICE failed: see systemctl --user status $SERVICE"; return 1; }
+    systemctl --user enable "$SERVICE" >/dev/null 2>&1 || { log_error "systemctl --user enable $SERVICE failed: see systemctl --user status $SERVICE"; return 1; }
+    move_to_service || return 1
     log_ok "the daemon runs as the user service $SERVICE"
     # Linger keeps the user's services running after logout and starts them at boot (CON-162).
     if [ "$WITH_LINGER" = true ] && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
