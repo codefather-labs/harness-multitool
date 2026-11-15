@@ -9,11 +9,13 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
                                 # service, and install Claude Code's rules and self-check hook (CON-162)
 ./install.sh --local --no-service --no-agent-setup   # only the binary
 ./install.sh --uninstall        # remove the binary, the service and the agent setup; keep data and backups
+.\install.ps1 -Local            # Windows: the same, the daemon as the Scheduled Task multitool-daemon at logon,
+                                # the hook as harness-selfcheck-reminder.ps1; -NoService, -NoAgentSetup, -Uninstall
 multitool                       # from any folder: the start page, on the profile last chosen with Use in the settings
 multitool --profile work        # on another profile for this run only, as autostart wants it (CON-127)
 multitool daemon restart        # stop the daemon, its runs included, and start this build's on the same port (CON-128),
                                 # through its user service when one is installed (CON-162)
-multitool daemon stop           # stop it and start none
+multitool daemon stop           # stop it and start none; --pid N only if it is that process (the service's ExecStop)
 ./run.sh                        # build (release) from this checkout and open the TUI at the splash
 ./run.sh preview main-session   # open on a named state (see `screen --list`)
 ./run.sh --graphics off         # text only; auto|sixel|kitty|iterm2|off
