@@ -216,9 +216,12 @@ impl Feed {
             // Claude Code reports a command it ran in the foreground the same way; only a task on
             // the list was in the background.
             Event::BackgroundDone { id, .. } if !v.background.iter().any(|task| task.id == *id) => {}
-            Event::BackgroundDone { summary, .. } => {
+            Event::BackgroundDone { id, summary, .. } => {
                 let (kind, from) = inbound_kind(harness_api::HARNESS_LABEL);
                 v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: summary.clone() }));
+                // Done, or stopped with the process it ran in: off the strip, whether or not a new
+                // list follows (journal#1311).
+                v.background.retain(|task| task.id != *id);
             }
             Event::BackendCompacted => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["The agent's own program compacted what it holds of this conversation.".to_string()] }),
             Event::ContextSummary { .. } => v.transcript.push(Item::Tips { label: "COMPACTED".into(), lines: vec!["What is above went into a summary here.".to_string()] }),
@@ -1319,6 +1322,8 @@ mod inbound_tests {
         assert_eq!(v.transcript.len(), cards, "a command in the foreground is no background task");
         feed.apply(&mut v, &entry(600, Event::BackgroundDone { id: "a".into(), status: "completed".into(), summary: "job a completed".into() }));
         assert!(matches!(v.transcript.last(), Some(Item::Inbound(m)) if m.text == "job a completed"));
+        // journal#1311: a task said done leaves the strip, even with no new list after it.
+        assert_eq!(v.background.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b"]);
         feed.apply(&mut v, &entry(700, Event::BackgroundTasks { tasks: vec![] }));
         assert!(v.background.is_empty());
         assert!(!tick_activity(&mut v, 5000), "an idle session draws nothing");

@@ -8,3 +8,7 @@ the gone process's task is ended: [BackendSession { id: "s9" }, TurnStarted { tu
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.24s
 
 error: test failed, to rerun pass `-p harness-backend-claude-code --test process`
+thread 'live::inbound_tests::background_tasks_keep_their_start_and_go_with_the_process' (1629218) panicked at crates/frontend-tui/src/live.rs:1323:9:
+assertion `left == right` failed
+  left: ["a", "b"]
+--

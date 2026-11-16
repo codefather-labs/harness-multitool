@@ -7,3 +7,4 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 test a_log_cut_off_mid_tool_resumes_with_an_interrupted_result ... ok
 test a_resumed_log_ends_the_background_tasks_of_a_gone_process ... ok
 test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.39s
+test result: ok. 135 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.16s
