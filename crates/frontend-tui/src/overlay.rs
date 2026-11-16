@@ -2204,7 +2204,7 @@ mod tests {
         assert_eq!(p.opened, Some(0));
         chats_key(p, Key::Char('d'), &mut outbox);
         chats_key(p, Key::Char('l'), &mut outbox);
-        assert!(matches!(outbox.as_slice(), [Outgoing::ChatDump { session }, Outgoing::ChatPick { .. }] if session == "s-one"));
+        assert!(matches!(outbox.as_slice(), [Outgoing::ChatDump { session }, Outgoing::ChatPick] if session == "s-one"));
         (p.loading, p.archives, p.load_cursor) = (true, vec!["multitool_dumps/a.zip".into()], 0);
         outbox.clear();
         chats_key(p, Key::Enter, &mut outbox);
