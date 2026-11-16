@@ -62,6 +62,11 @@ pub enum Target {
     ProfileRow(usize),
     /// A button of the Profiles tab: 0 Add, 1 Edit, 2 Delete, 3 Use; in Edit 10 sign Claude Code in, 11 out.
     ProfileButton(usize),
+    /// The Chats page (CON-173): a conversation's row, its Dump button, Load, the 'as a copy' box.
+    ChatRow(usize),
+    ChatDump,
+    ChatLoad,
+    ChatCopy,
     /// A provider row on the settings window's provider page.
     Provider(usize),
     /// A row of the settings' Callbacks tab.

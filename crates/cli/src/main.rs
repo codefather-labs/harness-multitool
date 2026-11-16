@@ -9,6 +9,7 @@ use frontend_tui::{Theme, fixtures};
 use tui_snapshot::{Raster, side_by_side};
 
 mod config;
+mod file_picker;
 mod plugins;
 mod reload;
 
@@ -1545,13 +1546,28 @@ impl Live {
                         (m.done, m.total) = (done, total);
                     }
                 }
+                ChatJob::Picked { picked, new_id } => {
+                    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.chats.picking = false;
+                    }
+                    if let Some(page) = &mut w.chats {
+                        page.picking = false;
+                    }
+                    match picked {
+                        file_picker::Picked::Path(path) => self.start_chat_load(w, path.to_string_lossy().into_owned(), new_id),
+                        file_picker::Picked::Cancelled => self.chats_status(w, "No archive chosen.".to_string(), false),
+                        // No picker here: the in-window list of archives instead.
+                        file_picker::Picked::Unavailable(why) => self.chats_status(w, format!("{why}. Choose from the list, or type a path."), true),
+                    }
+                }
                 ChatJob::Done { job, said } => {
                     w.archiving.retain(|m| m.tab != job);
                     let page = chats_page(&self.root, said.clone());
                     let on_chats = match &mut w.overlay {
                         Some(frontend_tui::model::Overlay::Settings(s)) => {
                             let cursor = s.chats.cursor.min(page.rows.len().saturating_sub(1));
-                            s.chats = frontend_tui::model::ChatsPage { cursor, ..page.clone() };
+                            let opened = s.chats.opened.filter(|&i| i < page.rows.len());
+                            s.chats = frontend_tui::model::ChatsPage { cursor, opened, new_id: s.chats.new_id, picking: s.chats.picking, ..page.clone() };
                             s.sections.get(s.section).is_some_and(|n| n == frontend_tui::overlay::CHATS_SECTION)
                         }
                         _ => false,
@@ -1564,6 +1580,33 @@ impl Live {
             }
         }
         changed
+    }
+
+    /// The Chats page says `said`; with `list`, it opens its in-window list of archives (CON-173).
+    fn chats_status(&mut self, w: &mut frontend_tui::model::Workspace, said: String, list: bool) {
+        let fresh = chats_page(&self.root, said);
+        for page in [w.overlay.as_mut().and_then(|o| if let frontend_tui::model::Overlay::Settings(s) = o { Some(&mut s.chats) } else { None }), w.chats.as_mut()].into_iter().flatten() {
+            page.status.clone_from(&fresh.status);
+            page.archives.clone_from(&fresh.archives);
+            if list {
+                page.loading = true;
+                page.load_cursor = 0;
+            }
+        }
+    }
+
+    /// A load of the Chats tab, with its toast (CON-172).
+    fn start_chat_load(&mut self, w: &mut frontend_tui::model::Workspace, path: String, new_id: bool) {
+        let root = self.root.clone();
+        let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
+        let shown = file.file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+        self.start_chat_job(w, format!("Loading {shown}"), move |progress| match config::data_dir() {
+            Ok(data) => match harness_session::chat_archive::load_progress(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }, progress) {
+                Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
+                Err(e) => format!("Not loaded: {e}"),
+            },
+            Err(e) => format!("Not loaded: {e}"),
+        });
     }
 
     /// Starts a dump or a load of the Chats tab off the window's thread, with its toast (CON-172).
@@ -2245,16 +2288,14 @@ impl Live {
                         Err(e) => format!("Not dumped: {e}"),
                     });
                 }
-                Outgoing::ChatLoad { path, new_id } => {
-                    let root = self.root.clone();
-                    let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
-                    let shown = file.file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
-                    self.start_chat_job(w, format!("Loading {shown}"), move |progress| match config::data_dir() {
-                        Ok(data) => match harness_session::chat_archive::load_progress(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }, progress) {
-                            Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
-                            Err(e) => format!("Not loaded: {e}"),
-                        },
-                        Err(e) => format!("Not loaded: {e}"),
+                Outgoing::ChatLoad { path, new_id } => self.start_chat_load(w, path, new_id),
+                // CON-173: the system's file picker, off the window's thread.
+                Outgoing::ChatPick { new_id } => {
+                    let dumps = std::path::Path::new(&self.root).join(harness_session::chat_archive::DUMPS_DIR);
+                    let start = if dumps.is_dir() { dumps } else { std::path::PathBuf::from(&self.root) };
+                    let sender = self.chat_jobs.0.clone();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(ChatJob::Picked { picked: file_picker::pick(&start), new_id });
                     });
                 }
                 Outgoing::SaveGames { enabled, texas_holdem } => {
@@ -3116,6 +3157,8 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
 enum ChatJob {
     Progress { job: u64, done: u64, total: u64 },
     Done { job: u64, said: String },
+    /// What the system's file picker gave, for a load (CON-173).
+    Picked { picked: file_picker::Picked, new_id: bool },
 }
 
 fn chats_page(root: &str, status: String) -> frontend_tui::model::ChatsPage {

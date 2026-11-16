@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Debug, CON-171 and CON-172: the Settings' Chats tab. The real TUI in a pty with a fake model and a temporary home: one
-conversation is made, the Chats tab lists it by its adapter, d dumps it into a .zip in the project's multitool_dumps/,
-l lists that archive, Enter on it is refused (already on this machine), n and Enter load a copy, which the
-list then shows. CON-172: the log is padded to about 200 MB, so the dump's and the load's progress
-toasts are seen over the Settings with their share; the archive's name carries the time of the dump
-(journal#1281). Needs pyte. Usage: tools/pty_chats_tab.py <absolute path to multitool>"""
+"""Debug, CON-171, CON-172 and CON-173: the Settings' Chats tab, driven by mouse clicks. The real TUI
+in a pty with a fake model and a temporary home. One conversation is made, its log padded to about
+200 MB so a dump and a load take a while. In the Chats tab:
+- a click on the conversation shows [ Dump ] under it, and a click on that dumps it into
+  multitool_dumps/ with a progress toast over the Settings (the archive named with the time);
+- [ Load… ] opens the file picker, a fake zenity first on PATH that records its arguments and
+  answers the archive: the load is refused as already here, then with [x] as a copy it loads a
+  copy with its toast; a cancelled picker says 'No archive chosen.';
+- a second window whose PATH has no picker falls back to the in-window list of archives.
+Needs pyte. Usage: tools/pty_chats_tab.py <absolute path to multitool>"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import re, fcntl, glob, http.server, json, pty, select, signal, struct, tempfile, termios, threading, time
 import pyte
@@ -22,32 +26,70 @@ model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Model); threading.Thre
 
 root = tempfile.mkdtemp(prefix="mt-chats-root"); home = tempfile.mkdtemp(prefix="mt-chats-home"); os.makedirs(home + "/cfg/harness-multitool")
 open(home + "/cfg/harness-multitool/config.toml", "w").write(f'[session.providers.anthropic]\nbase_url="http://127.0.0.1:{model.server_port}"\n')
-pid, fd = pty.fork()
-if pid == 0:
-    os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=home + "/claude", ANTHROPIC_API_KEY="test-key-local-fake", TERM="xterm-256color", MULTITOOL_GRAPHICS="off")
-    os.execv(sys.argv[1], [sys.argv[1], "--new"])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 140, 0, 0))
-screen = pyte.Screen(140, 44); stream = pyte.ByteStream(screen)
-def pump(sec):
-    end = time.time() + sec
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if r:
-            try: stream.feed(os.read(fd, 65536))
-            except OSError: return
-def text(): return "\n".join(l.rstrip() for l in screen.display).rstrip()
-def wait(cond, sec):
-    end = time.time() + sec
-    while time.time() < end and not cond(): pump(0.2)
-    return cond()
-def keys(*ks):
-    for k in ks: os.write(fd, k.encode()); time.sleep(0.05)
-def show(t): print(f"\n===== {t} =====\n" + "\n".join(l.rstrip() for l in screen.display if l.strip()))
+proof_dir = os.environ.get("PROOF_DIR", tempfile.mkdtemp(prefix="mt-chats-proof")); os.makedirs(proof_dir, exist_ok=True)
+# The fake picker: records its arguments, answers what $home/pick holds, or cancels (exit 1) on CANCEL.
+fakebin = home + "/fakebin"; os.makedirs(fakebin); emptybin = home + "/emptybin"; os.makedirs(emptybin)
+open(fakebin + "/zenity", "w").write(f'#!/bin/sh\nprintf "%s\\n" "$@" > {home}/picker-args\nanswer=$(/bin/cat {home}/pick)\n[ "$answer" = CANCEL ] && exit 1\nprintf "%s\\n" "$answer"\n')
+os.chmod(fakebin + "/zenity", 0o755)
+
+class Window:
+    def __init__(self, path_dirs):
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(root); os.environ.update(XDG_CONFIG_HOME=home + "/cfg", MULTITOOL_HOME=home + "/mt-home", XDG_DATA_HOME=home + "/data", CLAUDE_CONFIG_DIR=home + "/claude", ANTHROPIC_API_KEY="test-key-local-fake", TERM="xterm-256color", MULTITOOL_GRAPHICS="off", PATH=path_dirs, DISPLAY=":99")
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            os.execv(sys.argv[1], [sys.argv[1], "--new"])
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 140, 0, 0))
+        self.screen = pyte.Screen(140, 44); self.stream = pyte.ByteStream(self.screen)
+    def pump(self, sec):
+        end = time.time() + sec
+        while time.time() < end:
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if r:
+                try: self.stream.feed(os.read(self.fd, 65536))
+                except OSError: return
+    def text(self): return "\n".join(l.rstrip() for l in self.screen.display).rstrip()
+    def wait(self, cond, sec):
+        end = time.time() + sec
+        while time.time() < end and not cond(): self.pump(0.2)
+        return cond()
+    def keys(self, *ks):
+        for k in ks: os.write(self.fd, k.encode()); time.sleep(0.05)
+    def show(self, t): print(f"\n===== {t} =====\n" + "\n".join(l.rstrip() for l in self.screen.display if l.strip()))
+    def find(self, label, also=""):
+        """Where `label` is on the screen, 1-based (column, row), on a line that also holds `also`."""
+        for y, line in enumerate(self.screen.display):
+            x = line.find(label)
+            if x >= 0 and also in line: return x + 1, y + 1
+        return None
+    def click(self, label, also=""):
+        at = self.find(label, also)
+        if at is None: return False
+        x, y = at; self.keys(f"\x1b[<0;{x + 1};{y}M", f"\x1b[<0;{x + 1};{y}m"); self.pump(0.5)
+        return True
+    def to_chats(self):
+        self.keys(*"/settings", "\r"); self.pump(2)
+        for _ in range(20):
+            if "CHATS" in self.text(): break
+            self.keys("\x1b[B"); self.pump(0.3)
+        self.keys("\x1b[C"); self.pump(1)
+    def close(self):
+        for _ in range(3): self.keys("\x1b"); self.pump(0.4)  # out of a list, the page, the Settings
+        for c in "/exit\r": os.write(self.fd, c.encode()); time.sleep(0.01)
+        self.pump(1)
+        for _ in range(50):
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]: return
+            except ChildProcessError: return
+            self.pump(0.2)
+        print("window did not exit: killed"); os.kill(self.pid, signal.SIGKILL)
+
 results = {}
-assert wait(lambda: "Enter send" in text(), 20), text()
-keys(*"hello chats", "\r")
-results["conversation_made"] = wait(lambda: "ANSWER-ONE" in text(), 20)
-pump(2)
+w = Window(fakebin + ":" + os.environ["PATH"])
+assert w.wait(lambda: "Enter send" in w.text(), 20), w.text()
+w.keys(*"hello chats", "\r")
+results["conversation_made"] = w.wait(lambda: "ANSWER-ONE" in w.text(), 20)
+w.pump(2)
 # CON-172: about 200 MB of incompressible lines in the conversation's log, so a dump takes a while.
 logs = glob.glob(home + "/data/harness-multitool/sessions/*/*.jsonl")
 assert len(logs) == 1, logs
@@ -55,46 +97,63 @@ with open(logs[0], "a") as f:
     for _ in range(1600):
         f.write(json.dumps({"pad": os.urandom(64 * 1024).hex()[: 128 * 1024]}) + "\n")
 print("log padded to", os.path.getsize(logs[0]) // 1_000_000, "MB")
-keys(*"/settings", "\r"); pump(2)
-# To the Chats section: it comes after Journal.
-for _ in range(20):
-    if "CHATS" in text(): break
-    keys("\x1b[B"); pump(0.3)
-keys("\x1b[C"); pump(1)
-show("the Chats tab")
-results["listed_by_adapter"] = "hello chats" in text() and "anthropic" in text()
-results["listed_size_is_the_log"] = " MB" in text() and any(f"{n} MB" in text() or f"{n}." in text() for n in range(200, 230))
+w.to_chats()
+w.show("the Chats tab")
+results["listed_by_adapter"] = "hello chats" in w.text() and "anthropic" in w.text()
+results["load_button_always_there"] = "[ Load… ]" in w.text() and "[ ] as a copy" in w.text() and "[ Dump ]" not in w.text()
 def progress_seen(word):
     """Waits for the toast with `word` and a share, and keeps the screen it was seen on."""
-    seen = wait(lambda: word in text() and re.search(r"MB · ([1-9]|[1-9][0-9])%", text()) is not None, 60)
-    if seen: show(f"progress: {word}"); open(proof_dir + f"/{word.lower()}-toast.txt", "w").write(text())
+    seen = w.wait(lambda: word in w.text() and re.search(r"MB · ([1-9]|[1-9][0-9])%", w.text()) is not None, 60)
+    if seen: w.show(f"progress: {word}"); open(proof_dir + f"/{word.lower()}-toast.txt", "w").write(w.text())
     return seen
-proof_dir = os.environ.get("PROOF_DIR", tempfile.mkdtemp(prefix="mt-chats-proof")); os.makedirs(proof_dir, exist_ok=True)
-keys("d")
-results["dump_progress_over_settings"] = progress_seen("Dumping") and "CHATS" in text()
-results["dumped"] = wait(lambda: "Dumped hello chats to" in text(), 120)
-results["dump_toast_gone"] = "Dumping" not in text()
+# CON-173: a click on the conversation shows its Dump button; a click on that dumps it.
+w.click("hello chats", also=" MB")
+results["row_click_shows_dump"] = w.wait(lambda: "[ Dump ]" in w.text(), 5)
+w.show("after a click on the conversation")
+w.click("[ Dump ]")
+results["dump_progress_over_settings"] = progress_seen("Dumping") and "CHATS" in w.text()
+results["dumped"] = w.wait(lambda: "Dumped hello chats to" in w.text(), 120)
+results["dump_toast_gone"] = "Dumping" not in w.text()
 zips = glob.glob(root + "/multitool_dumps/*.zip")
-results["zip_in_multitool_dumps"] = len(zips) == 1 and not glob.glob(root + "/*.zip")  # journal#1288
-import re
+results["zip_in_multitool_dumps"] = len(zips) == 1 and not glob.glob(root + "/*.zip")
 results["zip_named_with_its_time"] = bool(zips) and re.fullmatch(r"hello-chats-[0-9A-Za-z]{1,8}-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d\.zip", os.path.basename(zips[0])) is not None
 print("archive:", [os.path.basename(z) for z in zips])
-show("after d")
-keys("l"); pump(1)
-results["archive_offered"] = wait(lambda: ("multitool_dumps/" + os.path.basename(zips[0])) in text() if zips else False, 5)
-keys("\r")
-results["refused_already_here"] = wait(lambda: "is already on this" in text() and "machine: load it with --new-id" in text(), 60)  # wrapped at a word (journal#1278)
-show("after Enter: refused")
-keys("l"); pump(0.5); keys("n"); pump(0.3); keys("\r")
+# Load: the picker answers the archive; it is here already, so refused.
+open(home + "/pick", "w").write(zips[0] if zips else "/nonexistent.zip")
+w.click("[ Load… ]")
+results["refused_already_here"] = w.wait(lambda: "is already on this" in w.text(), 60)
+args = open(home + "/picker-args").read().split("\n") if os.path.exists(home + "/picker-args") else []
+print("picker arguments:", args)
+results["picker_opened_on_multitool_dumps"] = "--file-selection" in args and f"--filename={root}/multitool_dumps/" in args and "--file-filter=Chat archives | *.zip" in args
+w.show("after Load: refused")
+# As a copy: loads, with its toast.
+w.click("[ ] as a copy")
+results["copy_box_ticked"] = w.wait(lambda: "[x] as a copy" in w.text(), 5)
+w.click("[ Load… ]")
 results["load_progress_over_settings"] = progress_seen("Loading")
-results["copy_loaded"] = wait(lambda: "Loaded hello chats as loaded-" in text(), 120)
-results["load_toast_gone"] = "Loading" not in text()
-show("after n and Enter: a copy")
-results["copy_listed"] = text().count("hello chats") >= 2
+results["copy_loaded"] = w.wait(lambda: "Loaded hello chats as loaded-" in w.text(), 120)
+results["load_toast_gone"] = "Loading" not in w.text()
+w.show("after Load as a copy")
+results["copy_listed"] = w.text().count("hello chats") >= 3
+# A cancelled picker.
+open(home + "/pick", "w").write("CANCEL")
+w.click("[ Load… ]")
+results["cancel_said"] = w.wait(lambda: "No archive chosen." in w.text(), 20)
+open(proof_dir + "/chats-buttons.txt", "w").write(w.text())
+w.close()
+
+# A window with no picker on its PATH: the in-window list instead.
+w2 = Window(emptybin)
+w2.wait(lambda: "Enter send" in w2.text(), 20); w2.pump(1)
+w2.to_chats()
+w2.click("[ Load… ]")
+results["no_picker_said"] = w2.wait(lambda: "no file picker found" in w2.text(), 20)
+results["fallback_list"] = "Load a conversation into this project" in w2.text() and ("multitool_dumps/" + os.path.basename(zips[0]) if zips else "?") in w2.text()
+w2.show("no picker: the list")
+open(proof_dir + "/no-picker.txt", "w").write(w2.text())
+w2.close()
+
 print("\nRESULTS:", json.dumps(results))
-keys("\x1b"); pump(0.5)
-for c in "/exit\r": os.write(fd, c.encode()); time.sleep(0.01)
-pump(1)
 try: os.kill(json.load(open(home + "/data/harness-multitool/daemon/address.json"))["pid"], signal.SIGTERM)
 except Exception as e: print("daemon stop:", e)
 print("ALL PASSED" if all(results.values()) else "FAILED")

@@ -133,6 +133,8 @@ pub enum Outgoing {
     ChatDump { session: String },
     /// A conversation brought in from a .zip, into this project (CON-171).
     ChatLoad { path: String, new_id: bool },
+    /// The system's file picker, for a .zip to load (CON-173).
+    ChatPick { new_id: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -1134,9 +1136,14 @@ pub struct ChatsPage {
     pub archives: Vec<String>,
     pub load_cursor: usize,
     pub typed: String,
+    /// Loading as a separate copy, under new ids (the 'as a copy' box).
     pub new_id: bool,
     /// What the last dump or load did, or what it is doing.
     pub status: String,
+    /// The row whose Dump button shows under it (CON-173).
+    pub opened: Option<usize>,
+    /// The system's file picker is open for a load.
+    pub picking: bool,
 }
 
 /// The trackers the Journal page offers, and whether each is built (ADR 0028, CON-143).

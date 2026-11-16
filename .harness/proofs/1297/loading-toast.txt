@@ -1,0 +1,44 @@
+ harness-multitool / v0.1.0-dev                                                                     /tmp/mt-chats-root96skqp1n  |  ● online
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄╭──────────────────────────────────────────────────╮
+ █  WELCOME                                                                            │ Loading hello-chats-17948447-2026-11-16-17-59-1… │
+ █  Welcome to harness-multitool                                                       │ 15 MB / 210 MB · 7%                              │
+ █  plugin-first coding harness · Rust + ratatui                                       │ ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╰──────────────────────────────────────────────────╯
+ █  QUICK TIPS    ╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ █   • Enter sends│  Settings                                                                                         ×  │
+ █   • Ctrl+P comm│  project and local build configuration                                                               │
+ █   • Drop files │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+ ━━━━━━━━━━━━━━━━━│                            │                                                                         │━━━━━━━━━━━━━━━━━
+ █  INITIALIZE THE│    Provider                │  CHATS   profile default                                                │
+ █   • This projec│    Tools                   │                                                                         │ocumentation in
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│    Policy                  │   [ Load… ]  [x] as a copy                                              │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  USER  17:59   │    Memory                  │                                                                         │
+ █  hello chats   │    Router                  │   anthropic                                                             │
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│    Frontend                │     hello chats    209.7 MB  0 min ago                                  │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  ASSISTANT  17:│    Callbacks               │       [ Dump ]                                                          │
+ █  ANSWER-ONE    │    Telegram                │                                                                         │
+ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│    Speech to text          │                                                                         │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                  │    Profiles                │                                                                         │
+                  │    Theme                   │                                                                         │
+                  │    Journal                 │                                                                         │
+                  │  ▌ Chats                   │                                                                         │
+                  │    Games                   │                                                                         │
+                  │                            │                                                                         │
+                  │                            │                                                                         │
+                  │                            │                                                                         │
+                  │                            │   Choose a .zip in the window that opened.                              │
+                  │                            │   Click or Enter on a conversation for its Dump button (d); Load… (l)   │
+                  │                            │                                                                         │
+                  │                            │                                                                         │
+                  │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+                  │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │
+                  │                                                                                                      │
+                  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MODE  normal  ·  PROFILE  default (your Claude)  ·  ADAPTER  anthropic  ·  MODEL  claude-opus-5-5  ·  TOKENS  55 / 1M  ·  COST  $0.00  ·  B
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ ╭────────────╮
+ │ Ask about the repo, request an edit, or type / for commands…█                                                           │ │ ⚙ Settings │
+ │ Enter send  ·  Shift+Enter newline  ·  @ file  ·  / command                                                             │ │   Ctrl+,   │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────╯

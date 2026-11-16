@@ -617,9 +617,10 @@ pub const GAMES_SECTION: &str = "Games";
 /// The settings section of this project's conversations, dumped and loaded (CON-171).
 pub const CHATS_SECTION: &str = "Chats";
 
-/// This project's conversations (CON-171): grouped by adapter, d dumps one into a .zip in the
-/// project's folder, l loads one from the .zip files there or a path typed.
-fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+/// This project's conversations (CON-171): grouped by adapter. A click on one shows its Dump
+/// button; Load and the 'as a copy' box stand on the header line, Load opening the system's file
+/// picker (CON-173). The in-window list of archives is the fallback when there is no picker.
+fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
     let p = &s.chats;
     let focus = s.focus == SettingsPane::Page;
     let muted = Style::default().fg(t.text_muted);
@@ -643,6 +644,17 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
         }
         text(f, r.x, y + 1, r.width, vec![Span::styled(" New id (a separate copy) ", muted), Span::styled(format!("[{}]", if p.new_id { "x" } else { " " }), strong)], bg);
     } else {
+        // Load and its box, always there (CON-173).
+        let button = |lit: bool| if lit { Style::default().fg(t.surface).bg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) };
+        let load = if p.picking { "[ Choosing… ]" } else { "[ Load… ]" };
+        let load_w = load.chars().count() as u16;
+        text(f, r.x + 1, y, load_w, vec![Span::styled(load, button(p.picking))], bg);
+        out.hits.push(Hit { rect: Rect::new(r.x + 1, y, load_w, 1), target: Target::ChatLoad });
+        let copy = format!("[{}] as a copy", if p.new_id { "x" } else { " " });
+        let copy_w = copy.chars().count() as u16;
+        text(f, r.x + 3 + load_w, y, copy_w, vec![Span::styled(copy, strong)], bg);
+        out.hits.push(Hit { rect: Rect::new(r.x + 3 + load_w, y, copy_w, 1), target: Target::ChatCopy });
+        y += 2;
         if p.rows.is_empty() {
             text(f, r.x, y, r.width, vec![Span::styled(" No conversation in this project yet.", muted)], bg);
         }
@@ -662,11 +674,18 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
             let size = format!("{:>7.1} MB", row.bytes as f64 / 1e6);
             let name: String = row.name.chars().take(name_width).collect();
             let pad = " ".repeat(name_width.saturating_sub(name.chars().count()));
-            text(f, r.x, y, r.width, vec![Span::styled(format!("   {name}{pad}"), strong), Span::styled(format!("  {size}  {}", row.age), muted)], if under { t.surface_raised } else { bg });
+            text(f, r.x, y, r.width, vec![Span::styled(format!("   {name}{pad}"), strong), Span::styled(format!("  {size}  {}", row.age), muted)], if under || p.opened == Some(i) { t.surface_raised } else { bg });
+            out.hits.push(Hit { rect: Rect::new(r.x, y, r.width, 1), target: Target::ChatRow(i) });
             y += 1;
+            // Its Dump button, under it when it is opened (CON-173).
+            if p.opened == Some(i) && y < bottom {
+                text(f, r.x + 5, y, 10, vec![Span::styled("[ Dump ]", button(false))], bg);
+                out.hits.push(Hit { rect: Rect::new(r.x + 5, y, 8, 1), target: Target::ChatDump });
+                y += 1;
+            }
         }
     }
-    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Up and Down choose, d dumps it to multitool_dumps/, l loads one." };
+    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Click a conversation for Dump. Keys: Enter, d dump, l load, n copy." };
     // The status wraps, up to three lines, so a refusal's reason is read whole (journal#1278).
     let mut notes = wrap_chars(&p.status, r.width.saturating_sub(2) as usize, 3);
     notes.push(help.to_string());
@@ -748,20 +767,45 @@ fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
         return;
     }
     match k {
-        Key::Up => p.cursor = p.cursor.saturating_sub(1),
-        Key::Down => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
-        Key::Char('d') => {
-            if let Some(row) = p.rows.get(p.cursor) {
-                p.status = format!("Dumping {}...", row.name);
-                outbox.push(Outgoing::ChatDump { session: row.session.clone() });
-            }
+        Key::Up => {
+            p.cursor = p.cursor.saturating_sub(1);
+            p.opened = None;
         }
-        Key::Char('l') => {
-            p.loading = true;
-            p.load_cursor = 0;
+        Key::Down => {
+            p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1));
+            p.opened = None;
         }
+        Key::Enter => toggle_chat(p, p.cursor),
+        Key::Char('d') => dump_chat(p, p.cursor, outbox),
+        Key::Char('l') => pick_chat(p, outbox),
+        Key::Char('n') => p.new_id = !p.new_id,
         _ => {}
     }
+}
+
+/// A click or Enter on a conversation: its Dump button shows under it, or goes (CON-173).
+fn toggle_chat(p: &mut ChatsPage, i: usize) {
+    if i < p.rows.len() {
+        p.cursor = i;
+        p.opened = if p.opened == Some(i) { None } else { Some(i) };
+    }
+}
+
+fn dump_chat(p: &mut ChatsPage, i: usize, outbox: &mut Vec<Outgoing>) {
+    if let Some(row) = p.rows.get(i) {
+        p.status = format!("Dumping {}...", row.name);
+        outbox.push(Outgoing::ChatDump { session: row.session.clone() });
+    }
+}
+
+/// Load: the system's file picker, once at a time (CON-173).
+fn pick_chat(p: &mut ChatsPage, outbox: &mut Vec<Outgoing>) {
+    if p.picking {
+        return;
+    }
+    p.picking = true;
+    p.status = "Choose a .zip in the window that opened.".to_string();
+    outbox.push(Outgoing::ChatPick { new_id: p.new_id });
 }
 
 /// Games between agents (ADR 0029): on or off, and which games. Tables are made on the dashboard.
@@ -1211,7 +1255,7 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == CHATS_SECTION {
-        chats_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+        chats_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == GAMES_SECTION {
         games_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == JOURNAL_SECTION {
@@ -2049,6 +2093,24 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         // On the button that stops it, Enter stops it; elsewhere a click does nothing while it listens.
         (Some(Overlay::Settings(s)), Target::VoiceRow(VOICE_TEST_ROW)) if s.voice.menu.is_none() => voice_key(&mut s.voice, Key::Enter, &mut w.outbox),
         (Some(Overlay::Settings(s)), Target::VoiceRow(_)) => s.voice.menu = None,
+        (Some(Overlay::Settings(s)), Target::ChatRow(i)) if !s.chats.loading => {
+            s.focus = SettingsPane::Page;
+            toggle_chat(&mut s.chats, i);
+        }
+        (Some(Overlay::Settings(s)), Target::ChatDump) => {
+            s.focus = SettingsPane::Page;
+            if let Some(i) = s.chats.opened {
+                dump_chat(&mut s.chats, i, &mut w.outbox);
+            }
+        }
+        (Some(Overlay::Settings(s)), Target::ChatLoad) if !s.chats.loading => {
+            s.focus = SettingsPane::Page;
+            pick_chat(&mut s.chats, &mut w.outbox);
+        }
+        (Some(Overlay::Settings(s)), Target::ChatCopy) => {
+            s.focus = SettingsPane::Page;
+            s.chats.new_id = !s.chats.new_id;
+        }
         (Some(Overlay::Settings(s)), Target::ProfileRow(i)) => {
             s.focus = SettingsPane::Page;
             s.profiles.cursor = i;
@@ -2112,6 +2174,60 @@ fn parse_users(typed: &str) -> Result<Vec<i64>, String> {
 
 #[cfg(test)]
 mod tests {
+    /// CON-173: a click on a conversation shows its Dump button and a click on that dumps it; Load
+    /// and the 'as a copy' box are there with no row opened; the keys do the same.
+    #[test]
+    fn the_chats_page_works_by_buttons() {
+        let mut w = on_provider_page();
+        let row = |n: &str| crate::model::ChatRow { session: format!("s-{n}"), name: n.into(), adapter: "claude-code".into(), bytes: 1_000_000, age: "1 h ago".into() };
+        let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
+        s.section = s.sections.iter().position(|n| n == CHATS_SECTION).unwrap();
+        s.chats.rows = vec![row("one"), row("two")];
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let draw = |w: &Workspace| {
+            let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+            let mut drawn = Drawn::default();
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
+            terminal.draw(|f| chats_page(f, f.area(), s, &theme, Color::Reset, &mut drawn)).unwrap();
+            let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+            (drawn.hits.iter().map(|h| h.target).collect::<Vec<_>>(), screen)
+        };
+        let (hits, screen) = draw(&w);
+        assert!(hits.contains(&Target::ChatLoad) && hits.contains(&Target::ChatCopy) && !hits.contains(&Target::ChatDump), "Load always, Dump only under an opened row");
+        assert!(screen.contains("[ Load… ]") && screen.contains("[ ] as a copy"));
+        click(&mut w, Target::ChatRow(1));
+        let (hits, screen) = draw(&w);
+        assert!(hits.contains(&Target::ChatDump) && screen.contains("[ Dump ]"));
+        click(&mut w, Target::ChatDump);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatDump { session }) if session == "s-two"));
+        click(&mut w, Target::ChatRow(1));
+        assert!(!draw(&w).0.contains(&Target::ChatDump), "a second click hides it");
+        click(&mut w, Target::ChatLoad);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatPick { new_id: false })));
+        click(&mut w, Target::ChatLoad);
+        assert!(w.outbox.is_empty(), "one picker at a time");
+        let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
+        s.chats.picking = false;
+        click(&mut w, Target::ChatCopy);
+        assert!(draw(&w).1.contains("[x] as a copy"));
+        click(&mut w, Target::ChatLoad);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatPick { new_id: true })));
+        // The keys: Enter opens, d dumps, l picks; the fallback list still loads with Enter.
+        let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
+        let p = &mut s.chats;
+        (p.picking, p.cursor, p.opened) = (false, 0, None);
+        let mut outbox = Vec::new();
+        chats_key(p, Key::Enter, &mut outbox);
+        assert_eq!(p.opened, Some(0));
+        chats_key(p, Key::Char('d'), &mut outbox);
+        chats_key(p, Key::Char('l'), &mut outbox);
+        assert!(matches!(outbox.as_slice(), [Outgoing::ChatDump { session }, Outgoing::ChatPick { .. }] if session == "s-one"));
+        (p.loading, p.archives, p.load_cursor) = (true, vec!["multitool_dumps/a.zip".into()], 0);
+        outbox.clear();
+        chats_key(p, Key::Enter, &mut outbox);
+        assert!(matches!(outbox.as_slice(), [Outgoing::ChatLoad { path, .. }] if path == "multitool_dumps/a.zip"));
+    }
+
     /// journal#1278: the Chats page's status wraps at its spaces, three lines at most.
     #[test]
     fn a_status_wraps_at_its_words() {
