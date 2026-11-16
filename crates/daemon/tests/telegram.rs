@@ -283,6 +283,7 @@ struct FakeHost {
     notices: Mutex<Vec<(String, String)>>,
     plans: Mutex<Vec<(String, bool)>>,
     reloads: Mutex<u32>,
+    windows: Mutex<Vec<String>>,
 }
 
 impl ConversationHost for FakeHost {
@@ -310,9 +311,12 @@ impl ConversationHost for FakeHost {
     fn open_sessions(&self) -> Vec<OpenSession> {
         self.open.lock().unwrap().clone()
     }
-    fn reload_all(&self) -> usize {
+    fn reload_all(&self) -> Vec<String> {
         *self.reloads.lock().unwrap() += 1;
-        self.open.lock().unwrap().len()
+        self.windows.lock().unwrap().clone()
+    }
+    fn windows(&self) -> Vec<String> {
+        self.windows.lock().unwrap().clone()
     }
     fn deliver_to(&self, session: &str, _: &str, text: &str) -> bool {
         let open = self.open.lock().unwrap().iter().any(|s| s.id == session);
@@ -388,7 +392,8 @@ fn one_session_binds_by_itself_and_several_are_chosen_from() {
     assert_eq!(keyboard["inline_keyboard"][1][0]["callback_data"], "switch:b");
     until("whoami", || said(&w.fake).iter().any(|t| t == "This chat goes to no session."));
     w.fake.lock().unwrap().updates.push(tap(4, 42, 7, "switch:b"));
-    until("the waiting message goes to the chosen one", || w.host.got.lock().unwrap().as_slice() == [("b".to_string(), "which one?".to_string())]);
+    // It goes with its time: it waited (journal#1245).
+    until("the waiting message goes to the chosen one", || w.host.got.lock().unwrap().iter().any(|(to, text)| to == "b" && text.contains("held until now") && text.ends_with("which one?")));
     assert!(said(&w.fake).iter().any(|t| t.contains("now goes to beta") && t.contains("1 waiting")), "{:?}", said(&w.fake));
     assert_eq!(w.client.stats().unwrap()["telegram"]["bound"], 1);
 }
@@ -446,7 +451,7 @@ fn a_session_that_is_not_open_holds_the_message_and_a_stranger_can_press_nothing
     let kept = std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).unwrap();
     assert!(kept.contains("are you there"), "kept across a restart: {kept}");
     w.fake.lock().unwrap().updates.push(tap(5, 42, 7, "switch:b"));
-    until("it goes on", || w.host.got.lock().unwrap().as_slice() == [("b".to_string(), "are you there".to_string())]);
+    until("it goes on", || w.host.got.lock().unwrap().iter().any(|(to, text)| to == "b" && text.contains("held until now") && text.ends_with("are you there")));
 }
 
 #[test]
@@ -693,6 +698,7 @@ fn the_harness_is_run_from_telegram() {
     let daemon = Daemon::start(data.path(), 0).unwrap();
     let host = Arc::new(FakeHost::default());
     *host.open.lock().unwrap() = vec![OpenSession { root: root1.clone(), ..session("s1", "alpha") }];
+    *host.windows.lock().unwrap() = vec!["conv-1-1".into()];
     daemon.host_conversations(host.clone());
     daemon.start_telegram(Config { terminal: Some(format!("sh {}", tools.path().join("term.sh").display())), ..config(&url, &[42]) });
     fake.lock().unwrap().updates = vec![message(1, -100, None, "/reload"), message(2, -100, None, "/open")];
@@ -727,4 +733,84 @@ fn the_harness_is_run_from_telegram() {
     // The register now holds both, s1 with its root.
     let known = std::fs::read_to_string(data.path().join("daemon/known.json")).unwrap();
     assert!(known.contains("\"s1\"") && known.contains(&root1.replace('\\', "\\\\")), "{known}");
+}
+
+/// journal#1245: what waits for a session goes by itself as soon as that session is open again,
+/// with its time; what waited more than a day is dropped and said.
+#[test]
+fn a_held_message_goes_when_its_session_is_back_with_its_time() {
+    let w = bound_world(vec![session("s1", "alpha")], vec![message(1, -100, Some(7), "first")]);
+    until("bound", || !w.host.got.lock().unwrap().is_empty());
+    // s1 closes; another stays open, so the channel goes on taking messages.
+    *w.host.open.lock().unwrap() = vec![session("s2", "beta")];
+    w.fake.lock().unwrap().updates.push(message(2, -100, Some(7), "while it was closed"));
+    until("held", || std::fs::read_to_string(w.data.path().join("daemon/telegram.json")).is_ok_and(|t| t.contains("while it was closed")));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(w.host.got.lock().unwrap().len(), 1, "nothing to deliver to while closed");
+    *w.host.open.lock().unwrap() = vec![session("s1", "alpha"), session("s2", "beta")];
+    until("delivered by itself", || w.host.got.lock().unwrap().len() == 2);
+    let (to, text) = w.host.got.lock().unwrap()[1].clone();
+    assert_eq!(to, "s1");
+    assert!(text.contains("held until now") && text.contains("sent 20") && text.ends_with("while it was closed"), "{text}");
+    until("the chat says which", || said(&w.fake).iter().any(|t| t.contains("waiting message(s) went to it") && t.contains("«while it was closed»")));
+    let log = std::fs::read_to_string(w.data.path().join("daemon/triggers.jsonl")).unwrap();
+    assert!(log.contains("\"released\""), "{log}");
+}
+
+#[test]
+fn a_message_held_more_than_a_day_is_dropped_and_said() {
+    let (url, fake) = fake_api();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data.path().join("daemon")).unwrap();
+    std::fs::write(data.path().join("daemon/telegram.json"), json!({"bot": "123456", "offset": 0, "bindings": [{"chat": -100, "topic": 7, "session": "s1"}], "held": [{"chat": -100, "topic": 7, "text": "an old one", "at_ms": 1000}]}).to_string()).unwrap();
+    let daemon = Daemon::start(data.path(), 0).unwrap();
+    let host = Arc::new(FakeHost::default());
+    *host.open.lock().unwrap() = vec![session("s1", "alpha")];
+    daemon.host_conversations(host.clone());
+    daemon.start_telegram(config(&url, &[42]));
+    until("said dropped", || said(&fake).iter().any(|t| t.contains("more than a day") && t.contains("«an old one»")));
+    assert!(host.got.lock().unwrap().is_empty(), "not delivered");
+}
+
+/// journal#1243: /reload says done when its windows are back.
+#[test]
+fn a_reload_says_when_its_windows_are_back() {
+    let w = bound_world(vec![session("s1", "alpha")], vec![]);
+    *w.host.windows.lock().unwrap() = vec!["conv-100-1".into(), "conv-200-1".into()];
+    w.fake.lock().unwrap().updates.push(message(1, -100, None, "/reload"));
+    until("asked", || *w.host.reloads.lock().unwrap() == 1);
+    until("reloading said", || said(&w.fake).iter().any(|t| t.contains("Reloading 2 window")));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!said(&w.fake).iter().any(|t| t.contains("Окна перезагружены")), "not before they are back");
+    *w.host.windows.lock().unwrap() = vec!["conv-100-2".into(), "conv-200-2".into()];
+    until("done", || said(&w.fake).iter().any(|t| t.contains("✅ Окна перезагружены: 2 из 2.")));
+}
+
+/// journal#1243: a daemon started after a /restart says so, with the old pid; a stale marker is
+/// dropped unsaid.
+#[test]
+fn a_daemon_restarted_from_telegram_says_so() {
+    for (asked_ms, said_expected) in [(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64, true), (1000, false)] {
+        let (url, fake) = fake_api();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(data.path().join("daemon")).unwrap();
+        std::fs::write(data.path().join("daemon/restart-asked.json"), json!({"chat": -100, "topic": 7, "old_pid": 4242, "asked_ms": asked_ms}).to_string()).unwrap();
+        let daemon = Daemon::start(data.path(), 0).unwrap();
+        let host = Arc::new(FakeHost::default());
+        *host.windows.lock().unwrap() = vec!["conv-1-1".into()];
+        daemon.host_conversations(host.clone());
+        daemon.start_telegram(config(&url, &[42]));
+        let start = Instant::now();
+        while data.path().join("daemon/restart-asked.json").exists() && start.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!data.path().join("daemon/restart-asked.json").exists(), "the marker is taken");
+        std::thread::sleep(Duration::from_millis(300));
+        let told = said(&fake).iter().any(|t| t.contains("✅ Демон перезапущен: pid 4242 →") && t.contains("Окон подключено: 1."));
+        assert_eq!(told, said_expected, "{:?}", said(&fake));
+        if told {
+            let sent = fake.lock().unwrap().sent.iter().find(|b| b["text"].as_str().unwrap_or_default().contains("перезапущен")).cloned().unwrap();
+            assert_eq!((sent["chat_id"].as_i64(), sent["message_thread_id"].as_i64()), (Some(-100), Some(7)), "to the chat that asked");
+        }
+    }
 }

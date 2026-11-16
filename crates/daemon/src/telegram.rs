@@ -78,6 +78,21 @@ struct Held {
     #[serde(default)]
     topic: Option<i64>,
     text: String,
+    /// When it came; 0 for one kept before the time was (journal#1245).
+    #[serde(default)]
+    at_ms: u64,
+}
+
+/// A held message older than this is not delivered: it is dropped, and the chat is told.
+const HELD_LIVE_MS: u64 = 24 * 3600 * 1000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// A time as the user reads it, in this machine's zone.
+fn local(at_ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(at_ms as i64).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "?".to_string())
 }
 
 /// What the channel knows while it runs.
@@ -98,6 +113,8 @@ pub(crate) struct Channel {
     /// What a chat's last /open or /new listed, for its buttons' short numbers (CON-167): a
     /// session id or a root may not fit Telegram's 64 bytes of a button.
     picks: std::collections::HashMap<Key, (std::time::Instant, Vec<Pick>)>,
+    /// A /reload waiting to be said done: the chat, when, the windows asked (journal#1243).
+    reloading: Option<(Key, std::time::Instant, Vec<String>)>,
 }
 
 /// One thing a button of /open or /new stands for.
@@ -130,7 +147,7 @@ impl Channel {
     pub(crate) fn new(config: Config) -> Channel {
         let timeout = Duration::from_secs(config.poll_timeout_s + 10);
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).build().into();
-        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default(), picks: Default::default() }
+        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default(), picks: Default::default(), reloading: None }
     }
 
     pub(crate) fn status(&self) -> Value {
@@ -161,14 +178,14 @@ impl Channel {
         if dropped && let Some(at) = self.kept.held.iter().position(|h| (h.chat, h.topic) == key) {
             self.kept.held.remove(at);
         }
-        self.kept.held.push(Held { chat: key.0, topic: key.1, text: text.to_string() });
+        self.kept.held.push(Held { chat: key.0, topic: key.1, text: text.to_string(), at_ms: now_ms() });
         dropped
     }
 
-    fn take_held(&mut self, key: Key) -> Vec<String> {
+    fn take_held(&mut self, key: Key) -> Vec<Held> {
         let (taken, kept): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.kept.held).into_iter().partition(|h| (h.chat, h.topic) == key);
         self.kept.held = kept;
-        taken.into_iter().map(|h| h.text).collect()
+        taken
     }
 
     fn request(&self) -> Requester {
@@ -387,7 +404,10 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "restart", "description": "Restart the daemon"},
         ]}),
     );
+    let started = std::time::Instant::now();
     while current() && !daemon.channels_stopped.load(Ordering::Relaxed) {
+        say_done(&daemon, &requester, started);
+        release_held(&daemon, &requester);
         // With nothing to deliver to, nothing is taken, so nothing is confirmed and lost.
         if daemon.listening_window().is_none() && daemon.conversations().is_none_or(|host| host.open_sessions().is_empty()) {
             std::thread::sleep(Duration::from_millis(200));
@@ -610,9 +630,12 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
             say(daemon, requester, key, &what, None);
         }
         "/reload" => {
-            let asked = daemon.conversations().map_or(0, |host| host.reload_all());
-            let what = if asked == 0 { "No window is open.".to_string() } else { format!("Reloading {asked} window(s): each swaps when its run is at a safe point.") };
+            let asked = daemon.conversations().map_or_else(Vec::new, |host| host.reload_all());
+            let what = if asked.is_empty() { "No window is open.".to_string() } else { format!("Reloading {} window(s): each swaps when its run is at a safe point.", asked.len()) };
             say(daemon, requester, key, &what, None);
+            if !asked.is_empty() {
+                daemon.with_channel(|c| c.reloading = Some((key, std::time::Instant::now(), asked)));
+            }
         }
         "/restart" => {
             let buttons = json!({"inline_keyboard": [[{"text": "✅ Restart", "callback_data": "restart:y"}, {"text": "✖ No", "callback_data": "restart:n"}]]});
@@ -656,14 +679,37 @@ fn switch(daemon: &Daemon, requester: &Requester, key: Key, session: &OpenSessio
         held = c.take_held(key);
     });
     save_kept(daemon);
-    let waited = if held.is_empty() { String::new() } else { format!(" {} waiting message(s) went to it.", held.len()) };
-    say(daemon, requester, key, &format!("This chat now goes to {}.{waited}", session.title), None);
+    // What waited goes with its time, so the agent knows it is not new (journal#1245); what
+    // waited more than a day is dropped, and the chat says so.
+    let now = now_ms();
+    let (old, fresh): (Vec<Held>, Vec<Held>) = held.into_iter().partition(|h| h.at_ms != 0 && now.saturating_sub(h.at_ms) > HELD_LIVE_MS);
+    let first_words = |h: &Held| short(&h.text, 40);
+    let mut told = format!("This chat now goes to {}.", session.title);
+    if !fresh.is_empty() {
+        told.push_str(&format!("\n{} waiting message(s) went to it:", fresh.len()));
+        for h in &fresh {
+            told.push_str(&format!("\n• {} «{}»", if h.at_ms == 0 { "?".to_string() } else { local(h.at_ms) }, first_words(h)));
+        }
+    }
+    if !old.is_empty() {
+        told.push_str(&format!("\n{} message(s) waited more than a day and were dropped:", old.len()));
+        for h in &old {
+            told.push_str(&format!("\n• {} «{}»", local(h.at_ms), first_words(h)));
+        }
+    }
+    say(daemon, requester, key, &told, None);
     if let Some(host) = daemon.conversations() {
-        for text in held {
+        for h in fresh {
+            let when = if h.at_ms == 0 { "sent earlier, time unknown".to_string() } else { format!("sent {}", local(h.at_ms)) };
+            let text = format!("({when}, held until now) {}", h.text);
             if host.deliver_to(&session.id, TELEGRAM_LABEL, &text) {
                 daemon.with_channel(|c| c.delivered += 1);
+                daemon.trigger_log(&format!("held-{}", h.at_ms), TELEGRAM_LABEL, &session.id, "released", &when);
             }
         }
+    }
+    for h in old {
+        daemon.trigger_log(&format!("held-{}", h.at_ms), TELEGRAM_LABEL, &session.id, "dropped", "held more than a day");
     }
 }
 
@@ -726,6 +772,9 @@ fn restart(daemon: &Daemon, requester: &Requester, key: Key) {
         return;
     };
     say(daemon, requester, key, "Restarting the daemon. The windows reconnect by themselves.", None);
+    // The next daemon says it is done (journal#1243).
+    let asked = json!({"chat": key.0, "topic": key.1, "old_pid": std::process::id(), "asked_ms": now_ms()});
+    let _ = crate::write_private(&restart_marker(&daemon.data_dir), &asked.to_string());
     std::thread::spawn(move || {
         // The answer goes out first.
         std::thread::sleep(Duration::from_millis(800));
@@ -733,6 +782,83 @@ fn restart(daemon: &Daemon, requester: &Requester, key: Key) {
             eprintln!("restart from Telegram: {e}");
         }
     });
+}
+
+fn restart_marker(data_dir: &Path) -> PathBuf {
+    data_dir.join("daemon").join("restart-asked.json")
+}
+
+/// How long a new daemon waits before it says it restarted: the windows reconnect meanwhile.
+const RESTART_SAY_AFTER: Duration = Duration::from_secs(8);
+/// How long a /reload waits for its windows to come back.
+const RELOAD_WAIT: Duration = Duration::from_secs(60);
+
+/// Which asked windows came back: a window that reloads is the same process under a new id
+/// (conv-<pid>-<ms>). Answers (back, not back).
+pub fn reloaded(asked: &[String], now: &[String]) -> (Vec<String>, Vec<String>) {
+    let pid = |id: &str| id.split('-').nth(1).map(str::to_string);
+    asked.iter().cloned().partition(|old| now.iter().any(|new| new != old && pid(new).is_some() && pid(new) == pid(old)))
+}
+
+/// What a restart or a reload asked from this chat is said done (journal#1243). Run from the
+/// channel's loop.
+fn say_done(daemon: &Daemon, requester: &Requester, started: std::time::Instant) {
+    let marker = restart_marker(&daemon.data_dir);
+    if started.elapsed() >= RESTART_SAY_AFTER
+        && let Ok(text) = std::fs::read_to_string(&marker)
+    {
+        let _ = std::fs::remove_file(&marker);
+        let asked: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let took = now_ms().saturating_sub(asked["asked_ms"].as_u64().unwrap_or(0));
+        if let Some(chat) = asked["chat"].as_i64().filter(|_| took < 600_000) {
+            let windows = daemon.conversations().map_or(0, |h| h.windows().len());
+            let old = asked["old_pid"].as_u64().map_or("?".to_string(), |p| p.to_string());
+            let what = format!("✅ Демон перезапущен: pid {old} → {}, за {} с. Окон подключено: {windows}.", std::process::id(), took / 1000);
+            say(daemon, requester, (chat, asked["topic"].as_i64()), &what, None);
+        }
+    }
+    let reloading = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.reloading.clone());
+    if let Some((key, at, asked)) = reloading {
+        let now = daemon.conversations().map_or_else(Vec::new, |h| h.windows());
+        let (back, missing) = reloaded(&asked, &now);
+        if missing.is_empty() || at.elapsed() >= RELOAD_WAIT {
+            daemon.with_channel(|c| c.reloading = None);
+            let mut what = format!("✅ Окна перезагружены: {} из {}.", back.len(), asked.len());
+            if !missing.is_empty() {
+                what.push_str(&format!(" Не вернулись за {} с: {}.", RELOAD_WAIT.as_secs(), missing.join(", ")));
+            }
+            say(daemon, requester, key, &what, None);
+        }
+    }
+}
+
+/// What waits for a session goes as soon as there is one for it (journal#1245): its chat's bound
+/// session, open again, or the only one open for a chat bound to none. Nothing waits for the
+/// user to write again or to switch.
+fn release_held(daemon: &Daemon, requester: &Requester) {
+    let keys: Vec<Key> = {
+        let channel = daemon.telegram.lock().expect("telegram");
+        let Some(c) = channel.as_ref() else { return };
+        let mut keys: Vec<Key> = c.kept.held.iter().map(|h| (h.chat, h.topic)).collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    };
+    if keys.is_empty() {
+        return;
+    }
+    let open = daemon.conversations().map_or_else(Vec::new, |h| h.open_sessions());
+    for key in keys {
+        let bound = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.bound_session(key));
+        let target = match bound {
+            Some(id) => open.iter().find(|s| s.id == id).cloned(),
+            None if open.len() == 1 => Some(open[0].clone()),
+            None => None,
+        };
+        if let Some(session) = target {
+            switch(daemon, requester, key, &session);
+        }
+    }
 }
 
 /// Keeps what a chat's list shows, for its buttons.
@@ -957,5 +1083,19 @@ fn waited(mut call: impl FnMut() -> Answer) -> Result<Value, String> {
         Answer::Result(value) => Ok(value),
         Answer::Wait(seconds) => Err(format!("Telegram asks to wait {seconds} s before sending")),
         Answer::Failed(message) => Err(message),
+    }
+}
+
+#[cfg(test)]
+mod done_tests {
+    use super::*;
+
+    /// A window back under a new id of the same process is back; one gone is not.
+    #[test]
+    fn a_window_back_is_the_same_process_under_a_new_id() {
+        let asked = ["conv-100-1".to_string(), "conv-200-1".to_string()];
+        let (back, missing) = reloaded(&asked, &["conv-100-9".to_string(), "conv-200-1".to_string()]);
+        assert_eq!((back, missing), (vec!["conv-100-1".to_string()], vec!["conv-200-1".to_string()]), "the same id is not back yet");
+        assert_eq!(reloaded(&asked, &[]).1.len(), 2);
     }
 }

@@ -1258,15 +1258,19 @@ impl ConversationHost for DaemonHost {
         self.windows.lock().expect("windows").get(window)?.sessions.session_of(tab).map(str::to_string)
     }
 
-    fn reload_all(&self) -> usize {
+    fn reload_all(&self) -> Vec<String> {
         let mut windows = self.windows.lock().expect("windows");
-        let mut asked = 0;
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        let mut asked = Vec::new();
+        for (id, window) in windows.iter_mut().filter(|(_, w)| !w.closed) {
             window.say(json!({"kind": "reload"}));
-            asked += 1;
+            asked.push(id.clone());
         }
         self.wake.notify_all();
         asked
+    }
+
+    fn windows(&self) -> Vec<String> {
+        self.windows.lock().expect("windows").iter().filter(|(_, w)| !w.closed).map(|(id, _)| id.clone()).collect()
     }
 
     fn rename(&self, session: &str, nick: &str) -> bool {

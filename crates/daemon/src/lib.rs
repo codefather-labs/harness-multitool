@@ -122,9 +122,13 @@ pub trait ConversationHost: Send + Sync {
     fn open_sessions(&self) -> Vec<OpenSession> {
         Vec::new()
     }
-    /// Asks every open window to reload at its next safe point (CON-167); answers how many.
-    fn reload_all(&self) -> usize {
-        0
+    /// Asks every open window to reload at its next safe point (CON-167); answers their ids.
+    fn reload_all(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// The windows open now, by id.
+    fn windows(&self) -> Vec<String> {
+        Vec::new()
     }
     /// A message for this session as an inbound. False if it is not open.
     fn deliver_to(&self, _session: &str, _label: &str, _text: &str) -> bool {
