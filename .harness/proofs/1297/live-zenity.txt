@@ -1,0 +1,4 @@
+Live, on this desktop (GNOME, Wayland, DISPLAY=:0): zenity with the picker's exact arguments
+(--file-selection --title=Load a conversation --file-filter=Chat archives | *.zip --filename=<fbscout>/multitool_dumps/)
+stayed open until the 8 s timeout: exit 124, so it opened and did not fail.
+gnome-screenshot could not take a picture under Wayland (it hung, presumably on the portal's permission); no screenshot.
