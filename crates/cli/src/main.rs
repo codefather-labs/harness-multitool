@@ -3135,8 +3135,15 @@ fn chats_page(root: &str, status: String) -> frontend_tui::model::ChatsPage {
         .collect();
     // Grouped by adapter; within one the newest first, as listed.
     rows.sort_by(|a, b| a.adapter.cmp(&b.adapter));
-    let mut archives: Vec<String> = std::fs::read_dir(root).map(|d| d.flatten().filter_map(|e| e.file_name().to_str().filter(|n| n.ends_with(".zip")).map(str::to_string)).collect()).unwrap_or_default();
-    archives.sort();
+    // The dumps' folder first, then older dumps left in the project's root (journal#1288).
+    let zips = |dir: &std::path::Path| -> Vec<String> {
+        let mut found: Vec<String> = std::fs::read_dir(dir).map(|d| d.flatten().filter_map(|e| e.file_name().to_str().filter(|n| n.ends_with(".zip")).map(str::to_string)).collect()).unwrap_or_default();
+        found.sort();
+        found
+    };
+    let dumps = harness_session::chat_archive::DUMPS_DIR;
+    let mut archives: Vec<String> = zips(&std::path::Path::new(root).join(dumps)).into_iter().map(|n| format!("{dumps}/{n}")).collect();
+    archives.extend(zips(std::path::Path::new(root)));
     frontend_tui::model::ChatsPage { rows, archives, status, ..Default::default() }
 }
 

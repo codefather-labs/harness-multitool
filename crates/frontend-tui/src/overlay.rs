@@ -666,7 +666,7 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
             y += 1;
         }
     }
-    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Up and Down choose, d dumps it to a .zip in this folder, l loads one." };
+    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Up and Down choose, d dumps it to multitool_dumps/, l loads one." };
     // The status wraps, up to three lines, so a refusal's reason is read whole (journal#1278).
     let mut notes = wrap_chars(&p.status, r.width.saturating_sub(2) as usize, 3);
     notes.push(help.to_string());

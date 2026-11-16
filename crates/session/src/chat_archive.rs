@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 use harness_api::Event;
 use serde::{Deserialize, Serialize};
 
+/// The folder of a project where its dumps go, by default (journal#1288).
+pub const DUMPS_DIR: &str = "multitool_dumps";
+
 /// This archive layout's version.
 pub const FORMAT: u32 = 1;
 
@@ -206,7 +209,7 @@ fn files_under(dir: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// Packs `session` of the project at `root` into a .zip: `out`, else `<name>-<id>-<yyyy-mm-dd-hh-mm-ss>.zip`
-/// in `root` (journal#1281), `-2`, `-3`… after it when that is taken (journal#1278).
+/// in `root`'s multitool_dumps/ (journal#1288), `-2`, `-3`… after it when that is taken (journal#1278).
 pub fn dump(data_dir: &str, root: &str, session: &str, out: Option<&Path>) -> Result<Dumped, String> {
     dump_with(data_dir, root, session, out, claude_dir(), &|_, _| {})
 }
@@ -230,7 +233,11 @@ fn dump_with(data_dir: &str, root: &str, session: &str, out: Option<&Path>, clau
     let path = match out {
         Some(out) if out.exists() => return Err(format!("{} is there already, and is never written over: give another name with --out", out.display())),
         Some(out) => out.to_path_buf(),
-        None => free_path(Path::new(root), &format!("{}-{short}-{}", file_name(&name), chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"))),
+        None => {
+            let folder = Path::new(root).join(DUMPS_DIR);
+            std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+            free_path(&folder, &format!("{}-{short}-{}", file_name(&name), chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")))
+        }
     };
     let adapter = std::fs::read_to_string(Path::new(data_dir).join("daemon/conversations.json"))
         .ok()
@@ -553,7 +560,7 @@ mod tests {
         let dumped = dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone()), &|done, total| seen.borrow_mut().push((done, total))).unwrap();
         let name = dumped.path.file_name().unwrap().to_string_lossy().into_owned();
         let stamp = name.strip_prefix("orchestrator-9-11111111-").and_then(|r| r.strip_suffix(".zip")).unwrap_or_default();
-        assert!(dumped.path.parent() == Some(root_a.as_path()) && chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%d-%H-%M-%S").is_ok(), "into the project's folder, named after it with the time of the dump (journal#1281): {name}");
+        assert!(dumped.path.parent() == Some(root_a.join("multitool_dumps").as_path()) && chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%d-%H-%M-%S").is_ok(), "into the project's multitool_dumps/ (journal#1288), named after it with the time of the dump (journal#1284): {name}");
         assert!(dumped.journal && dumped.files == 7, "{dumped:?}");
         let seen = seen.into_inner();
         let journal_bytes = crate::journal_export(&data_a, &root_a_s).unwrap().len() as u64;

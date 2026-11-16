@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Debug, CON-171 and CON-172: the Settings' Chats tab. The real TUI in a pty with a fake model and a temporary home: one
-conversation is made, the Chats tab lists it by its adapter, d dumps it into a .zip in the project's folder,
+conversation is made, the Chats tab lists it by its adapter, d dumps it into a .zip in the project's multitool_dumps/,
 l lists that archive, Enter on it is refused (already on this machine), n and Enter load a copy, which the
 list then shows. CON-172: the log is padded to about 200 MB, so the dump's and the load's progress
 toasts are seen over the Settings with their share; the archive's name carries the time of the dump
@@ -74,14 +74,14 @@ keys("d")
 results["dump_progress_over_settings"] = progress_seen("Dumping") and "CHATS" in text()
 results["dumped"] = wait(lambda: "Dumped hello chats to" in text(), 120)
 results["dump_toast_gone"] = "Dumping" not in text()
-zips = glob.glob(root + "/*.zip")
-results["zip_in_the_project_folder"] = len(zips) == 1
+zips = glob.glob(root + "/multitool_dumps/*.zip")
+results["zip_in_multitool_dumps"] = len(zips) == 1 and not glob.glob(root + "/*.zip")  # journal#1288
 import re
 results["zip_named_with_its_time"] = bool(zips) and re.fullmatch(r"hello-chats-[0-9A-Za-z]{1,8}-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d\.zip", os.path.basename(zips[0])) is not None
 print("archive:", [os.path.basename(z) for z in zips])
 show("after d")
 keys("l"); pump(1)
-results["archive_offered"] = wait(lambda: os.path.basename(zips[0]) in text() if zips else False, 5)
+results["archive_offered"] = wait(lambda: ("multitool_dumps/" + os.path.basename(zips[0])) in text() if zips else False, 5)
 keys("\r")
 results["refused_already_here"] = wait(lambda: "is already on this" in text() and "machine: load it with --new-id" in text(), 60)  # wrapped at a word (journal#1278)
 show("after Enter: refused")

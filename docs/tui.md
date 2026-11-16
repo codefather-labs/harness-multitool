@@ -14,7 +14,7 @@ The terminal frontend (IF-11) is built design-first against [design/concept](des
 multitool                       # from any folder: the start page, on the profile last chosen with Use in the settings
 multitool --profile work        # on another profile for this run only, as autostart wants it (CON-127)
 multitool --dir ~/p --new         # a new session tab in that folder at once; --resume <id> opens that conversation (CON-167)
-multitool chat dump [id|name]   # a conversation, its Claude Code form and the project's journal with its maps, into a .zip here (CON-171); named with the time of the dump, -2, -3… if taken; progress on stderr (CON-172)
+multitool chat dump [id|name]   # a conversation, its Claude Code form and the project's journal with its maps, into multitool_dumps/ here (CON-171); named with the time of the dump, -2, -3… if taken; progress on stderr (CON-172)
 multitool chat load <file.zip>  # into this folder's project: ids kept (--new-id for a copy), paths moved, the journal once; `chat list` lists
 multitool daemon restart        # stop the daemon, its runs included, and start this build's on the same port (CON-128),
                                 # through its user service when one is installed (CON-162)
