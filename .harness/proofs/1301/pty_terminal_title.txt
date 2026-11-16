@@ -1,0 +1,4 @@
+moon phases seen: 🌑🌒🌓🌔🌕🌖🌗🌘
+titles seen: ['new · mt-title-root04egtaiv', 'alpha-nick · mt-title-root04egtaiv', 'beta-nick · mt-title-root04egtaiv']
+RESULTS: {"titled_at_start": true, "moon_turns_while_busy": true, "title_follows_set_nick": true, "no_moon_when_idle": true, "title_follows_slash_nick": true}
+ALL PASSED

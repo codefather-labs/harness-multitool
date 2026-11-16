@@ -3655,9 +3655,9 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     dirty = true;
                 }
                 settings_were_open = settings_open;
-                // The terminal's tab is named after the active tab's agent (CON-170), only when
-                // that changed.
-                let title = frontend_tui::model::terminal_title(&state, &title_folder);
+                // The terminal's tab is named after the active tab's agent (CON-170), with a moon
+                // while the window is busy (CON-174); written only when that changed.
+                let title = frontend_tui::model::terminal_title(&state, &title_folder, chrono::Utc::now().timestamp_millis() as u64);
                 if title != last_title {
                     let _ = execute!(std::io::stdout(), ratatui::crossterm::terminal::SetTitle(&title));
                     last_title = title;

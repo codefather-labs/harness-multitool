@@ -26,8 +26,23 @@ pub struct HeaderInfo {
 }
 
 /// The terminal's own title for this window (CON-170): the active tab's agent by its nick, else
-/// the tab's title, with the project's folder; `multitool` before a session is open.
-pub fn terminal_title(state: &AppState, folder: &str) -> String {
+/// the tab's title, with the project's folder; `multitool` before a session is open. While the
+/// window is busy a moon phase stands before it, by `now_ms` (CON-174).
+pub fn terminal_title(state: &AppState, folder: &str, now_ms: u64) -> String {
+    let plain = plain_title(state, folder);
+    if window_busy(state) { format!("{} {plain}", MOON[((now_ms / MOON_STEP_MS) % MOON.len() as u64) as usize]) } else { plain }
+}
+
+/// The phases a busy window's title steps through, one every [`MOON_STEP_MS`] (CON-174).
+pub const MOON: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+pub const MOON_STEP_MS: u64 = 150;
+
+/// Some tab of the window has its agent generating or a background task running (CON-174).
+pub fn window_busy(state: &AppState) -> bool {
+    matches!(&state.mode, Mode::Session(w) if w.tabs.iter().any(|t| t.view.generating || !t.view.background.is_empty()))
+}
+
+fn plain_title(state: &AppState, folder: &str) -> String {
     let name = match &state.mode {
         Mode::Session(w) => w.tabs.get(w.active).map(|t| t.view.agent_name.clone().unwrap_or_else(|| t.title.clone())).filter(|n| !n.trim().is_empty()),
         _ => None,
@@ -1382,15 +1397,46 @@ mod title_tests {
     #[test]
     fn the_title_is_the_active_agent_and_the_folder() {
         let mut state = crate::fixtures::startup();
-        assert_eq!(terminal_title(&state, "fbscout"), "multitool · fbscout", "the start page");
+        assert_eq!(terminal_title(&state, "fbscout", 0), "multitool · fbscout", "the start page");
         state = crate::fixtures::main_session();
         let Mode::Session(w) = &mut state.mode else { panic!("a session") };
+        w.tabs.iter_mut().for_each(|t| (t.view.generating, t.view.background) = (false, Vec::new()));
         w.tabs[w.active].view.agent_name = None;
         let plain = w.tabs[w.active].title.clone();
-        assert_eq!(terminal_title(&state, "fbscout"), format!("{plain} · fbscout"), "no nick: the tab's title");
+        assert_eq!(terminal_title(&state, "fbscout", 0), format!("{plain} · fbscout"), "no nick: the tab's title");
         let Mode::Session(w) = &mut state.mode else { unreachable!() };
         w.tabs[w.active].view.agent_name = Some("multitool-arch".into());
-        assert_eq!(terminal_title(&state, "fbscout"), "multitool-arch · fbscout");
-        assert_eq!(terminal_title(&state, ""), "multitool-arch");
+        assert_eq!(terminal_title(&state, "fbscout", 0), "multitool-arch · fbscout");
+        assert_eq!(terminal_title(&state, "", 0), "multitool-arch");
+    }
+
+    /// CON-174: a busy window's title has a moon before it, a phase every 150 ms; idle, none.
+    #[test]
+    fn a_busy_window_has_a_moon_in_its_title() {
+        let mut state = crate::fixtures::main_session();
+        let Mode::Session(w) = &mut state.mode else { panic!("a session") };
+        w.tabs.iter_mut().for_each(|t| (t.view.generating, t.view.background) = (false, Vec::new()));
+        w.tabs[w.active].view.agent_name = Some("arch".into());
+        assert_eq!(terminal_title(&state, "p", 300), "arch · p", "idle: no moon");
+        let Mode::Session(w) = &mut state.mode else { unreachable!() };
+        w.tabs[w.active].view.generating = true;
+        assert_eq!(terminal_title(&state, "p", 0), "🌑 arch · p");
+        assert_eq!(terminal_title(&state, "p", 149), "🌑 arch · p");
+        assert_eq!(terminal_title(&state, "p", 150), "🌒 arch · p");
+        assert_eq!(terminal_title(&state, "p", 1050), "🌘 arch · p");
+        assert_eq!(terminal_title(&state, "p", 1200), "🌑 arch · p", "round again");
+        // A background task is busy too, and so is a tab behind the active one.
+        let Mode::Session(w) = &mut state.mode else { unreachable!() };
+        w.tabs[w.active].view.generating = false;
+        w.tabs[w.active].view.background = vec![BackgroundView { id: "b1".into(), description: "cargo build".into(), started_ms: 0 }];
+        assert_eq!(terminal_title(&state, "p", 450), "🌔 arch · p");
+        let Mode::Session(w) = &mut state.mode else { unreachable!() };
+        w.tabs[w.active].view.background.clear();
+        let behind = w.tabs.clone().into_iter().next().unwrap();
+        w.tabs.push(behind);
+        let last = w.tabs.len() - 1;
+        w.tabs[last].view.generating = true;
+        assert!(w.active != last);
+        assert_eq!(terminal_title(&state, "p", 600), "🌕 arch · p", "a busy tab behind the active one");
     }
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Debug, CON-170: a window names its terminal tab after its agent. The real TUI in a pty with a fake model
 whose turn calls set_nick; the terminal title (OSC 0, which pyte keeps as screen.title) follows it, and
-/nick typed in the window changes it again. Needs pyte.
+/nick typed in the window changes it again. CON-174: the model holds its second answer 3 s; while
+it holds, the title shows the moon's phases before the name, and after it, none. Needs pyte.
 Usage: tools/pty_terminal_title.py <absolute path to multitool>"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
 import fcntl, http.server, json, pty, select, signal, struct, tempfile, termios, threading, time
@@ -15,9 +16,12 @@ def turn(text, tool=None):
     ev += [{"type": "message_delta", "delta": {"stop_reason": "tool_use" if tool else "end_turn"}, "usage": {"output_tokens": 5}}, {"type": "message_stop"}]
     return sse(ev)
 turns = [turn("Naming myself.", ("n1", "set_nick", {"nick": "alpha-nick"})), turn("Named.")]
+answered = []
 class Model(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
+        answered.append(1)
+        if len(answered) == 2: time.sleep(3)  # CON-174: the window is busy meanwhile
         b = turns.pop(0) if turns else turn("more")
         self.send_response(200); self.send_header("content-type", "text/event-stream"); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self, *a): pass
@@ -48,7 +52,16 @@ def type_(s):
 results, seen = {}, []
 results["titled_at_start"] = wait(lambda: screen.title.endswith(f"· {folder}"), 20); seen.append(screen.title)
 type_("name yourself\r")
+# CON-174: while the answer is held, the title's moon turns.
+moons = set(); end = time.time() + 6
+while time.time() < end:
+    pump(0.05)
+    head = screen.title.split(" ", 1)[0]
+    if head in "🌑🌒🌓🌔🌕🌖🌗🌘" and head: moons.add(head)
+print("moon phases seen:", "".join(sorted(moons)))
+results["moon_turns_while_busy"] = len(moons) >= 3
 results["title_follows_set_nick"] = wait(lambda: screen.title == f"alpha-nick · {folder}", 20); seen.append(screen.title)
+results["no_moon_when_idle"] = not any(m in screen.title for m in "🌑🌒🌓🌔🌕🌖🌗🌘")
 if not results["title_follows_set_nick"]:
     print("===== screen while waiting for set_nick =====\n" + "\n".join(l.rstrip() for l in screen.display if l.strip()))
 type_("/nick beta-nick\r")
