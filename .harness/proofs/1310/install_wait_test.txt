@@ -1,0 +1,9 @@
+PASS no daemon: busy 0
+PASS idle: restart at once
+PASS busy then idle: waited, then restart (2 s)
+PASS busy throughout: gave up after WAIT_MAX, no restart
+PASS --force: no wait
+PASS skipped: says how to restart later
+PASS optional tools: warnings only, status untouched
+
+ALL PASSED

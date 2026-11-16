@@ -38,6 +38,11 @@ WITH_SERVICE=true
 WITH_AGENT_SETUP=true
 WITH_LINGER=true
 BUILD=true
+FORCE=false
+# How the installer waits for working agents before a daemon restart (CON-176), in seconds.
+WAIT_STEP="${MULTITOOL_INSTALL_WAIT_STEP:-5}"
+WAIT_MAX="${MULTITOOL_INSTALL_WAIT_MAX:-900}"
+RESTART_SKIPPED=false
 
 if [ -t 1 ]; then BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; NC=$'\033[0m'; else BOLD=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; NC=""; fi
 log_info()  { echo "${BLUE}[INFO]${NC} $1"; }
@@ -60,6 +65,8 @@ OPTIONS:
   --no-linger        Do not enable linger (Linux): the service then stops when you log out
   --no-agent-setup   Do not install Claude Code's rules and hook
   --no-build         With --local: install the build already in target/release
+  --force            Restart the daemon even while agents work (their running commands end);
+                     otherwise it asks, or with --yes waits up to 15 minutes for them
   --uninstall        Remove the binary, its link, the service and the agent setup;
                      keep your data and the backups
   --help             Show this help
@@ -87,6 +94,7 @@ while [ $# -gt 0 ]; do
     --no-linger) WITH_LINGER=false ;;
     --no-agent-setup) WITH_AGENT_SETUP=false ;;
     --no-build) BUILD=false ;;
+    --force) FORCE=true ;;
     --uninstall) UNINSTALL=true ;;
     --help|-h) print_help; exit 0 ;;
     *) log_error "unknown option: $1"; print_help >&2; exit 2 ;;
@@ -162,6 +170,45 @@ has_user_systemd() {
   [ "$(uname -s)" = Linux ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
 }
 
+# --- agents before a restart (CON-176) begin ---
+# How many conversations the running daemon has working now; 0 when none answers.
+busy_agents() {
+  local out n
+  out=$("$BIN_DIR/multitool" daemon --status 2>/dev/null) || { echo 0; return 0; }
+  n=$(printf '%s' "$out" | sed -n 's/.*"busy":\([0-9][0-9]*\).*/\1/p')
+  echo "${n:-0}"
+}
+
+# Whether the daemon may be restarted now: a restart ends every working agent's running command
+# (journal#1285). Asked, the answer decides (default no); with --yes, or with no terminal to ask
+# on, it waits for them to be idle, up to WAIT_MAX seconds; --force does not wait.
+may_restart() {
+  [ "$FORCE" = true ] && return 0
+  local n waited=0
+  n=$(busy_agents)
+  [ "$n" -eq 0 ] && return 0
+  if [ "$ASSUME_YES" != true ] && [ -r /dev/tty ]; then
+    local answer=""
+    printf '%s agent(s) are working: restarting the daemon now ends their running commands. Restart now? [y/N] ' "$n" > /dev/tty
+    read -r answer < /dev/tty || true
+    case "$answer" in y|Y|yes) return 0 ;; *) return 1 ;; esac
+  fi
+  while [ "$n" -gt 0 ]; do
+    if [ "$waited" -ge "$WAIT_MAX" ]; then return 1; fi
+    if [ $((waited % 30)) -eq 0 ]; then log_info "waiting: $n agent(s) working, the daemon restarts once they are idle (--force not to wait)"; fi
+    sleep "$WAIT_STEP"
+    waited=$((waited + WAIT_STEP))
+    n=$(busy_agents)
+  done
+  return 0
+}
+
+restart_skipped() {
+  RESTART_SKIPPED=true
+  log_warn "agents are still working: the daemon is left running its old build; run multitool daemon restart once they are idle"
+}
+# --- agents before a restart (CON-176) end ---
+
 # A daemon not run by the service makes way for the service's: one daemon a machine.
 # macOS: the LaunchAgent takes over from a daemon that runs now (launchd starts it at bootstrap).
 stop_running_daemon() {
@@ -176,6 +223,7 @@ stop_running_daemon() {
 # It ends every run of that daemon, this installer's own caller's too when an agent runs it: an
 # agent runs this from a transient unit (systemd-run --user --unit=...), which outlives its run.
 move_to_service() {
+  may_restart || { restart_skipped; return 0; }
   log_info "the daemon now runs as the service $SERVICE"
   "$BIN_DIR/multitool" daemon restart >/dev/null 2>&1 || systemctl --user start "$SERVICE" >/dev/null 2>&1 || { log_error "the service would not start: see systemctl --user status $SERVICE"; return 1; }
 }
@@ -202,7 +250,7 @@ UNIT
     systemctl --user daemon-reload
     systemctl --user enable "$SERVICE" >/dev/null 2>&1 || { log_error "systemctl --user enable $SERVICE failed: see systemctl --user status $SERVICE"; return 1; }
     move_to_service || return 1
-    log_ok "the daemon runs as the user service $SERVICE"
+    [ "$RESTART_SKIPPED" = true ] || log_ok "the daemon runs as the user service $SERVICE"
     # Linger keeps the user's services running after logout and starts them at boot (CON-162).
     if [ "$WITH_LINGER" = true ] && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
       if loginctl enable-linger "$(id -un)" 2>/dev/null; then
@@ -212,6 +260,7 @@ UNIT
       fi
     fi
   elif [ "$(uname -s)" = Darwin ]; then
+    may_restart || { restart_skipped; return 0; }
     stop_running_daemon
     mkdir -p "$(dirname "$LAUNCH_PLIST")"
     cat > "$LAUNCH_PLIST" <<PLIST
@@ -440,13 +489,22 @@ if [ "$WITH_AGENT_SETUP" = true ]; then agent_setup "$src"; fi
 echo ""
 log_info "checking the install"
 check() { if eval "$2" >/dev/null 2>&1; then log_ok "$1"; else log_error "$1: no"; status=1; fi; }
+# What some features use, said and never counted as a failure (CON-176).
+optional_tools() {
+  [ "$(uname -s)" = Linux ] || return 0
+  if command -v zenity >/dev/null 2>&1 || command -v kdialog >/dev/null 2>&1; then log_ok "a file picker for Settings > Chats' Load"; else log_warn "no zenity or kdialog: Settings > Chats' Load lists the archives in the window instead of opening a file picker"; fi
+  if command -v xdg-terminal-exec >/dev/null 2>&1 || command -v ptyxis >/dev/null 2>&1 || command -v gnome-terminal >/dev/null 2>&1 || command -v x-terminal-emulator >/dev/null 2>&1; then log_ok "a terminal for Telegram's /open and /new"; else log_warn "no terminal program found for Telegram's /open and /new: name one in Settings > Telegram ([telegram] terminal)"; fi
+  if has_user_systemd && command -v systemd-run >/dev/null 2>&1; then log_ok "systemd-run --user, for a scope per agent"; else log_warn "no systemd-run --user: agents run without scopes of their own"; fi
+}
 check "multitool runs" "\"$BIN_DIR/multitool\" --version"
 if [ "$WITH_SERVICE" = true ]; then
   for _ in $(seq 1 30); do "$BIN_DIR/multitool" daemon --status >/dev/null 2>&1 && break; sleep 0.5; done
   check "the daemon answers" "\"$BIN_DIR/multitool\" daemon --status"
-  if [ -f "$SYSTEMD_UNIT" ]; then check "the service $SERVICE is active" "systemctl --user is-active $SERVICE"; fi
+  if [ -f "$SYSTEMD_UNIT" ] && [ "$RESTART_SKIPPED" != true ]; then check "the service $SERVICE is active" "systemctl --user is-active $SERVICE"; fi
   if [ -f "$SYSTEMD_UNIT" ] && [ "$WITH_LINGER" = true ]; then check "linger is on" "[ \"\$(loginctl show-user \"\$(id -un)\" -p Linger --value)\" = yes ]"; fi
 fi
+optional_tools
+
 if [ "$WITH_AGENT_SETUP" = true ] && [ -d "$src/assets/claude" ]; then
   check "the rules are in $CLAUDE_DIR/rules" "[ -f \"$CLAUDE_DIR/rules/project-journal.md\" ] && [ -f \"$CLAUDE_DIR/rules/cognitive-self-check.md\" ]"
   check "the self-check hook runs" "echo '{}' | \"$CLAUDE_DIR/hooks/$HOOK_NAME\""
@@ -460,6 +518,7 @@ echo "  multitool                     open it; s opens the settings"
 echo "  Settings, Provider            choose an adapter and sign in"
 echo "  Settings, Telegram            a bot token, to reach your sessions from a chat"
 echo "  Settings, Speech to text      choose and download an engine"
+echo "  Settings, Chats               dump a conversation, load one from a .zip (multitool chat)"
 echo "  ./install.sh --uninstall      remove it, keeping your data"
 echo ""
 exit "$status"
