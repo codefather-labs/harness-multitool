@@ -1,0 +1,4 @@
+  Settings, Speech to text      choose and download an engine
+  ./install.sh --uninstall      remove it, keeping your data
+
+service active

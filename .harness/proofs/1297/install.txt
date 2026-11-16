@@ -1,0 +1,5 @@
+  Settings, Telegram            a bot token, to reach your sessions from a chat
+  Settings, Speech to text      choose and download an engine
+  ./install.sh --uninstall      remove it, keeping your data
+
+service active
