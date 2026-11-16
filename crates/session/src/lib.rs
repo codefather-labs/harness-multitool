@@ -382,10 +382,17 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
         .filter_map(|f| f.file_name().to_str()?.strip_suffix(".jsonl").map(str::to_string))
         .filter_map(|id| {
             let log = read_log(data_dir, root, &id);
-            let title = log.iter().find_map(|e| match &e.event {
-                Event::UserMessage { text } => text.lines().next().map(str::to_string),
+            // A conversation brought in keeps the name it had there, as its /resume shows it
+            // (journal#1254); else its first telling words.
+            let first = log.iter().find_map(|e| match &e.event {
+                Event::UserMessage { text } => Some(harness_api::event::telling_words(text).unwrap_or_else(|| text.lines().next().unwrap_or_default().to_string())),
                 _ => None,
             })?;
+            let named = log.iter().find_map(|e| match &e.event {
+                Event::ConversationImported { id, title, .. } if !title.is_empty() && title != id => Some(title.clone()),
+                _ => None,
+            });
+            let title = named.unwrap_or(first);
             let model = log.iter().rev().find_map(|e| match &e.event {
                 Event::TurnStarted { model, .. } => Some(model.clone()),
                 _ => None,
@@ -1446,5 +1453,36 @@ mod every_tool {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");
         }
         assert!(specs.iter().filter(|s| !s.name.starts_with("mode__")).all(|s| !s.description.starts_with("HARNESS MODE")));
+    }
+}
+
+#[cfg(test)]
+mod recent_title_tests {
+    use super::*;
+
+    fn write(data: &str, root: &str, id: &str, events: Vec<Event>) {
+        let dir = sessions_dir(data, root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines: Vec<String> = events.into_iter().enumerate().map(|(n, event)| harness_api::event::to_line(&LogEntry { seq: n as u64, at_ms: 1000 + n as u64, event })).collect();
+        std::fs::write(format!("{dir}/{id}.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    /// journal#1254: a conversation brought in keeps the name /resume gave it; another is named by
+    /// its first telling words, not a pasted block's tag.
+    #[test]
+    fn a_session_is_named_as_resume_names_it() {
+        let dir = std::env::temp_dir().join(format!("mt-recent-titles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data = dir.to_string_lossy().into_owned();
+        let root = "/home/u/fbscout";
+        let pasted = "<pasted_content id=\"7ae1\">\n[callback]: {}\n</pasted_content>";
+        write(&data, root, "imported-e30f0149-1", vec![Event::UserMessage { text: pasted.into() }, Event::ConversationImported { source: "claude-code".into(), id: "e30f0149-cfa3".into(), title: "orchestrator-3".into() }]);
+        write(&data, root, "imported-bcca3d37-1", vec![Event::UserMessage { text: pasted.into() }, Event::ConversationImported { source: "claude-code".into(), id: "bcca3d37-e57e".into(), title: "bcca3d37-e57e".into() }]);
+        write(&data, root, "1794-2", vec![Event::UserMessage { text: "[Request interrupted by user]\nmake the feed faster".into() }]);
+        let names: std::collections::HashMap<String, String> = recent(&data, root).into_iter().map(|s| (s.id, s.title)).collect();
+        assert_eq!(names["imported-e30f0149-1"], "orchestrator-3");
+        assert_eq!(names["imported-bcca3d37-1"], "[callback]: {}", "a title that is only the id is no name: the pasted block's own words");
+        assert_eq!(names["1794-2"], "make the feed faster");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

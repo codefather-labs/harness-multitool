@@ -30,6 +30,18 @@ pub const HARNESS_LABEL: &str = "harness";
 
 /// Whether a message under this label is the user's own words: from Telegram, which delivers only
 /// the user's own accounts (CON-52), typed or dictated (CON-158).
+/// The words a person would know a conversation by, from a message (journal#1254): its first line
+/// that says something, past pasted blocks' tags, interruptions, and command or system lines. A
+/// message that is only a pasted block gives the block's own first line.
+pub fn telling_words(text: &str) -> Option<String> {
+    const NOISE: [&str; 6] = ["<pasted_content", "</pasted_content", "[Request interrupted", "<command-", "<local-command", "<system-reminder"];
+    let lines = || text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let said = lines().find(|l| !l.starts_with('<') && !l.starts_with("[Request interrupted") && !l.starts_with("Caveat:") && !l.starts_with("[callback") && !l.starts_with('{'));
+    let words = said.or_else(|| lines().find(|l| !NOISE.iter().any(|n| l.starts_with(n))))?;
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!words.is_empty()).then_some(words)
+}
+
 pub fn is_users_own(label: &str) -> bool {
     label == TELEGRAM_LABEL || label == TELEGRAM_VOICE_LABEL
 }
@@ -217,4 +229,19 @@ pub fn to_line(entry: &LogEntry) -> String {
 /// The entry a stored line holds.
 pub fn from_line(line: &str) -> Result<LogEntry, serde_json::Error> {
     serde_json::from_str(line)
+}
+
+#[cfg(test)]
+mod telling_tests {
+    use super::telling_words;
+
+    /// journal#1254: a name is said words, not a pasted block's tag or a marker.
+    #[test]
+    fn a_name_is_what_was_said() {
+        assert_eq!(telling_words("<pasted_content id=\"7ae1\">\n[callback]: {\"case\":1}\n</pasted_content>\nfix the classifier please").as_deref(), Some("fix the classifier please"));
+        assert_eq!(telling_words("[Request interrupted by user]\n\nnow   try again").as_deref(), Some("now try again"));
+        assert_eq!(telling_words("<command-name>/clear</command-name>"), None);
+        assert_eq!(telling_words("<pasted_content id=\"1\">\nthe pasted words\n</pasted_content>").as_deref(), Some("the pasted words"), "only a pasted block: its own first line");
+        assert_eq!(telling_words("   \n  "), None);
+    }
 }

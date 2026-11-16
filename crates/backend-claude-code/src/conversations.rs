@@ -68,7 +68,17 @@ impl ConversationFormat for ClaudeCodeConversations {
             let path = file.path();
             let (Some(id), Ok(meta)) = (path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".jsonl")), file.metadata()) else { continue };
             let last_ms = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
-            out.push(ConversationInfo { id: id.to_string(), title: title_near_end(&path).or_else(|| first_words(&path)).unwrap_or_default(), last_ms, bytes: meta.len() });
+            // Its name as /resume shows it, from the end or the start of the file; one with no
+            // message at all is not listed, as /resume lists none (journal#1254).
+            let title = match title_near_end(&path).or_else(|| title_near_start(&path)) {
+                Some(title) => title,
+                None => match first_words(&path) {
+                    Some(words) => words,
+                    None if !has_messages(&path) => continue,
+                    None => String::new(),
+                },
+            };
+            out.push(ConversationInfo { id: id.to_string(), title, last_ms, bytes: meta.len() });
         }
         out.sort_by_key(|c| std::cmp::Reverse(c.last_ms));
         Ok(out)
@@ -338,6 +348,24 @@ fn title_near_end(path: &Path) -> Option<String> {
     custom.or(ai)
 }
 
+/// A title written early, as Claude Code does with its first ai-title: the first 1 MiB.
+fn title_near_start(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let (mut custom, mut ai) = (None, None);
+    for line in BufReader::new(std::io::Read::take(file, TITLE_TAIL)).split(b'\n').map_while(Result::ok) {
+        if line.len() < 4096 && let Ok(value) = serde_json::from_slice::<Value>(&line) {
+            title_of(&value, &mut custom, &mut ai);
+        }
+    }
+    custom.or(ai)
+}
+
+/// Whether the conversation has a message of the user's or the model's in its first 1 MiB.
+fn has_messages(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else { return false };
+    BufReader::new(std::io::Read::take(file, TITLE_TAIL)).split(b'\n').map_while(Result::ok).any(|line| serde_json::from_slice::<Value>(&line).is_ok_and(|v| v["type"] == "user" || v["type"] == "assistant"))
+}
+
 /// What the user first said, for a conversation that was never given a title.
 fn first_words(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
@@ -348,8 +376,8 @@ fn first_words(path: &Path) -> Option<String> {
         }
         let content = &value["message"]["content"];
         let text = content.as_str().map(str::to_string).or_else(|| content.as_array()?.iter().find_map(|b| b["text"].as_str().map(str::to_string)));
-        if let Some(words) = text.as_deref().and_then(|t| t.lines().next()).filter(|t| !t.trim().is_empty() && !t.starts_with('<')) {
-            return Some(words.to_string());
+        if let Some(words) = text.as_deref().and_then(harness_api::event::telling_words) {
+            return Some(words);
         }
     }
     None
