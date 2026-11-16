@@ -231,6 +231,15 @@ impl Engine {
         for id in self.unanswered_calls() {
             self.emit(Event::ToolResult { id, output: "interrupted: the session ended before this call finished".into(), is_error: true });
         }
+        // A background task lives as long as its process, and a resumed session has none of the
+        // old one's: a list it left is ended (CON-177).
+        let left = entries.iter().rev().find_map(|e| match &e.event {
+            Event::BackgroundTasks { tasks } => Some(!tasks.is_empty()),
+            _ => None,
+        });
+        if left == Some(true) {
+            self.emit(Event::BackgroundTasks { tasks: Vec::new() });
+        }
     }
 
     fn unanswered_calls(&self) -> Vec<String> {

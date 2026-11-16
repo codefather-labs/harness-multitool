@@ -349,6 +349,33 @@ fn a_log_cut_off_mid_tool_resumes_with_an_interrupted_result() {
     assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "t9");
 }
 
+/// CON-177: a log whose last background list names tasks resumes with that list ended, since the
+/// process that ran them is gone; one whose list was already empty adds nothing.
+#[test]
+fn a_resumed_log_ends_the_background_tasks_of_a_gone_process() {
+    let task = |id: &str| event_kinds::BackgroundTask { id: id.into(), description: "Run the memory watchdog in the background".into(), kind: "local_bash".into() };
+    for (name, lists, ended) in [("stale", vec![vec![task("b1")]], true), ("clean", vec![vec![task("b1")], vec![]], false)] {
+        let root = temp_dir(&format!("bg-{name}"));
+        let data = temp_dir(&format!("bg-{name}-data"));
+        let (url, _seen) = fake_endpoint(vec![anthropic_turn(None, "Back.")]);
+        let factory = hermetic_factory(settings(&url, "k"), root.clone(), data.clone().into());
+        let mut log = vec![LogEntry { seq: 0, at_ms: 1, event: Event::UserMessage { text: "watch memory".into() } }];
+        for tasks in lists {
+            log.push(LogEntry { seq: log.len() as u64, at_ms: 2, event: Event::BackgroundTasks { tasks } });
+        }
+        let slug: String = root.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+        let dir = format!("{data}/sessions/{}", slug.trim_matches('-'));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/old.jsonl"), log.iter().map(|e| harness_api::event::to_line(e) + "\n").collect::<String>()).unwrap();
+        let mut sessions = Sessions::new(factory, root.clone());
+        sessions.resume(1, "old");
+        let (_entries, _, _) = drive(&mut sessions, &["go on"], Answer::Deny);
+        let all = read_log(&data, &root, "old");
+        let emptied = all.iter().skip(log.len()).any(|e| matches!(&e.event, Event::BackgroundTasks { tasks } if tasks.is_empty()));
+        assert_eq!(emptied, ended, "{name}: {:?}", all.iter().skip(log.len()).map(|e| &e.event).collect::<Vec<_>>());
+    }
+}
+
 /// IF-6: shell hooks add context, veto and fail, each as specified.
 #[test]
 fn shell_hooks_add_context_veto_and_fail() {

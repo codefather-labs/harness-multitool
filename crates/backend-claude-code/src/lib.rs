@@ -439,7 +439,13 @@ impl ClaudeCode {
             if (request.stopped)() {
                 return Ok(BackendEnd::Stopped);
             }
+            let replaced = slot.is_some();
             *slot = Some(self.start(request)?);
+            // The process it had took its background tasks with it (CON-177); the new one tells
+            // of its own only when they change.
+            if replaced {
+                sink(Event::BackgroundTasks { tasks: Vec::new() });
+            }
         }
         let live = slot.as_mut().expect("just set");
         live.prompt_seen = false;

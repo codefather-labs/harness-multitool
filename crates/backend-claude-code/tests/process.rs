@@ -143,3 +143,41 @@ done"#);
     backend.reset();
     assert_eq!(backend.own_process(), None);
 }
+
+/// CON-177: a process that is replaced takes its background tasks with it: the run on the new one
+/// ends the old list; a process that goes on adds no such list.
+#[test]
+fn a_replaced_process_ends_its_background_tasks() {
+    let _serial = serial();
+    let empty = |events: &[Event]| events.iter().any(|e| matches!(e, Event::BackgroundTasks { tasks } if tasks.is_empty()));
+    // One turn and out: the first process starts a background task, then exits.
+    let f = fake(r#"echo '{"type":"system","subtype":"init","session_id":"s9","model":"m1"}'
+IFS= read -r line
+echo '{"type":"user","isReplay":true,"message":{"content":[{"type":"text","text":"echo"}]}}'
+if [ ! -e started ]; then
+  touch started
+  echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","description":"Run the memory watchdog in the background","task_type":"local_bash"}]}'
+fi
+echo '{"type":"result","is_error":false,"stop_reason":"end_turn","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'"#);
+    let backend = f.backend();
+    let (first, end) = run(&backend, &NEVER);
+    assert!(matches!(end, Ok(BackendEnd::Done)), "{end:?}");
+    assert!(first.iter().any(|e| matches!(e, Event::BackgroundTasks { tasks } if tasks.len() == 1)), "{first:?}");
+    assert!(!empty(&first), "a first process ends nothing");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let (second, end) = run(&backend, &NEVER);
+    assert!(matches!(end, Ok(BackendEnd::Done)), "{end:?}");
+    assert!(empty(&second), "the gone process's task is ended: {second:?}");
+
+    // A process that goes on: no empty list.
+    let g = fake(r#"echo '{"type":"system","subtype":"init","session_id":"s9","model":"m1"}'
+while IFS= read -r line; do
+  echo '{"type":"user","isReplay":true,"message":{"content":[{"type":"text","text":"echo"}]}}'
+  echo '{"type":"result","is_error":false,"stop_reason":"end_turn","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+done"#);
+    let backend = g.backend();
+    let (_, _) = run(&backend, &NEVER);
+    let (again, _) = run(&backend, &NEVER);
+    assert!(!empty(&again), "the same process: nothing ended: {again:?}");
+    backend.reset();
+}

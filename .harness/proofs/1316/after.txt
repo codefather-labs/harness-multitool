@@ -1,0 +1,9 @@
+test a_missing_binary_a_silent_exit_and_an_error_result_are_errors ... ok
+test it_reads_the_stream_gets_the_prompt_on_stdin_and_inherits_no_session ... ok
+test a_stop_ends_the_process_at_once ... ok
+test a_replaced_process_ends_its_background_tasks ... ok
+test one_process_takes_the_messages_of_a_session_and_one_sent_during_a_run ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.69s
+test a_log_cut_off_mid_tool_resumes_with_an_interrupted_result ... ok
+test a_resumed_log_ends_the_background_tasks_of_a_gone_process ... ok
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.39s
