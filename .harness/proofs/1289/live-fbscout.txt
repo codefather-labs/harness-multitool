@@ -1,0 +1,4 @@
+Installed 781db05 (install.txt: service active). In fbscout:
+$ multitool chat dump imported-207b939b-1794668178014
+dumped custom-socks5-proxy-with-trafic-routing to .../fbscout/multitool_dumps/custom-socks5-proxy-with-trafic-routing-207b939b-2026-11-16-17-41-15.zip: 169.3 MB, 178 files, the journal with its maps in it
+multitool_dumps/ was made by the dump; no .zip written in the project's root.

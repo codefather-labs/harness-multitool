@@ -1,0 +1,7 @@
+  multitool                     open it; s opens the settings
+  Settings, Provider            choose an adapter and sign in
+  Settings, Telegram            a bot token, to reach your sessions from a chat
+  Settings, Speech to text      choose and download an engine
+  ./install.sh --uninstall      remove it, keeping your data
+
+service active
