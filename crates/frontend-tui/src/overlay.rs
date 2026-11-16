@@ -618,7 +618,7 @@ pub const GAMES_SECTION: &str = "Games";
 pub const CHATS_SECTION: &str = "Chats";
 
 /// This project's conversations (CON-171): grouped by adapter. A click on one shows its Dump
-/// button; Load and the 'as a copy' box stand on the header line, Load opening the system's file
+/// button; Load stands on the header line, opening the system's file
 /// picker (CON-173). The in-window list of archives is the fallback when there is no picker.
 fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, out: &mut Drawn) {
     let p = &s.chats;
@@ -642,18 +642,13 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
             text(f, r.x, y, r.width, vec![Span::styled(format!("  {choice}"), if i == p.archives.len() && p.typed.is_empty() { muted } else { strong }), Span::styled(if typing { "█" } else { "" }, Style::default().fg(t.accent_line))], if under { t.surface_raised } else { bg });
             y += 1;
         }
-        text(f, r.x, y + 1, r.width, vec![Span::styled(" New id (a separate copy) ", muted), Span::styled(format!("[{}]", if p.new_id { "x" } else { " " }), strong)], bg);
     } else {
-        // Load and its box, always there (CON-173).
+        // Load, always there (CON-173); every load has new ids (CON-175).
         let button = |lit: bool| if lit { Style::default().fg(t.surface).bg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) };
         let load = if p.picking { "[ Choosing… ]" } else { "[ Load… ]" };
         let load_w = load.chars().count() as u16;
         text(f, r.x + 1, y, load_w, vec![Span::styled(load, button(p.picking))], bg);
         out.hits.push(Hit { rect: Rect::new(r.x + 1, y, load_w, 1), target: Target::ChatLoad });
-        let copy = format!("[{}] as a copy", if p.new_id { "x" } else { " " });
-        let copy_w = copy.chars().count() as u16;
-        text(f, r.x + 3 + load_w, y, copy_w, vec![Span::styled(copy, strong)], bg);
-        out.hits.push(Hit { rect: Rect::new(r.x + 3 + load_w, y, copy_w, 1), target: Target::ChatCopy });
         y += 2;
         if p.rows.is_empty() {
             text(f, r.x, y, r.width, vec![Span::styled(" No conversation in this project yet.", muted)], bg);
@@ -685,7 +680,7 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
             }
         }
     }
-    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Click a conversation for Dump. Keys: Enter, d dump, l load, n copy." };
+    let help = if p.loading { "Up and Down choose, type a path on its row, Enter loads, Esc back." } else { "Click a conversation for Dump. Keys: Enter, d dump, l load." };
     // The status wraps, up to three lines, so a refusal's reason is read whole (journal#1278).
     let mut notes = wrap_chars(&p.status, r.width.saturating_sub(2) as usize, 3);
     notes.push(help.to_string());
@@ -747,7 +742,6 @@ fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
             Key::Esc => p.loading = false,
             Key::Up => p.load_cursor = p.load_cursor.saturating_sub(1),
             Key::Down => p.load_cursor = (p.load_cursor + 1).min(p.archives.len()),
-            Key::Char('n') if !typing => p.new_id = !p.new_id,
             Key::Backspace if typing => {
                 p.typed.pop();
             }
@@ -758,7 +752,7 @@ fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
                     p.status = "Type the archive's path first.".to_string();
                 } else {
                     p.status = format!("Loading {path}...");
-                    outbox.push(Outgoing::ChatLoad { path, new_id: p.new_id });
+                    outbox.push(Outgoing::ChatLoad { path });
                     p.loading = false;
                 }
             }
@@ -778,7 +772,6 @@ fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
         Key::Enter => toggle_chat(p, p.cursor),
         Key::Char('d') => dump_chat(p, p.cursor, outbox),
         Key::Char('l') => pick_chat(p, outbox),
-        Key::Char('n') => p.new_id = !p.new_id,
         _ => {}
     }
 }
@@ -805,7 +798,7 @@ fn pick_chat(p: &mut ChatsPage, outbox: &mut Vec<Outgoing>) {
     }
     p.picking = true;
     p.status = "Choose a .zip in the window that opened.".to_string();
-    outbox.push(Outgoing::ChatPick { new_id: p.new_id });
+    outbox.push(Outgoing::ChatPick);
 }
 
 /// Games between agents (ADR 0029): on or off, and which games. Tables are made on the dashboard.
@@ -2107,10 +2100,6 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.focus = SettingsPane::Page;
             pick_chat(&mut s.chats, &mut w.outbox);
         }
-        (Some(Overlay::Settings(s)), Target::ChatCopy) => {
-            s.focus = SettingsPane::Page;
-            s.chats.new_id = !s.chats.new_id;
-        }
         (Some(Overlay::Settings(s)), Target::ProfileRow(i)) => {
             s.focus = SettingsPane::Page;
             s.profiles.cursor = i;
@@ -2175,7 +2164,7 @@ fn parse_users(typed: &str) -> Result<Vec<i64>, String> {
 #[cfg(test)]
 mod tests {
     /// CON-173: a click on a conversation shows its Dump button and a click on that dumps it; Load
-    /// and the 'as a copy' box are there with no row opened; the keys do the same.
+    /// is there with no row opened; the keys do the same. No copy box (CON-175).
     #[test]
     fn the_chats_page_works_by_buttons() {
         let mut w = on_provider_page();
@@ -2193,8 +2182,8 @@ mod tests {
             (drawn.hits.iter().map(|h| h.target).collect::<Vec<_>>(), screen)
         };
         let (hits, screen) = draw(&w);
-        assert!(hits.contains(&Target::ChatLoad) && hits.contains(&Target::ChatCopy) && !hits.contains(&Target::ChatDump), "Load always, Dump only under an opened row");
-        assert!(screen.contains("[ Load… ]") && screen.contains("[ ] as a copy"));
+        assert!(hits.contains(&Target::ChatLoad) && !hits.contains(&Target::ChatDump), "Load always, Dump only under an opened row");
+        assert!(screen.contains("[ Load… ]") && !screen.contains("as a copy"), "no copy box: every load has new ids (CON-175)");
         click(&mut w, Target::ChatRow(1));
         let (hits, screen) = draw(&w);
         assert!(hits.contains(&Target::ChatDump) && screen.contains("[ Dump ]"));
@@ -2203,15 +2192,9 @@ mod tests {
         click(&mut w, Target::ChatRow(1));
         assert!(!draw(&w).0.contains(&Target::ChatDump), "a second click hides it");
         click(&mut w, Target::ChatLoad);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatPick { new_id: false })));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatPick)));
         click(&mut w, Target::ChatLoad);
         assert!(w.outbox.is_empty(), "one picker at a time");
-        let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
-        s.chats.picking = false;
-        click(&mut w, Target::ChatCopy);
-        assert!(draw(&w).1.contains("[x] as a copy"));
-        click(&mut w, Target::ChatLoad);
-        assert!(matches!(w.outbox.pop(), Some(Outgoing::ChatPick { new_id: true })));
         // The keys: Enter opens, d dumps, l picks; the fallback list still loads with Enter.
         let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
         let p = &mut s.chats;

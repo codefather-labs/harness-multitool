@@ -102,20 +102,17 @@ enum ChatAction {
     Dump {
         /// The conversation: its id, or its name as the start page shows it.
         conversation: Option<String>,
-        /// Where the archive goes, instead of `<name>-<id>.zip` here.
+        /// Where the archive goes, instead of `multitool_dumps/<name>-<id>-<time>.zip` here.
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Bring a conversation in from such an archive, into this folder's project: its ids kept, its
-    /// project paths moved here, the journal once (CON-171).
+    /// Bring a conversation in from such an archive, into this folder's project: under new ids
+    /// (CON-175), its project paths moved here, the journal once (CON-171).
     Load {
         archive: PathBuf,
         /// List it under another name.
         #[arg(long)]
         name: Option<String>,
-        /// A separate copy under new ids, for one already on this machine.
-        #[arg(long)]
-        new_id: bool,
     },
     /// This project's conversations, as the Chats tab lists them.
     List,
@@ -1546,7 +1543,7 @@ impl Live {
                         (m.done, m.total) = (done, total);
                     }
                 }
-                ChatJob::Picked { picked, new_id } => {
+                ChatJob::Picked(picked) => {
                     if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
                         s.chats.picking = false;
                     }
@@ -1554,7 +1551,7 @@ impl Live {
                         page.picking = false;
                     }
                     match picked {
-                        file_picker::Picked::Path(path) => self.start_chat_load(w, path.to_string_lossy().into_owned(), new_id),
+                        file_picker::Picked::Path(path) => self.start_chat_load(w, path.to_string_lossy().into_owned()),
                         file_picker::Picked::Cancelled => self.chats_status(w, "No archive chosen.".to_string(), false),
                         // No picker here: the in-window list of archives instead.
                         file_picker::Picked::Unavailable(why) => self.chats_status(w, format!("{why}. Choose from the list, or type a path."), true),
@@ -1567,7 +1564,7 @@ impl Live {
                         Some(frontend_tui::model::Overlay::Settings(s)) => {
                             let cursor = s.chats.cursor.min(page.rows.len().saturating_sub(1));
                             let opened = s.chats.opened.filter(|&i| i < page.rows.len());
-                            s.chats = frontend_tui::model::ChatsPage { cursor, opened, new_id: s.chats.new_id, picking: s.chats.picking, ..page.clone() };
+                            s.chats = frontend_tui::model::ChatsPage { cursor, opened, picking: s.chats.picking, ..page.clone() };
                             s.sections.get(s.section).is_some_and(|n| n == frontend_tui::overlay::CHATS_SECTION)
                         }
                         _ => false,
@@ -1596,12 +1593,12 @@ impl Live {
     }
 
     /// A load of the Chats tab, with its toast (CON-172).
-    fn start_chat_load(&mut self, w: &mut frontend_tui::model::Workspace, path: String, new_id: bool) {
+    fn start_chat_load(&mut self, w: &mut frontend_tui::model::Workspace, path: String) {
         let root = self.root.clone();
         let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
         let shown = file.file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
         self.start_chat_job(w, format!("Loading {shown}"), move |progress| match config::data_dir() {
-            Ok(data) => match harness_session::chat_archive::load_progress(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }, progress) {
+            Ok(data) => match harness_session::chat_archive::load_progress(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { name: None }, progress) {
                 Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
                 Err(e) => format!("Not loaded: {e}"),
             },
@@ -2288,14 +2285,14 @@ impl Live {
                         Err(e) => format!("Not dumped: {e}"),
                     });
                 }
-                Outgoing::ChatLoad { path, new_id } => self.start_chat_load(w, path, new_id),
+                Outgoing::ChatLoad { path } => self.start_chat_load(w, path),
                 // CON-173: the system's file picker, off the window's thread.
-                Outgoing::ChatPick { new_id } => {
+                Outgoing::ChatPick => {
                     let dumps = std::path::Path::new(&self.root).join(harness_session::chat_archive::DUMPS_DIR);
                     let start = if dumps.is_dir() { dumps } else { std::path::PathBuf::from(&self.root) };
                     let sender = self.chat_jobs.0.clone();
                     std::thread::spawn(move || {
-                        let _ = sender.send(ChatJob::Picked { picked: file_picker::pick(&start), new_id });
+                        let _ = sender.send(ChatJob::Picked(file_picker::pick(&start)));
                     });
                 }
                 Outgoing::SaveGames { enabled, texas_holdem } => {
@@ -3158,7 +3155,7 @@ enum ChatJob {
     Progress { job: u64, done: u64, total: u64 },
     Done { job: u64, said: String },
     /// What the system's file picker gave, for a load (CON-173).
-    Picked { picked: file_picker::Picked, new_id: bool },
+    Picked(file_picker::Picked),
 }
 
 fn chats_page(root: &str, status: String) -> frontend_tui::model::ChatsPage {
@@ -3341,8 +3338,8 @@ fn chat(action: ChatAction) -> Result<()> {
             println!("dumped {} ({session}) to {}: {:.1} MB, {} files{}", dumped.name, dumped.path.display(), dumped.bytes as f64 / 1e6, dumped.files, if dumped.journal { ", the journal with its maps in it" } else { "; the journal is NOT in it (none could be read)" });
             println!("on the other machine, from the project's folder: multitool chat load {}", dumped.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
         }
-        ChatAction::Load { archive, name, new_id } => {
-            let loaded = chat_archive::load_progress(&data, &root, &archive, &chat_archive::LoadOptions { new_id, name }, &progress_line("Loading"));
+        ChatAction::Load { archive, name } => {
+            let loaded = chat_archive::load_progress(&data, &root, &archive, &chat_archive::LoadOptions { name }, &progress_line("Loading"));
             end_progress_line();
             let loaded = loaded.map_err(|e| anyhow!(e))?;
             println!("loaded {} as {}{}", loaded.name, loaded.session, loaded.claude_id.as_deref().map_or_else(String::new, |id| format!(", Claude Code's {id}")));

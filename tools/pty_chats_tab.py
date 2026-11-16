@@ -5,8 +5,8 @@ in a pty with a fake model and a temporary home. One conversation is made, its l
 - a click on the conversation shows [ Dump ] under it, and a click on that dumps it into
   multitool_dumps/ with a progress toast over the Settings (the archive named with the time);
 - [ Load… ] opens the file picker, a fake zenity first on PATH that records its arguments and
-  answers the archive: the load is refused as already here, then with [x] as a copy it loads a
-  copy with its toast; a cancelled picker says 'No archive chosen.';
+  answers the archive: it loads under new ids with its toast (CON-175), and a second load of it is
+  another conversation; a cancelled picker says 'No archive chosen.';
 - a second window whose PATH has no picker falls back to the in-window list of archives.
 Needs pyte. Usage: tools/pty_chats_tab.py <absolute path to multitool>"""
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import pty_cleanup
@@ -100,7 +100,7 @@ print("log padded to", os.path.getsize(logs[0]) // 1_000_000, "MB")
 w.to_chats()
 w.show("the Chats tab")
 results["listed_by_adapter"] = "hello chats" in w.text() and "anthropic" in w.text()
-results["load_button_always_there"] = "[ Load… ]" in w.text() and "[ ] as a copy" in w.text() and "[ Dump ]" not in w.text()
+results["load_button_always_there"] = "[ Load… ]" in w.text() and "[ Dump ]" not in w.text()
 def progress_seen(word):
     """Waits for the toast with `word` and a share, and keeps the screen it was seen on."""
     seen = w.wait(lambda: word in w.text() and re.search(r"MB · ([1-9]|[1-9][0-9])%", w.text()) is not None, 60)
@@ -118,23 +118,21 @@ zips = glob.glob(root + "/multitool_dumps/*.zip")
 results["zip_in_multitool_dumps"] = len(zips) == 1 and not glob.glob(root + "/*.zip")
 results["zip_named_with_its_time"] = bool(zips) and re.fullmatch(r"hello-chats-[0-9A-Za-z]{1,8}-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d\.zip", os.path.basename(zips[0])) is not None
 print("archive:", [os.path.basename(z) for z in zips])
-# Load: the picker answers the archive; it is here already, so refused.
+# Load: the picker answers the archive. CON-175: a load always has new ids, so it loads at once.
 open(home + "/pick", "w").write(zips[0] if zips else "/nonexistent.zip")
 w.click("[ Load… ]")
-results["refused_already_here"] = w.wait(lambda: "is already on this" in w.text(), 60)
+results["load_progress_over_settings"] = progress_seen("Loading")
+results["loaded_with_new_ids"] = w.wait(lambda: "Loaded hello chats as loaded-" in w.text(), 120)
+results["load_toast_gone"] = "Loading" not in w.text()
 args = open(home + "/picker-args").read().split("\n") if os.path.exists(home + "/picker-args") else []
 print("picker arguments:", args)
 results["picker_opened_on_multitool_dumps"] = "--file-selection" in args and f"--filename={root}/multitool_dumps/" in args and "--file-filter=Chat archives | *.zip" in args
-w.show("after Load: refused")
-# As a copy: loads, with its toast.
-w.click("[ ] as a copy")
-results["copy_box_ticked"] = w.wait(lambda: "[x] as a copy" in w.text(), 5)
+results["no_copy_box"] = "as a copy" not in w.text()
+w.show("after Load")
+# The same archive again: another conversation.
 w.click("[ Load… ]")
-results["load_progress_over_settings"] = progress_seen("Loading")
-results["copy_loaded"] = w.wait(lambda: "Loaded hello chats as loaded-" in w.text(), 120)
-results["load_toast_gone"] = "Loading" not in w.text()
-w.show("after Load as a copy")
-results["copy_listed"] = w.text().count("hello chats") >= 3
+results["second_load_another_copy"] = w.wait(lambda: w.text().count("hello chats") >= 3 and "Loaded hello chats as loaded-" in w.text(), 120)
+w.show("after a second Load")
 # A cancelled picker.
 open(home + "/pick", "w").write("CANCEL")
 w.click("[ Load… ]")

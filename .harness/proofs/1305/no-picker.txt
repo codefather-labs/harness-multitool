@@ -1,0 +1,44 @@
+ harness-multitool / v0.1.0-dev                                                                     /tmp/mt-chats-root9_dfu86q  |  ● online
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  WELCOME
+ █  Welcome to harness-multitool
+ █  plugin-first coding harness · Rust + ratatui
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ █  QUICK TIPS    ╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ █   • Enter sends│  Settings                                                                                         ×  │
+ █   • Ctrl+P comm│  project and local build configuration                                                               │
+ █   • Drop files │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│                            │                                                                         │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                  │    Provider                │  CHATS   profile default                                                │
+                  │    Tools                   │                                                                         │
+                  │    Policy                  │   Load a conversation into this project                                 │
+                  │    Memory                  │    multitool_dumps/hello-chats-17948496-2026-11-16-19-21-44.zip         │
+                  │    Router                  │    a path: type it                                                      │
+                  │    Frontend                │                                                                         │
+                  │    Callbacks               │                                                                         │
+                  │    Telegram                │                                                                         │
+                  │    Speech to text          │                                                                         │
+                  │    Profiles                │                                                                         │
+                  │    Theme                   │                                                                         │
+                  │    Journal                 │                                                                         │
+                  │  ▌ Chats                   │                                                                         │
+                  │    Games                   │                                                                         │
+                  │                            │                                                                         │
+                  │                            │                                                                         │
+                  │                            │   no file picker found: install zenity or kdialog. Choose from the      │
+                  │                            │   list, or type a path.                                                 │
+                  │                            │   Up and Down choose, type a path on its row, Enter loads, Esc back.    │
+                  │                            │                                                                         │
+                  │                            │                                                                         │
+                  │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+                  │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │
+                  │                                                                                                      │
+                  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MODE  normal  ·  PROFILE  default (your Claude)  ·  ADAPTER  anthropic  ·  MODEL  claude-opus-5-5  ·  TOKENS  0  ·  COST  $0.00  ·  BUDGET
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ ╭────────────╮
+ │ Ask about the repo, request an edit, or type / for commands…█                                                           │ │ ⚙ Settings │
+ │ Enter send  ·  Shift+Enter newline  ·  @ file  ·  / command                                                             │ │   Ctrl+,   │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────╯

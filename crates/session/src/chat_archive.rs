@@ -11,9 +11,9 @@
 //!   `multitool journal export` writes it.
 //!
 //! A dump never writes over a file: its default name carries the time of the dump, and `-2`, `-3`… when
-//! that is taken. A load keeps the ids, refuses a conversation already on this
-//! machine unless asked for a new copy, moves `cwd` fields under the dumped project to the folder it
-//! is loaded in, and brings the journal in once: new ids here, its maps' references moved with them.
+//! that is taken. A load gives the conversation new ids, always (CON-175), moves `cwd` fields
+//! under the dumped project to the folder it is loaded in, and brings the journal in once: new ids
+//! here, its maps' references moved with them.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -70,8 +70,6 @@ pub struct Loaded {
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
-    /// A separate copy under new ids, for a conversation already on this machine.
-    pub new_id: bool,
     /// Another name to list it under.
     pub name: Option<String>,
 }
@@ -289,18 +287,6 @@ fn dump_with(data_dir: &str, root: &str, session: &str, out: Option<&Path>, clau
     Ok(Dumped { path, bytes, files, name, journal: journal.is_some() })
 }
 
-/// Whether a multitool session of this id is anywhere on this machine.
-fn session_here(data_dir: &str, session: &str) -> bool {
-    let Ok(projects) = std::fs::read_dir(Path::new(data_dir).join("sessions")) else { return false };
-    projects.flatten().any(|p| p.path().join(format!("{session}.jsonl")).exists())
-}
-
-/// Whether a Claude Code conversation of this id is anywhere on this machine.
-fn claude_here(claude: &Path, id: &str) -> bool {
-    let Ok(projects) = std::fs::read_dir(claude.join("projects")) else { return false };
-    projects.flatten().any(|p| p.path().join(format!("{id}.jsonl")).exists())
-}
-
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -365,19 +351,9 @@ fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOpti
     if manifest.format > FORMAT {
         return Err(format!("the archive is of a newer format ({}) than this multitool reads ({FORMAT})", manifest.format));
     }
-    if !options.new_id {
-        if session_here(data_dir, &manifest.session) {
-            return Err(format!("{} ({}) is already on this machine: load it with --new-id for a separate copy", manifest.name, manifest.session));
-        }
-        if let (Some(id), Some(claude)) = (&manifest.claude_id, &claude)
-            && claude_here(claude, id)
-        {
-            return Err(format!("Claude Code's conversation {id} is already on this machine: load it with --new-id for a separate copy"));
-        }
-    }
-    // New ids for a copy: the session's, and Claude Code's, renamed wherever they are written.
-    let session = if options.new_id { format!("loaded-{}-{}", &new_uuid()[..8], now_ms()) } else { manifest.session.clone() };
-    let claude_id = manifest.claude_id.as_ref().map(|id| if options.new_id { new_uuid() } else { id.clone() });
+    // New ids, always (CON-175): the session's, and Claude Code's, renamed wherever they are written.
+    let session = format!("loaded-{}-{}", &new_uuid()[..8], now_ms());
+    let claude_id = manifest.claude_id.as_ref().map(|_| new_uuid());
     let mut renamed: Vec<(String, String)> = Vec::new();
     if let (Some(old), Some(new)) = (&manifest.claude_id, &claude_id)
         && old != new
@@ -509,8 +485,8 @@ mod tests {
     }
 
     /// CON-171: a conversation with its Claude Code form and a journal with a map goes out and
-    /// comes back in another machine's place: ids kept, paths moved, the journal once; a second
-    /// load is refused, and --new-id makes a copy.
+    /// comes back in another machine's place: paths moved, the journal once. CON-175: every load
+    /// has new ids, and a second load of the same archive is another conversation.
     #[test]
     fn a_conversation_goes_out_whole_and_comes_back_once() {
         use harness_memory_journal::journal;
@@ -588,17 +564,20 @@ mod tests {
         let seen = seen.into_inner();
         assert_eq!(seen.last().copied(), Some((unpacked, unpacked)), "a load counts every byte it unpacks: {seen:?}");
         assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0));
-        assert_eq!((loaded.session.as_str(), loaded.claude_id.as_deref(), loaded.journal_written), ("imported-11111111-1", Some(cid), 1));
+        assert!(loaded.session.starts_with("loaded-") && loaded.journal_written == 1, "{loaded:?}");
+        let new_cid = loaded.claude_id.clone().unwrap();
+        assert!(new_cid != cid && new_cid.len() == cid.len(), "a new Claude Code id: {new_cid}");
         // The harness's copy opens there with its name and nick.
         let listed = crate::recent(&data_b, &root_b_s);
         assert_eq!(listed[0].title, "orchestrator-9");
         // Claude Code's form at B's place, paths moved, sidecars there.
         let folder_b = claude_folder(&claude_b, &root_b_s);
-        let transcript = std::fs::read_to_string(folder_b.join(format!("{cid}.jsonl"))).unwrap();
-        assert!(transcript.contains(&format!("\"cwd\":\"{root_b_s}\"")) && !transcript.contains(&root_a_s), "{transcript}");
-        assert!(std::fs::read_to_string(folder_b.join(cid).join("subagents/agent-1.jsonl")).unwrap().contains(&format!("{root_b_s}/sub")));
-        assert_eq!(std::fs::read(folder_b.join(cid).join("tool-results/out.txt")).unwrap(), b"spilled");
-        assert_eq!(std::fs::read(claude_b.join("file-history").join(cid).join("backup@v1")).unwrap(), b"before");
+        let transcript = std::fs::read_to_string(folder_b.join(format!("{new_cid}.jsonl"))).unwrap();
+        assert!(transcript.contains(&format!("\"cwd\":\"{root_b_s}\"")) && !transcript.contains(&root_a_s) && !transcript.contains(cid), "{transcript}");
+        let subagent = std::fs::read_to_string(folder_b.join(&new_cid).join("subagents/agent-1.jsonl")).unwrap();
+        assert!(subagent.contains(&format!("{root_b_s}/sub")) && subagent.contains(&new_cid));
+        assert_eq!(std::fs::read(folder_b.join(&new_cid).join("tool-results/out.txt")).unwrap(), b"spilled");
+        assert_eq!(std::fs::read(claude_b.join("file-history").join(&new_cid).join("backup@v1")).unwrap(), b"before");
         // The journal: A's entry under a new id, its map pointing at it.
         let conn = journal::open(&Path::new(&data_b).join("journals"), &key_b, false).unwrap().unwrap();
         let (total, page) = journal::list(&conn, &journal::Filter::default(), 0, 10).unwrap();
@@ -609,10 +588,9 @@ mod tests {
         assert!(maps[0].nodes.iter().any(|n| n.refs == vec![moved]), "the map points at the entry's new id");
         drop(conn);
 
-        // Again: refused. With --new-id: a copy, the journal not written twice.
-        assert!(load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions::default(), Some(claude_b.clone()), &|_, _| {}).unwrap_err().contains("already on this machine"));
-        let copy = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions { new_id: true, name: Some("the copy".into()) }, Some(claude_b.clone()), &|_, _| {}).unwrap();
-        assert!(copy.session != loaded.session && copy.claude_id.as_deref() != Some(cid));
+        // Again: never refused, another conversation with ids of its own; the journal not written twice.
+        let copy = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions { name: Some("the copy".into()) }, Some(claude_b.clone()), &|_, _| {}).unwrap();
+        assert!(copy.session != loaded.session && copy.claude_id.as_deref() != Some(cid) && copy.claude_id != loaded.claude_id);
         assert_eq!((copy.journal_written, copy.journal_merged), (0, 1));
         let copied = std::fs::read_to_string(folder_b.join(format!("{}.jsonl", copy.claude_id.unwrap()))).unwrap();
         assert!(!copied.contains(cid) && copied.contains("\"customTitle\":\"the copy\""));
