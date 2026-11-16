@@ -94,6 +94,33 @@ enum ProfileAction {
 }
 
 #[derive(Subcommand)]
+enum ChatAction {
+    /// Pack a conversation of this project, with its Claude Code form and the project's journal,
+    /// mind maps and flowcharts, into a .zip in this folder; with none named, the newest. An
+    /// existing file is never written over (CON-171).
+    Dump {
+        /// The conversation: its id, or its name as the start page shows it.
+        conversation: Option<String>,
+        /// Where the archive goes, instead of `<name>-<id>.zip` here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Bring a conversation in from such an archive, into this folder's project: its ids kept, its
+    /// project paths moved here, the journal once (CON-171).
+    Load {
+        archive: PathBuf,
+        /// List it under another name.
+        #[arg(long)]
+        name: Option<String>,
+        /// A separate copy under new ids, for one already on this machine.
+        #[arg(long)]
+        new_id: bool,
+    },
+    /// This project's conversations, as the Chats tab lists them.
+    List,
+}
+
+#[derive(Subcommand)]
 enum JournalAction {
     /// Bring in a journal and maps from a stream of JSON documents, keeping their ids. Run again it
     /// updates what changed.
@@ -173,6 +200,11 @@ enum Command {
         /// `claude-code`
         source: String,
         id: Option<String>,
+    },
+    /// A conversation dumped to a .zip and loaded back, here or on another machine (CON-171).
+    Chat {
+        #[command(subcommand)]
+        action: ChatAction,
     },
     /// This project's journal and maps, whole.
     Journal {
@@ -380,6 +412,7 @@ fn main() -> Result<()> {
             println!("Open it in a browser on this machine. The token lets whoever has it see and start games: keep it to yourself.");
             Ok(())
         }
+        Command::Chat { action } => chat(action),
         Command::Journal { action } => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
             let data = config::data_dir()?.to_string_lossy().into_owned();
@@ -755,6 +788,8 @@ struct Live {
     login_events: LoginEvents,
     /// The Journal page as a check of gh found it, off the window's thread (CON-132).
     journal_checks: (std::sync::mpsc::Sender<frontend_tui::model::JournalPage>, std::sync::mpsc::Receiver<frontend_tui::model::JournalPage>),
+    /// What a Chats tab's dump or load came to (CON-171).
+    chat_jobs: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
     plan_models: (std::sync::mpsc::Sender<ModelList>, std::sync::mpsc::Receiver<ModelList>),
     step_debug_tabs: std::collections::HashSet<u64>,
     window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
@@ -858,6 +893,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
             w.auth = Some(self.auth_page(w.auth.clone()));
@@ -957,6 +993,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
         state
@@ -1240,7 +1277,7 @@ impl Live {
                 }
             }
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1252,6 +1289,7 @@ impl Live {
             w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
             if w.auth.is_none() {
@@ -1465,6 +1503,7 @@ impl Live {
         w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &w.overlay {
             let (section, focus, profiles) = (s.section, s.focus, s.profiles.clone());
@@ -1491,6 +1530,18 @@ impl Live {
     }
 
     /// What a check of gh found reaches the Journal page, its cursor kept.
+    /// A Chats tab's dump or load has finished: the page shows it, its list read again.
+    fn tick_chat_jobs(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
+        let Ok(said) = self.chat_jobs.1.try_recv() else { return false };
+        let page = chats_page(&self.root, said);
+        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+            let cursor = s.chats.cursor.min(page.rows.len().saturating_sub(1));
+            s.chats = frontend_tui::model::ChatsPage { cursor, ..page.clone() };
+        }
+        w.chats = Some(page);
+        true
+    }
+
     fn tick_journal_checks(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
         let Ok(page) = self.journal_checks.1.try_recv() else { return false };
         if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
@@ -2134,6 +2185,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
                     show_profiles(w);
                 }
@@ -2141,6 +2193,34 @@ impl Live {
                 Outgoing::ProfileClaudeSwitch { name } => self.terminal_wanted = Some((name, ClaudeStep::Switch)),
                 Outgoing::ProfileCodex { name, login } => self.terminal_wanted = Some((name, if login { ClaudeStep::CodexLogin } else { ClaudeStep::CodexLogout })),
                 Outgoing::JournalCheck => self.check_journal_issues("Checking gh...".to_string()),
+                // CON-171: a dump or a load runs off the window's thread; its outcome comes back.
+                Outgoing::ChatDump { session } => {
+                    let (root, sender) = (self.root.clone(), self.chat_jobs.0.clone());
+                    std::thread::spawn(move || {
+                        let said = match config::data_dir() {
+                            Ok(data) => match harness_session::chat_archive::dump(&data.to_string_lossy(), &root, &session, None) {
+                                Ok(d) => format!("Dumped {} to {}: {:.1} MB{}.", d.name, d.path.display(), d.bytes as f64 / 1e6, if d.journal { ", with the journal and its maps" } else { ", without the journal (none could be read)" }),
+                                Err(e) => format!("Not dumped: {e}"),
+                            },
+                            Err(e) => format!("Not dumped: {e}"),
+                        };
+                        let _ = sender.send(said);
+                    });
+                }
+                Outgoing::ChatLoad { path, new_id } => {
+                    let (root, sender) = (self.root.clone(), self.chat_jobs.0.clone());
+                    std::thread::spawn(move || {
+                        let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
+                        let said = match config::data_dir() {
+                            Ok(data) => match harness_session::chat_archive::load(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }) {
+                                Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
+                                Err(e) => format!("Not loaded: {e}"),
+                            },
+                            Err(e) => format!("Not loaded: {e}"),
+                        };
+                        let _ = sender.send(said);
+                    });
+                }
                 Outgoing::SaveGames { enabled, texas_holdem } => {
                     let said = config::data_dir().map_err(|e| e.to_string()).and_then(|data| {
                         let settings = harness_daemon::games::GameSettings { enabled, texas_holdem, ..harness_daemon::games::read_settings(&data) };
@@ -2271,6 +2351,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
@@ -2285,6 +2366,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
@@ -2299,6 +2381,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
@@ -2345,6 +2428,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                 }
@@ -2373,6 +2457,7 @@ impl Live {
                     w.memory = Some(self.memory_page());
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
+            w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
                     w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "CALLBACKS".into(), lines: vec![note] });
@@ -2989,6 +3074,30 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
 }
 
 /// The Games page, from the daemon's games settings (ADR 0029).
+/// The Chats page of this window's project (CON-171): its conversations by adapter, and the .zip
+/// files in its folder to load.
+fn chats_page(root: &str, status: String) -> frontend_tui::model::ChatsPage {
+    let Ok(data) = config::data_dir() else { return frontend_tui::model::ChatsPage { status, ..Default::default() } };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let age = |ms: u64| {
+        let s = now.saturating_sub(ms) / 1000;
+        match s {
+            0..=3599 => format!("{} min ago", s / 60),
+            3600..=86_399 => format!("{} h ago", s / 3600),
+            _ => format!("{} days ago", s / 86_400),
+        }
+    };
+    let mut rows: Vec<frontend_tui::model::ChatRow> = harness_session::chat_archive::listed(&data.to_string_lossy(), root)
+        .into_iter()
+        .map(|(s, adapter, bytes)| frontend_tui::model::ChatRow { session: s.id, name: s.title, adapter, bytes, age: age(s.last_ms) })
+        .collect();
+    // Grouped by adapter; within one the newest first, as listed.
+    rows.sort_by(|a, b| a.adapter.cmp(&b.adapter));
+    let mut archives: Vec<String> = std::fs::read_dir(root).map(|d| d.flatten().filter_map(|e| e.file_name().to_str().filter(|n| n.ends_with(".zip")).map(str::to_string)).collect()).unwrap_or_default();
+    archives.sort();
+    frontend_tui::model::ChatsPage { rows, archives, status, ..Default::default() }
+}
+
 fn games_page(status: String) -> frontend_tui::model::GamesPage {
     let settings = config::data_dir().map(|data| harness_daemon::games::read_settings(&data)).unwrap_or_default();
     frontend_tui::model::GamesPage { enabled: settings.enabled, texas_holdem: settings.texas_holdem, status, ..Default::default() }
@@ -3104,6 +3213,37 @@ fn journal_issues(data: &str, root: &str, action: IssuesAction) -> Result<()> {
 }
 
 /// `multitool import`: lists a source's conversations, or brings one in as a session here.
+/// `multitool chat dump|load|list` (CON-171): what the Chats tab runs, on the command line.
+fn chat(action: ChatAction) -> Result<()> {
+    use harness_session::chat_archive;
+    let root = std::env::current_dir()?.to_string_lossy().into_owned();
+    let data = config::data_dir()?.to_string_lossy().into_owned();
+    match action {
+        ChatAction::Dump { conversation, out } => {
+            let session = match conversation {
+                Some(wanted) => chat_archive::resolve(&data, &root, &wanted).map_err(|e| anyhow!(e))?,
+                None => harness_session::recent(&data, &root).into_iter().next().map(|s| s.id).ok_or_else(|| anyhow!("this folder has no conversation to dump"))?,
+            };
+            let dumped = chat_archive::dump(&data, &root, &session, out.as_deref()).map_err(|e| anyhow!(e))?;
+            println!("dumped {} ({session}) to {}: {:.1} MB, {} files{}", dumped.name, dumped.path.display(), dumped.bytes as f64 / 1e6, dumped.files, if dumped.journal { ", the journal with its maps in it" } else { "; the journal is NOT in it (none could be read)" });
+            println!("on the other machine, from the project's folder: multitool chat load {}", dumped.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+        }
+        ChatAction::Load { archive, name, new_id } => {
+            let loaded = chat_archive::load(&data, &root, &archive, &chat_archive::LoadOptions { new_id, name }).map_err(|e| anyhow!(e))?;
+            println!("loaded {} as {}{}", loaded.name, loaded.session, loaded.claude_id.as_deref().map_or_else(String::new, |id| format!(", Claude Code's {id}")));
+            println!("project paths moved from {} to {root}", loaded.moved_from);
+            println!("journal: {} entries written, {} already here", loaded.journal_written, loaded.journal_merged);
+            println!("open it from the start page here, or: multitool --resume {}", loaded.session);
+        }
+        ChatAction::List => {
+            for (s, adapter, bytes) in chat_archive::listed(&data, &root) {
+                println!("{:<12} {:>8.1} MB  {}  {}", adapter, bytes as f64 / 1e6, s.id, s.title);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn import_conversation(source: &str, id: Option<&str>) -> Result<()> {
     let root = std::env::current_dir()?.to_string_lossy().into_owned();
     let conversations = harness_session::conversation_source(source).map_err(|e| anyhow!(e))?;
@@ -3253,6 +3393,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
         let mut dirty = true;
         // The terminal tab's name as last set (CON-170), and the project folder it carries.
         let mut last_title = String::new();
+        let mut settings_were_open = false;
         let title_folder = std::env::current_dir().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
         loop {
             // A profile's Claude Code sign-in: Claude Code's own, in the terminal, then back here (CON-123).
@@ -3376,6 +3517,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 dirty |= live.tick_toast(w);
                 dirty |= live.tick_login(w);
                 dirty |= live.tick_journal_checks(w);
+                dirty |= live.tick_chat_jobs(w);
                 w.new_tab_runs_on = Some((live.provider.clone(), live.model.clone()));
                 dirty |= live.tick_voice_download(w);
                 dirty |= live.tick_voice_test(w);
@@ -3384,6 +3526,20 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {
+                // The Chats tab lists what is in the project now, each time the settings open
+                // (CON-171): the conversations of the window's run are in it.
+                let settings_open = matches!(&state.mode, frontend_tui::model::Mode::Session(w) if matches!(w.overlay, Some(frontend_tui::model::Overlay::Settings(_))));
+                if settings_open && !settings_were_open
+                    && let frontend_tui::model::Mode::Session(w) = &mut state.mode
+                {
+                    let page = chats_page(&live.root, String::new());
+                    if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.chats = page.clone();
+                    }
+                    w.chats = Some(page);
+                    dirty = true;
+                }
+                settings_were_open = settings_open;
                 // The terminal's tab is named after the active tab's agent (CON-170), only when
                 // that changed.
                 let title = frontend_tui::model::terminal_title(&state, &title_folder);

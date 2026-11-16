@@ -31,6 +31,8 @@ pollster = "0.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 harness-scenarios = { version = "0.1.0-dev", path = "../scenarios" }

@@ -88,6 +88,8 @@ pub struct Workspace {
     pub journal_issues: Option<JournalPage>,
     /// The Games page (ADR 0029).
     pub games: Option<GamesPage>,
+    /// The Chats page (CON-171).
+    pub chats: Option<ChatsPage>,
     /// The harness's skills here, for /skills (ADR 0030): name, description, project or user.
     pub skills: Option<Vec<(String, String, String)>>,
     /// The profiles, as the running harness reads them (CON-125).
@@ -124,6 +126,10 @@ pub enum Outgoing {
     JournalCheck,
     /// Games between agents on or off, and which games (ADR 0029).
     SaveGames { enabled: bool, texas_holdem: bool },
+    /// A conversation of this project packed into a .zip in its folder (CON-171).
+    ChatDump { session: String },
+    /// A conversation brought in from a .zip, into this project (CON-171).
+    ChatLoad { path: String, new_id: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -230,6 +236,7 @@ pub struct SettingsView {
     pub memory: MemoryPage,
     pub journal: JournalPage,
     pub games: GamesPage,
+    pub chats: ChatsPage,
     pub profiles: ProfilesPage,
     pub auth: AuthPage,
     /// The model name is being typed.
@@ -377,7 +384,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, skills: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, chats: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -1099,6 +1106,33 @@ pub struct GamesPage {
     pub texas_holdem: bool,
     /// 0 games on or off, 1 Texas hold'em.
     pub cursor: usize,
+    pub status: String,
+}
+
+/// One conversation on the Chats page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatRow {
+    pub session: String,
+    pub name: String,
+    pub adapter: String,
+    pub bytes: u64,
+    /// How long ago it was last active, as read.
+    pub age: String,
+}
+
+/// The settings' Chats page (CON-171): this project's conversations, dumped to a .zip and loaded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatsPage {
+    /// Grouped by adapter, the newest first in each.
+    pub rows: Vec<ChatRow>,
+    pub cursor: usize,
+    /// Loading: the .zip files of the project's folder to choose from, then a path typed.
+    pub loading: bool,
+    pub archives: Vec<String>,
+    pub load_cursor: usize,
+    pub typed: String,
+    pub new_id: bool,
+    /// What the last dump or load did, or what it is doing.
     pub status: String,
 }
 

@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod skills;
 
 pub mod remote;
+pub mod chat_archive;
 
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

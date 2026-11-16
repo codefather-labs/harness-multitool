@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::input::{Key, Outcome};
-use crate::model::{AuthPage, CODEX_PROVIDER, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
+use crate::model::{AuthPage, ChatsPage, CODEX_PROVIDER, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
 use crate::model::{
     Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
 };
@@ -56,6 +56,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     }
     if let Some(page) = &w.games {
         s.games = page.clone();
+    }
+    if let Some(page) = &w.chats {
+        s.chats = page.clone();
     }
     if let Some(page) = &w.profiles {
         s.profiles = page.clone();
@@ -131,7 +134,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION, GAMES_SECTION].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION, CHATS_SECTION, GAMES_SECTION].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -152,6 +155,7 @@ pub fn sample_settings() -> SettingsView {
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
         journal: Default::default(),
         games: crate::model::GamesPage { texas_holdem: true, ..Default::default() },
+        chats: Default::default(),
         profiles: ProfilesPage::default(),
         auth: AuthPage::default(),
         editing_model: false,
@@ -610,6 +614,105 @@ fn profiles_key(p: &mut ProfilesPage, k: Key, outbox: &mut Vec<Outgoing>) {
 /// The settings section of games between agents (ADR 0029).
 pub const GAMES_SECTION: &str = "Games";
 
+/// The settings section of this project's conversations, dumped and loaded (CON-171).
+pub const CHATS_SECTION: &str = "Chats";
+
+/// This project's conversations (CON-171): grouped by adapter, d dumps one into a .zip in the
+/// project's folder, l loads one from the .zip files there or a path typed.
+fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.chats;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    let accent = Style::default().fg(t.accent);
+    let mut y = r.y + 1;
+    let bottom = r.y + r.height.saturating_sub(4);
+    if p.loading {
+        text(f, r.x, y, r.width, vec![Span::styled(" Load a conversation into this project", accent)], bg);
+        y += 1;
+        let mut choices: Vec<String> = p.archives.clone();
+        choices.push(if p.typed.is_empty() { "a path: type it".to_string() } else { p.typed.clone() });
+        for (i, choice) in choices.iter().enumerate() {
+            if y >= bottom {
+                break;
+            }
+            let under = focus && p.load_cursor == i;
+            let typing = under && i == p.archives.len();
+            text(f, r.x, y, r.width, vec![Span::styled(format!("  {choice}"), if i == p.archives.len() && p.typed.is_empty() { muted } else { strong }), Span::styled(if typing { "█" } else { "" }, Style::default().fg(t.accent_line))], if under { t.surface_raised } else { bg });
+            y += 1;
+        }
+        text(f, r.x, y + 1, r.width, vec![Span::styled(" New id (a separate copy) ", muted), Span::styled(format!("[{}]", if p.new_id { "x" } else { " " }), strong)], bg);
+    } else {
+        if p.rows.is_empty() {
+            text(f, r.x, y, r.width, vec![Span::styled(" No conversation in this project yet.", muted)], bg);
+        }
+        let mut adapter = "";
+        for (i, row) in p.rows.iter().enumerate() {
+            if y >= bottom {
+                break;
+            }
+            if row.adapter != adapter {
+                adapter = &row.adapter;
+                text(f, r.x, y, r.width, vec![Span::styled(format!(" {adapter}"), accent)], bg);
+                y += 1;
+            }
+            let under = focus && p.cursor == i;
+            let size = format!("{:>7.1} MB", row.bytes as f64 / 1e6);
+            let name: String = row.name.chars().take(r.width.saturating_sub(28) as usize).collect();
+            text(f, r.x, y, r.width, vec![Span::styled(format!("   {name}"), strong), Span::styled(format!("  {size}  {}", row.age), muted)], if under { t.surface_raised } else { bg });
+            y += 1;
+        }
+    }
+    let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Up and Down choose, d dumps it to a .zip in this folder, l loads one." };
+    let notes = [p.status.as_str(), help];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + r.height.saturating_sub(3) + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+    }
+}
+
+fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
+    if p.loading {
+        let typing = p.load_cursor == p.archives.len();
+        match k {
+            Key::Esc => p.loading = false,
+            Key::Up => p.load_cursor = p.load_cursor.saturating_sub(1),
+            Key::Down => p.load_cursor = (p.load_cursor + 1).min(p.archives.len()),
+            Key::Char('n') if !typing => p.new_id = !p.new_id,
+            Key::Backspace if typing => {
+                p.typed.pop();
+            }
+            Key::Char(c) if typing => p.typed.push(c),
+            Key::Enter => {
+                let path = if typing { p.typed.trim().to_string() } else { p.archives[p.load_cursor].clone() };
+                if path.is_empty() {
+                    p.status = "Type the archive's path first.".to_string();
+                } else {
+                    p.status = format!("Loading {path}...");
+                    outbox.push(Outgoing::ChatLoad { path, new_id: p.new_id });
+                    p.loading = false;
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    match k {
+        Key::Up => p.cursor = p.cursor.saturating_sub(1),
+        Key::Down => p.cursor = (p.cursor + 1).min(p.rows.len().saturating_sub(1)),
+        Key::Char('d') => {
+            if let Some(row) = p.rows.get(p.cursor) {
+                p.status = format!("Dumping {}...", row.name);
+                outbox.push(Outgoing::ChatDump { session: row.session.clone() });
+            }
+        }
+        Key::Char('l') => {
+            p.loading = true;
+            p.load_cursor = 0;
+        }
+        _ => {}
+    }
+}
+
 /// Games between agents (ADR 0029): on or off, and which games. Tables are made on the dashboard.
 fn games_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let p = &s.games;
@@ -1056,6 +1159,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == CHATS_SECTION {
+        chats_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == GAMES_SECTION {
         games_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == JOURNAL_SECTION {
@@ -1581,6 +1686,14 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
             } else {
                 profiles_key(&mut s.profiles, k, &mut w.outbox);
                 open_provider_if_asked(s);
+            }
+        }
+        // The Chats tab: Esc leaves loading before it closes the window (CON-171).
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == CHATS_SECTION) && s.focus == SettingsPane::Page && (!matches!(k, Key::Esc) || s.chats.loading) => {
+            if matches!(k, Key::Tab | Key::Left) && !s.chats.loading {
+                s.focus = SettingsPane::Sections;
+            } else {
+                chats_key(&mut s.chats, k, &mut w.outbox);
             }
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == GAMES_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
