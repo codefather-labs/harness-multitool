@@ -384,9 +384,17 @@ pub fn merge_journal(data_dir: &str, root: &str, stream: &str) -> Result<(usize,
     result
 }
 
-/// The conversations of a project for the Chats tab: id, name, adapter, size and last activity,
-/// newest first.
+/// The conversations of a project for the Chats tab: id, name, adapter, the size a dump takes in
+/// (the log with the linked Claude Code form and its sidecars, journal#1273), newest first.
 pub fn listed(data_dir: &str, root: &str) -> Vec<(crate::SessionInfo, String, u64)> {
+    listed_with(data_dir, root, claude_dir())
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    files_under(dir).iter().map(|(_, f)| std::fs::metadata(f).map_or(0, |m| m.len())).sum()
+}
+
+fn listed_with(data_dir: &str, root: &str, claude: Option<PathBuf>) -> Vec<(crate::SessionInfo, String, u64)> {
     let adapters: HashMap<String, String> = std::fs::read_to_string(Path::new(data_dir).join("daemon/conversations.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<HashMap<String, serde_json::Value>>(&t).ok())
@@ -396,7 +404,15 @@ pub fn listed(data_dir: &str, root: &str) -> Vec<(crate::SessionInfo, String, u6
         .into_iter()
         .map(|s| {
             let adapter = adapters.get(&s.id).cloned().unwrap_or_else(|| if s.imported.is_some() { "claude-code".to_string() } else { "native".to_string() });
-            let bytes = std::fs::metadata(log_path(data_dir, root, &s.id)).map_or(0, |m| m.len());
+            let log = log_path(data_dir, root, &s.id);
+            let mut bytes = std::fs::metadata(&log).map_or(0, |m| m.len());
+            // The Claude Code form: the import's id when there is one, else the log's own link.
+            let claude_id = s.imported.clone().or_else(|| std::fs::read_to_string(&log).ok().and_then(|t| of_log(&t).0));
+            if let (Some(id), Some(claude)) = (claude_id, &claude) {
+                let folder = claude_folder(claude, root);
+                bytes += std::fs::metadata(folder.join(format!("{id}.jsonl"))).map_or(0, |m| m.len());
+                bytes += dir_size(&folder.join(&id)) + dir_size(&claude.join("file-history").join(&id));
+            }
             (s, adapter, bytes)
         })
         .collect()
@@ -464,6 +480,12 @@ mod tests {
         harness_memory_journal::mindmap::add(&mut conn, m, &harness_memory_journal::mindmap::NewNode { kind: "fact", text: "rests on e1", parent: Some(root_node), refs: &[e1], ..Default::default() }, 102).unwrap();
         drop(conn);
 
+        // journal#1273: the listed size is what a dump takes in, the Claude Code form with it.
+        let log_bytes = std::fs::metadata(log_path(&data_a, &root_a_s, "imported-11111111-1")).unwrap().len();
+        let form_bytes = std::fs::metadata(folder.join(format!("{cid}.jsonl"))).unwrap().len() + dir_size(&folder.join(cid)) + dir_size(&claude_a.join("file-history").join(cid));
+        let listed = listed_with(&data_a, &root_a_s, Some(claude_a.clone()));
+        assert_eq!(listed[0].2, log_bytes + form_bytes, "the log and the whole Claude Code form");
+        assert!(form_bytes > 0);
         let dumped = dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone())).unwrap();
         assert_eq!(dumped.path, root_a.join("orchestrator-9-11111111.zip"), "into the project's folder, named after it");
         assert!(dumped.journal && dumped.files == 7, "{dumped:?}");

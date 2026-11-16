@@ -647,6 +647,8 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
             text(f, r.x, y, r.width, vec![Span::styled(" No conversation in this project yet.", muted)], bg);
         }
         let mut adapter = "";
+        // One width for the names, so the size and the age line up (journal#1273).
+        let name_width = p.rows.iter().map(|row| row.name.chars().count()).max().unwrap_or(0).min(r.width.saturating_sub(30) as usize);
         for (i, row) in p.rows.iter().enumerate() {
             if y >= bottom {
                 break;
@@ -658,8 +660,9 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
             }
             let under = focus && p.cursor == i;
             let size = format!("{:>7.1} MB", row.bytes as f64 / 1e6);
-            let name: String = row.name.chars().take(r.width.saturating_sub(28) as usize).collect();
-            text(f, r.x, y, r.width, vec![Span::styled(format!("   {name}"), strong), Span::styled(format!("  {size}  {}", row.age), muted)], if under { t.surface_raised } else { bg });
+            let name: String = row.name.chars().take(name_width).collect();
+            let pad = " ".repeat(name_width.saturating_sub(name.chars().count()));
+            text(f, r.x, y, r.width, vec![Span::styled(format!("   {name}{pad}"), strong), Span::styled(format!("  {size}  {}", row.age), muted)], if under { t.surface_raised } else { bg });
             y += 1;
         }
     }
