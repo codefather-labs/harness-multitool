@@ -2305,3 +2305,47 @@ fn a_session_is_told_its_own_callback_url() {
     assert!(seen.lock().unwrap().last().unwrap().contains(&own));
     assert_eq!(client.session_callback(&session, &root).unwrap(), own);
 }
+
+/// journal#1251: a window the daemon took for gone opens itself there again, with its tab, on its
+/// next operation, and its message is answered: it is never left cut off while it is open.
+#[test]
+fn a_window_the_daemon_lost_opens_itself_again() {
+    use harness_session::remote::{DaemonHost, MakeHost, RemoteSessions, SessionLink};
+    let root = temp_dir("lost-window");
+    let data = temp_dir("lost-window-data");
+    let (url, _) = fake_endpoint(vec![anthropic_turn(None, "First."), anthropic_turn(None, "Back again.")]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let settings = settings(&url, "k");
+    let mut link = SessionLink::Remote(RemoteSessions::open(client.clone(), &root, &settings, Default::default()).unwrap());
+    let window = link.window_id().unwrap().to_string();
+    let wait_end = |link: &SessionLink| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut texts = Vec::new();
+        while std::time::Instant::now() < deadline {
+            for m in link.drain() {
+                if let FromSession::Entry { entry, .. } = &m
+                    && let Event::TextDelta { text } = &entry.event
+                {
+                    texts.push(text.clone());
+                }
+                if matches!(m, FromSession::Ended { .. }) {
+                    return Some(texts.concat());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    };
+    link.prompt(1, "hi".to_string());
+    assert_eq!(wait_end(&link).as_deref(), Some("First."));
+    // The daemon loses it: closed there, and swept once idle.
+    client.conversation_op(&json!({"window": window, "op": "close", "tab": 0})).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(client.conversation_op(&json!({"window": window, "op": "session_of", "tab": 1})).unwrap_err().contains("not open here"), "gone from the daemon");
+    // Its next message opens it again and is answered, in the same conversation.
+    link.prompt(1, "still there?".to_string());
+    assert_eq!(wait_end(&link).as_deref(), Some("Back again."));
+}

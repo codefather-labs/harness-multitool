@@ -814,3 +814,32 @@ fn a_daemon_restarted_from_telegram_says_so() {
         }
     }
 }
+
+/// CON-169: a chat's first word brings the Service button, once; pressing it shows the menu and
+/// reaches no session; its buttons do what their commands do; a stranger's press does nothing.
+#[test]
+fn the_service_button_opens_the_controls() {
+    let w = bound_world(vec![session("s1", "alpha")], vec![message(1, -100, Some(7), "hello")]);
+    *w.host.windows.lock().unwrap() = vec!["conv-1-1".into()];
+    until("bound", || !w.host.got.lock().unwrap().is_empty());
+    // In the topic the messages come from; a tap here carries no topic, so it is a chat of its own.
+    let with_button = |f: &Arc<Mutex<Fake>>| f.lock().unwrap().sent.iter().filter(|b| b["reply_markup"]["keyboard"][0][0]["text"] == "🛠 Service" && b["message_thread_id"] == 7).count();
+    until("the button", || with_button(&w.fake) == 1);
+    let shown = w.fake.lock().unwrap().sent.iter().find(|b| b["reply_markup"]["keyboard"].is_array()).cloned().unwrap();
+    assert_eq!((shown["reply_markup"]["is_persistent"].clone(), shown["message_thread_id"].as_i64()), (json!(true), Some(7)));
+    // Pressing it: the menu, and nothing for the agent.
+    w.fake.lock().unwrap().updates.push(message(2, -100, Some(7), "🛠 Service"));
+    until("the menu", || said(&w.fake).iter().any(|t| t == "What should the harness do?"));
+    let menu = w.fake.lock().unwrap().sent.iter().find(|b| b["text"] == "What should the harness do?").cloned().unwrap();
+    let names: Vec<String> = menu["reply_markup"]["inline_keyboard"].as_array().unwrap().iter().flat_map(|row| row.as_array().unwrap().iter().map(|b| b["callback_data"].as_str().unwrap().to_string())).collect();
+    assert_eq!(names, ["svc:open", "svc:new", "svc:reload", "svc:restart", "svc:agents", "svc:whoami"]);
+    assert_eq!(w.host.got.lock().unwrap().len(), 1, "the button's text reached no session");
+    // Its buttons.
+    w.fake.lock().unwrap().updates.extend([tap(3, 666, -100, "svc:reload"), tap(4, 42, -100, "svc:reload"), tap(5, 42, -100, "svc:restart"), tap(6, 42, -100, "svc:whoami")]);
+    until("reloaded", || *w.host.reloads.lock().unwrap() == 1);
+    until("restart asks", || said(&w.fake).iter().any(|t| t.starts_with("Restart the daemon?")));
+    until("whoami", || said(&w.fake).iter().any(|t| t.contains("goes to")));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(*w.host.reloads.lock().unwrap(), 1, "the stranger's press did nothing");
+    assert_eq!(with_button(&w.fake), 1, "the button is sent once");
+}

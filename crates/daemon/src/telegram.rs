@@ -61,7 +61,16 @@ struct Kept {
     bindings: Vec<Binding>,
     #[serde(default)]
     held: Vec<Held>,
+    /// The chats that have the Service button (CON-169).
+    #[serde(default)]
+    shown_keyboard: Vec<Key>,
 }
+
+/// The persistent button's text, and what pressing it sends (CON-169).
+pub const SERVICE: &str = "🛠 Service";
+
+/// What the Service button opens: each a command the channel already has.
+const SERVICE_MENU: [[(&str, &str); 2]; 3] = [[("📂 Open", "open"), ("➕ New", "new")], [("🔄 Reload windows", "reload"), ("♻️ Restart daemon", "restart")], [("💬 Sessions", "agents"), ("❓ Which session", "whoami")]];
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Binding {
@@ -402,6 +411,7 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "new", "description": "A new session in a project, in a new window"},
             {"command": "reload", "description": "Reload every open window"},
             {"command": "restart", "description": "Restart the daemon"},
+            {"command": "service", "description": "The harness's controls, as buttons"},
         ]}),
     );
     let started = std::time::Instant::now();
@@ -459,7 +469,8 @@ fn take(daemon: &Arc<Daemon>, requester: &Requester, update: &Value, id: i64, al
     if let (Some(text), Some(user), Some(chat)) = (message["text"].as_str(), message["from"]["id"].as_i64(), message["chat"]["id"].as_i64())
         && text.split_whitespace().next().and_then(|word| word.split('@').next()) == Some("/id")
     {
-        say(daemon, requester, (chat, message["message_thread_id"].as_i64()), &format!("Your user id: {user}"), None);
+        // Anyone may learn their id, and nothing else: no Service button here (CON-169).
+        send_word(daemon, requester, (chat, message["message_thread_id"].as_i64()), &format!("Your user id: {user}"), None);
         return true;
     }
     let from_allowed = message["from"]["id"].as_i64().is_some_and(|user| allowed.contains(&user));
@@ -598,6 +609,11 @@ fn hold(daemon: &Daemon, requester: &Requester, key: Key, text: &str, open: &[Op
 
 /// A bot command: never for a session. False if this is not one.
 fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool {
+    // The Service button's own text: never for a session (CON-169).
+    if text.trim() == SERVICE {
+        service_menu(daemon, requester, key);
+        return true;
+    }
     let mut words = text.split_whitespace();
     let Some(first) = words.next().filter(|w| w.starts_with('/')) else { return false };
     let name = first.split('@').next().unwrap_or(first);
@@ -612,7 +628,11 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
         format!("Open sessions:\n{}", lines.join("\n"))
     };
     match name {
-        "/start" | "/agents" => say(daemon, requester, key, &list(), keyboard(&open)),
+        "/start" => {
+            say(daemon, requester, key, &list(), keyboard(&open));
+            service_button(daemon, requester, key);
+        }
+        "/agents" => say(daemon, requester, key, &list(), keyboard(&open)),
         "/whoami" => {
             let what = match bound.as_deref().map(|id| open.iter().find(|s| s.id == id).map_or(format!("{id}, not open now"), |s| s.title.clone())) {
                 Some(title) => format!("This chat goes to {title}."),
@@ -642,6 +662,10 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
             say(daemon, requester, key, "Restart the daemon? The runs going on now stop; the windows reopen their conversations.", Some(buttons));
         }
         "/open" => open_list(daemon, requester, key),
+        "/service" => {
+            service_button(daemon, requester, key);
+            service_menu(daemon, requester, key);
+        }
         "/new" => new_list(daemon, requester, key),
         "/switch" if rest.is_empty() => say(daemon, requester, key, &list(), keyboard(&open)),
         "/switch" => match choose(&open, &rest) {
@@ -740,6 +764,13 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
                 say(daemon, requester, key, &format!("Ничего не изменилось: {why}"), None);
             }
         }
+        return;
+    }
+    // A Service menu button: its command, as if typed (CON-169).
+    if let Some(name) = data.strip_prefix("svc:")
+        && SERVICE_MENU.iter().flatten().any(|(_, n)| *n == name)
+    {
+        command(daemon, requester, key, &format!("/{name}"));
         return;
     }
     if let Some(answer) = data.strip_prefix("restart:") {
@@ -965,6 +996,34 @@ fn keyboard(open: &[OpenSession]) -> Option<Value> {
 
 /// The channel's own word to a chat. A failure loses no message of the user's; it shows in the status.
 fn say(daemon: &Daemon, requester: &Requester, key: Key, text: &str, keyboard: Option<Value>) {
+    send_word(daemon, requester, key, text, keyboard);
+    // A chat's first word from the bot brings the Service button (CON-169).
+    let first = daemon.telegram.lock().expect("telegram").as_mut().is_some_and(|c| {
+        let first = !c.kept.shown_keyboard.contains(&key);
+        if first {
+            c.kept.shown_keyboard.push(key);
+        }
+        first
+    });
+    if first {
+        save_kept(daemon);
+        service_button(daemon, requester, key);
+    }
+}
+
+/// The persistent reply keyboard with the one Service button.
+fn service_button(daemon: &Daemon, requester: &Requester, key: Key) {
+    let keyboard = json!({"keyboard": [[{"text": SERVICE}]], "is_persistent": true, "resize_keyboard": true});
+    send_word(daemon, requester, key, "🛠 The harness's controls are under the Service button below.", Some(keyboard));
+}
+
+/// The Service button's menu.
+fn service_menu(daemon: &Daemon, requester: &Requester, key: Key) {
+    let rows: Vec<Value> = SERVICE_MENU.iter().map(|row| json!(row.iter().map(|(text, name)| json!({"text": text, "callback_data": format!("svc:{name}")})).collect::<Vec<_>>())).collect();
+    send_word(daemon, requester, key, "What should the harness do?", Some(json!({"inline_keyboard": rows})));
+}
+
+fn send_word(daemon: &Daemon, requester: &Requester, key: Key, text: &str, keyboard: Option<Value>) {
     let mut body = json!({"chat_id": key.0, "text": text});
     if let Some(topic) = key.1 {
         body["message_thread_id"] = json!(topic);

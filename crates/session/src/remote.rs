@@ -20,6 +20,11 @@ use crate::{Factory, FromSession, Host, Sessions, Settings, TaskRefused};
 /// A window that has not polled for this long is gone; its runs finish with nobody watching.
 const WINDOW_GONE: Duration = Duration::from_secs(30);
 const PUMP: Duration = Duration::from_millis(10);
+/// A pump that comes this long after the last one means the daemon itself was held (a machine's
+/// sleep, a frozen cgroup): the windows were not silent then, it was (journal#1251).
+const HELD: Duration = Duration::from_secs(2);
+/// What a window says when the daemon has no window of its id: it opens itself there again.
+const NOT_OPEN_HERE: &str = "this window is not open here";
 /// How long a closing daemon waits for its sessions' threads. Idle ones end at once.
 const CLOSING: Duration = Duration::from_secs(5);
 /// A window polls every couple of seconds. One silent for this long is not there, as far as
@@ -263,6 +268,10 @@ fn ask_key(tool: &str, input: &Value) -> String {
 
 pub struct DaemonHost {
     windows: Mutex<HashMap<String, Window>>,
+    /// When the pump last ran: a long gap is the daemon's own, not its windows' (journal#1251).
+    last_pump: Mutex<Instant>,
+    /// The last event number of each window dropped here, for its numbering if it comes back.
+    ended_seq: Mutex<HashMap<String, u64>>,
     /// Messages a window sent and went away from, by session: for whoever opens it next. Only in
     /// memory: a message that never reached the log is not the conversation yet.
     left: Mutex<HashMap<String, Vec<PendingMessage>>>,
@@ -881,7 +890,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { agent_checks: Mutex::new(HashMap::new()), agent_check_every: agent_check_every(std::env::var("MULTITOOL_AGENT_CHECK_SECS").ok()), program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { last_pump: Mutex::new(Instant::now()), ended_seq: Mutex::new(HashMap::new()), agent_checks: Mutex::new(HashMap::new()), agent_check_every: agent_check_every(std::env::var("MULTITOOL_AGENT_CHECK_SECS").ok()), program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -895,6 +904,20 @@ impl DaemonHost {
     /// Takes what the sessions said and queues it for their windows.
     fn pump(&self) {
         let mut windows = self.windows.lock().expect("windows");
+        // The daemon was held, and every window with it: none of them was silent. They start
+        // their time to be heard from again now, rather than being taken for gone.
+        let held = {
+            let mut last = self.last_pump.lock().expect("last pump");
+            let gap = last.elapsed();
+            *last = Instant::now();
+            gap
+        };
+        if held > HELD {
+            eprintln!("the daemon was held for {} s: its windows are given their time again", held.as_secs());
+            for window in windows.values_mut() {
+                window.polled = Instant::now();
+            }
+        }
         let mut any = false;
         // A handed-over run speaks to the window that took it.
         let mut handed = Vec::new();
@@ -1000,6 +1023,14 @@ impl DaemonHost {
             }
         }
         // A closed window stays until its runs have finished: the log gets their end.
+        // What a dropped window numbered last: if it opens itself here again, its events go on from
+        // there, past what its subscription has seen (journal#1251).
+        {
+            let mut ended = self.ended_seq.lock().expect("ended seq");
+            for (id, w) in windows.iter().filter(|(_, w)| w.closed && !w.sessions.busy() && w.handed.is_empty() && w.following.is_empty()) {
+                ended.insert(id.clone(), w.next);
+            }
+        }
         windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
         waiting_word.append(&mut self.program_words.lock().expect("words"));
         any |= self.tell_masters(&mut windows, waiting_word, ended_runs);
@@ -1164,7 +1195,8 @@ impl DaemonHost {
             Some(window) => window.sessions.set_factory(factory),
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next: 0, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), plan_asks: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                let next = self.ended_seq.lock().expect("ended seq").remove(id).unwrap_or(0);
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), plan_asks: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
             }
         }
         if let Some(window) = windows.get_mut(id) {
@@ -1322,7 +1354,7 @@ impl ConversationHost for DaemonHost {
             self.wake.notify_all();
             return Ok(json!({"ok": true}));
         }
-        let window = windows.get_mut(id).ok_or("this window is not open here")?;
+        let window = windows.get_mut(id).ok_or(NOT_OPEN_HERE)?;
         window.polled = Instant::now();
         let tab = op["tab"].as_u64().unwrap_or(0);
         // An agent asks for the harness to be rebuilt: the window does it, and tells that tab.
@@ -1483,7 +1515,16 @@ impl ConversationHost for DaemonHost {
         let deadline = Instant::now() + wait;
         let mut windows = self.windows.lock().expect("windows");
         loop {
-            let Some(window) = windows.get_mut(id) else { return Vec::new() };
+            // A window this daemon has not (or no longer) is waited out, not spun on: its
+            // subscription asks again after `wait` (journal#1251).
+            let Some(window) = windows.get_mut(id) else {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Vec::new();
+                }
+                windows = self.wake.wait_timeout(windows, left).expect("windows").0;
+                continue;
+            };
             window.polled = Instant::now();
             while window.events.front().is_some_and(|(seq, _)| *seq <= after) {
                 window.events.pop_front();
@@ -1549,10 +1590,18 @@ fn reopen(link: &Mutex<Link>, client: &Client, window: &str) {
     link.lock().expect("link").generation += 1;
 }
 
-/// One operation through `link`'s client, which waits while the daemon is away (CON-131).
-fn op_through(link: &Mutex<Link>, _window: &str, op: &Value) -> Result<Value, String> {
+/// One operation through `link`'s client, which waits while the daemon is away (CON-131). A
+/// daemon that took this window for gone gets it opened again, its tabs with it, and the
+/// operation once more (journal#1251): a window never stays cut off while it is open.
+fn op_through(link: &Mutex<Link>, window: &str, op: &Value) -> Result<Value, String> {
     let client = link.lock().expect("link").client.clone();
-    client.conversation_op(op)
+    match client.conversation_op(op) {
+        Err(e) if e.contains(NOT_OPEN_HERE) && op["op"] != "open" => {
+            reopen(link, &client, window);
+            client.conversation_op(op)
+        }
+        other => other,
+    }
 }
 
 impl RemoteSessions {
