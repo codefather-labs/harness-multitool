@@ -25,6 +25,21 @@ pub struct HeaderInfo {
     pub online: bool,
 }
 
+/// The terminal's own title for this window (CON-170): the active tab's agent by its nick, else
+/// the tab's title, with the project's folder; `multitool` before a session is open.
+pub fn terminal_title(state: &AppState, folder: &str) -> String {
+    let name = match &state.mode {
+        Mode::Session(w) => w.tabs.get(w.active).map(|t| t.view.agent_name.clone().unwrap_or_else(|| t.title.clone())).filter(|n| !n.trim().is_empty()),
+        _ => None,
+    };
+    match name {
+        Some(name) if !folder.is_empty() => format!("{name} · {folder}"),
+        Some(name) => name,
+        None if !folder.is_empty() => format!("multitool · {folder}"),
+        None => "multitool".to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)] // one value per app, moved only between screens
 pub enum Mode {
@@ -1312,5 +1327,26 @@ impl Composer {
         let column = at - rows[row].0;
         self.move_to(rows[target].0 + column.min(rows[target].1));
         true
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    /// CON-170: the terminal's title follows the active tab's agent.
+    #[test]
+    fn the_title_is_the_active_agent_and_the_folder() {
+        let mut state = crate::fixtures::startup();
+        assert_eq!(terminal_title(&state, "fbscout"), "multitool · fbscout", "the start page");
+        state = crate::fixtures::main_session();
+        let Mode::Session(w) = &mut state.mode else { panic!("a session") };
+        w.tabs[w.active].view.agent_name = None;
+        let plain = w.tabs[w.active].title.clone();
+        assert_eq!(terminal_title(&state, "fbscout"), format!("{plain} · fbscout"), "no nick: the tab's title");
+        let Mode::Session(w) = &mut state.mode else { unreachable!() };
+        w.tabs[w.active].view.agent_name = Some("multitool-arch".into());
+        assert_eq!(terminal_title(&state, "fbscout"), "multitool-arch · fbscout");
+        assert_eq!(terminal_title(&state, ""), "multitool-arch");
     }
 }

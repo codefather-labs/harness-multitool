@@ -3251,6 +3251,9 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
         let mut drawn = Drawn::default();
         // Only a change is worth a frame: an idle session must not spin on drawing.
         let mut dirty = true;
+        // The terminal tab's name as last set (CON-170), and the project folder it carries.
+        let mut last_title = String::new();
+        let title_folder = std::env::current_dir().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
         loop {
             // A profile's Claude Code sign-in: Claude Code's own, in the terminal, then back here (CON-123).
             if let Some((profile, step)) = live.terminal_wanted.take() {
@@ -3381,6 +3384,13 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             // Input still queued (a burst of wheel events, fast typing) is handled first and
             // drawn once after, instead of one frame per event.
             if !event::poll(std::time::Duration::ZERO)? {
+                // The terminal's tab is named after the active tab's agent (CON-170), only when
+                // that changed.
+                let title = frontend_tui::model::terminal_title(&state, &title_folder);
+                if title != last_title {
+                    let _ = execute!(std::io::stdout(), ratatui::crossterm::terminal::SetTitle(&title));
+                    last_title = title;
+                }
                 if dirty {
                     dirty = false;
                     terminal.draw(|f| {
