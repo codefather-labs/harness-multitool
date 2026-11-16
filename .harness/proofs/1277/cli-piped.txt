@@ -1,0 +1,3 @@
+stderr to a file: 0 bytes
+dumped custom-socks5-proxy-with-trafic-routing (imported-207b939b-1794668178014) to /tmp/mt-cli172/piped.zip: 169.2 MB, 178 files, the journal with its maps in it
+on the other machine, from the project's folder: multitool chat load piped.zip

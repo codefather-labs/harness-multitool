@@ -68,6 +68,9 @@ pub struct Workspace {
     /// Conversations the daemon is moving or bringing in line, each with its own toast and
     /// progress bar (CON-136, CON-144). Only those tabs are held.
     pub moving: Vec<Moving>,
+    /// Dumps and loads of the Chats tab under way, each with its toast and bar (CON-172). They
+    /// hold no tab; `tab` is the job's number.
+    pub archiving: Vec<Moving>,
     /// A modal window over the session: it takes the keys until it closes.
     pub overlay: Option<Overlay>,
     /// A map being dragged with the mouse.
@@ -384,7 +387,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, chats: None, skills: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, chats: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {

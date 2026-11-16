@@ -180,6 +180,10 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     };
     // Under it, a toast for each conversation being moved (CON-144).
     below += draw_moving(f, Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr }, &w.moving, t);
+    // Then the Chats tab's dumps and loads (CON-172).
+    if w.overlay.is_none() {
+        below += draw_progress(f, Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr }, &w.archiving, t, "under way");
+    }
     let tr_toast = Rect { y: tr.y + below, height: tr.height.saturating_sub(below), ..tr };
     if let (Some(toast), None) = (&w.toast, &w.overlay) {
         draw_toast(f, tr_toast, toast, t, out);
@@ -206,9 +210,11 @@ fn workspace(f: &mut Frame, area: Rect, s: &AppState, w: &Workspace, t: &Theme, 
     if let Some(o) = &w.overlay {
         out.hits.clear();
         crate::overlay::draw(f, area, o, t, out);
-        // A message about what is going on in the overlay has to show over it.
+        // A message about what is going on in the overlay has to show over it, and so does a
+        // dump's or a load's progress (CON-172).
+        let over = draw_progress(f, tr, &w.archiving, t, "under way");
         if let Some(toast) = &w.toast {
-            draw_toast(f, tr, toast, t, out);
+            draw_toast(f, Rect { y: tr.y + over, height: tr.height.saturating_sub(over), ..tr }, toast, t, out);
         }
     }
 }
@@ -379,6 +385,11 @@ pub fn moving_lines(m: &crate::model::Moving, width: u16) -> (String, String, St
 /// The toasts of the conversations being moved (CON-144), one under another, the rest counted.
 /// Answers the rows they took.
 fn draw_moving(f: &mut Frame, area: Rect, moving: &[crate::model::Moving], t: &Theme) -> u16 {
+    draw_progress(f, area, moving, t, "being moved")
+}
+
+/// Progress toasts, one under another, the rest counted as `+N more <rest>`. Answers the rows they took.
+fn draw_progress(f: &mut Frame, area: Rect, moving: &[crate::model::Moving], t: &Theme, rest: &str) -> u16 {
     use ratatui::widgets::{Block, BorderType, Borders};
     let mut y = 0;
     for m in moving.iter().take(MOVING_SHOWN) {
@@ -403,7 +414,7 @@ fn draw_moving(f: &mut Frame, area: Rect, moving: &[crate::model::Moving], t: &T
         y += 5;
     }
     if moving.len() > MOVING_SHOWN && y < area.height {
-        let more = format!(" +{} more being moved ", moving.len() - MOVING_SHOWN);
+        let more = format!(" +{} more {rest} ", moving.len() - MOVING_SHOWN);
         let w = (more.chars().count() as u16).min(area.width);
         f.render_widget(Paragraph::new(Span::styled(more, Style::default().fg(t.text_muted).bg(t.surface))), Rect { x: area.x + area.width.saturating_sub(w), y: area.y + y, width: w, height: 1 });
         y += 1;
@@ -460,6 +471,27 @@ fn draw_toast(f: &mut Frame, area: Rect, toast: &crate::model::Toast, t: &Theme,
 #[cfg(test)]
 mod reconnecting_tests {
     use super::*;
+
+    /// CON-172: a dump's progress toast shows over the Settings, and the Chats page's status wraps
+    /// so a refusal's reason is read whole (journal#1278).
+    #[test]
+    fn a_dumps_progress_shows_over_the_settings() {
+        let mut state = crate::fixtures::settings_overlay();
+        let crate::model::Mode::Session(w) = &mut state.mode else { panic!() };
+        let crate::model::Overlay::Settings(s) = w.overlay.as_mut().unwrap() else { panic!() };
+        s.section = s.sections.iter().position(|n| n == crate::overlay::CHATS_SECTION).unwrap();
+        s.chats.status = "Not dumped: /home/codefather-server/Documents/projects/fbscout/orchestrator-3-5b5fb5d6.zip is there already, and is never written over: END-OF-REASON".to_string();
+        w.chats = Some(s.chats.clone());
+        w.archiving.push(crate::model::Moving { tab: 1, name: "orchestrator-3".into(), what: "Dumping orchestrator-3".into(), done: 500_000_000, total: 1_000_000_000, bytes: true, ..Default::default() });
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40)).unwrap();
+        terminal.draw(|f| { draw(f, &state, &theme); }).unwrap();
+        let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("Dumping orchestrator-3"), "the toast over the Settings");
+        assert!(screen.contains("500 MB / 1000 MB · 50%"));
+        let rows: Vec<String> = screen.chars().collect::<Vec<_>>().chunks(140).map(|r| r.iter().collect()).collect();
+        assert!(screen.contains("END-OF-REASON"), "the status read to its end:\n{}", rows.join("\n"));
+    }
 
     /// CON-144: a moving conversation's toast says what is done, the count and its share, with a
     /// bar filled to it; with no total yet its bar pulses; past 3 the rest are counted.

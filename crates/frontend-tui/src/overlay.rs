@@ -626,7 +626,7 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let strong = Style::default().fg(t.text);
     let accent = Style::default().fg(t.accent);
     let mut y = r.y + 1;
-    let bottom = r.y + r.height.saturating_sub(4);
+    let bottom = r.y + r.height.saturating_sub(6);
     if p.loading {
         text(f, r.x, y, r.width, vec![Span::styled(" Load a conversation into this project", accent)], bg);
         y += 1;
@@ -667,10 +667,58 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
         }
     }
     let help = if p.loading { "Up and Down choose, type a path on its row, n new id, Enter loads, Esc back." } else { "Up and Down choose, d dumps it to a .zip in this folder, l loads one." };
-    let notes = [p.status.as_str(), help];
+    // The status wraps, up to three lines, so a refusal's reason is read whole (journal#1278).
+    let mut notes = wrap_chars(&p.status, r.width.saturating_sub(2) as usize, 3);
+    notes.push(help.to_string());
+    let top = (r.y + r.height).saturating_sub(2 + notes.len() as u16);
     for (i, note) in notes.iter().enumerate() {
-        text(f, r.x, r.y + r.height.saturating_sub(3) + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+        text(f, r.x, top + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
     }
+}
+
+/// `text` wrapped at its spaces into lines of at most `width` characters (a longer word is cut),
+/// at most `most` of them, the last ending in an ellipsis when there is more. No text, no line.
+fn wrap_chars(text: &str, width: usize, most: usize) -> Vec<String> {
+    let width = width.max(2);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        while !word.is_empty() {
+            let room = if line.is_empty() { width } else { width.saturating_sub(line.chars().count() + 1) };
+            if word.len() <= room {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.extend(word.drain(..));
+            } else if word.len() > width && room > 1 {
+                // A word longer than a line (a path) is cut anyway: it starts where the line is.
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.extend(word.drain(..room));
+                lines.push(std::mem::take(&mut line));
+            } else if line.is_empty() {
+                line.extend(word.drain(..width));
+                lines.push(std::mem::take(&mut line));
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.len() > most {
+        lines.truncate(most);
+        if let Some(last) = lines.last_mut() {
+            if last.chars().count() >= width {
+                last.pop();
+            }
+            last.push('…');
+        }
+    }
+    lines
 }
 
 fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
@@ -2064,6 +2112,15 @@ fn parse_users(typed: &str) -> Result<Vec<i64>, String> {
 
 #[cfg(test)]
 mod tests {
+    /// journal#1278: the Chats page's status wraps at its spaces, three lines at most.
+    #[test]
+    fn a_status_wraps_at_its_words() {
+        assert_eq!(wrap_chars("Not loaded: it is already on this machine", 20, 3), ["Not loaded: it is", "already on this", "machine"]);
+        assert_eq!(wrap_chars("/a/very/long/path/without/spaces", 10, 3), ["/a/very/lo", "ng/path/wi", "thout/spa…"]);
+        assert_eq!(wrap_chars("Not: /a/very/long/path ok", 10, 3), ["Not: /a/ve", "ry/long/pa", "th ok"], "a path starts on the line it follows");
+        assert!(wrap_chars("", 10, 3).is_empty());
+    }
+
     use super::*;
 
     fn pick(id: &str) -> ModelChoice {

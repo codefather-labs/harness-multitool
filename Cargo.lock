@@ -1217,6 +1217,7 @@ dependencies = [
 name = "harness-session"
 version = "0.1.0-dev"
 dependencies = [
+ "chrono",
  "harness-api",
  "harness-auth-apikey",
  "harness-auth-chatgpt",

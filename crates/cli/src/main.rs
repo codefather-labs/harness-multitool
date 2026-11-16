@@ -789,7 +789,9 @@ struct Live {
     /// The Journal page as a check of gh found it, off the window's thread (CON-132).
     journal_checks: (std::sync::mpsc::Sender<frontend_tui::model::JournalPage>, std::sync::mpsc::Receiver<frontend_tui::model::JournalPage>),
     /// What a Chats tab's dump or load came to (CON-171).
-    chat_jobs: (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>),
+    chat_jobs: (std::sync::mpsc::Sender<ChatJob>, std::sync::mpsc::Receiver<ChatJob>),
+    /// The number the next dump or load of the Chats tab gets, for its toast (CON-172).
+    chat_job_next: u64,
     plan_models: (std::sync::mpsc::Sender<ModelList>, std::sync::mpsc::Receiver<ModelList>),
     step_debug_tabs: std::collections::HashSet<u64>,
     window_ids: std::collections::HashMap<u64, (harness_daemon::client::Client, String)>,
@@ -1277,7 +1279,7 @@ impl Live {
                 }
             }
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
+        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), chat_job_next: 1, plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1530,16 +1532,54 @@ impl Live {
     }
 
     /// What a check of gh found reaches the Journal page, its cursor kept.
-    /// A Chats tab's dump or load has finished: the page shows it, its list read again.
+    /// A Chats tab's dump or load: its progress moves its toast (CON-172); when it has finished the
+    /// toast goes, the page shows the outcome with its list read again, and a toast says it when
+    /// the Chats page is not open.
     fn tick_chat_jobs(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
-        let Ok(said) = self.chat_jobs.1.try_recv() else { return false };
-        let page = chats_page(&self.root, said);
-        if let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
-            let cursor = s.chats.cursor.min(page.rows.len().saturating_sub(1));
-            s.chats = frontend_tui::model::ChatsPage { cursor, ..page.clone() };
+        let mut changed = false;
+        while let Ok(job) = self.chat_jobs.1.try_recv() {
+            changed = true;
+            match job {
+                ChatJob::Progress { job, done, total } => {
+                    if let Some(m) = w.archiving.iter_mut().find(|m| m.tab == job) {
+                        (m.done, m.total) = (done, total);
+                    }
+                }
+                ChatJob::Done { job, said } => {
+                    w.archiving.retain(|m| m.tab != job);
+                    let page = chats_page(&self.root, said.clone());
+                    let on_chats = match &mut w.overlay {
+                        Some(frontend_tui::model::Overlay::Settings(s)) => {
+                            let cursor = s.chats.cursor.min(page.rows.len().saturating_sub(1));
+                            s.chats = frontend_tui::model::ChatsPage { cursor, ..page.clone() };
+                            s.sections.get(s.section).is_some_and(|n| n == frontend_tui::overlay::CHATS_SECTION)
+                        }
+                        _ => false,
+                    };
+                    if !on_chats {
+                        w.toast = Some(frontend_tui::overlay::system_toast(&said));
+                    }
+                    w.chats = Some(page);
+                }
+            }
         }
-        w.chats = Some(page);
-        true
+        changed
+    }
+
+    /// Starts a dump or a load of the Chats tab off the window's thread, with its toast (CON-172).
+    fn start_chat_job(&mut self, w: &mut frontend_tui::model::Workspace, what: String, run: impl FnOnce(&dyn Fn(u64, u64)) -> String + Send + 'static) {
+        let job = self.chat_job_next;
+        self.chat_job_next += 1;
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        w.archiving.push(frontend_tui::model::Moving { tab: job, what, bytes: true, now_ms, ..Default::default() });
+        let sender = self.chat_jobs.0.clone();
+        std::thread::spawn(move || {
+            let progress = |done, total| {
+                let _ = sender.send(ChatJob::Progress { job, done, total });
+            };
+            let said = run(&progress);
+            let _ = sender.send(ChatJob::Done { job, said });
+        });
     }
 
     fn tick_journal_checks(&mut self, w: &mut frontend_tui::model::Workspace) -> bool {
@@ -2195,30 +2235,26 @@ impl Live {
                 Outgoing::JournalCheck => self.check_journal_issues("Checking gh...".to_string()),
                 // CON-171: a dump or a load runs off the window's thread; its outcome comes back.
                 Outgoing::ChatDump { session } => {
-                    let (root, sender) = (self.root.clone(), self.chat_jobs.0.clone());
-                    std::thread::spawn(move || {
-                        let said = match config::data_dir() {
-                            Ok(data) => match harness_session::chat_archive::dump(&data.to_string_lossy(), &root, &session, None) {
-                                Ok(d) => format!("Dumped {} to {}: {:.1} MB{}.", d.name, d.path.display(), d.bytes as f64 / 1e6, if d.journal { ", with the journal and its maps" } else { ", without the journal (none could be read)" }),
-                                Err(e) => format!("Not dumped: {e}"),
-                            },
+                    let root = self.root.clone();
+                    let name = w.chats.as_ref().and_then(|p| p.rows.iter().find(|r| r.session == session)).map_or_else(|| session.clone(), |r| r.name.clone());
+                    self.start_chat_job(w, format!("Dumping {name}"), move |progress| match config::data_dir() {
+                        Ok(data) => match harness_session::chat_archive::dump_progress(&data.to_string_lossy(), &root, &session, None, progress) {
+                            Ok(d) => format!("Dumped {} to {}: {:.1} MB{}.", d.name, d.path.display(), d.bytes as f64 / 1e6, if d.journal { ", with the journal and its maps" } else { ", without the journal (none could be read)" }),
                             Err(e) => format!("Not dumped: {e}"),
-                        };
-                        let _ = sender.send(said);
+                        },
+                        Err(e) => format!("Not dumped: {e}"),
                     });
                 }
                 Outgoing::ChatLoad { path, new_id } => {
-                    let (root, sender) = (self.root.clone(), self.chat_jobs.0.clone());
-                    std::thread::spawn(move || {
-                        let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
-                        let said = match config::data_dir() {
-                            Ok(data) => match harness_session::chat_archive::load(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }) {
-                                Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
-                                Err(e) => format!("Not loaded: {e}"),
-                            },
+                    let root = self.root.clone();
+                    let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { std::path::Path::new(&root).join(&path) };
+                    let shown = file.file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                    self.start_chat_job(w, format!("Loading {shown}"), move |progress| match config::data_dir() {
+                        Ok(data) => match harness_session::chat_archive::load_progress(&data.to_string_lossy(), &root, &file, &harness_session::chat_archive::LoadOptions { new_id, name: None }, progress) {
+                            Ok(l) => format!("Loaded {} as {}: paths moved from {}; journal {} written, {} already here. It is on the start page.", l.name, l.session, l.moved_from, l.journal_written, l.journal_merged),
                             Err(e) => format!("Not loaded: {e}"),
-                        };
-                        let _ = sender.send(said);
+                        },
+                        Err(e) => format!("Not loaded: {e}"),
                     });
                 }
                 Outgoing::SaveGames { enabled, texas_holdem } => {
@@ -3076,6 +3112,12 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
 /// The Games page, from the daemon's games settings (ADR 0029).
 /// The Chats page of this window's project (CON-171): its conversations by adapter, and the .zip
 /// files in its folder to load.
+/// What a Chats tab's dump or load tells the window (CON-172).
+enum ChatJob {
+    Progress { job: u64, done: u64, total: u64 },
+    Done { job: u64, said: String },
+}
+
 fn chats_page(root: &str, status: String) -> frontend_tui::model::ChatsPage {
     let Ok(data) = config::data_dir() else { return frontend_tui::model::ChatsPage { status, ..Default::default() } };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -3213,6 +3255,25 @@ fn journal_issues(data: &str, root: &str, action: IssuesAction) -> Result<()> {
 }
 
 /// `multitool import`: lists a source's conversations, or brings one in as a session here.
+/// A dump's or a load's progress on one line of stderr, when it is a terminal (CON-172).
+fn progress_line(what: &'static str) -> impl Fn(u64, u64) {
+    use std::io::IsTerminal;
+    let shown = std::io::stderr().is_terminal();
+    move |done, total| {
+        if shown {
+            let share = (done.min(total) * 100).checked_div(total).unwrap_or(0);
+            eprint!("\r{what}: {:.1} / {:.1} MB · {share}%   ", done as f64 / 1e6, total as f64 / 1e6);
+        }
+    }
+}
+
+fn end_progress_line() {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!();
+    }
+}
+
 /// `multitool chat dump|load|list` (CON-171): what the Chats tab runs, on the command line.
 fn chat(action: ChatAction) -> Result<()> {
     use harness_session::chat_archive;
@@ -3224,12 +3285,16 @@ fn chat(action: ChatAction) -> Result<()> {
                 Some(wanted) => chat_archive::resolve(&data, &root, &wanted).map_err(|e| anyhow!(e))?,
                 None => harness_session::recent(&data, &root).into_iter().next().map(|s| s.id).ok_or_else(|| anyhow!("this folder has no conversation to dump"))?,
             };
-            let dumped = chat_archive::dump(&data, &root, &session, out.as_deref()).map_err(|e| anyhow!(e))?;
+            let dumped = chat_archive::dump_progress(&data, &root, &session, out.as_deref(), &progress_line("Dumping"));
+            end_progress_line();
+            let dumped = dumped.map_err(|e| anyhow!(e))?;
             println!("dumped {} ({session}) to {}: {:.1} MB, {} files{}", dumped.name, dumped.path.display(), dumped.bytes as f64 / 1e6, dumped.files, if dumped.journal { ", the journal with its maps in it" } else { "; the journal is NOT in it (none could be read)" });
             println!("on the other machine, from the project's folder: multitool chat load {}", dumped.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
         }
         ChatAction::Load { archive, name, new_id } => {
-            let loaded = chat_archive::load(&data, &root, &archive, &chat_archive::LoadOptions { new_id, name }).map_err(|e| anyhow!(e))?;
+            let loaded = chat_archive::load_progress(&data, &root, &archive, &chat_archive::LoadOptions { new_id, name }, &progress_line("Loading"));
+            end_progress_line();
+            let loaded = loaded.map_err(|e| anyhow!(e))?;
             println!("loaded {} as {}{}", loaded.name, loaded.session, loaded.claude_id.as_deref().map_or_else(String::new, |id| format!(", Claude Code's {id}")));
             println!("project paths moved from {} to {root}", loaded.moved_from);
             println!("journal: {} entries written, {} already here", loaded.journal_written, loaded.journal_merged);
@@ -3481,9 +3546,9 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     dirty = true;
                 }
                 // A moving conversation's bar moves (CON-144).
-                if !w.moving.is_empty() {
+                if !w.moving.is_empty() || !w.archiving.is_empty() {
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-                    w.moving.iter_mut().for_each(|m| m.now_ms = now_ms);
+                    w.moving.iter_mut().chain(w.archiving.iter_mut()).for_each(|m| m.now_ms = now_ms);
                     dirty = true;
                 }
                 // Messages go to the tab in front, once there is one; a run on takes them after it.

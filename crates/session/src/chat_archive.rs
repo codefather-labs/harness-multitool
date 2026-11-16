@@ -10,7 +10,8 @@
 //! - `journal.jsonl`: the project's journal with its mind maps and flowcharts, as
 //!   `multitool journal export` writes it.
 //!
-//! A dump never writes over a file. A load keeps the ids, refuses a conversation already on this
+//! A dump never writes over a file: its default name carries the time of the dump, and `-2`, `-3`… when
+//! that is taken. A load keeps the ids, refuses a conversation already on this
 //! machine unless asked for a new copy, moves `cwd` fields under the dumped project to the folder it
 //! is loaded in, and brings the journal in once: new ids here, its maps' references moved with them.
 
@@ -129,12 +130,54 @@ fn file_name(name: &str) -> String {
     if trimmed.is_empty() { "conversation".to_string() } else { trimmed }
 }
 
-fn add_file(zip: &mut zip::ZipWriter<std::fs::File>, name: &str, path: &Path) -> Result<(), String> {
+/// How far a dump or a load is, in bytes (CON-172): told to `report` at most every 100 ms, and
+/// once more at the end.
+struct Counter<'a> {
+    done: std::cell::Cell<u64>,
+    total: u64,
+    last: std::cell::Cell<Option<std::time::Instant>>,
+    report: &'a dyn Fn(u64, u64),
+}
+
+impl<'a> Counter<'a> {
+    fn new(total: u64, report: &'a dyn Fn(u64, u64)) -> Self {
+        report(0, total);
+        Counter { done: Default::default(), total, last: std::cell::Cell::new(Some(std::time::Instant::now())), report }
+    }
+
+    fn add(&self, n: u64) {
+        self.done.set(self.done.get() + n);
+        if self.last.get().is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(100)) {
+            self.last.set(Some(std::time::Instant::now()));
+            (self.report)(self.done.get().min(self.total), self.total);
+        }
+    }
+
+    fn finish(&self) {
+        (self.report)(self.total, self.total);
+    }
+}
+
+/// A reader that counts what goes through it, so the count moves inside a big file too.
+struct Counted<'a, 'b, R> {
+    inner: R,
+    counter: &'a Counter<'b>,
+}
+
+impl<R: Read> Read for Counted<'_, '_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.counter.add(n as u64);
+        Ok(n)
+    }
+}
+
+fn add_file(zip: &mut zip::ZipWriter<std::fs::File>, name: &str, path: &Path, counter: &Counter) -> Result<(), String> {
     let size = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(size >= 0xFFFF_FFFF);
     zip.start_file(name, options).map_err(|e| e.to_string())?;
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::io::copy(&mut file, zip).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::io::copy(&mut Counted { inner: file, counter }, zip).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(())
 }
 
@@ -162,70 +205,81 @@ fn files_under(dir: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Packs `session` of the project at `root` into a .zip: `out`, else `<name>-<id>.zip` in `root`.
+/// Packs `session` of the project at `root` into a .zip: `out`, else `<name>-<id>-<yyyy-mm-dd-hh-mm-ss>.zip`
+/// in `root` (journal#1281), `-2`, `-3`… after it when that is taken (journal#1278).
 pub fn dump(data_dir: &str, root: &str, session: &str, out: Option<&Path>) -> Result<Dumped, String> {
-    dump_with(data_dir, root, session, out, claude_dir())
+    dump_with(data_dir, root, session, out, claude_dir(), &|_, _| {})
 }
 
-fn dump_with(data_dir: &str, root: &str, session: &str, out: Option<&Path>, claude: Option<PathBuf>) -> Result<Dumped, String> {
+/// As [`dump`], telling `progress` the bytes packed so far and in all (CON-172).
+pub fn dump_progress(data_dir: &str, root: &str, session: &str, out: Option<&Path>, progress: &dyn Fn(u64, u64)) -> Result<Dumped, String> {
+    dump_with(data_dir, root, session, out, claude_dir(), progress)
+}
+
+/// The first of `<stem>.zip`, `<stem>-2.zip`, `<stem>-3.zip`… in `root` that is not there (journal#1278).
+fn free_path(root: &Path, stem: &str) -> PathBuf {
+    (1..).map(|n| root.join(if n == 1 { format!("{stem}.zip") } else { format!("{stem}-{n}.zip") })).find(|p| !p.exists() && !p.with_extension("zip.partial").exists()).expect("some name is free")
+}
+
+fn dump_with(data_dir: &str, root: &str, session: &str, out: Option<&Path>, claude: Option<PathBuf>, progress: &dyn Fn(u64, u64)) -> Result<Dumped, String> {
     let log = log_path(data_dir, root, session);
     let text = std::fs::read_to_string(&log).map_err(|_| format!("no conversation {session} in this project"))?;
     let (claude_id, nick) = of_log(&text);
     let name = crate::recent(data_dir, root).into_iter().find(|s| s.id == session).map_or_else(|| session.to_string(), |s| s.title);
     let short: String = claude_id.as_deref().unwrap_or(session).chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
-    let path = out.map_or_else(|| Path::new(root).join(format!("{}-{short}.zip", file_name(&name))), Path::to_path_buf);
-    if path.exists() {
-        return Err(format!("{} is there already, and is never written over: give another name with --out", path.display()));
-    }
+    let path = match out {
+        Some(out) if out.exists() => return Err(format!("{} is there already, and is never written over: give another name with --out", out.display())),
+        Some(out) => out.to_path_buf(),
+        None => free_path(Path::new(root), &format!("{}-{short}-{}", file_name(&name), chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"))),
+    };
     let adapter = std::fs::read_to_string(Path::new(data_dir).join("daemon/conversations.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .and_then(|v| v[session]["provider"].as_str().map(str::to_string))
         .unwrap_or_else(|| if claude_id.is_some() { "claude-code".to_string() } else { "native".to_string() });
     let manifest = Manifest { format: FORMAT, session: session.to_string(), name: name.clone(), nick, project: root.to_string(), adapter, claude_id: claude_id.clone(), dumped_at_ms: now_ms() };
+    // What goes in, known before the first byte is packed, so the progress has its total.
+    let mut sources = vec![(format!("multitool/{session}.jsonl"), log.clone())];
+    if let (Some(id), Some(claude)) = (&claude_id, &claude) {
+        let folder = claude_folder(claude, root);
+        let transcript = folder.join(format!("{id}.jsonl"));
+        if transcript.is_file() {
+            sources.push((format!("claude/{id}.jsonl"), transcript));
+        }
+        sources.extend(files_under(&folder.join(id)).into_iter().map(|(rel, file)| (format!("claude/{id}/{rel}"), file)));
+        sources.extend(files_under(&claude.join("file-history").join(id)).into_iter().map(|(rel, file)| (format!("claude-file-history/{id}/{rel}"), file)));
+    }
+    // The project's journal, with its mind maps and flowcharts (CON-171).
+    let journal = crate::journal_export(data_dir, root).ok();
+    let total = sources.iter().map(|(_, p)| std::fs::metadata(p).map_or(0, |m| m.len())).sum::<u64>() + journal.as_ref().map_or(0, |j| j.len() as u64);
+    let counter = Counter::new(total, progress);
     let partial = path.with_extension("zip.partial");
     let file = std::fs::File::create(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
     let mut zip = zip::ZipWriter::new(file);
     let mut files = 0;
-    let written = (|| -> Result<bool, String> {
+    let written = (|| -> Result<(), String> {
         add_bytes(&mut zip, "manifest.json", serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes())?;
-        add_file(&mut zip, &format!("multitool/{session}.jsonl"), &log)?;
-        files += 2;
-        if let (Some(id), Some(claude)) = (&claude_id, &claude) {
-            let folder = claude_folder(claude, root);
-            let transcript = folder.join(format!("{id}.jsonl"));
-            if transcript.is_file() {
-                add_file(&mut zip, &format!("claude/{id}.jsonl"), &transcript)?;
-                files += 1;
-            }
-            for (rel, file) in files_under(&folder.join(id)) {
-                add_file(&mut zip, &format!("claude/{id}/{rel}"), &file)?;
-                files += 1;
-            }
-            for (rel, file) in files_under(&claude.join("file-history").join(id)) {
-                add_file(&mut zip, &format!("claude-file-history/{id}/{rel}"), &file)?;
-                files += 1;
-            }
-        }
-        // The project's journal, with its mind maps and flowcharts (CON-171).
-        let journal = crate::journal_export(data_dir, root).ok();
-        if let Some(journal) = &journal {
-            add_bytes(&mut zip, "journal.jsonl", journal.as_bytes())?;
+        files += 1;
+        for (name, source) in &sources {
+            add_file(&mut zip, name, source, &counter)?;
             files += 1;
         }
-        Ok(journal.is_some())
+        if let Some(journal) = &journal {
+            add_bytes(&mut zip, "journal.jsonl", journal.as_bytes())?;
+            counter.add(journal.len() as u64);
+            files += 1;
+        }
+        Ok(())
     })();
     let finished = zip.finish().map_err(|e| e.to_string());
-    let journal = match (written, finished) {
-        (Ok(journal), Ok(_)) => journal,
-        (Err(e), _) | (_, Err(e)) => {
-            let _ = std::fs::remove_file(&partial);
-            return Err(e);
-        }
-    };
+    if let Some(e) = written.err().or(finished.err()) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
     std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    counter.finish();
     let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-    Ok(Dumped { path, bytes, files, name, journal })
+    Ok(Dumped { path, bytes, files, name, journal: journal.is_some() })
 }
 
 /// Whether a multitool session of this id is anywhere on this machine.
@@ -271,10 +325,10 @@ fn moved_text(text: &str, from: &str, to: &str, renamed: &[(String, String)]) ->
     out
 }
 
-fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Option<Vec<u8>>, String> {
-    let Ok(mut file) = archive.by_name(name) else { return Ok(None) };
+fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str, counter: &Counter) -> Result<Option<Vec<u8>>, String> {
+    let Ok(file) = archive.by_name(name) else { return Ok(None) };
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|e| format!("{name}: {e}"))?;
+    Counted { inner: file, counter }.read_to_end(&mut bytes).map_err(|e| format!("{name}: {e}"))?;
     Ok(Some(bytes))
 }
 
@@ -287,13 +341,20 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Brings a dumped conversation into the project at `root`.
 pub fn load(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOptions) -> Result<Loaded, String> {
-    load_with(data_dir, root, archive_path, options, claude_dir())
+    load_with(data_dir, root, archive_path, options, claude_dir(), &|_, _| {})
 }
 
-fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOptions, claude: Option<PathBuf>) -> Result<Loaded, String> {
+/// As [`load`], telling `progress` the bytes unpacked so far and in all (CON-172).
+pub fn load_progress(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOptions, progress: &dyn Fn(u64, u64)) -> Result<Loaded, String> {
+    load_with(data_dir, root, archive_path, options, claude_dir(), progress)
+}
+
+fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOptions, claude: Option<PathBuf>, progress: &dyn Fn(u64, u64)) -> Result<Loaded, String> {
     let file = std::fs::File::open(archive_path).map_err(|e| format!("{}: {e}", archive_path.display()))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{} is not a chat archive: {e}", archive_path.display()))?;
-    let manifest: Manifest = serde_json::from_slice(&read_entry(&mut archive, "manifest.json")?.ok_or("no manifest.json: not a chat archive")?).map_err(|e| format!("manifest.json: {e}"))?;
+    let total = (0..archive.len()).filter_map(|i| archive.by_index_raw(i).ok().map(|f| f.size())).sum();
+    let counter = Counter::new(total, progress);
+    let manifest: Manifest = serde_json::from_slice(&read_entry(&mut archive, "manifest.json", &counter)?.ok_or("no manifest.json: not a chat archive")?).map_err(|e| format!("manifest.json: {e}"))?;
     if manifest.format > FORMAT {
         return Err(format!("the archive is of a newer format ({}) than this multitool reads ({FORMAT})", manifest.format));
     }
@@ -318,7 +379,7 @@ fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOpti
     }
     let name = options.name.clone().unwrap_or_else(|| manifest.name.clone());
     // The harness's own log.
-    let log = read_entry(&mut archive, &format!("multitool/{}.jsonl", manifest.session))?.ok_or("the archive has no multitool log")?;
+    let log = read_entry(&mut archive, &format!("multitool/{}.jsonl", manifest.session), &counter)?.ok_or("the archive has no multitool log")?;
     let mut log = moved_text(&String::from_utf8_lossy(&log), &manifest.project, root, &renamed);
     if let Some(wanted) = &options.name {
         log = log
@@ -349,7 +410,7 @@ fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOpti
             } else {
                 continue;
             };
-            let bytes = read_entry(&mut archive, &entry)?.unwrap_or_default();
+            let bytes = read_entry(&mut archive, &entry, &counter)?.unwrap_or_default();
             let bytes = if text { moved_text(&String::from_utf8_lossy(&bytes), &manifest.project, root, &renamed).into_bytes() } else { bytes };
             write(&target, &bytes)?;
         }
@@ -361,9 +422,10 @@ fn load_with(data_dir: &str, root: &str, archive_path: &Path, options: &LoadOpti
     }
     // The journal: once, with new ids here.
     let (mut journal_written, mut journal_merged) = (0, 0);
-    if let Some(journal) = read_entry(&mut archive, "journal.jsonl")? {
+    if let Some(journal) = read_entry(&mut archive, "journal.jsonl", &counter)? {
         (journal_written, journal_merged) = merge_journal(data_dir, root, &String::from_utf8_lossy(&journal))?;
     }
+    counter.finish();
     Ok(Loaded { session, name, claude_id, moved_from: manifest.project, journal_written, journal_merged })
 }
 
@@ -486,17 +548,39 @@ mod tests {
         let listed = listed_with(&data_a, &root_a_s, Some(claude_a.clone()));
         assert_eq!(listed[0].2, log_bytes + form_bytes, "the log and the whole Claude Code form");
         assert!(form_bytes > 0);
-        let dumped = dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone())).unwrap();
-        assert_eq!(dumped.path, root_a.join("orchestrator-9-11111111.zip"), "into the project's folder, named after it");
+        // CON-172: the progress counts up to its total, which is every byte packed.
+        let seen = std::cell::RefCell::new(Vec::<(u64, u64)>::new());
+        let dumped = dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone()), &|done, total| seen.borrow_mut().push((done, total))).unwrap();
+        let name = dumped.path.file_name().unwrap().to_string_lossy().into_owned();
+        let stamp = name.strip_prefix("orchestrator-9-11111111-").and_then(|r| r.strip_suffix(".zip")).unwrap_or_default();
+        assert!(dumped.path.parent() == Some(root_a.as_path()) && chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%d-%H-%M-%S").is_ok(), "into the project's folder, named after it with the time of the dump (journal#1281): {name}");
         assert!(dumped.journal && dumped.files == 7, "{dumped:?}");
-        assert!(dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone())).unwrap_err().contains("never written over"));
+        let seen = seen.into_inner();
+        let journal_bytes = crate::journal_export(&data_a, &root_a_s).unwrap().len() as u64;
+        assert_eq!(seen.last().copied(), Some((log_bytes + form_bytes + journal_bytes, log_bytes + form_bytes + journal_bytes)), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "never back: {seen:?}");
+        // journal#1278: a taken name is never written over: the next free one is taken.
+        let first = std::fs::read(&dumped.path).unwrap();
+        let again = dump_with(&data_a, &root_a_s, "imported-11111111-1", None, Some(claude_a.clone()), &|_, _| {}).unwrap();
+        assert!(again.path != dumped.path && again.path.exists(), "a second dump is a file of its own");
+        std::fs::remove_file(&again.path).unwrap();
+        assert_eq!(std::fs::read(&dumped.path).unwrap(), first, "the first archive as it was");
+        assert!(dump_with(&data_a, &root_a_s, "imported-11111111-1", Some(&dumped.path), Some(claude_a.clone()), &|_, _| {}).unwrap_err().contains("never written over"), "a named --out is still refused");
 
         // B: a filler entry first, so the journal's ids there differ from A's.
         let key_b = harness_memory_journal::project::key_for(None, Path::new(&root_b_s));
         let mut conn = journal::open(&Path::new(&data_b).join("journals"), &key_b, true).unwrap().unwrap();
         journal::add(&mut conn, &journal::NewEntry { body: "B's own older entry".into(), category: "note".into(), tags: vec!["t".into()], ..Default::default() }, 50).unwrap();
         drop(conn);
-        let loaded = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions::default(), Some(claude_b.clone())).unwrap();
+        let seen = std::cell::RefCell::new(Vec::<(u64, u64)>::new());
+        let loaded = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions::default(), Some(claude_b.clone()), &|done, total| seen.borrow_mut().push((done, total))).unwrap();
+        let unpacked: u64 = {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&dumped.path).unwrap()).unwrap();
+            (0..zip.len()).map(|i| zip.by_index(i).unwrap().size()).sum()
+        };
+        let seen = seen.into_inner();
+        assert_eq!(seen.last().copied(), Some((unpacked, unpacked)), "a load counts every byte it unpacks: {seen:?}");
+        assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0));
         assert_eq!((loaded.session.as_str(), loaded.claude_id.as_deref(), loaded.journal_written), ("imported-11111111-1", Some(cid), 1));
         // The harness's copy opens there with its name and nick.
         let listed = crate::recent(&data_b, &root_b_s);
@@ -519,14 +603,28 @@ mod tests {
         drop(conn);
 
         // Again: refused. With --new-id: a copy, the journal not written twice.
-        assert!(load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions::default(), Some(claude_b.clone())).unwrap_err().contains("already on this machine"));
-        let copy = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions { new_id: true, name: Some("the copy".into()) }, Some(claude_b.clone())).unwrap();
+        assert!(load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions::default(), Some(claude_b.clone()), &|_, _| {}).unwrap_err().contains("already on this machine"));
+        let copy = load_with(&data_b, &root_b_s, &dumped.path, &LoadOptions { new_id: true, name: Some("the copy".into()) }, Some(claude_b.clone()), &|_, _| {}).unwrap();
         assert!(copy.session != loaded.session && copy.claude_id.as_deref() != Some(cid));
         assert_eq!((copy.journal_written, copy.journal_merged), (0, 1));
         let copied = std::fs::read_to_string(folder_b.join(format!("{}.jsonl", copy.claude_id.unwrap()))).unwrap();
         assert!(!copied.contains(cid) && copied.contains("\"customTitle\":\"the copy\""));
         assert!(crate::recent(&data_b, &root_b_s).iter().any(|s| s.title == "the copy"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// journal#1278: a name that is taken is never written over: `-2`, `-3`… after it.
+    #[test]
+    fn a_taken_name_gets_the_next_number() {
+        let root = std::env::temp_dir().join(format!("mt-chat-free-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(free_path(&root, "a-1"), root.join("a-1.zip"));
+        std::fs::write(root.join("a-1.zip"), b"old").unwrap();
+        assert_eq!(free_path(&root, "a-1"), root.join("a-1-2.zip"));
+        std::fs::write(root.join("a-1-2.zip"), b"").unwrap();
+        std::fs::write(root.join("a-1-3.zip.partial"), b"").unwrap();
+        assert_eq!(free_path(&root, "a-1"), root.join("a-1-4.zip"), "one being written counts as taken");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
