@@ -243,7 +243,9 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 /// meaning alone still says how far to trust it.
 ///
 /// - Work items, open until a session closes them (`journal close`): todo,
-///   question, problem, `bugreport` (a defect as reported — symptom, steps —
+///   question, `wait-for-decision` (a choice only its decider, usually the
+///   owner, makes; the work that depends on it waits; closed with the decision
+///   as its resolution, CON-178), problem, `bugreport` (a defect as reported — symptom, steps —
 ///   not yet worked through), reminder, `unverified` (a hypothesis, closed by
 ///   checking it), `disputed` (contradicts another entry, closed when
 ///   settled), `ai-feedback` (an agent's suggestion for the harness itself).
@@ -266,9 +268,10 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 /// An open work item, a specification, a constraint, an invariant, a principle
 /// or an important mark keeps its entry past retention; the other marks do not
 /// (salience decides).
-pub const FLAGS: [&str; 18] = [
+pub const FLAGS: [&str; 19] = [
     "todo",
     "question",
+    "wait-for-decision",
     "problem",
     "bugreport",
     "reminder",
@@ -2648,6 +2651,31 @@ mod tests {
 
         let a = agenda(&c, 10).unwrap();
         assert_eq!(a.iter().map(|(f, n, _)| (f.as_str(), *n)).collect::<Vec<_>>(), vec![("todo", 1), ("question", 1)]);
+    }
+
+    /// CON-178: `wait-for-decision` is a work item: open, on the agenda, closed with the decision.
+    #[test]
+    fn a_wait_for_decision_entry_is_open_until_decided() {
+        let (_d, mut c) = journal();
+        assert_eq!(normalize_flags(&["WAIT-FOR-DECISION"]).unwrap(), vec!["wait-for-decision"]);
+        assert!(normalize_flags(&["wait-for-desigion"]).is_err(), "a misspelling is refused");
+        assert!(closable("wait-for-decision"));
+        let mut e = entry("Postgres or SQLite for the cache? Options: (a) SQLite, local; (b) Postgres, shared.", "decision", &["cache"]);
+        e.flags = vec!["wait-for-decision".into()];
+        let (_, id) = add(&mut c, &e, 10).unwrap();
+        let open = |c: &Connection, state: Option<bool>| -> Vec<i64> {
+            let f = Filter { flags: vec!["wait-for-decision".into()], open: state, ..Default::default() };
+            list(c, &f, 0, 10).unwrap().1.iter().map(|e| e.id).collect()
+        };
+        assert_eq!(open(&c, Some(true)), vec![id]);
+        let a = agenda(&c, 10).unwrap();
+        assert_eq!(a.iter().map(|(f, n, _)| (f.as_str(), *n)).collect::<Vec<_>>(), vec![("wait-for-decision", 1)]);
+        assert_eq!(close(&mut c, id, &[], Some("owner"), Some("SQLite: one machine for now"), 20).unwrap(), vec!["wait-for-decision"]);
+        assert!(open(&c, Some(true)).is_empty() && agenda(&c, 10).unwrap().is_empty());
+        let f = get(&c, id).unwrap().unwrap().flags;
+        assert_eq!((f[0].open, f[0].resolution.as_deref()), (false, Some("SQLite: one machine for now")));
+        assert_eq!(reopen(&mut c, id, &["wait-for-decision".into()]).unwrap(), vec!["wait-for-decision"]);
+        assert_eq!(open(&c, Some(true)), vec![id]);
     }
 
     #[test]

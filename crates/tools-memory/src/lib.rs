@@ -327,7 +327,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_l
     match name {
         "journal_add" => tool(
             "journal_add",
-            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, problem, unverified, verified, specification, constraint, invariant, principle, important, idea, concept, comment, deprecated. An invariant or principle entry is mirrored to docs/spec/invariants.md or docs/spec/principles.md and needs its doc id (INV- or P-).",
+            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, wait-for-decision (a choice only the user makes; close it with the decision), problem, unverified, verified, specification, constraint, invariant, principle, important, idea, concept, comment, deprecated. An invariant or principle entry is mirrored to docs/spec/invariants.md or docs/spec/principles.md and needs its doc id (INV- or P-).",
             || {
                 object(
                     json!({

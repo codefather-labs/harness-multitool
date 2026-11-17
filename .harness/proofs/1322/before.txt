@@ -1,0 +1,4 @@
+thread 'journal::tests::a_wait_for_decision_entry_is_open_until_decided' (1799031) panicked at crates/memory-journal/src/journal.rs:2657:60:
+called `Result::unwrap()` on an `Err` value: unknown flag `wait-for-decision`: one of todo, question, problem, bugreport, reminder, unverified, disputed, ai-feedback, specification, constraint, invariant, principle, important, idea, concept, comment, verified, deprecated
+--
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.01s

@@ -87,6 +87,7 @@ Any entry can carry flags, any number at once:
 |---|---|---|
 | `todo` | something to do | `journal_close` |
 | `question` | an open question | `journal_close` (the answer) |
+| `wait-for-decision` | waits for a choice only its decider makes, usually the user, with the options laid out; the work that depends on it does not go on | `journal_close` (the decision) |
 | `problem` | an unresolved problem | `journal_close` (the fix) |
 | `unverified` | a hypothesis or an implementation not yet checked | `journal_close`, only once a separate `Verifies journal#N` entry carries the evidence |
 | `specification` | how something must behave; binding | `journal_mark` remove (or replace it) |
@@ -102,7 +103,7 @@ Any entry can carry flags, any number at once:
 - Never act on a `deprecated` entry. Treat an `unverified` one as an assumption.
 - When an entry stops being true, mark it `deprecated` and cite it from the entry that replaces it.
 - When you settle a question, fix a problem or finish a todo, close it saying how; `journal_reopen` if it comes back.
-- Write todos and questions down instead of leaving them in the conversation, where the next session will not see them.
+- Write todos and questions down instead of leaving them in the conversation, where the next session will not see them. A choice only the user can make, and that can wait, is an entry flagged `wait-for-decision` with its options; close it with the decision when it comes.
 
 ## Specifications — spec-driven development
 
