@@ -18,7 +18,7 @@ On a fresh context window (session start, resume, after compaction), and before 
 - `journal_list` — by category, tags, flags, feature, open or closed, newest first;
 - `journal_get` — one entry in full, with its links.
 
-Read by category and tag, not by paging through everything.
+Read by category and tag, not by paging through everything. Before a research or an analysis, look for an earlier one (`journal_list` with flags `research`, `journal_search`) and do not redo what still holds.
 
 An entry you rely on is evidence: cite it as `journal#<id>`. An entry is what an earlier session believed — if the code now says otherwise, the code wins, and that contradiction is itself a finding to journal.
 
@@ -35,6 +35,7 @@ What counts:
 - **bug** — a defect found: symptom, cause, where, whether fixed.
 - **assumption-falsified** — something believed that turned out wrong, and what is true instead.
 - **lesson** — a correction from the operator, or a mistake of your own, worth not repeating.
+- **research** — not a category but a flag: the result of any research or analysis (a cause hunted, options compared, a system or a codebase read, a measurement), flagged `research` on its entry (a finding, a decision…). It stands alone: what was asked; how it was looked into (method, commands, data, conditions); its sources named exactly (`path:line`, a URL, a version, a command and its output); the result, with numbers where there are any; how sure it is and what it does not cover. Give it `salience` high when it should be kept for good.
 - **update** — a change you made to the project: code, config, docs, dependencies, infrastructure. What changed and where (files, the commit hash once there is one), and why — cite the `journal#<id>` of the decision behind it when there is one. These entries are the changelog.
 
 Reuse the categories and tags the journal already has before inventing new ones.
@@ -95,6 +96,7 @@ Any entry can carry flags, any number at once:
 | `invariant`, `principle` | mirrored to `docs/spec/invariants.md` / `principles.md`, with their doc id | `journal_mark` remove |
 | `important` | keep in view | `journal_mark` remove |
 | `idea`, `concept`, `comment` | thinking, not binding | `journal_mark` remove |
+| `research` | the result of a research or an analysis: what was asked, how, its sources named exactly, the result, how sure it is | `journal_mark` remove |
 | `verified` | declares that the check passed, with its proof | `journal_mark` remove |
 | `deprecated` | no longer true: history only | `journal_mark` remove |
 
