@@ -964,6 +964,11 @@ impl Sessions {
         self.handles.values().any(|h| h.running.load(Ordering::SeqCst))
     }
 
+    /// A message waits for a tab's next run, one not yet retired (CON-181).
+    pub fn queued(&self) -> bool {
+        self.handles.iter().any(|(tab, handle)| !handle.retired.load(Ordering::SeqCst) && self.inboxes.get(tab).is_some_and(|inbox| !inbox.lock().expect("inbox").is_empty()))
+    }
+
     /// The stored sessions of the tabs that have one.
     pub fn open(&self) -> Vec<(u64, String)> {
         self.handles.iter().map(|(tab, handle)| (*tab, handle.session.clone())).collect()
@@ -1194,6 +1199,13 @@ impl Sessions {
     pub fn stop(&self, tab: u64) {
         if let Some(handle) = self.handles.get(&tab) {
             handle.stop.stop();
+        }
+    }
+
+    /// This tab's run stops once the tool calls under way have their results (CON-181).
+    pub fn stop_after_tools(&self, tab: u64) {
+        if let Some(handle) = self.handles.get(&tab) {
+            handle.stop.stop_after_tools();
         }
     }
 

@@ -1,8 +1,6 @@
 //! The real plugins end to end, against a fake provider endpoint on localhost: real HTTP and SSE
 //! through `Net`, a real file edit and a real command through the tools, a real session log.
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,126 +9,9 @@ use harness_api::*;
 use harness_session::*;
 use serde_json::json;
 
-/// Serves one canned SSE body per request and records the requests.
-fn fake_endpoint(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
-    std::thread::spawn(move || {
-        for (i, stream) in listener.incoming().enumerate() {
-            let mut stream = stream.unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0u8; 65536];
-            loop {
-                let n = stream.read(&mut buf).unwrap();
-                request.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some(head_end) = text.find("\r\n\r\n") {
-                    let length = text[..head_end].lines().find_map(|l| l.to_lowercase().strip_prefix("content-length: ").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
-                    if request.len() >= head_end + 4 + length {
-                        break;
-                    }
-                }
-            }
-            log.lock().unwrap().push(String::from_utf8_lossy(&request).into_owned());
-            let body = bodies.get(i).cloned().unwrap_or_default();
-            let response = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
-            stream.write_all(response.as_bytes()).unwrap();
-        }
-    });
-    (url, seen)
-}
+mod common;
+use common::*;
 
-fn sse(events: &[serde_json::Value]) -> String {
-    events.iter().map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap_or("x"))).collect()
-}
-
-fn anthropic_turn(tool: Option<(&str, &str, serde_json::Value)>, text: &str) -> String {
-    let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}})];
-    events.push(json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}));
-    events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}));
-    events.push(json!({"type":"content_block_stop","index":0}));
-    events.push(json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}));
-    events.push(json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}}));
-    events.push(json!({"type":"content_block_stop","index":1}));
-    let stop = if let Some((id, name, input)) = tool {
-        events.push(json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":id,"name":name,"input":{}}}));
-        events.push(json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":input.to_string()}}));
-        events.push(json!({"type":"content_block_stop","index":2}));
-        "tool_use"
-    } else {
-        "end_turn"
-    };
-    events.push(json!({"type":"message_delta","delta":{"stop_reason":stop},"usage":{"output_tokens":100}}));
-    events.push(json!({"type":"message_stop"}));
-    sse(&events)
-}
-
-/// The real factory, with this process's environment less what a harness running these tests sets for
-/// its own profile: a test reads no one's real sign-in (journal#786).
-fn hermetic_factory(settings: Settings, root: String, data_dir: std::path::PathBuf) -> harness_session::Factory {
-    let mut env = harness_session::this_environment();
-    for name in [harness_session::CHATGPT_DIR_VAR, "CLAUDE_CONFIG_DIR", "MULTITOOL_HOME"] {
-        env.remove(name);
-    }
-    let host = harness_session::Host { environment: Some(std::sync::Arc::new(env)), ..Default::default() };
-    harness_session::with_host(settings, root, data_dir, host)
-}
-
-/// A test's own folder. Folders of runs whose process is gone are removed first: the test harness
-/// has no hook after the last test, so at most the last run's are left on the disk.
-fn temp_dir(name: &str) -> String {
-    static SWEPT: std::sync::Once = std::sync::Once::new();
-    SWEPT.call_once(|| {
-        for entry in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
-            let file = entry.file_name().to_string_lossy().into_owned();
-            let Some(pid) = file.strip_prefix("harness-e2e-").and_then(|rest| rest.rsplit('-').next()).and_then(|p| p.parse::<u32>().ok()) else { continue };
-            if pid != std::process::id() && !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    });
-    let dir = std::env::temp_dir().join(format!("harness-e2e-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.to_string_lossy().into_owned()
-}
-
-/// Runs prompts, answering every permission prompt with `answer`, until each run ends.
-fn drive(sessions: &mut Sessions, prompts: &[&str], answer: Answer) -> (Vec<LogEntry>, Vec<RunEndOf>, u32) {
-    let (mut entries, mut ends, mut asked) = (Vec::new(), Vec::new(), 0);
-    for prompt in prompts {
-        sessions.prompt(1, prompt.to_string());
-        loop {
-            match sessions.next(Duration::from_secs(20)).expect("the session answers") {
-                FromSession::Entry { entry, .. } => entries.push(entry),
-                FromSession::Ask { tab, .. } => {
-                    asked += 1;
-                    sessions.answer(tab, answer);
-                }
-                FromSession::Ended { end, .. } => {
-                    ends.push(format!("{end:?}"));
-                    break;
-                }
-                FromSession::Unavailable { message, .. } => panic!("{message}"),
-                FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
-                FromSession::Queued { .. } => {}
-                FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
-            }
-        }
-    }
-    (entries, ends, asked)
-}
-
-type RunEndOf = String;
-
-fn settings(url: &str, data_key: &str) -> Settings {
-    let mut s = Settings::default();
-    s.providers.insert("anthropic".into(), json!({"base_url": url, "fallbacks": true}));
-    s.auth.insert("anthropic".into(), json!({"env": "HARNESS_E2E_NO_SUCH_VAR", "key": data_key}));
-    s
-}
 
 /// A real coding step: the model edits a file, runs a command that sees the change, and answers.
 #[test]
@@ -1794,10 +1675,11 @@ fn a_window_takes_over_a_run_from_one_that_went_away() {
     assert!(seen.lock().unwrap()[2].contains("Rest of the run"), "the session went on with all of it");
 }
 
-/// INV-20: a window gone: its run ends, and what it had queued does not start by itself. It waits
-/// for whoever opens the session next.
+/// CON-181 (replacing CON-76's rule that a gone window's queue never starts): a window that leaves
+/// saying stop has its run stopped, its question denied, and what it had queued not started. That
+/// waits for whoever opens the session next.
 #[test]
-fn what_a_gone_window_queued_does_not_start() {
+fn what_a_window_leaving_with_stop_queued_does_not_start() {
     use harness_session::remote::{DaemonHost, MakeHost};
     let root = temp_dir("left");
     let data = temp_dir("left-data");
@@ -1826,15 +1708,148 @@ fn what_a_gone_window_queued_does_not_start() {
     assert!(asked);
     let session = op(gone, json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
     op(gone, json!({"op": "prompt", "tab": 1, "text": "queued, then gone"}));
-    // It goes silent with the run on. Whatever answers the prompt, the run ends with that.
-    std::thread::sleep(Duration::from_secs(7));
-    op(gone, json!({"op": "answer", "tab": 1, "answer": "once"}));
-    std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(seen.lock().unwrap().len(), 2, "the queued message started nothing");
+    // It leaves saying stop, with the run waiting on its question.
+    op(gone, json!({"op": "close", "leave": "stop"}));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(seen.lock().unwrap().len(), 1, "stopped: the queued message started nothing, and the run asked nothing more");
     assert_eq!(user_texts(&read_log(&data, &root, &session)), ["start"]);
     op(next, json!({"op": "open", "root": root, "settings": s}));
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([{"kind": "user", "text": "queued, then gone"}]));
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([]), "once");
+}
+
+/// CON-181: a window leaves its conversations one of four ways. Its run is in a tool call
+/// (`sleep 3`), and a second message is queued, when it closes.
+/// - stop: nothing more is asked of the model;
+/// - finish-command: the tool call finishes, then nothing more;
+/// - finish-work: the run and the queued message go on to their end;
+/// - keep: as finish-work, and a callback afterwards starts another run.
+#[test]
+fn a_window_leaves_its_conversations_as_it_says() {
+    use harness_session::remote::{DaemonHost, MakeHost};
+    for leave in ["stop", "finish-command", "finish-work", "keep"] {
+        let root = temp_dir(&format!("leave-{leave}"));
+        let data = temp_dir(&format!("leave-{leave}-data"));
+        let (url, seen) = fake_endpoint(vec![
+            anthropic_turn(Some(("s1", "shell", json!({"command": "sleep 3; echo slept"}))), "Sleeping."),
+            anthropic_turn(None, "DONE"),
+            anthropic_turn(None, "QUEUED DONE"),
+            anthropic_turn(None, "WOKEN"),
+        ]);
+        let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+        let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+        daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+        let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+        let op = |op: serde_json::Value| {
+            let mut op = op;
+            op["window"] = json!("conv-555-leave");
+            client.conversation_op(&op).unwrap()
+        };
+        op(json!({"op": "open", "root": root, "settings": settings(&url, "k")}));
+        op(json!({"op": "prompt", "tab": 1, "text": "start"}));
+        let (mut after, deadline) = (0, std::time::Instant::now() + Duration::from_secs(10));
+        let mut asked = false;
+        while !asked && std::time::Instant::now() < deadline {
+            for event in client.conversation_events("conv-555-leave", after).unwrap() {
+                after = event["seq"].as_u64().unwrap();
+                asked |= event["event"]["kind"] == "ask";
+            }
+        }
+        assert!(asked, "{leave}: the shell call asks first");
+        let session = op(json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
+        op(json!({"op": "answer", "tab": 1, "answer": "once"}));
+        op(json!({"op": "prompt", "tab": 1, "text": "and on"}));
+        std::thread::sleep(Duration::from_millis(800));
+        op(json!({"op": "close", "leave": leave}));
+        std::thread::sleep(Duration::from_secs(6));
+        let log = read_log(&data, &root, &session);
+        let result = log.iter().find_map(|e| match &e.event { Event::ToolResult { output, .. } => Some(output.clone()), _ => None }).unwrap_or_default();
+        let calls = seen.lock().unwrap().len();
+        match leave {
+            "stop" => {
+                assert_eq!(calls, 1, "stop: the model is asked nothing more");
+                assert!(!result.contains("slept"), "stop: the tool call was stopped: {result}");
+            }
+            "finish-command" => {
+                assert_eq!(calls, 1, "finish-command: nothing after the tool call");
+                assert!(result.contains("slept"), "finish-command: the tool call finished: {result}");
+            }
+            _ => {
+                // The queued message goes into the run's next call (take_queued), so two calls.
+                assert_eq!(calls, 2, "{leave}: the run and the queued message went on");
+                assert!(result.contains("slept"));
+                assert_eq!(user_texts(&log), ["start", "and on"]);
+            }
+        }
+        if leave == "keep" {
+            // Kept: a callback to the conversation reaches it and starts a run (CON-164).
+            let url = client.session_callback(&session, &root).unwrap();
+            let path = url.split_once("/callback/").map(|(_, token)| format!("/callback/{token}")).unwrap();
+            let (status, _) = client.request("POST", &path, "", &json!({"uuid": "u-keep-1", "type": "notification", "label": "test", "text": "wake up"}).to_string()).unwrap();
+            assert!(status < 300, "the callback is taken: {status}");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while seen.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            assert_eq!(seen.lock().unwrap().len(), 3, "keep: the callback started a run with no window");
+        }
+        drop(daemon);
+    }
+}
+
+/// CON-181: a run with no window keeps its question; a window that opens the conversation later
+/// gets it and answers it, and the run goes on.
+#[test]
+fn a_question_with_no_window_waits_for_one() {
+    use harness_session::remote::{DaemonHost, MakeHost};
+    let root = temp_dir("question-waits");
+    let data = temp_dir("question-waits-data");
+    let (url, seen) = fake_endpoint(vec![anthropic_turn(Some(("q1", "shell", json!({"command": "echo asked"}))), "Asking."), anthropic_turn(None, "ANSWERED")]);
+    let daemon = harness_daemon::Daemon::start(std::path::Path::new(&data), 0).unwrap();
+    let make_host: MakeHost = Arc::new(|_, note, reload| Host { note, plugins: Arc::new(|| json!({})), reload, environment: None, window: None, choices: Default::default() });
+    daemon.host_conversations(DaemonHost::new(std::path::Path::new(&data), make_host));
+    let client = harness_daemon::client::Client::find(std::path::Path::new(&data)).unwrap();
+    let op = |window: &str, op: serde_json::Value| {
+        let mut op = op;
+        op["window"] = json!(window);
+        client.conversation_op(&op).unwrap()
+    };
+    let s = settings(&url, "k");
+    op("conv-666-a", json!({"op": "open", "root": root, "settings": s}));
+    op("conv-666-a", json!({"op": "prompt", "tab": 1, "text": "start"}));
+    let (mut after, deadline) = (0, std::time::Instant::now() + Duration::from_secs(10));
+    let mut asked = false;
+    while !asked && std::time::Instant::now() < deadline {
+        for event in client.conversation_events("conv-666-a", after).unwrap() {
+            after = event["seq"].as_u64().unwrap();
+            asked |= event["event"]["kind"] == "ask";
+        }
+    }
+    assert!(asked);
+    let session = op("conv-666-a", json!({"op": "session_of", "tab": 1}))["session"].as_str().unwrap().to_string();
+    op("conv-666-a", json!({"op": "close", "leave": "finish-work"}));
+    std::thread::sleep(Duration::from_secs(3));
+    let log = read_log(&data, &root, &session);
+    assert!(!log.iter().any(|e| matches!(&e.event, Event::ToolDecision { allowed: false, .. })), "no denial with no window");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    // Another window opens it: the question comes with it, and its answer lets the run go on.
+    op("conv-777-b", json!({"op": "open", "root": root, "settings": s}));
+    assert_eq!(op("conv-777-b", json!({"op": "resume", "tab": 3, "text": session}))["attached"], true);
+    let (mut after, deadline) = (0, std::time::Instant::now() + Duration::from_secs(10));
+    let mut asked = false;
+    while !asked && std::time::Instant::now() < deadline {
+        for event in client.conversation_events("conv-777-b", after).unwrap() {
+            after = event["seq"].as_u64().unwrap();
+            asked |= event["event"]["kind"] == "ask" && event["event"]["tab"] == 3;
+        }
+    }
+    assert!(asked, "the question came with the conversation");
+    op("conv-777-b", json!({"op": "answer", "tab": 3, "answer": "once"}));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while seen.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(seen.lock().unwrap().len(), 2, "the run went on after the answer");
 }
 
 /// journal#807: a daemon of a newer build replaces an idle one; a window of the old one goes on

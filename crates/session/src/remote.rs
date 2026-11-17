@@ -19,6 +19,12 @@ use crate::{Factory, FromSession, Host, Sessions, Settings, TaskRefused};
 
 /// A window that has not polled for this long is gone; its runs finish with nobody watching.
 const WINDOW_GONE: Duration = Duration::from_secs(30);
+
+/// How long a window may be silent before it is lost: WINDOW_GONE, or MULTITOOL_WINDOW_GONE_SECS
+/// for a test that cannot wait half a minute.
+fn window_gone() -> Duration {
+    std::env::var("MULTITOOL_WINDOW_GONE_SECS").ok().and_then(|s| s.parse().ok()).map_or(WINDOW_GONE, Duration::from_secs)
+}
 const PUMP: Duration = Duration::from_millis(10);
 /// A pump that comes this long after the last one means the daemon itself was held (a machine's
 /// sleep, a frozen cgroup): the windows were not silent then, it was (journal#1251).
@@ -107,6 +113,38 @@ fn answer_from_json(value: &Value) -> Answer {
     }
 }
 
+/// What a window's conversations do when it leaves (CON-181): asked on /exit, or set for an
+/// accidental loss of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Leave {
+    /// Every running run is stopped now.
+    Stop,
+    /// Each running run finishes the tool call under way, then is stopped.
+    FinishCommand,
+    /// Each conversation goes on until its agent stops on its own, queued messages included.
+    #[default]
+    FinishWork,
+    /// The conversations stay open in the daemon with no window.
+    Keep,
+}
+
+impl Leave {
+    pub const ALL: [Leave; 4] = [Leave::Stop, Leave::FinishCommand, Leave::FinishWork, Leave::Keep];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Leave::Stop => "stop",
+            Leave::FinishCommand => "finish-command",
+            Leave::FinishWork => "finish-work",
+            Leave::Keep => "keep",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Leave> {
+        Leave::ALL.into_iter().find(|leave| leave.as_str() == text)
+    }
+}
+
 /// Builds what a session gets from this binary, in the daemon as in a frontend.
 pub type MakeHost = Arc<dyn Fn(&Settings, Arc<dyn Fn(u64) -> Option<String> + Send + Sync>, Arc<AtomicBool>) -> Host + Send + Sync>;
 
@@ -145,6 +183,14 @@ struct Window {
     stopped_starting: bool,
     /// The window's environment, for reading a provider's conversations (the daemon's own is not it).
     environment: Option<crate::WindowEnv>,
+    /// What its conversations do if the window is lost (CON-181), as it said when it opened.
+    on_loss: Leave,
+    /// How it left, once it has; applied once.
+    leave: Option<Leave>,
+    leave_done: bool,
+    /// Tabs whose run is in a tool call now, and those to stop once that call's result comes.
+    in_tool: std::collections::HashSet<u64>,
+    stop_on_result: std::collections::HashSet<u64>,
 }
 
 /// A tab showing a run of another window. When it ends the tab has the session itself.
@@ -157,6 +203,17 @@ struct Follow {
 }
 
 impl Window {
+    /// It is there for messages, agents and Telegram: open, or left with its conversations kept.
+    fn reachable(&self) -> bool {
+        !self.closed || self.leave == Some(Leave::Keep)
+    }
+
+    /// Closed, it stays for its conversations' sake (CON-181): a run on, what is queued when it
+    /// finishes its work, everything when it keeps them.
+    fn holds_on(&self) -> bool {
+        self.sessions.busy() || !self.handed.is_empty() || !self.following.is_empty() || self.leave == Some(Leave::Keep) || (self.leave == Some(Leave::FinishWork) && self.sessions.queued())
+    }
+
     fn silent(&self) -> bool {
         self.closed || self.polled.elapsed() > WINDOW_SILENT
     }
@@ -200,7 +257,19 @@ impl Window {
             "note" => {
                 self.notes.lock().expect("notes").insert(tab, text());
             }
-            "close" => self.closed = true,
+            // How it leaves: said once, the first time (CON-181). A window of an older build says
+            // nothing: its work finishes.
+            "close" => {
+                if !self.closed {
+                    self.closed = true;
+                    self.leave = Some(op["leave"].as_str().and_then(Leave::parse).unwrap_or_default());
+                }
+            }
+            "on_loss" => {
+                if let Some(leave) = op["text"].as_str().and_then(Leave::parse) {
+                    self.on_loss = leave;
+                }
+            }
             other => return Err(format!("no such operation: {other}")),
         }
         Ok(json!({"ok": true}))
@@ -587,7 +656,7 @@ impl DaemonHost {
             }
             Ok(reply) if reply.get("answer_slave").is_some() => {
                 let slave = reply["answer_slave"].as_str().unwrap_or_default();
-                for window in windows.values_mut().filter(|w| !w.closed) {
+                for window in windows.values_mut().filter(|w| w.reachable()) {
                     if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == slave) {
                         let answer = reply["answer"].as_str().unwrap_or("deny").to_string();
                         // What a program that has stopped asked is no one's to answer now.
@@ -619,7 +688,7 @@ impl DaemonHost {
                     orchestra.planning.remove(&slave);
                     self.save_orchestra(&orchestra);
                 }
-                for window in windows.values_mut().filter(|w| !w.closed) {
+                for window in windows.values_mut().filter(|w| w.reachable()) {
                     if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == slave) {
                         window.sessions.stop(their_tab);
                         window.sessions.forget(their_tab);
@@ -660,7 +729,7 @@ impl DaemonHost {
         }
         let any = !words.is_empty();
         for (master, slave, what) in words {
-            for window in windows.values_mut().filter(|w| !w.closed) {
+            for window in windows.values_mut().filter(|w| w.reachable()) {
                 if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == master) {
                     window.sessions.inbound(tab, format!("agent:{slave}"), what.clone());
                 }
@@ -687,14 +756,14 @@ impl DaemonHost {
                 }
                 *last = now;
                 // Its window went, and its tab with it: there is nothing to check (journal#595).
-                if !windows.values().filter(|w| !w.closed).any(|w| w.sessions.open().into_iter().any(|(_, s)| s == *slave)) {
+                if !windows.values().filter(|w| w.reachable()).any(|w| w.sessions.open().into_iter().any(|(_, s)| s == *slave)) {
                     let name = nicks.get(slave).map_or(slave.as_str(), String::as_str);
                     let task = orchestra.tasks.get(slave).map_or_else(|| "no entry".to_string(), |task| format!("journal#{task}"));
                     due.push((master.clone(), format!("{name} is gone: its window closed with its tab, and its work on {task} stopped where it was. What it wrote stays. Start another agent on that entry if the work goes on.")));
                     gone.push(slave.clone());
                     continue;
                 }
-                let running = windows.values().filter(|w| !w.closed).any(|w| w.sessions.open().into_iter().any(|(tab, s)| s == *slave && w.sessions.running(tab)));
+                let running = windows.values().filter(|w| w.reachable()).any(|w| w.sessions.open().into_iter().any(|(tab, s)| s == *slave && w.sessions.running(tab)));
                 let name = nicks.get(slave).map_or(slave.as_str(), String::as_str);
                 let task = orchestra.tasks.get(slave).map_or_else(|| "no entry".to_string(), |task| format!("journal#{task}"));
                 let state = if running { "running" } else { "not running" };
@@ -711,7 +780,7 @@ impl DaemonHost {
         }
         let any = !due.is_empty();
         for (master, what) in due {
-            for window in windows.values_mut().filter(|w| !w.closed) {
+            for window in windows.values_mut().filter(|w| w.reachable()) {
                 if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == master) {
                     window.sessions.inbound(tab, harness_api::HARNESS_LABEL.to_string(), what.clone());
                 }
@@ -788,7 +857,7 @@ impl DaemonHost {
         let stored = self.conversations.lock().expect("conversations");
         let nicks = self.nicks.lock().expect("nicks");
         let mut agents = Vec::new();
-        for window in windows.values().filter(|w| !w.closed) {
+        for window in windows.values().filter(|w| w.reachable()) {
             for (_, session) in window.sessions.open() {
                 if only.as_ref().is_some_and(|only| *only != session) {
                     continue;
@@ -846,7 +915,7 @@ impl DaemonHost {
             }
             times.push_back(Instant::now());
         }
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
             if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == target) {
                 let queued = window.sessions.runs(&target);
                 if to_own_slave {
@@ -864,7 +933,7 @@ impl DaemonHost {
     /// A nick, any case, or an id, among what is open.
     fn resolve_agent(&self, windows: &HashMap<String, Window>, to: &str) -> Result<String, String> {
         let nicks = self.nicks.lock().expect("nicks");
-        let open: Vec<String> = windows.values().filter(|w| !w.closed).flat_map(|w| w.sessions.open().into_iter().map(|(_, session)| session)).collect();
+        let open: Vec<String> = windows.values().filter(|w| w.reachable()).flat_map(|w| w.sessions.open().into_iter().map(|(_, session)| session)).collect();
         if open.iter().any(|session| session == to) {
             return Ok(to.to_string());
         }
@@ -927,16 +996,37 @@ impl DaemonHost {
         for (id, window) in windows.iter_mut() {
             let messages = window.sessions.drain();
             let reload = window.reload.swap(false, Ordering::SeqCst);
-            if window.polled.elapsed() > WINDOW_GONE {
+            // Lost: it leaves as it said it would on a loss (CON-181).
+            if !window.closed && window.polled.elapsed() > window_gone() {
                 window.closed = true;
+                window.leave = Some(window.on_loss);
             }
-            // Gone: what it was still going to send does not start by itself. Its sender may be
-            // on the conversation in another program by now (INV-20).
-            if window.silent() && !window.stopped_starting {
-                window.stopped_starting = true;
-                let mut left = self.left.lock().expect("left");
-                for (session, waiting) in window.sessions.stop_starting() {
-                    left.entry(session).or_default().extend(waiting);
+            if window.closed && !window.leave_done {
+                window.leave_done = true;
+                let leave = window.leave.unwrap_or_default();
+                let tabs: Vec<u64> = window.sessions.open().into_iter().map(|(tab, _)| tab).filter(|tab| window.sessions.running(*tab)).collect();
+                for tab in tabs {
+                    match leave {
+                        Leave::Stop => window.sessions.stop(tab),
+                        // Between tool calls it stops now; in one, once that call's result comes.
+                        // The native loop stops itself after the results; a delegate's run is stopped
+                        // when the result is seen.
+                        Leave::FinishCommand if window.in_tool.contains(&tab) => {
+                            window.sessions.stop_after_tools(tab);
+                            window.stop_on_result.insert(tab);
+                        }
+                        Leave::FinishCommand => window.sessions.stop(tab),
+                        Leave::FinishWork | Leave::Keep => {}
+                    }
+                }
+                // Stopping: what it was still going to send does not start by itself. Its sender
+                // may be on the conversation in another program by now (INV-20).
+                if matches!(leave, Leave::Stop | Leave::FinishCommand) && !window.stopped_starting {
+                    window.stopped_starting = true;
+                    let mut left = self.left.lock().expect("left");
+                    for (session, waiting) in window.sessions.stop_starting() {
+                        left.entry(session).or_default().extend(waiting);
+                    }
                 }
             }
             let (theirs, own): (Vec<_>, Vec<_>) = messages.into_iter().partition(|m| window.handed.contains_key(&tab_of(m)));
@@ -968,6 +1058,19 @@ impl DaemonHost {
                         }
                     }
                     FromSession::Entry { tab, entry } => {
+                        // Where each run is, for a leave that lets the command under way finish.
+                        match &entry.event {
+                            harness_api::Event::ToolRequested { .. } => {
+                                window.in_tool.insert(*tab);
+                            }
+                            harness_api::Event::ToolResult { .. } => {
+                                window.in_tool.remove(tab);
+                                if window.stop_on_result.remove(tab) {
+                                    window.sessions.stop(*tab);
+                                }
+                            }
+                            _ => {}
+                        }
                         if let harness_api::Event::AgentName { name, .. } = &entry.event
                             && let Some(session) = window.sessions.session_of(*tab)
                         {
@@ -1013,8 +1116,9 @@ impl DaemonHost {
         for (from, from_tab, to, tab, message) in handed {
             any |= Self::bring(&mut windows, &from, from_tab, &to, tab, message);
         }
-        // Nobody is there to answer: a prompt is a denial, and the run goes on to its end.
-        let unanswered: Vec<(String, u64)> = windows.iter_mut().filter(|(_, w)| w.closed).flat_map(|(id, w)| w.asking.drain().map(|(tab, _)| (id.clone(), tab)).collect::<Vec<_>>()).collect();
+        // Nobody is there to answer a run being stopped: its prompt is a denial. A run left to finish
+        // its work, or kept, keeps its question for the window that opens it next (CON-181).
+        let unanswered: Vec<(String, u64)> = windows.iter_mut().filter(|(_, w)| w.closed && matches!(w.leave, Some(Leave::Stop | Leave::FinishCommand))).flat_map(|(id, w)| w.asking.drain().map(|(tab, _)| (id.clone(), tab)).collect::<Vec<_>>()).collect();
         for (id, tab) in unanswered {
             let source = windows.get(&id).and_then(|w| w.following.get(&tab)).map(|f| (f.window.clone(), f.tab));
             let (owner, owner_tab) = source.unwrap_or((id, tab));
@@ -1027,11 +1131,11 @@ impl DaemonHost {
         // there, past what its subscription has seen (journal#1251).
         {
             let mut ended = self.ended_seq.lock().expect("ended seq");
-            for (id, w) in windows.iter().filter(|(_, w)| w.closed && !w.sessions.busy() && w.handed.is_empty() && w.following.is_empty()) {
+            for (id, w) in windows.iter().filter(|(_, w)| w.closed && !w.holds_on()) {
                 ended.insert(id.clone(), w.next);
             }
         }
-        windows.retain(|_, w| !w.closed || w.sessions.busy() || !w.handed.is_empty() || !w.following.is_empty());
+        windows.retain(|_, w| !w.closed || w.holds_on());
         waiting_word.append(&mut self.program_words.lock().expect("words"));
         any |= self.tell_masters(&mut windows, waiting_word, ended_runs);
         any |= self.remind_masters(&mut windows);
@@ -1166,7 +1270,7 @@ impl DaemonHost {
                 }
                 Ok(json!({"ok": true}))
             }
-            "note" | "close" => window.apply(name, op),
+            "note" | "close" | "on_loss" => window.apply(name, op),
             _ => {
                 follow.pending.push(op.clone());
                 Ok(json!({"ok": true}))
@@ -1196,13 +1300,20 @@ impl DaemonHost {
             None => {
                 let sessions = Sessions::new(factory, root.clone()).with_data_dir(&self.data_dir.to_string_lossy());
                 let next = self.ended_seq.lock().expect("ended seq").remove(id).unwrap_or(0);
-                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), plan_asks: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None });
+                windows.insert(id.to_string(), Window { sessions, root, events: VecDeque::new(), next, reload, notes, choices, default: default.clone(), settings: for_window.clone(), slave_asks: Default::default(), program_asks: Vec::new(), program_allowed: Default::default(), polled: Instant::now(), closed: false, asking: HashMap::new(), plan_asks: HashMap::new(), handed: HashMap::new(), following: HashMap::new(), said: HashMap::new(), stopped_starting: false, environment: None, on_loss: Leave::default(), leave: None, leave_done: false, in_tool: Default::default(), stop_on_result: Default::default() });
             }
         }
         if let Some(window) = windows.get_mut(id) {
             window.environment = environment;
             window.default = default;
             window.settings = for_window;
+            window.on_loss = op["on_loss"].as_str().and_then(Leave::parse).unwrap_or_default();
+            // Back: a window that left with its conversations kept, or was lost, has them again.
+            if window.closed && matches!(window.leave, Some(Leave::Keep | Leave::FinishWork)) {
+                window.closed = false;
+                window.leave = None;
+                window.leave_done = false;
+            }
         }
         Ok(json!({"ok": true, "pid": std::process::id()}))
     }
@@ -1213,7 +1324,7 @@ impl ConversationHost for DaemonHost {
         let windows = self.windows.lock().expect("windows");
         let data = self.data_dir.to_string_lossy();
         let mut out = Vec::new();
-        for window in windows.values().filter(|w| !w.closed) {
+        for window in windows.values().filter(|w| w.reachable()) {
             for (_, session) in window.sessions.open() {
                 if !out.iter().any(|s: &harness_daemon::OpenSession| s.id == session) {
                     let nick = self.nicks.lock().expect("nicks").get(&session).cloned();
@@ -1228,7 +1339,7 @@ impl ConversationHost for DaemonHost {
 
     fn deliver_to(&self, session: &str, label: &str, text: &str) -> bool {
         let mut windows = self.windows.lock().expect("windows");
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
             if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
                 window.sessions.inbound(tab, label.to_string(), text.to_string());
                 self.wake.notify_all();
@@ -1240,7 +1351,7 @@ impl ConversationHost for DaemonHost {
 
     fn notify(&self, session: &str, label: &str, text: &str) -> bool {
         let mut windows = self.windows.lock().expect("windows");
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
             if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
                 window.sessions.notice(tab, label.to_string(), text.to_string());
                 self.wake.notify_all();
@@ -1252,7 +1363,7 @@ impl ConversationHost for DaemonHost {
 
     fn approve_plan(&self, session: &str, yes: bool) -> Result<String, String> {
         let mut windows = self.windows.lock().expect("windows");
-        let window = windows.values_mut().filter(|w| !w.closed).find(|w| w.sessions.open().iter().any(|(_, s)| s == session)).ok_or("that session is not open any more")?;
+        let window = windows.values_mut().find(|w| w.sessions.open().iter().any(|(_, s)| s == session)).ok_or("that session is not open any more")?;
         let tab = window.sessions.open().into_iter().find(|(_, s)| s == session).map(|(tab, _)| tab).ok_or("that session is not open any more")?;
         // A delegate's card (CON-163): the press decides, and the card goes from the window.
         if let Some(ask) = window.plan_asks.get(&tab).filter(|ask| ask.session == session).cloned() {
@@ -1276,7 +1387,7 @@ impl ConversationHost for DaemonHost {
 
     fn remind(&self, session: &str, hook: &str, text: &str) -> bool {
         let mut windows = self.windows.lock().expect("windows");
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
             if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
                 window.sessions.remind(tab, hook.to_string(), text.to_string());
                 self.wake.notify_all();
@@ -1302,12 +1413,12 @@ impl ConversationHost for DaemonHost {
     }
 
     fn windows(&self) -> Vec<String> {
-        self.windows.lock().expect("windows").iter().filter(|(_, w)| !w.closed).map(|(id, _)| id.clone()).collect()
+        self.windows.lock().expect("windows").iter().filter(|(_, w)| !w.closed).map(|(id, _)| id.clone()).collect::<Vec<_>>()
     }
 
     fn rename(&self, session: &str, nick: &str) -> bool {
         let mut windows = self.windows.lock().expect("windows");
-        for window in windows.values_mut().filter(|w| !w.closed) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
             if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| s == session) {
                 window.sessions.nick(tab, nick.to_string());
                 return true;
@@ -1665,11 +1776,26 @@ impl RemoteSessions {
     }
 
     pub fn configure(&self, root: &str, settings: &Settings) -> Result<(), String> {
-        let environment = self.link.lock().expect("link").open["env"].clone();
-        let open = json!({"root": root, "settings": settings, "env": environment});
-        self.op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": environment}))?;
+        let (environment, on_loss) = {
+            let link = self.link.lock().expect("link");
+            (link.open["env"].clone(), link.open["on_loss"].clone())
+        };
+        let open = json!({"root": root, "settings": settings, "env": environment, "on_loss": on_loss});
+        self.op(&json!({"window": self.window, "op": "open", "root": root, "settings": settings, "env": environment, "on_loss": on_loss}))?;
         self.link.lock().expect("link").open = open;
         Ok(())
+    }
+
+    /// What this window's conversations do if it is lost (CON-181): kept for a reopen too.
+    pub fn set_on_loss(&self, leave: Leave) {
+        self.link.lock().expect("link").open["on_loss"] = json!(leave.as_str());
+        let _ = self.op(&json!({"window": self.window, "op": "on_loss", "text": leave.as_str()}));
+    }
+
+    /// The window leaves, its conversations doing as `leave` says (CON-181).
+    pub fn leave(&self, leave: Leave) {
+        let client = self.link.lock().expect("link").client.clone();
+        let _ = client.conversation_op(&json!({"window": self.window, "op": "close", "leave": leave.as_str()}));
     }
 
     /// The environment this window's sessions start with from the next `configure` on: another
@@ -1751,6 +1877,26 @@ pub enum SessionLink {
 }
 
 impl SessionLink {
+    /// What this window's conversations do if it is lost (CON-181). Local sessions end with it.
+    pub fn set_on_loss(&self, leave: Leave) {
+        if let SessionLink::Remote(r) = self {
+            r.set_on_loss(leave);
+        }
+    }
+
+    /// The window leaves as `leave` says (CON-181). Local sessions can only stop, as the process
+    /// that runs them ends.
+    pub fn leave(&self, leave: Leave) {
+        if let SessionLink::Remote(r) = self {
+            r.leave(leave);
+        }
+    }
+
+    /// Whether the conversations run in a daemon, and so can outlive the window.
+    pub fn in_daemon(&self) -> bool {
+        matches!(self, SessionLink::Remote(_))
+    }
+
     /// The window's connection to the daemon, when its conversations run there.
     pub fn client(&self) -> Option<Client> {
         match self {

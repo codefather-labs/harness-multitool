@@ -39,7 +39,7 @@ const APPROVED: &str = "The user approved the plan. Plan mode is off. A fix: cal
 const UNCHECKED_SCAN: usize = 500;
 
 #[derive(Debug, Clone, Default)]
-pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>);
+pub struct StopFlag(Arc<std::sync::atomic::AtomicU32>, Arc<std::sync::atomic::AtomicBool>);
 
 /// What the user sent and the agent has not seen yet, shared with the thread that takes input.
 pub type Inbox = Arc<std::sync::Mutex<std::collections::VecDeque<harness_api::PendingMessage>>>;
@@ -67,6 +67,16 @@ impl StopFlag {
 
     fn take(&self) -> bool {
         self.0.swap(0, Ordering::SeqCst) > 0
+    }
+
+    /// Asks the loop to stop once the tool calls under way have their results, before it asks the
+    /// model again (CON-181): a running tool is not cut off.
+    pub fn stop_after_tools(&self) {
+        self.1.store(true, Ordering::SeqCst);
+    }
+
+    fn take_after_tools(&self) -> bool {
+        self.1.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -1020,6 +1030,7 @@ impl Engine {
         }
         // A stop that came while nothing ran is not for the next message.
         self.stop.take();
+        self.stop.take_after_tools();
         if let Some((hook, reason)) = self.hooks(HookPoint::UserPromptSubmit { text }).await {
             self.emit(Event::Error { source: hook, message: reason.clone() });
             return RunEnd::Failed(reason);
@@ -1039,7 +1050,7 @@ impl Engine {
             if let Err(message) = self.flush().await {
                 return self.fail("store", message, protocol);
             }
-            if self.stop.take() {
+            if self.stop.take() || self.stop.take_after_tools() {
                 return self.stopped(protocol);
             }
             self.watch_background();
