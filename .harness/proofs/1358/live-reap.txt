@@ -1,0 +1,11 @@
+before:
+  multitool-agent-claude-2609393-2-2dfd3622.scope active
+  multitool-agent-claude-2609393-3-27abf445.scope active
+  multitool-agent-claude-2609393-4-1ebdf8ab.scope active
+  multitool-agent-test-999999-0-abcd.scope active
+reap:
+stopped multitool-agent-test-999999-0-abcd.scope: its multitool is gone
+after:
+  multitool-agent-claude-2609393-2-2dfd3622.scope active
+  multitool-agent-claude-2609393-3-27abf445.scope active
+  multitool-agent-claude-2609393-4-1ebdf8ab.scope active

@@ -1,0 +1,4 @@
+SIGTERM: daemon 2709738 gone ; delegate 2709948 alive
+SIGKILL: delegate 2711444 alive
+RESULTS: {"sigterm_daemon_ends": true, "sigterm_delegate_ends": false, "sigkill_delegate_reaped_by_the_next_daemon": false}
+FAILED

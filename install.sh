@@ -240,6 +240,8 @@ After=network-online.target
 [Service]
 ExecStart=$BIN_DIR/multitool daemon
 ExecStop=$BIN_DIR/multitool daemon stop --pid \$MAINPID
+# What a daemon that died without a clean end left in agents' scopes goes (CON-182).
+ExecStopPost=$BIN_DIR/multitool daemon reap
 Restart=on-failure
 RestartSec=3
 Environment=PATH=$PATH

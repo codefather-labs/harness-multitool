@@ -41,6 +41,68 @@ fn unit_name(adapter: &str) -> String {
     format!("multitool-agent-{safe}-{}-{}-{nanos:x}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The pid of the program that started an agent's scope, from the scope's unit name
+/// (`multitool-agent-<adapter>-<pid>-<n>-<hex>.scope`), or None for any other unit (CON-182).
+pub fn starter_of(unit: &str) -> Option<u32> {
+    let name = unit.strip_prefix("multitool-agent-")?.strip_suffix(".scope")?;
+    let parts: Vec<&str> = name.rsplitn(4, '-').collect();
+    // From the end: hex, n, pid, adapter.
+    if parts.len() != 4 || parts[0].is_empty() || !parts[0].chars().all(|c| c.is_ascii_hexdigit()) || parts[1].parse::<u64>().is_err() || parts[3].is_empty() {
+        return None;
+    }
+    parts[2].parse().ok()
+}
+
+/// The agents' scopes whose starter is gone (CON-182): `alive` tells whether a pid is still a
+/// running multitool.
+pub fn orphans<'a>(units: &[&'a str], alive: impl Fn(u32) -> bool) -> Vec<&'a str> {
+    units.iter().copied().filter(|unit| starter_of(unit).is_some_and(|pid| !alive(pid))).collect()
+}
+
+/// Whether `pid` is a running multitool: a daemon, or a window that runs its sessions itself.
+pub fn multitool_alive(pid: u32) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| cmdline.split(|b| *b == 0).next().is_some_and(|program| String::from_utf8_lossy(program).ends_with("multitool")))
+}
+
+/// Stops the agents' scopes of every multitool that is gone, with all they still run (CON-182): a
+/// daemon that died with no clean end leaves none for long. Answers the units stopped.
+pub fn reap() -> Vec<String> {
+    if !available() {
+        return Vec::new();
+    }
+    let Ok(out) = Command::new("systemctl").args(["--user", "list-units", "--plain", "--no-legend", "--all", "multitool-agent-*"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() else {
+        return Vec::new();
+    };
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let units: Vec<&str> = listed.lines().filter_map(|line| line.split_whitespace().next()).collect();
+    let gone: Vec<String> = orphans(&units, multitool_alive).into_iter().map(str::to_string).collect();
+    if gone.is_empty() {
+        return gone;
+    }
+    // Asked to end, then killed after a short grace: a stop would wait out the scope's own timeout
+    // (90 s) for a delegate busy in a tool that does not hear SIGTERM.
+    let kill = |signal: &str, units: &[String]| {
+        let _ = Command::new("systemctl").args(["--user", "kill", "--kill-whom=all", &format!("--signal={signal}")]).args(units).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    };
+    kill("SIGTERM", &gone);
+    let active = |units: &[String]| -> Vec<String> {
+        units.iter().filter(|unit| Command::new("systemctl").args(["--user", "is-active", "--quiet", unit]).stdin(std::process::Stdio::null()).status().is_ok_and(|s| s.success())).cloned().collect()
+    };
+    let end = std::time::Instant::now() + REAP_GRACE;
+    let mut left = active(&gone);
+    while !left.is_empty() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        left = active(&left);
+    }
+    if !left.is_empty() {
+        kill("SIGKILL", &left);
+    }
+    gone
+}
+
+/// How long an orphan's processes have to end on SIGTERM before they are killed (CON-182).
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// The arguments that put `program` in a scope of its own, before its own arguments.
 fn wrapper_args(program: &str, adapter: &str) -> Vec<String> {
     let mut args: Vec<String> = ["--user", "--scope", "--quiet", "--collect", "--expand-environment=no"].map(String::from).to_vec();
@@ -104,6 +166,21 @@ pub fn keep_bus(command: &mut Command, given: &std::collections::BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CON-182: an agent's scope names the multitool that started it; only the scopes of one that
+    /// is gone are orphans.
+    #[test]
+    fn an_agents_scope_names_its_starter_and_orphans_are_those_of_the_gone() {
+        assert_eq!(starter_of("multitool-agent-claude-1872968-1-28550baf.scope"), Some(1872968));
+        assert_eq!(starter_of("multitool-agent-codex-42-0-ff.scope"), Some(42));
+        assert_eq!(starter_of("multitool-agent-claude-1872968-1-28550baf.service"), None);
+        assert_eq!(starter_of("multitool-window-12-0-ab.scope"), None, "a window's scope is never reaped");
+        assert_eq!(starter_of("multitool-agent-claude-x-1-ab.scope"), None);
+        assert_eq!(starter_of("run-p123-i456.scope"), None);
+        let units = ["multitool-agent-claude-100-0-a.scope", "multitool-agent-claude-200-1-b.scope", "multitool-window-100-0-c.scope", "other.scope"];
+        assert_eq!(orphans(&units, |pid| pid == 200), ["multitool-agent-claude-100-0-a.scope"]);
+        assert!(multitool_alive(std::process::id()) == std::env::current_exe().unwrap().to_string_lossy().ends_with("multitool"), "this test binary is no multitool");
+    }
 
     /// The program follows the wrapper's flags, after `--`, with the expansion off and a unit of
     /// its own each time.

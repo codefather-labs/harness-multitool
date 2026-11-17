@@ -45,6 +45,9 @@ enum DaemonAction {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Stops the agents' scopes that a multitool now gone left running (CON-182): run at every
+    /// daemon's start and as the service's ExecStopPost.
+    Reap,
 }
 
 #[derive(clap::Subcommand)]
@@ -515,8 +518,25 @@ fn main() -> Result<()> {
             println!("{}", client.stats().map_err(|e| anyhow!(e))?);
             Ok(())
         }
+        Command::Daemon { action: Some(DaemonAction::Reap), .. } => {
+            let stopped = harness_platform_native::scope::reap();
+            if stopped.is_empty() {
+                println!("no agent's scope was left by a multitool that is gone");
+            }
+            for unit in stopped {
+                println!("stopped {unit}: its multitool is gone");
+            }
+            Ok(())
+        }
         Command::Daemon { port, .. } => {
             let dir = config::data_dir()?;
+            // What a daemon that died without a clean end left running goes (CON-182), on a thread
+            // of its own: this start never waits for it.
+            std::thread::spawn(|| {
+                for unit in harness_platform_native::scope::reap() {
+                    eprintln!("stopped {unit}: the daemon that started it is gone");
+                }
+            });
             // The port it had before if it is free: callback URLs stay as they were.
             let wanted = if port == 0 { harness_daemon::last_port(&dir).unwrap_or(0) } else { port };
             // A daemon that just stopped can hold its port a while: up to CLOSING (5 s) for its runs and
@@ -534,6 +554,9 @@ fn main() -> Result<()> {
             let make_host: harness_session::remote::MakeHost = std::sync::Arc::new(|settings, note, reload| host_for(note, reload, selection_summary(settings)));
             daemon.host_conversations(harness_session::remote::DaemonHost::new(&dir, make_host));
             println!("daemon on 127.0.0.1:{}", daemon.port());
+            // systemd's stop and Ctrl+C end it cleanly, its delegates with it (CON-182).
+            let on_signal = daemon.clone();
+            harness_daemon::signals::on_stop_signal(move || on_signal.shut_down());
             daemon.wait_for_shutdown();
             // A run still going holds its delegate, and its thread is not unwound at exit: end
             // them all, so none outlives this daemon (journal#1021).

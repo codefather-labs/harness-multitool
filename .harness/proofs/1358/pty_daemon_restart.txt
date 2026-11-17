@@ -1,0 +1,14 @@
+stopped the daemon (pid 2779802, port 46765): no run was going on
+started the daemon (pid 2780222, port 46765): open windows reopen their conversations in it
+idle restart: pid 2779802 -> 2780222 port 46765 kept; conversation sess-2780082 resumed
+before the busy restart, at 955.3
+stopped the daemon (pid 2780222, port 46765): 1 window's run was stopped
+started the daemon (pid 2781044, port 46765): open windows reopen their conversations in it
+busy restart: port 46765 kept
+busy restart: the stopped run's delegate 2780575 is gone
+busy restart: the run was stopped and said so; the tab answered next, same conversation
+stopped the daemon (pid 2781044, port 46765): 1 window's run was stopped
+stop: no delegate outlived the daemon
+no daemon was running
+started the daemon (pid 2782441, port 46765): open windows reopen their conversations in it
+ok

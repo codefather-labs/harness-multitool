@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 pub mod client;
 pub mod service;
+pub mod signals;
 pub mod known;
 pub mod terminal;
 pub mod session_callbacks;
@@ -615,6 +616,13 @@ impl Daemon {
     /// This daemon's own id, told to every socket client in its welcome.
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+
+    /// Stops as POST /shutdown does, its windows' runs closed, and its socket with it: what a
+    /// SIGTERM or SIGINT of the daemon's process does (CON-182).
+    pub fn shut_down(self: &Arc<Self>) {
+        let _ = self.route("POST", "/shutdown", "", "{}", true);
+        self.stop_local();
     }
 
     /// Whether a stop was asked for.

@@ -1,0 +1,11 @@
+SIGTERM: daemon 2740650 gone ; delegate 2740870 gone
+t+3s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+t+6s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+t+9s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+t+12s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+t+15s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+t+18s daemons of this home: ['2742558 Sl'] address (2742558, 42277)
+daemon now: (2742558, 42277) was 2741700
+SIGKILL: delegate 2742152 gone
+RESULTS: {"sigterm_daemon_ends": true, "sigterm_delegate_ends": true, "sigkill_delegate_reaped_by_the_next_daemon": true}
+ALL PASSED
