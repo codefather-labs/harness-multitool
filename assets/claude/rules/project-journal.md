@@ -12,7 +12,7 @@ Every project has a journal: the decisions, findings and updates of every earlie
 
 On a fresh context window (session start, resume, after compaction), and before any non-trivial decision:
 
-- `journal_agenda` — what is open: todos, questions, problems, and the specifications and constraints that bind the work;
+- `journal_agenda` — what is open: todos, questions, choices waiting for the user's decision (`wait-for-decision`), problems, and the specifications and constraints that bind the work;
 - `journal_tags` — the tag vocabulary, most used first;
 - `journal_search` — by words, ranked; its `linked` names the neighbours of what it found;
 - `journal_list` — by category, tags, flags, feature, open or closed, newest first;

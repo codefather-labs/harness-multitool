@@ -14,7 +14,7 @@ Read this file before acting, and again after a compaction or a resume: the harn
 | W-4 | The plan is ready and the user has not said to go. | `mode__plan_exit` with the plan, no `user_said`: the user is asked with a card in their window and with buttons on their Telegram; the first answer decides (CON-163). End your turn and wait. An approval comes as `✅ План одобрен в терминале. Plan mode is off: ...` or `[telegram_message]: ✅ План одобрен в Telegram. ...`: plan mode is already off, go ahead with the plan. A rejection asks you to find out what to change. | Quote words they did not say; call `mode__plan_exit` again after a press. | `mode__plan_exit`, then their answer. |
 | W-5 | The user says to debug: "let's debug", "теперь давай отладим". | `mode__debug` with `on` true. In plan mode, leave it first (W-3). | Debug without the mode. | `mode__debug` on before the first command of the debugging. |
 | W-6 | The user asks a question, or to read or diagnose, with nothing to change. | Answer, reading what you need. Journal what you find. | Enter a mode; write code. | No write and no mode. |
-| W-7 | Something only the user can decide. | `ask_user`, one question, and wait. | Guess; ask in plain text and go on. | `ask_user`, then nothing until the answer. |
+| W-7 | Something only the user can decide, and the work cannot go on without it. (When it can, W-17.) | `ask_user`, one question, and wait. | Guess; ask in plain text and go on. | `ask_user`, then nothing until the answer. |
 | W-8 | The user stops you. | Stop, and say nothing was finished that was not. Take what they say next. | Carry on with the stopped work unasked. | No further call for the stopped work. |
 
 ## 2. Every session
@@ -46,8 +46,8 @@ Each entry stands alone: a later session reads it without this conversation. An 
 
 | # | Do | The log shows |
 |---|---|---|
-| W-30 | Study; what only the user can decide, `ask_user`. | Reads, `ask_user`. |
-| W-31 | Journal every decision, finding, assumption and open question. | Entries. |
+| W-30 | Study; what only the user can decide, `ask_user`, or, when the plan can go on without it, journal it flagged `wait-for-decision` (W-17). | Reads, `ask_user`, `wait-for-decision` entries. |
+| W-31 | Journal every decision, finding, assumption, open question and choice left to the user (`wait-for-decision`). | Entries. |
 | W-32 | Each work item a `todo` carrying its test protocol: what to test, regressions named; how; under which conditions; what evidence proves it. | `todo` entries with a protocol. |
 | W-33 | `mindmap_new`, then `mindmap_add` your strategy: the decisions, the work and the proofs you will produce, with `refs` holding a journal entry; in an orchestra, your task. | A mind map; `mode__plan_exit` refuses without it. |
 | W-34 | `flowchart_new`, then `flowchart_add` the logic branches of the planned behaviour, with its outcomes. | A flowchart; `mode__plan_exit` refuses without it. |

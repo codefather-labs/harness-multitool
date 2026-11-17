@@ -457,7 +457,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_l
         ),
         "journal_agenda" => tool(
             "journal_agenda",
-            "What is open in the journal, flag by flag: todos, questions, problems, and the specifications, constraints, invariants and principles that bind the work, each entry as its start: journal_get reads one whole. Read it on a fresh context. Those groups hold what can be worked on now; `blocked` is what waits for another entry, and `blocker_dropped` is what waited for something dropped instead of solved: re-read those, then lift the link with journal_mark.",
+            "What is open in the journal, flag by flag: todos, questions, choices waiting for the user's decision (wait-for-decision), problems, and the specifications, constraints, invariants and principles that bind the work, each entry as its start: journal_get reads one whole. Read it on a fresh context. Those groups hold what can be worked on now; `blocked` is what waits for another entry, and `blocker_dropped` is what waited for something dropped instead of solved: re-read those, then lift the link with journal_mark.",
             || object(json!({"limit": {"type": "integer", "description": "entries per flag, 10 by default"}}), &[]),
             |memory, input| more(memory, Ok(MemoryOp::JournalAgenda { limit: input["limit"].as_u64().unwrap_or(10) as usize })),
         ),
