@@ -1,0 +1,7 @@
+Live on the installed a59f6a0 (install.txt: all OK, service active):
+journal_add flags [research] -> #1331 (a real research: Claude Code's background task reports)
+journal_list flags [research] -> total 1, #1331
+journal_agenda -> groups: todo, question, unverified, disputed, specification, constraint, invariant, important, blocked; no 'research'
+strings installed binary | grep 'journaled flagged wait-for-decision with its options instead' -> 2 (PLAN_RULES)
+spec/agent-workflow.md: W-18 present (2 lines)
+~/.claude/rules/project-journal.md and cognitive-self-check.md identical to assets (diff -q)
