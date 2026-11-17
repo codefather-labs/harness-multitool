@@ -1,0 +1,5 @@
+Live on the installed 940ef7d (install.txt: all OK, service active):
+journal_add flags [wait-for-decision] -> #1324 open:[wait-for-decision]
+journal_agenda -> {flag: wait-for-decision, total: 1, entries: [#1324]}
+journal_close #1324 with a resolution -> closed; journal_list flags=[wait-for-decision] open=true -> total 0
+~/.claude/rules/project-journal.md identical to assets (diff -q); spec/agent-workflow.md has W-17
