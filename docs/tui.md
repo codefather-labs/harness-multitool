@@ -121,7 +121,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | settings | Tab · ↑↓ · Space / Enter · Ctrl+S · Esc · click | change pane · move · select (provider, field, box) · save · close |
 | maps | Ctrl+click a `#N` ref (mind map) · click a node or an arrow pill with refs (flowchart) · click an entry's header in the ticket · click again or the ticket | unfold the entries as a ticket on the right of the map card · show that entry, fold the others · fold the ticket |
 | maps | press and drag on a map | pan a map wider than its room (`◀ ▶` mark the hidden parts; no zoom) |
-| anywhere | F2 | next theme (dark, light, nord, monokai, cyan) |
+| anywhere | F2 | next theme (dark, light, paper, sand, blossom, mist, nord, monokai, cyan; CON-180) |
 
 ## Debug commands
 

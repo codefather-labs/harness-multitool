@@ -1,0 +1,26 @@
+# themes/blossom.toml — harness-multitool theme (CON-180). Contrast (WCAG 2.x, tools/theme_contrast.py):
+#   text on background 14.94:1, text_muted on background 7.33:1, text_muted on surface_raised 6.04:1, accent_text on accent 7.67:1, accent_line on background 5.59:1
+name = "Blossom"
+kind = "light"
+note = "Pale pink with plum accents."
+
+background = "#FCF7F8"
+surface = "#F6ECEE"
+surface_raised = "#EEDFE3"
+overlay_scrim = "#8E7F84"
+border_subtle = "#E0CDD3"
+text = "#2B1F25"
+text_muted = "#5E4E56"
+accent = "#8A2D7A"
+accent_text = "#FFFFFF"
+success = "#1F6B48"
+warning = "#875000"
+error = "#A8283C"
+info = "#2A5694"
+diff_add_bg = "#E2F2E8"
+diff_del_bg = "#F9E0E4"
+selection = "#F2D5EB"
+accent_line = "#A23A90"
+agent = "#5B3FA0"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

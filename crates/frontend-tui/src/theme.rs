@@ -7,6 +7,10 @@ use serde::Deserialize;
 pub const BUILTIN: &[(&str, &str)] = &[
     ("dark", include_str!("../../../themes/dark.toml")),
     ("light", include_str!("../../../themes/light.toml")),
+    ("paper", include_str!("../../../themes/paper.toml")),
+    ("sand", include_str!("../../../themes/sand.toml")),
+    ("blossom", include_str!("../../../themes/blossom.toml")),
+    ("mist", include_str!("../../../themes/mist.toml")),
     ("nord", include_str!("../../../themes/nord.toml")),
     ("monokai", include_str!("../../../themes/monokai.toml")),
     ("cyan", include_str!("../../../themes/cyan.toml")),
@@ -122,7 +126,7 @@ impl Theme {
         })
     }
 
-    /// A built-in theme by id (`dark`, `light`, `nord`, `monokai`, `cyan`).
+    /// A built-in theme by id (`dark`, `light`, `paper`, `sand`, `blossom`, `mist`, `nord`, `monokai`, `cyan`).
     pub fn builtin(id: &str) -> Result<Theme, ThemeError> {
         let (_, text) = BUILTIN
             .iter()
@@ -149,6 +153,22 @@ mod tests {
         let d = Theme::builtin("dark").unwrap();
         assert_eq!(d.accent_line, d.accent);
         assert_eq!(Theme::builtin("light").unwrap().accent_line, Color::Rgb(0xC9, 0x74, 0x00));
+    }
+
+    /// CON-180: the light themes are light, in F2's order, and a session screen draws in each.
+    #[test]
+    fn the_light_themes_are_light_and_draw() {
+        let ids: Vec<&str> = BUILTIN.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, ["dark", "light", "paper", "sand", "blossom", "mist", "nord", "monokai", "cyan"]);
+        for id in ["light", "paper", "sand", "blossom", "mist"] {
+            let t = Theme::builtin(id).unwrap();
+            assert!(!t.dark, "{id} is a light theme");
+            let state = crate::fixtures::main_session();
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|f| { crate::draw(f, &state, &t); }).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(buffer.content().iter().any(|c| c.bg == t.background), "{id}: its background is drawn");
+        }
     }
 
     #[test]

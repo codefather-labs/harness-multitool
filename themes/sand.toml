@@ -1,0 +1,26 @@
+# themes/sand.toml — harness-multitool theme (CON-180). Contrast (WCAG 2.x, tools/theme_contrast.py):
+#   text on background 14.12:1, text_muted on background 6.93:1, text_muted on surface_raised 5.59:1, accent_text on accent 5.96:1, accent_line on background 4.18:1
+name = "Sand"
+kind = "light"
+note = "Warm beige with deep teal accents."
+
+background = "#FAF6EE"
+surface = "#F1EBDF"
+surface_raised = "#E6DECE"
+overlay_scrim = "#8A8274"
+border_subtle = "#D6CCB8"
+text = "#2A251C"
+text_muted = "#5C5446"
+accent = "#00706A"
+accent_text = "#FFFFFF"
+success = "#2E6B2A"
+warning = "#8A4F00"
+error = "#A3302B"
+info = "#1D5A8A"
+diff_add_bg = "#E3F0DA"
+diff_del_bg = "#F6E1DA"
+selection = "#CDEBE7"
+accent_line = "#00857E"
+agent = "#6E3C8E"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

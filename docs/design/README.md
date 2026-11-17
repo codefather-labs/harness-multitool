@@ -12,7 +12,7 @@ In text mode the logo is pixel art in half blocks, 50 × 8 pixels in 4 rows (`LO
 
 ## Themes
 
-`../../themes/*.toml`: dark, light, nord, monokai, cyan — sixteen semantic roles, the brand colour, and the optional `accent_line` and `agent` roles.
+`../../themes/*.toml`: dark, light, paper, sand, blossom, mist (CON-180), nord, monokai, cyan — sixteen semantic roles, the brand colour, and the optional `accent_line` and `agent` roles.
 
 ## Mockups
 

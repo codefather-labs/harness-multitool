@@ -1,0 +1,26 @@
+# themes/mist.toml — harness-multitool theme (CON-180). Contrast (WCAG 2.x, tools/theme_contrast.py):
+#   text on background 15.13:1, text_muted on background 6.85:1, text_muted on surface_raised 5.63:1, accent_text on accent 6.96:1, accent_line on background 4.89:1
+name = "Mist"
+kind = "light"
+note = "Pale blue-grey with deep cyan-blue accents."
+
+background = "#F6F8FA"
+surface = "#EAEFF3"
+surface_raised = "#DCE3EA"
+overlay_scrim = "#7B8692"
+border_subtle = "#C8D2DC"
+text = "#18222C"
+text_muted = "#4A5866"
+accent = "#0B5F8A"
+accent_text = "#FFFFFF"
+success = "#1A6B47"
+warning = "#865100"
+error = "#A3283E"
+info = "#3A4FA6"
+diff_add_bg = "#DEF0E6"
+diff_del_bg = "#F7E1E5"
+selection = "#CFE3F0"
+accent_line = "#1873A5"
+agent = "#6A3E9E"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme

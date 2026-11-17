@@ -1,0 +1,4 @@
+expected backgrounds: {'light': 'fbfaf8', 'paper': 'fafbfd', 'sand': 'faf6ee', 'blossom': 'fcf7f8', 'mist': 'f6f8fa'}
+seen (most common cell background, its share): {"start": "0b0e14", "light": ["fbfaf8", 0.72], "paper": ["fafbfd", 0.72], "sand": ["faf6ee", 0.72], "blossom": ["fcf7f8", 0.72], "mist": ["f6f8fa", 0.72], "nord": ["2e3440", 0.72], "monokai": ["272822", 0.72], "cyan": ["07141b", 0.72], "dark": ["0b0e14", 0.73]}
+RESULTS: {"light_background_fills_the_screen": true, "paper_background_fills_the_screen": true, "sand_background_fills_the_screen": true, "blossom_background_fills_the_screen": true, "mist_background_fills_the_screen": true}
+ALL PASSED

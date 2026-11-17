@@ -1,0 +1,26 @@
+# themes/paper.toml — harness-multitool theme (CON-180). Contrast (WCAG 2.x, tools/theme_contrast.py):
+#   text on background 15.65:1, text_muted on background 7.07:1, text_muted on surface_raised 5.82:1, accent_text on accent 8.19:1, accent_line on background 5.78:1
+name = "Paper"
+kind = "light"
+note = "Cool white paper with indigo ink."
+
+background = "#FAFBFD"
+surface = "#EFF1F6"
+surface_raised = "#E2E5EE"
+overlay_scrim = "#7C8294"
+border_subtle = "#CDD2DE"
+text = "#1B2030"
+text_muted = "#4E566B"
+accent = "#3B3FB5"
+accent_text = "#FFFFFF"
+success = "#1C6E45"
+warning = "#8A5200"
+error = "#A62D3F"
+info = "#155A96"
+diff_add_bg = "#DFF2E7"
+diff_del_bg = "#F9E3E6"
+selection = "#DCDDF7"
+accent_line = "#4F54D0"
+agent = "#6B3FA8"
+
+brand = "#F5A623"   # the multitool logo, the same in every theme
