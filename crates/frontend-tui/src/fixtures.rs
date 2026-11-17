@@ -603,7 +603,7 @@ pub fn session_tabs() -> AppState {
         voice: None,
         memory: None,
         journal_issues: None,
-        chats: None, games: None,
+        chats: None, games: None, behaviour: None, on_exit: None, in_daemon: false,
         skills: None,
         profiles: None,
         auth: None,

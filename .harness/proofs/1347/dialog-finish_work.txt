@@ -1,0 +1,40 @@
+ harness-multitool / v0.1.0-dev                                                 /tmp/mt-leave-root17mfm5dm  |  ● online
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄╭───────────────────────────────────────────────╮
+ █  WELCOME                                                           │  ↯   Harness · daemon  now                  × │
+ █  Welcome to harness-multitool                                      │      Connected to the daemon, pid 2576091.    │
+ █  plugin-first coding harness · Rust + ratatui                      ╰───────────────────────────────────────────────╯
+ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ █  QUICK TIPS
+ █   • Enter sends, Shift+Enter newline
+ █   • Ctrl+P command palette · / commands
+ █   • Drop files to a╭──────────────────────────────────────────────────────────────────────────╮
+ ━━━━━━━━━━━━━━━━━━━━━│  ▌ Leaving multitool                                                     │━━━━━━━━━━━━━━━━━━━━━
+ █  INITIALIZE THE PRO│  ▌ what should the agents of this window do?                             │
+ █   • This project ha│                                                                          │e agent then keeps
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│   1 Stop the agent                                                       │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  USER  14:48       │      every run stops now                                                 │
+ █  work              │   2 Let its current command finish                                       │
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│      the tool call under way ends, then the run stops                    │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  ASSISTANT  14:48  │   3 Let it finish its work                                               │
+ █  Working.          │      it goes on until it stops by itself, then ends                      │
+ █    ▸  🌔 Calling sh│   4 Keep it running                                                      │
+ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│      it stays in the daemon: Telegram and callbacks reach it             │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                      │                                                                          │
+                      │  [ ] Remember my choice and do not ask again                             │
+                      │                                                                          │
+                      │  1-4 or Up/Down and Enter choose · Space remembers · Esc stays           │
+                      │                                                                          │
+                      │                                                                          │
+                      ╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MODE  normal  ·  PROFILE  default (your Claude)  ·  ADAPTER  anthropic  ·  MODEL  c 🌔 Calling shell  3s  ·  Esc stops
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮ ╭────────────╮
+ │ Ask about the repo, request an edit, or type / for commands…█                                       │ │ ⚙ Settings │
+ │ Enter send  ·  Shift+Enter newline  ·  @ file  ·  / command                                         │ │   Ctrl+,   │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────╯

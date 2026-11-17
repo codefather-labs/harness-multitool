@@ -57,6 +57,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.games {
         s.games = page.clone();
     }
+    if let Some(page) = &w.behaviour {
+        s.behaviour = page.clone();
+    }
     if let Some(page) = &w.chats {
         s.chats = page.clone();
     }
@@ -134,7 +137,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
 pub fn sample_settings() -> SettingsView {
     let p = |name: &str, description: &str, local_build: bool| ProviderOption { name: name.into(), description: description.into(), local_build, disabled: None };
     SettingsView {
-        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", JOURNAL_SECTION, CHATS_SECTION, GAMES_SECTION].iter().map(|s| s.to_string()).collect(),
+        sections: ["Provider", "Tools", "Policy", "Memory", "Router", "Frontend", "Callbacks", "Telegram", VOICE_SECTION, PROFILES_SECTION, "Theme", BEHAVIOUR_SECTION, JOURNAL_SECTION, CHATS_SECTION, GAMES_SECTION].iter().map(|s| s.to_string()).collect(),
         section: 0,
         focus: SettingsPane::Sections,
         providers: vec![
@@ -155,6 +158,7 @@ pub fn sample_settings() -> SettingsView {
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
         journal: Default::default(),
         games: crate::model::GamesPage { texas_holdem: true, ..Default::default() },
+        behaviour: Default::default(),
         chats: Default::default(),
         profiles: ProfilesPage::default(),
         auth: AuthPage::default(),
@@ -1072,6 +1076,106 @@ pub fn draw(f: &mut Frame, area: Rect, o: &Overlay, t: &Theme, out: &mut Drawn) 
     match o {
         Overlay::Permission(p) => permission(f, area, p, t, out),
         Overlay::Settings(s) => settings(f, area, s, t, out),
+        Overlay::Leave(l) => leave(f, area, l, t, out),
+    }
+}
+
+/// The exit dialog (CON-181), shaped like the permission card: four ways to leave, one line each,
+/// and the box that makes the choice 'On exit'.
+fn leave(f: &mut Frame, area: Rect, l: &crate::model::LeaveView, t: &Theme, out: &mut Drawn) {
+    use crate::model::LEAVES;
+    let bg = t.surface;
+    let w = 76.min(area.width.saturating_sub(4));
+    let h = (2 + 1 + 2 + LEAVES.len() as u16 * 2 + 1 + 1 + 1 + 1 + 2u16).min(area.height);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + area.height.saturating_sub(h) / 2, w, h);
+    let inner = modal(f, r, t.accent_line, bg);
+    let (x, iw) = (inner.x + 2, inner.width.saturating_sub(4));
+    let mut y = inner.y;
+    let stripe = Style::default().fg(t.accent_line);
+    text(f, x, y, iw, vec![Span::styled("▌ ", stripe), Span::styled("Leaving multitool", Style::default().fg(t.text).add_modifier(Modifier::BOLD))], bg);
+    let sub = if l.local { "no daemon runs these conversations: they can only stop" } else { "what should the agents of this window do?" };
+    text(f, x, y + 1, iw, vec![Span::styled("▌ ", stripe), Span::styled(sub, Style::default().fg(t.text_muted))], bg);
+    y += 3;
+    for (i, (_, label, line)) in LEAVES.iter().enumerate() {
+        let open = !l.local || i == 0;
+        let under = l.cursor == i;
+        let style = if !open { Style::default().fg(t.text_muted) } else if under { Style::default().fg(t.accent_text).bg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text).add_modifier(Modifier::BOLD) };
+        let row_bg = if under && open { t.accent } else { bg };
+        text(f, x, y, iw, vec![Span::styled(format!(" {} {label}", i + 1), style)], row_bg);
+        text(f, x + 4, y + 1, iw.saturating_sub(4), vec![Span::styled(line.to_string(), Style::default().fg(t.text_muted))], bg);
+        if open {
+            out.hits.push(Hit { rect: Rect::new(x, y, iw, 2), target: Target::LeaveChoice(i) });
+        }
+        y += 2;
+    }
+    y += 1;
+    if !l.local {
+        let mark = if l.remember { "[x]" } else { "[ ]" };
+        text(f, x, y, iw, vec![Span::styled(format!("{mark} Remember my choice and do not ask again"), Style::default().fg(t.text))], bg);
+        out.hits.push(Hit { rect: Rect::new(x, y, iw, 1), target: Target::LeaveRemember });
+    }
+    y += 2;
+    text(f, x, y, iw, vec![Span::styled("1-4 or Up/Down and Enter choose · Space remembers · Esc stays", Style::default().fg(t.text_muted))], bg);
+}
+
+/// Asks how to leave (CON-181), or leaves as 'On exit' says. A window with no live sessions just
+/// quits.
+pub fn ask_leave(w: &mut Workspace) -> Outcome {
+    if !w.live {
+        return Outcome::Quit;
+    }
+    if let Some(mode) = w.on_exit.clone() {
+        let mode = if w.in_daemon { mode } else { "stop".to_string() };
+        w.outbox.push(Outgoing::Leave { mode, remember: false });
+        return Outcome::Quit;
+    }
+    w.overlay = Some(Overlay::Leave(crate::model::LeaveView { cursor: if w.in_daemon { 2 } else { 0 }, remember: false, local: !w.in_daemon }));
+    Outcome::Stay
+}
+
+/// The dialog's choice: the window leaves so.
+fn leave_with(w: &mut Workspace, i: usize) -> Outcome {
+    let Some(Overlay::Leave(l)) = w.overlay.take() else { return Outcome::Stay };
+    if l.local && i != 0 {
+        w.overlay = Some(Overlay::Leave(l));
+        return Outcome::Stay;
+    }
+    let mode = crate::model::LEAVES[i.min(3)].0.to_string();
+    w.outbox.push(Outgoing::Leave { mode, remember: l.remember && !l.local });
+    Outcome::Quit
+}
+
+/// The settings section of what an exit and a loss do (CON-181).
+pub const BEHAVIOUR_SECTION: &str = "Behaviour";
+
+/// What 'On exit' offers: asking, then the four ways.
+fn exit_choices() -> Vec<(Option<String>, &'static str)> {
+    std::iter::once((None, "Ask every time")).chain(crate::model::LEAVES.iter().map(|(name, label, _)| (Some(name.to_string()), *label))).collect()
+}
+
+fn behaviour_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.behaviour;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+    let exit = exit_choices().into_iter().find(|(name, _)| *name == p.on_exit).map_or("Ask every time", |(_, label)| label);
+    let loss = crate::model::LEAVES.iter().find(|(name, _, _)| *name == p.on_loss).map_or("Let it finish its work", |(_, label, _)| *label);
+    let rows = [(" On exit                ", exit), (" On an accidental loss  ", loss)];
+    for (row, (label, value)) in rows.into_iter().enumerate() {
+        let under = focus && p.cursor == row;
+        text(f, r.x, r.y + 1 + row as u16, r.width, vec![Span::styled(label, muted), Span::styled(format!("‹ {value} ›"), strong)], if under { t.surface_raised } else { bg });
+    }
+    let notes = [
+        p.status.as_str(),
+        "",
+        "On exit: what /exit and the Ctrl+C quit do with this window's agents, or ask every time.",
+        "On an accidental loss: what they do when the window goes without a word, killed, its",
+        "terminal or ssh connection dropped, or silent for 30 s. Finishing the work lets the agent",
+        "go on until it stops by itself; keeping it leaves it in the daemon for Telegram and callbacks.",
+        "Up and Down choose, Space or Enter changes, Ctrl+S saves.",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 4 + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
     }
 }
 
@@ -1251,6 +1355,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         chats_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == GAMES_SECTION {
         games_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == BEHAVIOUR_SECTION {
+        behaviour_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == JOURNAL_SECTION {
         journal_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == PROFILES_SECTION {
@@ -1719,6 +1825,43 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
     }
     let overlay = w.overlay.as_mut()?;
     match overlay {
+        Overlay::Leave(l) => {
+            let open = |i: usize| !l.local || i == 0;
+            match k {
+                Key::Up | Key::Left => l.cursor = (0..l.cursor).rev().find(|i| open(*i)).unwrap_or(l.cursor),
+                Key::Down | Key::Right | Key::Tab => l.cursor = (l.cursor + 1..4).find(|i| open(*i)).unwrap_or(l.cursor),
+                Key::Char(' ') if !l.local => l.remember = !l.remember,
+                Key::Char(c @ '1'..='4') => return Some(leave_with(w, c as usize - '1' as usize)),
+                Key::Enter => {
+                    let at = l.cursor;
+                    return Some(leave_with(w, at));
+                }
+                Key::Esc => w.overlay = None,
+                _ => {}
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == BEHAVIOUR_SECTION) && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
+            let p = &mut s.behaviour;
+            match k {
+                Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
+                Key::Up => p.cursor = 0,
+                Key::Down => p.cursor = 1,
+                Key::Char(' ') | Key::Enter if p.cursor == 0 => {
+                    let choices = exit_choices();
+                    let at = choices.iter().position(|(name, _)| *name == p.on_exit).unwrap_or(0);
+                    p.on_exit = choices[(at + 1) % choices.len()].0.clone();
+                }
+                Key::Char(' ') | Key::Enter => {
+                    let at = crate::model::LEAVES.iter().position(|(name, _, _)| *name == p.on_loss).unwrap_or(2);
+                    p.on_loss = crate::model::LEAVES[(at + 1) % 4].0.to_string();
+                }
+                Key::Ctrl('s') => {
+                    p.status = "Saved.".to_string();
+                    w.outbox.push(Outgoing::SaveBehaviour { on_exit: p.on_exit.clone(), on_loss: p.on_loss.clone() });
+                }
+                _ => {}
+            }
+        }
         Overlay::Permission(p) => {
             let chosen = match k {
                 Key::Left | Key::Up => {
@@ -2063,6 +2206,8 @@ pub fn answer(w: &mut Workspace, choice: usize) {
 pub fn click(w: &mut Workspace, target: Target) -> Outcome {
     match (&mut w.overlay, target) {
         (Some(Overlay::Permission(_)), Target::Choice(i)) => answer(w, i),
+        (Some(Overlay::Leave(_)), Target::LeaveChoice(i)) => return leave_with(w, i),
+        (Some(Overlay::Leave(l)), Target::LeaveRemember) => l.remember = !l.remember && !l.local,
         (Some(Overlay::Settings(s)), Target::Section(i)) => {
             s.section = i;
             s.focus = SettingsPane::Sections;
@@ -2209,6 +2354,82 @@ mod tests {
         outbox.clear();
         chats_key(p, Key::Enter, &mut outbox);
         assert!(matches!(outbox.as_slice(), [Outgoing::ChatLoad { path, .. }] if path == "multitool_dumps/a.zip"));
+    }
+
+    /// CON-181: /exit asks how to leave; a choice leaves so, 'remember' with it; Esc stays; with
+    /// 'On exit' set it leaves at once; with no daemon only stopping is offered.
+    #[test]
+    fn exit_asks_how_to_leave() {
+        let session = || {
+            let mut w = on_provider_page();
+            w.overlay = None;
+            (w.live, w.in_daemon) = (true, true);
+            w
+        };
+        let mut w = session();
+        assert_eq!(ask_leave(&mut w), Outcome::Stay);
+        assert!(matches!(&w.overlay, Some(Overlay::Leave(l)) if l.cursor == 2 && !l.local), "finish-work in focus");
+        assert_eq!(key(&mut w, Key::Esc), Some(Outcome::Stay));
+        assert!(w.overlay.is_none() && w.outbox.is_empty(), "Esc stays and sends nothing");
+        ask_leave(&mut w);
+        assert_eq!(key(&mut w, Key::Char('2')), Some(Outcome::Quit));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::Leave { mode, remember: false }) if mode == "finish-command"));
+        ask_leave(&mut w);
+        key(&mut w, Key::Char(' '));
+        key(&mut w, Key::Up);
+        assert_eq!(key(&mut w, Key::Enter), Some(Outcome::Quit));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::Leave { mode, remember: true }) if mode == "finish-command"), "Space ticks remember; Up moved to 2");
+        // The dialog draws its four ways and its box, clickable.
+        ask_leave(&mut w);
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut drawn = Drawn::default();
+        terminal.draw(|f| draw(f, f.area(), w.overlay.as_ref().unwrap(), &theme, &mut drawn)).unwrap();
+        let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("Keep it running") && screen.contains("Remember my choice"));
+        assert_eq!(drawn.hits.iter().filter(|h| matches!(h.target, Target::LeaveChoice(_))).count(), 4);
+        assert_eq!(click(&mut w, Target::LeaveChoice(3)), Outcome::Quit);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::Leave { mode, .. }) if mode == "keep"));
+        // 'On exit' set: no dialog.
+        let mut w = session();
+        w.on_exit = Some("keep".into());
+        assert_eq!(ask_leave(&mut w), Outcome::Quit);
+        assert!(w.overlay.is_none() && matches!(w.outbox.pop(), Some(Outgoing::Leave { mode, .. }) if mode == "keep"));
+        // No daemon: only stop.
+        let mut w = session();
+        w.in_daemon = false;
+        ask_leave(&mut w);
+        assert!(matches!(&w.overlay, Some(Overlay::Leave(l)) if l.local && l.cursor == 0));
+        assert_eq!(key(&mut w, Key::Char('3')), Some(Outcome::Stay), "finish-work is not offered");
+        key(&mut w, Key::Down);
+        assert!(matches!(&w.overlay, Some(Overlay::Leave(l)) if l.cursor == 0), "the cursor stays on stop");
+        assert_eq!(key(&mut w, Key::Enter), Some(Outcome::Quit));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::Leave { mode, remember: false }) if mode == "stop"));
+        // Not live (a sample, the start page): it just quits.
+        let mut w = session();
+        w.live = false;
+        assert_eq!(ask_leave(&mut w), Outcome::Quit);
+        assert!(w.outbox.is_empty());
+    }
+
+    /// CON-181: Settings > Behaviour cycles 'On exit' and 'On an accidental loss', and Ctrl+S saves.
+    #[test]
+    fn the_behaviour_page_changes_and_saves() {
+        let mut w = on_provider_page();
+        let Some(Overlay::Settings(s)) = &mut w.overlay else { panic!() };
+        s.section = s.sections.iter().position(|n| n == BEHAVIOUR_SECTION).unwrap();
+        s.focus = SettingsPane::Page;
+        key(&mut w, Key::Enter);
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Enter);
+        key(&mut w, Key::Ctrl('s'));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveBehaviour { on_exit: Some(e), on_loss }) if e == "stop" && on_loss == "keep"), "ask -> stop; finish-work -> keep");
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| behaviour_page(f, f.area(), s, &theme, Color::Reset)).unwrap();
+        let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("On exit") && screen.contains("Stop the agent") && screen.contains("Keep it running"), "{screen}");
     }
 
     /// journal#1278: the Chats page's status wraps at its spaces, three lines at most.

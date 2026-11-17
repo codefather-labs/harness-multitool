@@ -62,6 +62,9 @@ pub enum Target {
     ProfileRow(usize),
     /// A button of the Profiles tab: 0 Add, 1 Edit, 2 Delete, 3 Use; in Edit 10 sign Claude Code in, 11 out.
     ProfileButton(usize),
+    /// The exit dialog (CON-181): a way to leave, and its 'remember' box.
+    LeaveChoice(usize),
+    LeaveRemember,
     /// The Chats page (CON-173): a conversation's row, its Dump button, Load.
     ChatRow(usize),
     ChatDump,

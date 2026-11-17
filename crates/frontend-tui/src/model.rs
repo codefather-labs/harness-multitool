@@ -106,6 +106,12 @@ pub struct Workspace {
     pub journal_issues: Option<JournalPage>,
     /// The Games page (ADR 0029).
     pub games: Option<GamesPage>,
+    /// Settings > Behaviour (CON-181), as the running harness reads it.
+    pub behaviour: Option<BehaviourPage>,
+    /// What an exit does without asking, when 'On exit' is set (CON-181).
+    pub on_exit: Option<String>,
+    /// The conversations run in a daemon and can outlive the window.
+    pub in_daemon: bool,
     /// The Chats page (CON-171).
     pub chats: Option<ChatsPage>,
     /// The harness's skills here, for /skills (ADR 0030): name, description, project or user.
@@ -150,6 +156,11 @@ pub enum Outgoing {
     ChatLoad { path: String },
     /// The system's file picker, for a .zip to load (CON-173).
     ChatPick,
+    /// The window leaves, its conversations doing as `mode` says; `remember` makes it 'On exit'
+    /// (CON-181).
+    Leave { mode: String, remember: bool },
+    /// Settings > Behaviour saved (CON-181).
+    SaveBehaviour { on_exit: Option<String>, on_loss: String },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -212,6 +223,45 @@ pub struct Drag {
 pub enum Overlay {
     Permission(PermissionView),
     Settings(SettingsView),
+    /// How to leave: asked on /exit and the Ctrl+C quit (CON-181).
+    Leave(LeaveView),
+}
+
+/// The ways a window leaves its conversations (CON-181), as the daemon names them, each with what
+/// the dialog says of it.
+pub const LEAVES: [(&str, &str, &str); 4] = [
+    ("stop", "Stop the agent", "every run stops now"),
+    ("finish-command", "Let its current command finish", "the tool call under way ends, then the run stops"),
+    ("finish-work", "Let it finish its work", "it goes on until it stops by itself, then ends"),
+    ("keep", "Keep it running", "it stays in the daemon: Telegram and callbacks reach it"),
+];
+
+/// The exit dialog (CON-181).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeaveView {
+    /// The choice in focus, an index into [`LEAVES`].
+    pub cursor: usize,
+    /// 'Remember my choice and do not ask again'.
+    pub remember: bool,
+    /// No daemon runs the conversations: only stopping is possible.
+    pub local: bool,
+}
+
+/// Settings > Behaviour (CON-181): what an exit does, and what an accidental loss does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BehaviourPage {
+    /// 0 'On exit', 1 'On an accidental loss'.
+    pub cursor: usize,
+    /// None: ask every time; else one of [`LEAVES`]' names.
+    pub on_exit: Option<String>,
+    pub on_loss: String,
+    pub status: String,
+}
+
+impl Default for BehaviourPage {
+    fn default() -> Self {
+        BehaviourPage { cursor: 0, on_exit: None, on_loss: "finish-work".to_string(), status: String::new() }
+    }
 }
 
 /// A tool call waiting for the user's approval (permission-*; IF-5 Policy asked).
@@ -256,6 +306,7 @@ pub struct SettingsView {
     pub memory: MemoryPage,
     pub journal: JournalPage,
     pub games: GamesPage,
+    pub behaviour: BehaviourPage,
     pub chats: ChatsPage,
     pub profiles: ProfilesPage,
     pub auth: AuthPage,
@@ -404,7 +455,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, chats: None, skills: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, behaviour: None, on_exit: None, in_daemon: false, chats: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {

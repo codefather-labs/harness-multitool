@@ -29,6 +29,42 @@ pub struct Terminal {
     pub graphics: Graphics,
 }
 
+/// What a window's conversations do when it leaves (CON-181), as Settings > Behaviour sets it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Behaviour {
+    /// On /exit and the Ctrl+C quit: none asks every time; else stop, finish-command,
+    /// finish-work or keep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exit: Option<String>,
+    /// On an accidental loss of the window: one of the four, finish-work when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_loss: Option<String>,
+}
+
+impl Behaviour {
+    /// The leave to do on exit without asking, if one is set; an unknown value is said and asks.
+    pub fn exit(&self) -> (Option<harness_session::remote::Leave>, Option<String>) {
+        match self.on_exit.as_deref() {
+            None | Some("ask") => (None, None),
+            Some(text) => match harness_session::remote::Leave::parse(text) {
+                Some(leave) => (Some(leave), None),
+                None => (None, Some(format!("[behaviour] on_exit = {text:?} is none of ask, stop, finish-command, finish-work, keep: the window asks"))),
+            },
+        }
+    }
+
+    /// The leave on an accidental loss; an unknown value is said and finish-work is used.
+    pub fn loss(&self) -> (harness_session::remote::Leave, Option<String>) {
+        match self.on_loss.as_deref() {
+            None => (harness_session::remote::Leave::default(), None),
+            Some(text) => match harness_session::remote::Leave::parse(text) {
+                Some(leave) => (leave, None),
+                None => (harness_session::remote::Leave::default(), Some(format!("[behaviour] on_loss = {text:?} is none of stop, finish-command, finish-work, keep: finish-work is used"))),
+            },
+        }
+    }
+}
+
 /// Speech to text: what the settings' page chose. What is downloaded is in the data directory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Voice {
@@ -79,6 +115,8 @@ pub struct Config {
     pub voice: Voice,
     #[serde(default)]
     pub telegram: Telegram,
+    #[serde(default)]
+    pub behaviour: Behaviour,
     /// The model and plugins a session runs on: provider, model, budgets, keys (never required
     /// here: keys normally come from the environment).
     #[serde(default)]
@@ -105,6 +143,8 @@ struct SharedFile {
     voice: Voice,
     #[serde(default)]
     telegram: Telegram,
+    #[serde(default)]
+    behaviour: Behaviour,
 }
 
 pub const DEFAULT_PROFILE: &str = "default";
@@ -675,7 +715,7 @@ fn ensure(root: &std::path::Path, old: Option<&std::path::Path>) -> Result<()> {
     private_dir(&root.join("profiles"))?;
     private_dir(&default)?;
     if !root.join("shared.toml").is_file() {
-        write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile: None, voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
+        write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile: None, voice: c.voice.clone(), telegram: c.telegram.clone(), behaviour: c.behaviour.clone() })?)?;
     }
     write_private(&default.join("profile.toml"), &toml::to_string_pretty(&ProfileFile { terminal: c.terminal, session: c.session })?)?;
     Ok(())
@@ -765,7 +805,7 @@ fn load_in(root: &std::path::Path, name: &str) -> Result<Config> {
     let p = root.join("profiles").join(name).join("profile.toml");
     let profile: ProfileFile = read(&p)?;
     let shared: SharedFile = read(&root.join("shared.toml"))?;
-    Ok(Config { terminal: profile.terminal, voice: shared.voice, telegram: shared.telegram, session: profile.session })
+    Ok(Config { terminal: profile.terminal, voice: shared.voice, telegram: shared.telegram, behaviour: shared.behaviour, session: profile.session })
 }
 
 /// A file's settings, the defaults when it is not there.
@@ -839,7 +879,7 @@ fn save_in(root: &std::path::Path, name: &str, c: &Config) -> Result<PathBuf> {
     write_private(&p, &toml::to_string_pretty(&ProfileFile { terminal: c.terminal.clone(), session: c.session.clone() })?)?;
     // The kept profile is not a setting of the Config: it stays as it was (CON-127).
     let profile = read::<SharedFile>(&root.join("shared.toml")).ok().and_then(|f| f.profile);
-    write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile, voice: c.voice.clone(), telegram: c.telegram.clone() })?)?;
+    write_private(&root.join("shared.toml"), &toml::to_string_pretty(&SharedFile { profile, voice: c.voice.clone(), telegram: c.telegram.clone(), behaviour: c.behaviour.clone() })?)?;
     Ok(p)
 }
 
@@ -929,6 +969,27 @@ mod tests {
         assert_eq!(own_value(None, None, profiles), None);
         // Where no profiles folder is known, nothing is filtered.
         assert_eq!(own_value(None, Some("/h/mine".into()), std::path::Path::new("")), Some("/h/mine".into()));
+    }
+
+    /// CON-181: the Behaviour settings: their defaults, a round trip through shared.toml, and an
+    /// unknown value said and replaced by the default.
+    #[test]
+    fn the_behaviour_settings_default_round_trip_and_fall_back() {
+        use harness_session::remote::Leave;
+        let b = Behaviour::default();
+        assert_eq!(b.exit(), (None, None), "asks by default");
+        assert_eq!(b.loss(), (Leave::FinishWork, None), "finishes the work by default");
+        let t = Temp::new("behaviour");
+        let c = Config { behaviour: Behaviour { on_exit: Some("keep".into()), on_loss: Some("stop".into()) }, ..Default::default() };
+        save_in(&t.0, DEFAULT_PROFILE, &c).unwrap();
+        let back = load_in(&t.0, DEFAULT_PROFILE).unwrap();
+        assert_eq!(back.behaviour.exit().0, Some(Leave::Keep));
+        assert_eq!(back.behaviour.loss().0, Leave::Stop);
+        assert!(std::fs::read_to_string(t.0.join("shared.toml")).unwrap().contains("[behaviour]"), "kept with the machine's settings");
+        let odd = Behaviour { on_exit: Some("later".into()), on_loss: Some("never".into()) };
+        assert!(odd.exit().0.is_none() && odd.exit().1.unwrap().contains("on_exit"));
+        assert_eq!(odd.loss().0, Leave::FinishWork);
+        assert!(odd.loss().1.unwrap().contains("on_loss"));
     }
 
     /// A fresh folder of its own for a test.

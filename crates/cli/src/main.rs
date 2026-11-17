@@ -740,12 +740,27 @@ fn live_session(provider: &str, model: &str, budget: &str) -> frontend_tui::AppS
     state.header.branch = git_branch();
     if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
         w.live = true;
+        // Settings > Behaviour, and what an exit does without asking (CON-181).
+        let behaviour = behaviour_now();
+        w.on_exit = behaviour.exit().0.map(|leave| leave.as_str().to_string());
+        w.behaviour = Some(behaviour_page(&behaviour, String::new()));
         let profile = profile_label();
         w.view_mut().status.fields = [("MODE", "normal"), ("PROFILE", profile.as_str()), ("ADAPTER", provider), ("MODEL", model), ("TOKENS", "0"), ("COST", "$0.00"), ("BUDGET", budget)]
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .to_vec();
     }
     state
+}
+
+/// Settings > Behaviour as the configuration has it (CON-181).
+fn behaviour_now() -> config::Behaviour {
+    config::load().map(|c| c.behaviour).unwrap_or_default()
+}
+
+fn behaviour_page(b: &config::Behaviour, status: String) -> frontend_tui::model::BehaviourPage {
+    let warnings: Vec<String> = [b.exit().1, b.loss().1].into_iter().flatten().collect();
+    let status = if status.is_empty() { warnings.join("; ") } else { status };
+    frontend_tui::model::BehaviourPage { cursor: 0, on_exit: b.exit().0.map(|l| l.as_str().to_string()), on_loss: b.loss().0.as_str().to_string(), status }
 }
 
 /// The screen a scenario of `multitool trace` leaves: the debug view of the UI's wiring.
@@ -1277,7 +1292,10 @@ impl Live {
                 }
             }
         };
-        Ok(Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), chat_job_next: 1, plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None })
+        let live = Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), chat_job_next: 1, plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None };
+        // What its conversations do if this window is lost (CON-181): the daemon holds it.
+        live.sessions.set_on_loss(behaviour_now().loss().0);
+        Ok(live)
     }
 
     fn fresh_session(&self) -> frontend_tui::AppState {
@@ -1530,6 +1548,22 @@ impl Live {
     }
 
     /// What a check of gh found reaches the Journal page, its cursor kept.
+    /// The window quits: the way it leaves its conversations, asked or set, goes to the daemon,
+    /// and a remembered choice becomes 'On exit' (CON-181).
+    fn leave_now(&mut self, state: &mut frontend_tui::AppState) {
+        let frontend_tui::model::Mode::Session(w) = &mut state.mode else { return };
+        let Some(at) = w.outbox.iter().rposition(|o| matches!(o, frontend_tui::model::Outgoing::Leave { .. })) else { return };
+        let frontend_tui::model::Outgoing::Leave { mode, remember } = w.outbox.remove(at) else { return };
+        let Some(leave) = harness_session::remote::Leave::parse(&mode) else { return };
+        if remember {
+            let _ = config::load().and_then(|mut c| {
+                c.behaviour.on_exit = Some(mode.clone());
+                config::save(&c)
+            });
+        }
+        self.sessions.leave(leave);
+    }
+
     /// A Chats tab's dump or load: its progress moves its toast (CON-172); when it has finished the
     /// toast goes, the page shows the outcome with its list read again, and a toast says it when
     /// the Chats page is not open.
@@ -2295,6 +2329,26 @@ impl Live {
                         let _ = sender.send(ChatJob::Picked(file_picker::pick(&start)));
                     });
                 }
+                // CON-181: Settings > Behaviour saved; the daemon hears the new loss at once.
+                Outgoing::SaveBehaviour { on_exit, on_loss } => {
+                    let said = config::load().and_then(|mut c| {
+                        c.behaviour = config::Behaviour { on_exit: Some(on_exit.clone().unwrap_or_else(|| "ask".to_string())), on_loss: Some(on_loss.clone()) };
+                        config::save(&c).map(|_| c.behaviour)
+                    });
+                    match said {
+                        Ok(b) => {
+                            w.on_exit = b.exit().0.map(|l| l.as_str().to_string());
+                            self.sessions.set_on_loss(b.loss().0);
+                            w.behaviour = Some(behaviour_page(&b, "Saved.".to_string()));
+                        }
+                        Err(e) => w.behaviour = Some(behaviour_page(&behaviour_now(), format!("Not saved: {e}"))),
+                    }
+                    if let (Some(frontend_tui::model::Overlay::Settings(s)), Some(page)) = (&mut w.overlay, &w.behaviour) {
+                        s.behaviour = page.clone();
+                    }
+                }
+                // Done where the window quits (leave_now): it is the last thing it does.
+                Outgoing::Leave { .. } => {}
                 Outgoing::SaveGames { enabled, texas_holdem } => {
                     let said = config::data_dir().map_err(|e| e.to_string()).and_then(|data| {
                         let settings = harness_daemon::games::GameSettings { enabled, texas_holdem, ..harness_daemon::games::read_settings(&data) };
@@ -3592,6 +3646,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     }
                     dirty = true;
                 }
+                // Whether its conversations can outlive the window: the exit dialog says so (CON-181).
+                w.in_daemon = live.sessions.in_daemon();
                 // A moving conversation's bar moves (CON-144).
                 if !w.moving.is_empty() || !w.archiving.is_empty() {
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -3729,6 +3785,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
                         if frontend_tui::input::interrupt(&mut state, &mut ctrl_c_at, std::time::Instant::now()) == frontend_tui::input::Outcome::Quit {
+                            live.leave_now(&mut state);
                             return Ok(());
                         }
                         live.send(&mut state);
@@ -3792,7 +3849,10 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                 _ => continue,
             };
             match outcome {
-                Outcome::Quit => return Ok(()),
+                Outcome::Quit => {
+                    live.leave_now(&mut state);
+                    return Ok(());
+                }
                 Outcome::LeaveSplash => state = live.startup(),
                 Outcome::OpenSession(i) => {
                     if let Some(opened) = live.open_recent(i) {

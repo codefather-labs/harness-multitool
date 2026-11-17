@@ -1,0 +1,40 @@
+ harness-multitool / v0.1.0-dev                                                 /tmp/mt-leave-root17mfm5dm  |  ● online
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  WELCOME
+ █  Welcome to harness-multitool
+ █  plug╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ ━━━━━━━│  Settings                                                                                         ×  │━━━━━━━
+ █  QUIC│  project and local build configuration                                                               │
+ █   • E│──────────────────────────────────────────────────────────────────────────────────────────────────────│
+ █   • C│                            │                                                                         │
+ █   • D│    Provider                │  BEHAVIOUR   profile default                                            │
+ ▀▀▀▀▀▀▀│    Tools                   │                                                                         │▀▀▀▀▀▀▀
+        │    Policy                  │   On exit                ‹ Stop the agent ›                             │
+        │    Memory                  │   On an accidental loss  ‹ Let it finish its work ›                     │
+        │    Router                  │                                                                         │
+        │    Frontend                │   Saved.                                                                │
+        │    Callbacks               │                                                                         │
+        │    Telegram                │   On exit: what /exit and the Ctrl+C quit do with this window's agents  │
+        │    Speech to text          │   On an accidental loss: what they do when the window goes without a w  │
+        │    Profiles                │   terminal or ssh connection dropped, or silent for 30 s. Finishing th  │
+        │    Theme                   │   go on until it stops by itself; keeping it leaves it in the daemon f  │
+        │  ▌ Behaviour               │   Up and Down choose, Space or Enter changes, Ctrl+S saves.             │
+        │    Journal                 │                                                                         │
+        │    Chats                   │                                                                         │
+        │    Games                   │                                                                         │
+        │                            │                                                                         │
+        │                            │                                                                         │
+        │                            │                                                                         │
+        │                            │                                                                         │
+        │                            │                                                                         │
+        │                            │                                                                         │
+        │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+        │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │
+        │                                                                                                      │
+────────╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯────────
+ MODE  normal  ·  PROFILE  default (your Claude)  ·  ADAPTER  anthropic  ·  MODEL  claude-opus-5-5  ·  TOKENS  0  ·  COS
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮ ╭────────────╮
+ │ Ask about the repo, request an edit, or type / for commands…█                                       │ │ ⚙ Settings │
+ │ Enter send  ·  Shift+Enter newline  ·  @ file  ·  / command                                         │ │   Ctrl+,   │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────╯

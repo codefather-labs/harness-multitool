@@ -1808,8 +1808,13 @@ impl RemoteSessions {
 impl Drop for RemoteSessions {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
-        let client = self.link.lock().expect("link").client.clone();
-        let _ = client.conversation_op(&json!({"window": self.window, "op": "close"}));
+        // A window that ends without saying how (a panic, a quit not through the dialog) leaves as
+        // on a loss (CON-181). One that said it already is closed: this changes nothing.
+        let (client, on_loss) = {
+            let link = self.link.lock().expect("link");
+            (link.client.clone(), link.open["on_loss"].clone())
+        };
+        let _ = client.conversation_op(&json!({"window": self.window, "op": "close", "leave": on_loss}));
     }
 }
 

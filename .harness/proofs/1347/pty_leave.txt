@@ -1,0 +1,10 @@
+finish_work: dialog True, quit True, model calls 2
+stop: dialog True, quit True, model calls 1
+keep: dialog True, quit True, model calls 2
+daemon windows after keep: 1
+remember: dialog True, quit True, model calls 1
+sigkill: model calls 2
+sighup: model calls 2
+
+RESULTS: {"finish_work_dialog_then_quit": true, "finish_work_model_calls_2": true, "stop_dialog_then_quit": true, "stop_model_calls_1": true, "keep_dialog_then_quit": true, "keep_model_calls_2": true, "keep_conversations_stay_in_the_daemon": true, "remember_dialog_then_quit": true, "remember_model_calls_1": true, "remember_saved_on_exit": true, "remembered_exit_asks_nothing": true, "sigkill_work_finishes": true, "sighup_work_finishes": true, "behaviour_page_saves_on_exit": true, "saved_on_exit_quits_without_asking": true, "no_tool_process_left": true}
+ALL PASSED

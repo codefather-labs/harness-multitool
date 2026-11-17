@@ -63,7 +63,8 @@ pub fn interrupt(s: &mut AppState, idle_press: &mut Option<std::time::Instant>, 
         return Outcome::Stay;
     }
     if idle_press.is_some_and(|at| now.duration_since(at) < QUIT_AGAIN) {
-        return Outcome::Quit;
+        *idle_press = None;
+        return crate::overlay::ask_leave(w);
     }
     *idle_press = Some(now);
     w.toast = Some(crate::model::Toast { kind: crate::model::InboundKind::System, from: "harness".to_string(), text: "Ctrl+C again to quit".to_string() });
@@ -120,7 +121,7 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
             match k {
                 Key::Enter => {
                     if crate::debug::submit(w) == crate::debug::Sent::Quit {
-                        return Outcome::Quit;
+                        return crate::overlay::ask_leave(w);
                     }
                 }
                 Key::Backspace => w.view_mut().composer.backspace(),
@@ -709,7 +710,15 @@ mod tests {
         let Mode::Session(w) = &s.mode else { unreachable!() };
         assert!(w.toast.as_ref().is_some_and(|t| t.text.contains("again")));
         assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(3)), Outcome::Stay, "too late: it asks again");
-        assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(4)), Outcome::Quit, "in time: it quits");
+        // In time: it asks how to leave (CON-181), and the choice quits.
+        assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(4)), Outcome::Stay, "in time: the exit dialog");
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        assert!(matches!(w.overlay, Some(crate::model::Overlay::Leave(_))));
+        assert_eq!(crate::overlay::key(w, Key::Char('1')), Some(Outcome::Quit), "stop chosen: it quits");
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        w.on_exit = Some("finish-work".into());
+        interrupt(&mut s, &mut idle, start + Duration::from_secs(10));
+        assert_eq!(interrupt(&mut s, &mut idle, start + Duration::from_secs(11)), Outcome::Quit, "'On exit' set: it quits at once");
         let mut page = crate::fixtures::splash();
         assert_eq!(interrupt(&mut page, &mut None, start), Outcome::Quit, "no session: it quits at once");
     }
