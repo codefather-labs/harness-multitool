@@ -1,0 +1,25 @@
+      1   [OK] installed /home/codefather-server/.local/share/harness-multitool/bin/multitool
+      1   [OK] linked /home/codefather-server/.local/bin/multitool
+      1   [OK] it runs: multitool 0.1.0-dev
+      1 [INFO] waiting: 1 agent(s) working, the daemon restarts once they are idle (--force not to wait)
+      1   [OK] the daemon runs as the user service multitool-daemon
+      1   [OK] /home/codefather-server/.claude/rules/project-journal.md
+      1   [OK] /home/codefather-server/.claude/rules/cognitive-self-check.md
+      1   [OK] /home/codefather-server/.claude/hooks/harness-selfcheck-reminder.sh
+      1   [OK] /home/codefather-server/.claude/settings.json: the self-check hook is there
+      1   [OK] multitool runs
+      1   [OK] the daemon answers
+      1   [OK] the service multitool-daemon is active
+      1   [OK] linger is on
+      1   [OK] a file picker for Settings > Chats' Load
+      1   [OK] a terminal for Telegram's /open and /new
+      1   [OK] systemd-run --user, for a scope per agent
+      1   [OK] the rules are in /home/codefather-server/.claude/rules
+      1   [OK] the self-check hook runs
+      1   [OK] settings.json calls it
+      1 harness-multitool installed.
+service active
+ExecStop=/home/codefather-server/.local/share/harness-multitool/bin/multitool daemon stop --pid $MAINPID
+ExecStopPost=/home/codefather-server/.local/share/harness-multitool/bin/multitool daemon reap
+agent scopes:
+multitool-agent-claude-2786512-0-d2458c1.scope active
