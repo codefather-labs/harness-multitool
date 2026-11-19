@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
     --graphics) MULTITOOL_GRAPHICS="$2"; shift 2 ;;
     --debug)    PROFILE=debug; shift ;;
     --claude-code) shift ;;
-    --no-claude-code) FEATURES=""; shift ;;
+    --no-claude-code) FEATURES="--no-default-features"; shift ;;
     --under)    UNDER="$2"; shift 2 ;;
     *) break ;;
   esac
@@ -31,8 +31,8 @@ export MULTITOOL_GRAPHICS="${MULTITOOL_GRAPHICS:-auto}"
 export COLORTERM="${COLORTERM:-truecolor}"
 # ---------------------------------------------------------------------------------------------
 
-# A build of your own has Claude Code as an adapter (ADR 0020); what is shipped decides apart.
-FEATURES="${FEATURES---features multitool/claude-code}"
+# Claude Code as an adapter is in the default build (ADR 0020); --no-claude-code leaves it out.
+FEATURES="${FEATURES-}"
 profile="${PROFILE:-release}"
 bin="$here/target/$profile/multitool"
 if [[ "$profile" == release ]]; then

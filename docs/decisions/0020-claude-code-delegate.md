@@ -1,6 +1,6 @@
 # 0020 — Claude Code as a delegate agent
 
-- **Status:** proposed · **Raised by:** the project owner, 2026-11-01
+- **Status:** accepted, 2026-11-19 (Q-33 settled by the owner) · **Raised by:** the project owner, 2026-11-01
 - **Specs:** IF-2, IF-17, INV-4, INV-5, INV-6, INV-9, CON-56, CON-57, CON-58, CON-59, CON-60, CON-61, Q-33, Q-34, Q-35; follows [ADR 0019](0019-vendor-documented-sign-in.md)
 
 ## Decision
@@ -13,7 +13,7 @@ Anthropic's [terms](https://code.claude.com/docs/en/legal-and-compliance) do not
 - developers of products should use API keys and may not route requests through plan credentials on behalf of their users;
 - running Claude Code in a product takes their Commercial Terms.
 
-So this stays **out of the default build**, behind a cargo feature, until Anthropic answers whether it may ship (Q-33). This record is not legal advice.
+This first kept it **out of the default build**, behind a cargo feature, until Anthropic answered whether it may ship (Q-33). Anthropic's published terms now say it: they do not prevent "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code", on conditions the harness meets. The owner settled Q-33 on 2026-11-19, and the feature is in the default build ([delegates](../delegates.md#terms-and-subscriptions)). This record is not legal advice.
 
 **Not this:** Claude Code as a hidden model behind the harness's own tool loop, with its tools switched off and its prompt replaced. That reads as a way round the terms, and external tools only reach it through MCP in any case.
 

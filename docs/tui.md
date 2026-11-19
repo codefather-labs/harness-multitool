@@ -209,7 +209,7 @@ In an initialized project:
 
 ### Claude Code and Codex as delegates
 
-`./run.sh --claude-code` builds with Claude Code as a delegate ([ADR 0020](decisions/0020-claude-code-delegate.md), off in the default build).
+Claude Code as a delegate is in the default build ([ADR 0020](decisions/0020-claude-code-delegate.md)); `./run.sh --no-claude-code` builds without it.
 
 - The `claude-code` row runs the unmodified `claude`, signed in by itself, and shows what it does. It always runs with `--chrome`, so its browser tools are there in every tab and every agent (CON-133).
 - A `codex` row runs the unmodified Codex CLI the same way. The Provider page lists Codex where it is installed. It is signed in by `multitool login codex` or the page's button, in the profile's own Codex folder (CON-137). It does not see your own hooks or servers, and for now it can only read.

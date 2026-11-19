@@ -39,5 +39,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 harness-scenarios = { version = "0.1.0-dev", path = "../scenarios" }
 
 [features]
-# Claude Code as a delegate agent: off until Anthropic answers whether it may ship (ADR 0020).
+# Claude Code as a delegate agent (ADR 0020); multitool turns it on by default.
 claude-code = ["dep:harness-backend-claude-code"]

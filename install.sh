@@ -447,12 +447,9 @@ fi
 if [ "$BUILD" = true ]; then ensure_build_deps; fi
 src="$(source_dir)"
 
-features=()
-[ "$WITH_CLAUDE_CODE" = true ] && features+=("multitool/claude-code")
+# Claude Code as an adapter is in the default build (ADR 0020); --no-claude-code leaves it out.
 args=(build --release -p multitool)
-if [ ${#features[@]} -gt 0 ]; then
-  args+=(--features "$(IFS=,; echo "${features[*]}")")
-fi
+[ "$WITH_CLAUDE_CODE" = true ] || args+=(--no-default-features)
 
 if [ "$BUILD" = true ]; then
   log_info "building: cargo ${args[*]}"

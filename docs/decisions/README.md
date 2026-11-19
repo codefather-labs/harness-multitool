@@ -26,7 +26,7 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0025](0025-one-conversation-in-every-form.md) | One conversation in every form | accepted |
 | [0026](0026-profiles.md) | Profiles: every setting, and each window's sign-in | accepted |
 | [0027](0027-windows-talk-to-the-daemon-over-a-local-socket.md) | Windows talk to the daemon over a local socket | accepted |
-| [0020](0020-claude-code-delegate.md) | Claude Code as a delegate agent, outside the default build | proposed |
+| [0020](0020-claude-code-delegate.md) | Claude Code as a delegate agent, in the default build | accepted (Q-33 settled, 2026-11-19) |
 | [0019](0019-vendor-documented-sign-in.md) | A subscription sign-in ships where the vendor documents it for other apps | accepted |
 | [0016](0016-plan-mode.md) | Plan mode: the classic plan mode with the accent on the journal, mind maps and flowcharts | accepted |
 | [0017](0017-docs-mirror-memory.md) | Project initialization (docs tree + `.harness/`); documentation mirrors the journal, mind maps and flowcharts | accepted |

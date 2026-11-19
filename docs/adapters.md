@@ -108,7 +108,7 @@ While the daemon writes a conversation's form for another adapter or profile, th
 
 ## Limits and status
 
-- **Claude Code as a delegate is behind a cargo feature, `claude-code`, off in a plain `cargo build`** until Anthropic answers whether it may ship (CON-57, Q-33). `./run.sh` and `install.sh` turn it on; `--no-claude-code` leaves it out. [ADR 0020](decisions/0020-claude-code-delegate.md) is still proposed.
+- **Claude Code as a delegate is in the default build** (CON-57, Q-33 settled 2026-11-19). `--no-default-features`, or `--no-claude-code` in `run.sh` and `install.sh`, builds without it.
 
 - **Ollama is a provider of the harness's own loop, not a delegate.** Ollama has no agent program of its own. Full Ollama support as a delegate is planned and not designed yet: whether it means Codex or Claude Code run against a local Ollama server, the native loop made complete on Ollama, or both, is an open question (journal#1222).
 

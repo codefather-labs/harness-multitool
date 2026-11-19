@@ -14,7 +14,8 @@ jobs:
       # CON-184: the terminal interface builds for the browser, for the site's in-page multitool.
       - run: cargo build -p frontend-tui --target wasm32-unknown-unknown
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy -p multitool --features claude-code --all-targets -- -D warnings
+      # The build without Claude Code as a delegate still builds clean (--no-claude-code).
+      - run: cargo clippy -p multitool --no-default-features --all-targets -- -D warnings
       - run: cargo run -q -p multitool -- docs check
   # CON-5: the other native targets build (the TLS library needs each OS's own toolchain).
   other-targets:

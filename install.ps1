@@ -240,10 +240,9 @@ if ($Local) {
 
 $status = 0
 try {
-    $features = @()
-    if (-not $NoClaudeCode) { $features += 'multitool/claude-code' }
+    # Claude Code as an adapter is in the default build (ADR 0020); -NoClaudeCode leaves it out.
     $cargoArgs = @('build', '--release', '-p', 'multitool')
-    if ($features.Count -gt 0) { $cargoArgs += @('--features', ($features -join ',')) }
+    if ($NoClaudeCode) { $cargoArgs += '--no-default-features' }
     Log-Info ('building: cargo ' + ($cargoArgs -join ' '))
     Push-Location $src
     try {
