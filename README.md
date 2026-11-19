@@ -62,6 +62,7 @@ Open the settings with `Ctrl+,` and choose a provider: a key for an API, a local
 | [Terminal UI](docs/tui.md) | running it, keys, debug commands, screens as images |
 | [Agent workflow](docs/agent-workflow.md) | what an agent must do in each situation; ships with the harness, and agents are given its path |
 | [Tools and modes](docs/tools.md) | what an agent can call, and how the harness's modes differ from utilities |
+| [Callbacks](docs/callbacks.md) | how outside apps reach an agent, and how to write a project's own callback handler in Rust: the contract |
 | [Design](docs/design/README.md) | the logo, icons, themes and the mockups the UI is built against |
 | [Decisions](docs/decisions/) | why the project is the way it is (ADRs) |
 | [Roadmap](docs/spec/roadmap.md) | the order of work |
