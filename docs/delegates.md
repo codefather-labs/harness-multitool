@@ -60,7 +60,7 @@ A conversation can move between the harness's own loop, Claude Code and Codex. T
 
 ## Terms and subscriptions
 
-The delegate design follows the vendors' published rules as the project reads them. This page is not legal advice.
+The delegate design follows the vendors' published rules as the project reads them. This page quotes them; it is not legal advice.
 
 What the harness does:
 
@@ -74,11 +74,23 @@ What the harness does:
 
 - keeps Claude Code as Claude Code: its prompt and tools are its own, and the harness only adds to them. Running it as a hidden model behind the harness's own tool loop is rejected in ADR 0020, because it reads as a way round the terms.
 
-What is still open:
+What Anthropic's terms say, as read on 2026-11-19 ([Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)):
 
-- Anthropic's terms say that subscription sign-in is meant for ordinary use of Claude Code, that products should use API keys, and that running Claude Code in a product takes the Commercial Terms. Whether the Claude Code delegate may ship in the default build is **Q-33**, waiting for Anthropic's answer through the owner.
+- An end user signing in to **the unmodified Claude Code binary with their own Claude subscription** is explicitly not prevented, "including where a platform hosts Claude Code".
 
-- The cargo feature `claude-code` therefore keeps the delegate out of a plain `cargo build`. The project's `run.sh` and `install.sh` turn the feature on by default, for the owner's own use; `--no-claude-code` builds without it.
+- Running Claude Code in a product is allowed on conditions. The binary is not modified, and its built-in sign-in methods are not removed or restricted. Nobody pays for, resells or intermediates Claude usage on the end users' behalf. Each end user authenticates with their own API key, subscription or cloud-provider credentials.
+
+- What developers may not do: offer Claude.ai login in their own app, route requests through plan credentials on behalf of their users, or collect, store or intermediate those credentials. Sign-in completes through Anthropic's own flow.
+
+How the harness meets them: every point in the list above. Each user's own Claude Code is signed in by that user, and the harness only starts it and reads its stream.
+
+What stays with the project's owner:
+
+- The same page says that preinstalling or running Claude Code in a product requires agreeing to Anthropic's **Commercial Terms**, unless agreed otherwise with Anthropic. That agreement is the owner's step, not the code's.
+
+- Plan usage limits "assume ordinary, individual usage of Claude Code and the Agent SDK". Many agents on one plan, as in an orchestra, use the same plan's limits.
+
+- Q-33 asked whether the delegate may ship in the default build. The terms above now answer what it asked of Anthropic, and it closes on the owner's word. Until then the cargo feature `claude-code` keeps the delegate out of a plain `cargo build`; the project's `run.sh` and `install.sh` turn it on by default, and `--no-claude-code` builds without it.
 
 - The harness's own loop does not offer a Claude subscription sign-in at all: Anthropic models there take an API key ([ADR 0019](decisions/0019-vendor-documented-sign-in.md)).
 
