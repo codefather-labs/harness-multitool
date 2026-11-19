@@ -340,6 +340,7 @@ pub fn splash() -> AppState {
 pub fn splash_points() -> Vec<SplashPoint> {
     vec![
         SplashPoint::new("Every part is a Rust plugin you can replace", None),
+        SplashPoint::new("One harness: Claude Code, OpenAI, Ollama adapters", None),
         SplashPoint::new("Done means proven: tasks close with evidence", None),
         SplashPoint::new("Spec-first: specs and invariants checked", None),
         SplashPoint::new("Journal, mind maps, flowcharts as knowledge graph", None),
