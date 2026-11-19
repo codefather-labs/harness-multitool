@@ -11,6 +11,8 @@ jobs:
       - run: cargo test --workspace
       # INV-1: the core and the interfaces build for the browser.
       - run: cargo check -p harness-api -p harness-core --target wasm32-unknown-unknown
+      # CON-184: the terminal interface builds for the browser, for the site's in-page multitool.
+      - run: cargo build -p frontend-tui --target wasm32-unknown-unknown
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p multitool --features claude-code --all-targets -- -D warnings
       - run: cargo run -q -p multitool -- docs check
