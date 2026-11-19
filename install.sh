@@ -341,6 +341,8 @@ elif action == "remove" and present:
     if not settings["hooks"]["UserPromptSubmit"]:
         del settings["hooks"]["UserPromptSubmit"]
 else:
+    if action == "add":
+        print("present")
     sys.exit(0)
 if os.path.exists(path):
     shutil.copy2(path, path + ".before-multitool-" + time.strftime("%Y%m%d%H%M%S"))
@@ -359,7 +361,11 @@ agent_setup() {
   put_file "$src/rules/cognitive-self-check.md" "$CLAUDE_DIR/rules/cognitive-self-check.md"
   put_file "$src/hooks/$HOOK_NAME" "$CLAUDE_DIR/hooks/$HOOK_NAME"
   chmod 755 "$CLAUDE_DIR/hooks/$HOOK_NAME"
-  if [ "$(settings_hook add)" = changed ]; then log_ok "$CLAUDE_DIR/settings.json: the self-check hook added"; else log_ok "$CLAUDE_DIR/settings.json: the self-check hook is there"; fi
+  # Without python3 settings_hook only warned: nothing to report as done (journal#1465).
+  case "$(settings_hook add)" in
+    changed) log_ok "$CLAUDE_DIR/settings.json: the self-check hook added" ;;
+    present) log_ok "$CLAUDE_DIR/settings.json: the self-check hook is there" ;;
+  esac
 }
 
 agent_unsetup() {
