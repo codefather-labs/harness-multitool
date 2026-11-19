@@ -3,7 +3,8 @@
 .harness/callbacks/echo holds a compiled Rust handler (the SDK's test-echo, built by cargo test -p
 harness-callback). One window, two tabs on two conversations:
 - the window says at opening that a handler waits for approval;
-- in tab 1, Settings > Callbacks: a then a approves it, Space subscribes tab 1's conversation;
+- in tab 1, Settings > Callbacks: one Enter on its row approves it and subscribes tab 1's
+  conversation (journal#1382);
 - a POST of a `ping` to tab 1's URL is answered 202 started, and tab 1's transcript shows the
   handler's message; tab 2's does not;
 - in tab 2, the Callbacks page shows echo approved but not subscribed, and a ping to its URL is 400.
@@ -93,17 +94,14 @@ w.callbacks()
 open(proof_dir + "/tab2-before.txt", "w").write(masked(w.text()))
 url2 = w.url()
 w.key("\x1b"); w.pump(0.8)
-# Tab 1: approve (a, a) and subscribe (Space).
+# Tab 1: one Enter approves and subscribes (journal#1382).
 w.key("\x1b1"); w.pump(1)
 w.callbacks()
 url1 = w.url()
 open(proof_dir + "/tab1-unapproved.txt", "w").write(masked(w.text()))
 results["listed_not_approved"] = "not approved" in w.text() and "echo" in w.text()
-w.type("a"); w.pump(0.8)
-results["approval_asks_naming_the_path"] = "a again approves" in w.text() and folder + "/handler:" in w.text()
-open(proof_dir + "/tab1-asking.txt", "w").write(masked(w.text()))
-w.type("a"); w.pump(1.5)
-w.type(" "); w.pump(1.5)
+w.type("\r"); w.pump(2)
+results["one_enter_says_approved_and_on"] = "echo approved as it is now, and on for this conversation" in w.seen
 open(proof_dir + "/tab1-subscribed.txt", "w").write(masked(w.text()))
 results["approved_and_subscribed"] = bool(re.search(r"● on\s+echo\s+approved", w.text()))
 w.key("\x1b"); w.pump(0.8)

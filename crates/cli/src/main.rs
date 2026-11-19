@@ -2443,20 +2443,16 @@ impl Live {
                 }
                 // CON-181: Settings > Behaviour saved; the daemon hears the new loss at once.
                 Outgoing::ProjectCallbacks { tab } => self.project_callbacks(w, tab, None),
-                Outgoing::ApproveCallback { tab, name } => {
-                    let said = self.project_callback_op(tab, serde_json::json!({"op": "callback_approve", "name": name}));
-                    let note = match said {
-                        Ok(_) => format!("Approved {name} as it is now: a new build is to be approved again."),
-                        Err(e) => format!("{name} not approved: {e}"),
-                    };
-                    self.project_callbacks(w, tab, Some(note));
-                }
-                Outgoing::SubscribeCallback { tab, name, on } => {
-                    let said = self.project_callback_op(tab, serde_json::json!({"op": "callback_subscribe", "name": name, "on": on}));
+                Outgoing::SubscribeCallback { tab, name, on, approve } => {
+                    // Turning one on approves its handler as it is now when that is needed
+                    // (journal#1382); a refused approval subscribes nothing.
+                    let approved = if approve { self.project_callback_op(tab, serde_json::json!({"op": "callback_approve", "name": name})).map(|_| ()) } else { Ok(()) };
+                    let said = approved.and_then(|()| self.project_callback_op(tab, serde_json::json!({"op": "callback_subscribe", "name": name, "on": on})));
                     let note = match (said, on) {
-                        (Ok(_), true) => format!("This conversation now takes {name}'s callbacks through its handler."),
+                        (Ok(_), true) if approve => format!("{name} approved as it is now, and on for this conversation."),
+                        (Ok(_), true) => format!("{name} is on for this conversation."),
                         (Ok(_), false) => format!("{name} is off for this conversation."),
-                        (Err(e), _) => format!("{name}: {e}"),
+                        (Err(e), _) => format!("{name} not turned {}: {e}", if on { "on" } else { "off" }),
                     };
                     self.project_callbacks(w, tab, Some(note));
                 }

@@ -5,10 +5,10 @@
  █  New session: session-2
  █  plugin-first coding harness · Rust + ratatui
  ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
- █  USER  12:48
+ █  USER  14:11
  █  hello from tab two
  ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
- █  ASSISTANT  12:╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ █  ASSISTANT  14:╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
  █  Noted.        │  Settings                                                                                         ×  │
  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│  project and local build configuration                                                               │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
                   │──────────────────────────────────────────────────────────────────────────────────────────────────────│
@@ -26,13 +26,13 @@
                   │    Theme                   │  Conditions  .harness/conditions.toml                                   │
                   │    Behaviour               │   none in this project                                                  │
                   │    Journal                 │                                                                         │
-                  │    Chats                   │  This conversation's callbacks  .harness/callbacks · Space subscribe ·  │
-                  │    Games                   │   its URL http://127.0.0.1:37053/callback/<token>   │
-                  │                            │   9661dd65b                                                             │
+                  │    Chats                   │  This conversation's callbacks  .harness/callbacks · Enter on or off ·  │
+                  │    Games                   │   its URL http://127.0.0.1:45089/callback/<token>   │
+                  │                            │   adba9970a                                                             │
                   │                            │   ○ off echo                not approved                                │
                   │                            │   types ping · says it back                                             │
                   │                            │                                                                         │
-                  │                            │  Daemon  running on 127.0.0.1:37053   r reload                          │
+                  │                            │  Daemon  running on 127.0.0.1:45089   r reload                          │
                   │                            │                                                                         │
                   │──────────────────────────────────────────────────────────────────────────────────────────────────────│
                   │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │

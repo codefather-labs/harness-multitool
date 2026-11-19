@@ -10,10 +10,10 @@
  █   • Ctrl+P command palette · / commands
  █   • Drop files ╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
  ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│  Settings                                                                                         ×  │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
- █  USER  12:48   │  project and local build configuration                                                               │
+ █  USER  14:11   │  project and local build configuration                                                               │
  █  hello from tab│──────────────────────────────────────────────────────────────────────────────────────────────────────│
  ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│                            │                                                                         │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
- █  ASSISTANT  12:│    Provider                │  CALLBACKS   profile default                                            │
+ █  ASSISTANT  14:│    Provider                │  CALLBACKS   profile default                                            │
  █  Noted.        │    Tools                   │  Standard types                                                         │
  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│    Policy                  │   notification      built-in ▾                     into the agent's in  │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
                   │    Memory                  │   journal           built-in ▾                     writes a journal en  │
@@ -26,13 +26,13 @@
                   │    Theme                   │  Conditions  .harness/conditions.toml                                   │
                   │    Behaviour               │   none in this project                                                  │
                   │    Journal                 │                                                                         │
-                  │    Chats                   │  This conversation's callbacks  .harness/callbacks · Space subscribe ·  │
-                  │    Games                   │   its URL http://127.0.0.1:37053/callback/<token>   │
-                  │                            │   35af22066                                                             │
+                  │    Chats                   │  This conversation's callbacks  .harness/callbacks · Enter on or off ·  │
+                  │    Games                   │   its URL http://127.0.0.1:45089/callback/<token>   │
+                  │                            │   ef01d156b                                                             │
                   │                            │   ○ off echo                not approved                                │
                   │                            │   types ping · says it back                                             │
                   │                            │                                                                         │
-                  │                            │  Daemon  running on 127.0.0.1:37053   r reload                          │
+                  │                            │  Daemon  running on 127.0.0.1:45089   r reload                          │
                   │                            │                                                                         │
                   │──────────────────────────────────────────────────────────────────────────────────────────────────────│
                   │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │

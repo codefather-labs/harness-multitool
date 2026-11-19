@@ -89,10 +89,14 @@ multitool callback list
 
 ### Turning it on: approve and subscribe
 
-Two things, both done by the user in **Settings > Callbacks**, under "This conversation's callbacks":
+The user turns a callback on in **Settings > Callbacks**, under "This conversation's callbacks". One `Enter` on its row (or `Space`, or a click) does it (journal#1382):
 
-1. **Approve** the handler: press `a` on its row, then `a` again. The second press confirms that the program at that path runs as you, with your rights. The approval pins the handler's file by its SHA-256. If the file changes later, even by a new build, the row says 'changed: approve again', and the handler does not run until it is approved again.
-2. **Subscribe** the conversation: press `Space` on the row. Subscriptions are per conversation: each conversation has its own pool of custom callbacks. A conversation that is not subscribed does not get the type at all.
+- **Off → on.** It approves the handler as it is now, if it is not approved yet or has changed since, and it subscribes this conversation. The approval pins the handler's file by its SHA-256 and means the program runs as you, with your rights. The toast says what was approved.
+- **On → off.** It unsubscribes this conversation. The approval stays.
+- **Changed.** If the handler's file changes later, even by a new build, the row says 'changed: Enter turns it on again'. The handler does not run until it is turned on again, which approves the new file.
+- **A handler that cannot run** (a script, not built, a bad config.toml) is not turned on, and the toast says why.
+
+Subscriptions are per conversation: each conversation has its own pool of custom callbacks. A conversation that is not subscribed does not get the type at all.
 
 When a window opens a project whose handlers wait for approval, a toast says so. An agent sees the same state with the `callback_handlers` tool. Approving and subscribing stay the user's.
 

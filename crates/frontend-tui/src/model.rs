@@ -163,10 +163,10 @@ pub enum Outgoing {
     SaveBehaviour { on_exit: Option<String>, on_loss: String },
     /// The active tab's project callbacks, as the daemon has them (CON-183).
     ProjectCallbacks { tab: u64 },
-    /// Approve a project callback's handler as it is now: pinned by its SHA-256 (CON-183).
-    ApproveCallback { tab: u64, name: String },
     /// Subscribe the active tab's conversation to a project callback, or take it off (CON-183).
-    SubscribeCallback { tab: u64, name: String, on: bool },
+    /// With `approve`, its handler is approved as it is now first, pinned by its SHA-256
+    /// (journal#1382).
+    SubscribeCallback { tab: u64, name: String, on: bool, approve: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -415,8 +415,6 @@ pub struct CallbacksPage {
     pub project_status: String,
     /// The conversation's callback URL, where its callbacks are POSTed.
     pub project_url: String,
-    /// The callback whose approval waits for a second `a` (CON-183).
-    pub approving: Option<String>,
 }
 
 impl CallbacksPage {
