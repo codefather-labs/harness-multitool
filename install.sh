@@ -509,7 +509,10 @@ optional_tools
 if [ "$WITH_AGENT_SETUP" = true ] && [ -d "$src/assets/claude" ]; then
   check "the rules are in $CLAUDE_DIR/rules" "[ -f \"$CLAUDE_DIR/rules/project-journal.md\" ] && [ -f \"$CLAUDE_DIR/rules/cognitive-self-check.md\" ]"
   check "the self-check hook runs" "echo '{}' | \"$CLAUDE_DIR/hooks/$HOOK_NAME\""
-  check "settings.json calls it" "grep -qF \"$CLAUDE_DIR/hooks/$HOOK_NAME\" \"$CLAUDE_DIR/settings.json\""
+  # Without python3, settings_hook did not edit settings.json and said so: no failure (journal#1465).
+  if command -v python3 >/dev/null 2>&1; then
+    check "settings.json calls it" "grep -qF \"$CLAUDE_DIR/hooks/$HOOK_NAME\" \"$CLAUDE_DIR/settings.json\""
+  fi
 fi
 
 echo ""
