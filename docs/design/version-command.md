@@ -1,5 +1,7 @@
 # TUI /version
 
+What the terminal UI's /version command shows, where it is implemented, and how it was verified.
+
 Specification: CON-102, journal#515 (replaces journal#504, deprecated). Work item: journal#505. Mind map #6; flowchart #7.
 
 `/version` appends an informational `Item::Tips` to the current transcript, not a toast, with label `VERSION` and text `harness-multitool <version>`. The version comes from `env!("CARGO_PKG_VERSION")`; frontend-tui inherits the workspace package version. No hard-coded version, git hash, provider request or daemon command is needed.

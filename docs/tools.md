@@ -59,7 +59,12 @@ Decisions, findings and work items of the project, kept across sessions.
 | `journal_branch` | The work branch of an entry: its todo, implementation, evidence. | The branch and how it stands. |
 | `journal_link` | Linking two entries whose text does not mention each other. | Whether it was added. |
 
-Flags on an entry (`journal_add`, `journal_mark`): the work items `todo`, `question`, `wait-for-decision` (a choice only the user makes, closed with the decision, CON-178), `problem`, and the marks `research` (the result of a research or an analysis, with its sources, CON-179), `specification`, `constraint`, `invariant`, `principle`, `important`, `idea`, `concept`, `comment`, `verified`, `deprecated`. `invariant` and `principle` are mirrored to `docs/spec/invariants.md` and `docs/spec/principles.md` (CON-115), and bind the work like `specification` and `constraint`; a category of the same name sets the flag. Each needs its doc id (`INV-` or `P-`) in its body.
+Flags on an entry (`journal_add`, `journal_mark`):
+
+- the work items `todo`, `question`, `wait-for-decision` (a choice only the user makes, closed with the decision, CON-178), `problem`;
+- the marks `research` (the result of a research or an analysis, with its sources, CON-179), `specification`, `constraint`, `invariant`, `principle`, `important`, `idea`, `concept`, `comment`, `verified`, `deprecated`.
+
+`invariant` and `principle` are mirrored to `docs/spec/invariants.md` and `docs/spec/principles.md` (CON-115), and bind the work like `specification` and `constraint`; a category of the same name sets the flag. Each needs its doc id (`INV-` or `P-`) in its body.
 
 ## Maps
 

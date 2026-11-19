@@ -11,10 +11,29 @@ ADR 0015 made a custom callback handler a plugin crate linked into the multitool
 
 A custom callback belongs to the **project**: `.harness/callbacks/<name>/` holds a `config.toml` and a handler.
 
-- **The handler is a Rust program**, built on the harness's contract crate `harness-callback` (crates/callback-sdk). `multitool callback new` makes one from a template and `multitool callback build` builds it. Scripts are refused: there is one way to run a handler, with no interpreters or environments to manage for each language. The handler's own logic may call anything else.
-- **The daemon stands at the start, as for every callback.** A custom callback comes to a conversation's URL with a uuid and a type, like a default one. The daemon keeps a registry, conversation → type → handler, in hash tables, so a callback finds its handler in O(1). Standard types stay native.
-- **The handler stands between the daemon and the conversation.** The daemon answers 202 and starts the handler without waiting for it. The handler gets the callback on stdin, its args, and the conversation and a reply URL in its environment. It POSTs its results to that URL: a message, a journal entry, or nothing. The daemon delivers them to that conversation alone.
-- **Trust.** The user approves a handler in Settings > Callbacks, and the approval pins it by its SHA-256. Each conversation is subscribed by the user. A handler runs in a systemd scope of its own, with a timeout and an output cap.
+### The handler
+
+- **The handler is a Rust program**, built on the harness's contract crate `harness-callback` (crates/callback-sdk).
+  - `multitool callback new` makes one from a template and `multitool callback build` builds it.
+  - Scripts are refused: there is one way to run a handler, with no interpreters or environments to manage for each language.
+  - The handler's own logic may call anything else.
+
+### The daemon stands at the start, as for every callback
+
+A custom callback comes to a conversation's URL with a uuid and a type, like a default one. The daemon keeps a registry, conversation → type → handler, in hash tables, so a callback finds its handler in O(1). Standard types stay native.
+
+### The handler stands between the daemon and the conversation
+
+- The daemon answers 202 and starts the handler without waiting for it.
+- The handler gets the callback on stdin, its args, and the conversation and a reply URL in its environment.
+- It POSTs its results to that URL: a message, a journal entry, or nothing.
+- The daemon delivers them to that conversation alone.
+
+### Trust
+
+- The user approves a handler in Settings > Callbacks, and the approval pins it by its SHA-256.
+- Each conversation is subscribed by the user.
+- A handler runs in a systemd scope of its own, with a timeout and an output cap.
 
 ## Rejected
 

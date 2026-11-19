@@ -1,5 +1,7 @@
 # Open questions
 
+Questions the specification has not settled yet, and what each needs to be settled. A settled one stays in the table, struck through, with its answer.
+
 | Id | Question | Needs |
 |---|---|---|
 | ~~**Q-1**~~ | ~~The name.~~ Settled: **harness-multitool** ([ADR 0008](../decisions/0008-name.md)). | — |

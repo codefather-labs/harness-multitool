@@ -1,5 +1,7 @@
 # Design
 
+The harness's visual design: the logo, the icons, the themes and the reference mockups of the terminal UI.
+
 ## Logo
 
 `logo/multitool.svg` is the logo: a fork, an orange handle with two eyes, a saw — traced from `concept/startup-light.png`, the owner's pick. The TUI recolours it per theme (tools in the text colour, the handle in the brand orange `#F5A623`, ink for the eyes and outline) and shows it as a picture in terminals with a graphics protocol.

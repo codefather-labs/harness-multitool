@@ -1,5 +1,7 @@
 # Specification
 
+The index of the project's specification: what each file holds, and the ids it defines.
+
 - [principles.md](principles.md) — `P-*`
 - [invariants.md](invariants.md) — `INV-*`
 - [constraints.md](constraints.md) — `CON-*`

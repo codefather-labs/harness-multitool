@@ -92,8 +92,11 @@ multitool callback list
 The user turns a callback on in **Settings > Callbacks**, under "This conversation's callbacks". One `Enter` on its row (or `Space`, or a click) does it (journal#1382):
 
 - **Off → on.** It approves the handler as it is now, if it is not approved yet or has changed since, and it subscribes this conversation. The approval pins the handler's file by its SHA-256 and means the program runs as you, with your rights. The toast says what was approved.
+
 - **On → off.** It unsubscribes this conversation. The approval stays.
+
 - **Changed.** If the handler's file changes later, even by a new build, the row says 'changed: Enter turns it on again'. The handler does not run until it is turned on again, which approves the new file.
+
 - **A handler that cannot run** (a script, not built, a bad config.toml) is not turned on, and the toast says why.
 
 Subscriptions are per conversation: each conversation has its own pool of custom callbacks. A conversation that is not subscribed does not get the type at all.
@@ -107,6 +110,7 @@ When a callback of type `T` is POSTed to conversation `S`'s URL:
 1. The daemon looks up `(S, T)` in its registry, a hash table, so the lookup is O(1). The registry is kept in `daemon/callback_subscriptions.json`.
 2. If no custom callback is registered for that pair, `T` goes on as before: a standard type, then a condition of `.harness/conditions.toml`. A type that a callback of the project serves, but that `S` is not subscribed to, gets 400 'not subscribed'. Any other type gets 400 'no handler'.
 3. If the handler is not approved, or has changed since its approval: 409, and nothing runs.
+
 4. Otherwise the daemon starts the handler and answers `{"result": "started"}` (202) at once. The caller never waits for the handler.
 5. The handler runs in a systemd scope of its own (`multitool-callback-<name>-…`) when the user manager is reachable. It is killed when its time (`timeout_s`) is over.
 6. The handler POSTs its results to its reply URL. The daemon delivers each one to `S`, and to `S` alone.

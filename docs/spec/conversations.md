@@ -61,7 +61,9 @@ The conversation is the session's event log (INV-5): one JSON line per event, ap
 
 What the log holds about a provider is marked as such and is never needed to read the conversation: a block a model signed for itself (`OpaqueBlock`), and the id of a session a provider keeps of its own (`BackendSession`, `ConversationImported`).
 
-`FormSynced` links a session to a form: which provider, its id, the position reached in that form, and how many messages of the session the form holds. The next pull starts at that position and the next push at that count, so neither side is ever read or written twice, and a build without the adapter simply leaves the form behind until one with it opens the session.
+`FormSynced` links a session to a form. It records which provider, its id, the position reached in that form, and how many messages of the session the form holds.
+
+The next pull starts at that position and the next push at that count, so neither side is ever read or written twice. A build without the adapter simply leaves the form behind until one with it opens the session.
 
 ## The forms of a conversation
 
@@ -107,7 +109,12 @@ A delegate gets the harness's own tools over MCP, whichever way its row runs: `m
 
 ### An agent changing the harness
 
-An agent can change the harness it runs in. `plugins_reload` builds from the source at once, while its turn goes on. A failed build comes back to it as its next message, with the error, and nothing is swapped. A good one swaps at the safe point, when the daemon has no run on in any window, a message the user sent meanwhile included, and it decides that itself, closing in the same step: the process and the daemon are replaced, the daemon's delegates ending with it, the conversations reopen from their forms, and the tab that asked gets a message from the harness, which starts its next turn. A reload the user asked for sends no message.
+An agent can change the harness it runs in. `plugins_reload` builds from the source at once, while its turn goes on.
+
+- **A failed build** comes back to it as its next message, with the error, and nothing is swapped.
+- **A good build** swaps at the safe point: when the daemon has no run on in any window, a message the user sent meanwhile included. It decides that itself, and closes in the same step.
+
+At the swap the process and the daemon are replaced, and the daemon's delegates end with it. The conversations reopen from their forms, and the tab that asked gets a message from the harness, which starts its next turn. A reload the user asked for sends no message.
 
 ### Bringing a journal in
 
@@ -118,6 +125,7 @@ An agent can change the harness it runs in. `plugins_reload` builds from the sou
 `./run.sh --under "<launcher>"` runs the harness inside a program that starts `claude` from the PATH and gives it an identity and messages. The harness takes the place of `claude` there, and a delegate still finds the real one. What the launcher sets reaches sessions as a window's environment, and what it types reaches the composer as a paste:
 
 - A message is known by the prefix it starts with, and goes in as what it is: Telegram, an agent, a callback or a reminder, with its own card and toast, marked as coming from outside (INV-12), not as the user's words. Only the start of a paste counts, so a line inside a body cannot pass for a sender. With a run on it waits its turn, and with no session open it waits for one. The Enter that came with it answers no prompt and opens no session.
+
 - A paste from the user waits in the composer, line breaks and all.
 
 A delegate is `claude -p`, and Claude Code offers some tools only in its interactive mode: asking with options, its plan mode, and artifacts. Under the harness those are the harness's own, or absent.
@@ -127,16 +135,27 @@ A delegate is `claude -p`, and Claude Code offers some tools only in its interac
 Choosing another adapter or model in the harness's settings moves every open conversation of the window onto it, at once:
 
 - The choice is saved by the harness itself: nobody edits a configuration file to change an adapter, and the next start opens on the same one.
+
 - The daemon reconnects each conversation and brings its form for the chosen adapter in line with the log at that moment (INV-20), creating it if that adapter keeps conversations and has none for this one yet. Its next message goes through the new adapter. The status line says so straight away. Nothing has to be reopened.
-- **The window waits for the daemon.** Bringing a form in line can take long: writing a form the adapter does not have yet means the whole conversation, and a long one runs to gigabytes. From the moment it starts until the daemon signals success or failure, the window shows the moon-phase spinner with what is being done, and takes no input: no message, no command, no other control. Failure leaves the window usable, says what went wrong, and the conversation stays on the adapter it had. The same holds for opening a conversation whose form has to be read or caught up (CON-81).
+
+- **The window waits for the daemon.** Bringing a form in line can take long: writing a form the adapter does not have yet means the whole conversation, and a long one runs to gigabytes.
+
+  From the moment it starts until the daemon signals success or failure, the window shows the moon-phase spinner with what is being done. It takes no input: no message, no command, no other control.
+
+  Failure leaves the window usable, says what went wrong, and the conversation stays on the adapter it had. The same holds for opening a conversation whose form has to be read or caught up (CON-81).
+
 - The context window is a dropdown beside them, per provider: Auto takes what the server or the model reports, and a chosen value wins over a report and is what compaction goes by. A delegate compacts by itself, so there it decides only what the status line counts against (CON-80).
+
 - **While a run is on, the adapter cannot be changed.** While any conversation of the window has a run on or a prompt waiting, the adapter, model and context window controls are shown disabled, wherever they are, and choosing one changes nothing and says why. They come back when the last run ends.
+
 - The daemon holds to the same rule: a change that reaches it during a run is refused, so no frontend can move a conversation in the middle of a run (CON-79).
 
 ## Moving between the harness and a provider's program
 
 - **Onto the harness:** open it. A provider's conversation listed for this directory or brought in with `multitool import` is linked, not copied: opening it pulls what it gained. Importing it again gives the same session.
+
 - **Back:** open the same id in the provider's program, `claude --resume <id>`. Every turn made in the harness is already in its file, on any provider. Turns made there come back the same way at the next open.
+
 - **One writer at a time:** while the provider's own program has the conversation open, the harness shows it live but refuses to send, naming the program (CON-78). Leave it there and send again.
 
 ## When things go wrong

@@ -1,5 +1,7 @@
 # Architecture
 
+How the harness is built: its layers, one turn of the loop, its modes and plugins, its builds, and the repository layout. The same architecture is kept as a mind map in the project's journal.
+
 ## Layers
 
 ```mermaid
@@ -124,7 +126,22 @@ Each feature has its own way to be looked at without the rest of the system:
 
 ## Repository layout
 
-Built today: `crates/api` (every interface, the events, the fold over the log), `crates/core` (loop, bus, registry), `crates/doubles` (a test double per interface), `crates/scenarios` (named runs of the real loop on doubles), the default plugins (`platform-native`, `auth-apikey`, `provider-anthropic`, `provider-openai`, `tools-builtin`, `policy-default`, `context-default`, `session-files`, `verifier-protocol`, `router-default`, `hooks-shell`, `memory-journal`, `tools-memory`), `crates/session` (the plugins from the configuration, a thread per session), `crates/daemon` (the callback entry, a URL per window), `crates/cli` (the `multitool` binary), `crates/frontend-tui` (the terminal UI) and `crates/tui-snapshot` (renders a frame to PNG with the same `draw`). The rest is the proposed layout:
+Built today:
+
+- `crates/api` (every interface, the events, the fold over the log);
+- `crates/core` (loop, bus, registry);
+- `crates/doubles` (a test double per interface);
+- `crates/scenarios` (named runs of the real loop on doubles);
+
+- the default plugins (`platform-native`, `auth-apikey`, `provider-anthropic`, `provider-openai`, `tools-builtin`, `policy-default`, `context-default`, `session-files`, `verifier-protocol`, `router-default`, `hooks-shell`, `memory-journal`, `tools-memory`);
+
+- `crates/session` (the plugins from the configuration, a thread per session);
+- `crates/daemon` (the callback entry, a URL per window);
+- `crates/cli` (the `multitool` binary);
+- `crates/frontend-tui` (the terminal UI);
+- `crates/tui-snapshot` (renders a frame to PNG with the same `draw`).
+
+The rest is the proposed layout:
 
 ```text
 crates/

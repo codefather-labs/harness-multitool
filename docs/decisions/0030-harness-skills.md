@@ -19,13 +19,17 @@ They are laid out as Claude Code lays out its own, with `.harness` in place of `
 ```
 
 `SKILL.md` starts with YAML frontmatter with `name` and `description`, and the body is the instructions. Files beside it (scripts, templates) are the skill's own, read by path.
-- **External contract, verify before building:** Anthropic's Agent Skills format: frontmatter fields `name` (lowercase, digits, hyphens) and `description` required, `allowed-tools` optional. Verify: docs.claude.com, Agent Skills; record it in an `### External contracts` entry with the doc's URL.
+
+- **External contract, verify before building:** Anthropic's Agent Skills format.
+  - Frontmatter fields `name` (lowercase, digits, hyphens) and `description` are required; `allowed-tools` is optional.
+  - Verify: docs.claude.com, Agent Skills; record it in an `### External contracts` entry with the doc's URL.
 - The same names on both levels: the project's wins (journal#888).
 - A skill folder of Claude Code's (`.claude/skills`) is not read by the harness: it is Claude Code's own, and stays so (CON-145).
 
 ### How an agent uses them
 
 Two tools are served by the harness's MCP server to every adapter. The native loop gets them as tools; Claude Code and Codex get them through the `harness` server they are already given.
+
 - `skill_list`: the skills here, each with its name, description, and whether it is the project's or the user's. Only descriptions, so a long list costs little.
 - `skill_load(name)`: the skill's body, and the paths of its files.
 

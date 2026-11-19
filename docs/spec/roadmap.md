@@ -14,7 +14,11 @@ Each milestone ends with its specifications checked, not with its features writt
 
 **Terminal UI, in progress ahead of the loop:** visible hook runs (ADR 0010), mind-map and flowchart tools with journal tickets and panning (ADR 0011), the welcome screen with the key points; next: SVG export of maps and charts, live flowchart instances (ADR 0012), the Callbacks settings tab (ADR 0015).
 
-**Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts — the agent writes the files, prompted by a `PostToolUse` hook on every memory write; the consistency check is a built-in, id-linked, advisory hook plus `multitool docs check` in CI (CON-45); the `project-init` skill creates the tree with an example entry in every file.
+**Documentation mirror (ADR 0017, CON-43):** the harness keeps a project's docs tree consistent with its journal, maps and flowcharts.
+
+- The agent writes the files, prompted by a `PostToolUse` hook on every memory write.
+- The consistency check is a built-in, id-linked, advisory hook plus `multitool docs check` in CI (CON-45).
+- The `project-init` skill creates the tree with an example entry in every file.
 
 **Conversations ([conversations.md](conversations.md)), in progress.** In: sessions in the daemon, the log as the format, transformation between providers, a window's environment, a window taking over a run, and one conversation kept consistent with Claude Code's form in both directions. Left: `multitool run` through the daemon; Codex CLI's form; `multitool chat dump` and `chat load` with `--format`; asking with options and plan mode for a delegate.
 
@@ -27,18 +31,31 @@ Each milestone ends with its specifications checked, not with its features writt
 
 ## TUI /version (CON-102)
 
-`/version` prints a local VERSION card in the current transcript with `harness-multitool <package version>`; it is listed in `/help` and never sends a model request. Specification journal#515 replaces journal#504 to repair its documentation identity without changing behaviour. Work journal#505; implementation journal#507; verification journal#509. Checked: frontend-tui 104 passed, 0 failed, 1 ignored; CLI build; real PTY preview `/version` displayed VERSION and harness-multitool 0.1.0-dev, exit 0. Live dispatch/outbox preservation checked by unit test; interactive smoke used preview, not a live provider.
+`/version` prints a local VERSION card in the current transcript with `harness-multitool <package version>`. It is listed in `/help` and never sends a model request.
+
+Specification journal#515 replaces journal#504 to repair its documentation identity without changing behaviour. Work journal#505; implementation journal#507; verification journal#509.
+
+Checked:
+
+- frontend-tui: 104 passed, 0 failed, 1 ignored;
+- CLI build;
+- real PTY preview: `/version` displayed VERSION and harness-multitool 0.1.0-dev, exit 0;
+- live dispatch/outbox preservation: checked by unit test. The interactive smoke used preview, not a live provider.
 
 ## Hot reload of plugins (M6; ADR 0015, CON-50)
 
 Plugins stay crates linked into the binary; a reload swaps the binary in the same terminal without restarting sessions:
 
 1. **Build.** `cargo build` of the local build. If it fails, nothing is swapped; the agent and the user see the error.
+
 2. **Safe point.** Wait until no model turn is streaming and no tool call is in flight.
+
 3. **Hand-off.** The process writes everything it holds only in memory to a hand-off file: tabs, transcripts, scroll positions, open journal tickets and expanded flowchart instances, the input draft, the open overlay.
+
 4. **Swap in the same terminal.**
    - Linux and macOS: the process gives the terminal back as the shell left it and replaces itself with the new binary (`exec`), which takes the terminal again: the same process and terminal, and the shell does not notice.
    - Windows: a process cannot replace itself, so the old one starts the new binary in the same console, waits for it and passes its exit code on; the console window stays.
+
 5. **Restore.** The new process reads the hand-off, redraws every tab as it was and deletes the file. Callbacks that came during the swap were taken by the daemon and are delivered now.
 
 Done when the test protocol of journal#330 passes on Linux and once on a Windows host.

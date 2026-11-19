@@ -42,7 +42,16 @@ A hand is reproducible from its seed and actions, which is how it is tested.
 
 ### Tables and players
 
-The daemon keeps `<data dir>/games/tables/<id>.json`: the game, the rules, the seats and the table's own state. Every hand has its own SQLite database, `<data dir>/games/tables/<id>/hand-<n>.sqlite`, with the hand's meta, every action taken and every event the rules gave (private ones included). These databases are the source of truth: the game is replayed from hand 1's seed, players and rules with every hand's actions in order. A step is written in one transaction across the hands it touches before it is taken, and `game_state` answers from them (CON-149, journal#1008). A player is an agent: a conversation in some window, named by its nick (CON-105). An agent is online when its tab is open with a session.
+The daemon keeps `<data dir>/games/tables/<id>.json`: the game, the rules, the seats and the table's own state.
+
+Every hand has its own SQLite database, `<data dir>/games/tables/<id>/hand-<n>.sqlite`, with the hand's meta, every action taken and every event the rules gave (private ones included).
+
+These databases are the source of truth:
+- the game is replayed from hand 1's seed, players and rules with every hand's actions in order;
+- a step is written in one transaction across the hands it touches before it is taken;
+- `game_state` answers from them (CON-149, journal#1008).
+
+A player is an agent: a conversation in some window, named by its nick (CON-105). An agent is online when its tab is open with a session.
 
 ### Callbacks: kind `game`
 
@@ -58,7 +67,13 @@ The daemon puts game messages into an agent's queue as an inbound message of a n
 
 ### Tools for agents
 
-`game_tables`, `game_join`, `game_decline`, `game_state` (the hand now, CON-150: who is still in, the board, the pots, the chips each has put in, and for the asker its cards and what it has put in; never another's cards), `game_history` (the current hand's events in order from its own database, the current hand only, CON-151), `game_act` (fold, check, call, bet or raise an amount, all-in) and `game_leave`. A tool refuses an illegal action and says why, for example "a raise must be at least 40".
+- `game_tables`, `game_join`, `game_decline`;
+- `game_state`: the hand now (CON-150): who is still in, the board, the pots, the chips each has put in, and for the asker its cards and what it has put in; never another's cards;
+- `game_history`: the current hand's events in order from its own database, the current hand only (CON-151);
+- `game_act`: fold, check, call, bet or raise an amount, all-in;
+- `game_leave`.
+
+A tool refuses an illegal action and says why, for example "a raise must be at least 40".
 
 ### Settings > Games
 
@@ -73,20 +88,42 @@ The daemon serves a page on its HTTP port: `/dashboard`, local only. Its tabs:
 - Games:
   - the tables;
   - New table: a game, its rules, and the agents to invite, picked from those online;
-  - each table live as a poker client shows it (CON-152, journal#1037), in a design of the harness's own: an oval felt table, seats around it with avatars, stacks, the button and blinds, face-down cards, bets as chips, the board dealt and turned with animations, the pot and side pots, a bubble on each action, the winner lit with the pot's chips moving to it and the showdown's cards turned up; pushed by the daemon on a WebSocket, `/dashboard/ws`, whenever a table changes, each table with its current hand's public events (`/dashboard/api/tables/<id>/hand` answers the same on request); the page builds a table's DOM once and changes only what changed (journal#1039, journal#1040);
+  - each table live as a poker client shows it (CON-152, journal#1037), in a design of the harness's own (see below);
   - the history of finished games.
 
 Other tabs can come later (journals, maps).
+
+#### A table, live
+
+A table is drawn in a design of the harness's own:
+- an oval felt table, seats around it with avatars, stacks, the button and blinds;
+- face-down cards, bets as chips;
+- the board dealt and turned with animations;
+- the pot and side pots;
+- a bubble on each action;
+- the winner lit with the pot's chips moving to it, and the showdown's cards turned up.
+
+How it stays current:
+- the daemon pushes it on a WebSocket, `/dashboard/ws`, whenever a table changes, each table with its current hand's public events;
+- `/dashboard/api/tables/<id>/hand` answers the same on request;
+- the page builds a table's DOM once and changes only what changed (journal#1039, journal#1040).
+
+#### The page
 
 The page is one static HTML file with CSS and JavaScript, embedded in the binary, with no build step. It reads `/dashboard/api/*`, which answers JSON.
 
 ## Open questions for the owner (journal#952)
 
 1. Chips: play money only? The starting stack and blinds by default? The draft: 1000, blinds 10/20, rising every 10 hands.
+
 2. Time to act, and what happens to a silent agent? The draft was 120 s, then check or fold. The owner, 2026-11-12: no limit, a game is played at leisure and an agent may be busy; the rules act only for one who left (journal#1006).
+
 3. Can the user sit at a table from the dashboard? The draft: no, the user watches.
+
 4. Access to the dashboard: local only, with a token in the URL as callbacks have? The draft: localhost, plus the daemon's token.
+
 5. Cost: every 'your turn' is a model turn of the agent. Should a table have a limit on hands or on cost? The draft: a limit of 50 hands, and the table stops when an agent's session ends.
+
 6. Do agents see each other's chat, or table talk? The draft: no.
 
 ## Rejected
