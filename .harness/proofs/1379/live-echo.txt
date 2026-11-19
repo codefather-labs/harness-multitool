@@ -1,0 +1,17 @@
+Live check of CON-183, 2026-11-19, installed multitool, this repository, conversation imported-fea526b9-1794407475691 (multitool-arch).
+The owner turned .harness/callbacks/echo on with one Enter in Settings > Callbacks (journal#1382).
+
+$ curl -X POST <this conversation's callback URL> -d '{"uuid": "live-echo-1795092298", "type": "echo_test", "text": "hello from the live check of CON-183"}'
+{"handler":"echo","result":"started"}
+HTTP 202
+
+daemon/triggers.jsonl:
+{"at_ms":1795092298349,"detail":"echo","outcome":"started","type":"echo_test","uuid":"live-echo-1795092298","window":"session:imported-fea526b9-1794407475691"}
+{"at_ms":1795092298366,"detail":"a handler's result","outcome":"handled","type":"echo","uuid":"handler-<token>-1","window":"session:imported-fea526b9-1794407475691"}
+{"at_ms":1795092298400,"detail":"echo exited 0","outcome":"ran","type":"echo_test","uuid":"live-echo-1795092298","window":"session:imported-fea526b9-1794407475691"}
+
+Delivered into the conversation:
+[callback:echo]: echo handler ran for echo_test (live-echo-1795092298): hello from the live check of CON-183
+
+multitool callback list:
+echo	echo_test	ready

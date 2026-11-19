@@ -1,0 +1,41 @@
+[INFO] building: cargo build --release -p multitool --features multitool/claude-code
+   Compiling harness-platform-native v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/platform-native)
+   Compiling frontend-tui v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/frontend-tui)
+   Compiling harness-backend-codex v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/backend-codex)
+   Compiling harness-backend-claude-code v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/backend-claude-code)
+   Compiling harness-daemon v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/daemon)
+   Compiling tui-snapshot v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/tui-snapshot)
+   Compiling harness-session v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/session)
+   Compiling multitool v0.1.0-dev (/home/codefather-server/Documents/projects/vladcraft-multitool/crates/cli)
+    Finished `release` profile [optimized] target(s) in 1m 00s
+  [OK] installed /home/codefather-server/.local/share/harness-multitool/bin/multitool
+  [OK] linked /home/codefather-server/.local/bin/multitool
+  [OK] it runs: multitool 0.1.0-dev
+[INFO] the daemon now runs as the service multitool-daemon
+  [OK] the daemon runs as the user service multitool-daemon
+  [OK] /home/codefather-server/.claude/rules/project-journal.md
+  [OK] /home/codefather-server/.claude/rules/cognitive-self-check.md
+  [OK] /home/codefather-server/.claude/hooks/harness-selfcheck-reminder.sh
+  [OK] /home/codefather-server/.claude/settings.json: the self-check hook is there
+
+[INFO] checking the install
+  [OK] multitool runs
+  [OK] the daemon answers
+  [OK] the service multitool-daemon is active
+  [OK] linger is on
+  [OK] a file picker for Settings > Chats' Load
+  [OK] a terminal for Telegram's /open and /new
+  [OK] systemd-run --user, for a scope per agent
+  [OK] the rules are in /home/codefather-server/.claude/rules
+  [OK] the self-check hook runs
+  [OK] settings.json calls it
+
+harness-multitool installed.
+
+  multitool                     open it; s opens the settings
+  Settings, Provider            choose an adapter and sign in
+  Settings, Telegram            a bot token, to reach your sessions from a chat
+  Settings, Speech to text      choose and download an engine
+  Settings, Chats               dump a conversation, load one from a .zip (multitool chat)
+  ./install.sh --uninstall      remove it, keeping your data
+
