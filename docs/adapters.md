@@ -31,6 +31,8 @@ Ollama and other local models are a provider of this loop: a row of kind `openai
 
 ### Delegates
 
+How the harness runs the vendors' own CLIs, unmodified, over their JSON streams, and how that stays within their terms: [Delegates](delegates.md).
+
 | Delegate | How it runs | How it signs in |
 |---|---|---|
 | Claude Code (`claude-code`) | the unmodified `claude`: `claude -p` with stream-json per message and `--resume` for the next (CON-58); always with `--chrome` (CON-133) | only by the unmodified `claude auth login`, in the profile's own folder (CON-123) |
