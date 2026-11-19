@@ -393,7 +393,7 @@ pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
             Outcome::Stay
         }
         (Mode::Session(w), Target::Settings) => {
-            w.overlay = Some(crate::model::Overlay::Settings(crate::overlay::settings_for(w)));
+            crate::overlay::open_settings(w);
             Outcome::Stay
         }
         (Mode::Session(w), Target::Tab(i)) => {
@@ -450,6 +450,26 @@ fn answer_question(w: &mut Workspace, k: Key) -> bool {
 mod tests {
     use super::*;
     use crate::fixtures;
+
+    /// journal#1380: Settings opened with the ⚙ button asks for the active tab's project
+    /// callbacks, as /settings does; it did not, and the page said none.
+    #[test]
+    fn the_settings_button_asks_for_the_project_callbacks() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut s = fixtures::maps();
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        w.live = true;
+        let tab = w.tabs[w.active].id;
+        let mut term = Terminal::new(TestBackend::new(170, 60)).unwrap();
+        let mut drawn = Drawn::default();
+        term.draw(|f| drawn = crate::draw(f, &s, &t)).unwrap();
+        let button = drawn.hits.iter().find(|h| matches!(h.target, Target::Settings)).expect("the settings button");
+        click(&mut s, &drawn, button.rect.x, button.rect.y);
+        let Mode::Session(w) = &s.mode else { unreachable!() };
+        assert!(matches!(w.overlay, Some(crate::model::Overlay::Settings(_))));
+        assert!(w.outbox.contains(&crate::model::Outgoing::ProjectCallbacks { tab }), "{:?}", w.outbox);
+    }
 
     #[test]
     fn enter_leaves_the_splash() {

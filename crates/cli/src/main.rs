@@ -4027,7 +4027,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         Some(ActionKind::Settings) => {
                             state = live.fresh_session();
                             if let Mode::Session(w) = &mut state.mode {
-                                w.overlay = Some(frontend_tui::model::Overlay::Settings(frontend_tui::overlay::settings_for(w)));
+                                frontend_tui::overlay::open_settings(w);
                             }
                             settings_from_start = true;
                         }

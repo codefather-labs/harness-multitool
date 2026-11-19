@@ -36,6 +36,15 @@ pub fn sample_permission() -> PermissionView {
     }
 }
 
+/// Opens the settings window, however it is asked for (the button, Ctrl+, or /settings), and asks
+/// for what stands per conversation: the active tab's project callbacks (CON-183, journal#1380).
+pub fn open_settings(w: &mut Workspace) {
+    w.overlay = Some(Overlay::Settings(settings_for(w)));
+    if w.live {
+        w.outbox.push(Outgoing::ProjectCallbacks { tab: w.tabs[w.active].id });
+    }
+}
+
 /// The settings window, opening on what the active session's status line says.
 pub fn settings_for(w: &Workspace) -> SettingsView {
     let mut s = sample_settings();
