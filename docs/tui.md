@@ -251,7 +251,6 @@ The Provider page chooses the model's provider, which also decides how it signs 
 
 - For `gpt-subscription`, Login opens OpenAI's page and waits, with Cancel and then Log out. Signing in puts the plan to use at once.
 - For an API provider, the button takes a key, masked, saved in the configuration readable only by you.
-- `claude-subscription` is listed and only answers that Anthropic's terms forbid it.
 
 The model row opens a dropdown of what the provider's API lists, each with its price per 1M tokens where known. On a plan its tokens are included, and the API price is shown for comparison.
 

@@ -79,7 +79,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
         s.auth = page.clone();
     }
     if s.auth.delegate {
-        let at = s.providers.iter().position(|p| p.name == CLAUDE_SUBSCRIPTION).unwrap_or(s.providers.len());
+        let at = s.providers.len();
         s.providers.insert(at, ProviderOption { name: DELEGATE_PROVIDER.into(), description: "runs your signed-in Claude Code as an agent".into(), local_build: false, disabled: None });
     }
     // Codex CLI, in every build, when it is on this machine (journal#913).
@@ -154,7 +154,6 @@ pub fn sample_settings() -> SettingsView {
             p("OpenAI-compatible", "OpenAI, Azure, Groq, OpenRouter, ...", false),
             p("Local", "Ollama, vLLM, LM Studio, ...", false),
             p(PLAN_PROVIDER, "your ChatGPT plan, through gpt-subscription", false),
-            ProviderOption { name: CLAUDE_SUBSCRIPTION.into(), description: CLAUDE_REASON.into(), local_build: false, disabled: Some(CLAUDE_REASON.into()) },
         ],
         provider: 0,
         cursor: 0,
@@ -183,10 +182,6 @@ pub fn sample_settings() -> SettingsView {
         saved_delegate: (true, false),
     }
 }
-
-/// Shown so the choice is visible; nothing implements it (CON-56).
-const CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
-const CLAUDE_REASON: &str = "not available: Anthropic's terms";
 
 /// The harness's own message, as a toast.
 pub fn system_toast(text: &str) -> Toast {
@@ -1639,8 +1634,8 @@ fn choose_provider(w: &mut Workspace, i: usize) {
         w.toast = Some(system_toast(RUN_ON));
         return;
     }
-    if s.providers[i].disabled.is_some() {
-        w.toast = Some(system_toast(harness_api::CLAUDE_SUBSCRIPTION_REFUSED));
+    if let Some(why) = s.providers[i].disabled.clone() {
+        w.toast = Some(system_toast(&why));
         return;
     }
     s.provider = i;
@@ -2808,21 +2803,18 @@ mod tests {
         assert_eq!(page(&w).model, "gpt-5.5-mini");
     }
 
+    /// journal#1435: claude-subscription is gone from the list; Claude Code is there as a delegate.
     #[test]
-    fn the_claude_subscription_option_shows_and_cannot_be_chosen() {
-        let mut w = on_provider_page();
-        assert!(!page(&w).providers.iter().any(|p| p.name.contains("acme")));
-        let claude = row(&w, CLAUDE_SUBSCRIPTION);
-        let before = page(&w).provider;
-        assert!(page(&w).providers[claude].disabled.is_some());
-        to(&mut w, claude);
-        press(&mut w, &[Key::Enter]);
-        assert_eq!(page(&w).provider, before, "by key");
-        assert!(matches!(&w.toast, Some(Toast { kind: InboundKind::System, text, .. }) if text.contains("forbidden by Anthropic")));
-        w.toast = None;
-        click(&mut w, Target::Provider(claude));
-        assert_eq!(page(&w).provider, before, "by click");
-        assert!(w.toast.is_some() && w.outbox.is_empty(), "{:?}", w.outbox);
+    fn the_provider_page_lists_no_claude_subscription() {
+        let w = on_provider_page();
+        assert!(!page(&w).providers.iter().any(|p| p.name.contains("claude-subscription") || p.name.contains("acme")), "{:?}", page(&w).providers.iter().map(|p| p.name.clone()).collect::<Vec<_>>());
+        assert!(page(&w).providers.iter().all(|p| p.disabled.is_none()), "no row is there only to be refused");
+        let mut delegate = crate::fixtures::welcome();
+        if let Mode::Session(ws) = &mut delegate.mode {
+            ws.auth = Some(AuthPage { delegate: true, codex_signed: Some(true), ..Default::default() });
+            let names: Vec<String> = settings_for(ws).providers.iter().map(|p| p.name.clone()).collect();
+            assert_eq!(names[names.len() - 2..], [DELEGATE_PROVIDER.to_string(), CODEX_PROVIDER.to_string()], "{names:?}");
+        }
     }
 
     #[test]

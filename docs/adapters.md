@@ -21,7 +21,6 @@ Every adapter writes the same events to the same log, so the transcript, a resum
 | kind `openai` | OpenAI, Azure, Groq, OpenRouter and other OpenAI-compatible APIs | `<PROVIDER>_API_KEY`, or `[session.auth.<name>]` |
 | `local` | Ollama, vLLM, LM Studio and other local OpenAI-compatible servers; Ollama's usual address `http://127.0.0.1:11434/v1` is the default | none needed |
 | `gpt-subscription` | your ChatGPT plan | OpenAI's own sign-in page |
-| `claude-subscription` | nothing | listed only to say that Anthropic's terms forbid it |
 
 The ChatGPT plan is shipped because OpenAI documents a sign-in flow for open-source and locally hosted apps. The harness registers its own client under its own name ([ADR 0019](decisions/0019-vendor-documented-sign-in.md)).
 
