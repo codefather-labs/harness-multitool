@@ -3,11 +3,13 @@
 # harness-multitool installer (Linux and macOS)
 # ============================================================================
 # Builds the harness from source, puts it on your PATH, runs its daemon as a user
-# service, and sets up Claude Code's rules and hook for it (CON-162). No releases
-# exist yet, so a Rust toolchain is needed.
+# service, and sets up Claude Code's rules and hook for it (CON-162). Building needs a
+# Rust toolchain; the install line of harness-multitool.dev needs none (CON-186): it runs
+# this script from a prebuilt bundle with --local --no-build.
 #
 #   ./install.sh --local                  from this checkout
-#   curl -fsSL <raw url>/install.sh | bash  from a temporary clone
+#   curl -fsSL https://raw.githubusercontent.com/codefather-labs/harness-multitool/main/install.sh | bash
+#                                         from a temporary clone
 #
 # Speech to text is not installed here: it is chosen and downloaded in the
 # harness's own settings, section Speech to text.

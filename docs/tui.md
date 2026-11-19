@@ -15,6 +15,9 @@ The startup page lists this folder's real sessions. Opening one draws its log, a
 ## Run
 
 ```bash
+curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | sh
+                                # the prebuilt binary for this machine, checked by its SHA-256, then installed
+                                # as install.sh does; options after `sh -s --` (CON-186)
 ./install.sh --local             # build it, copy it, put `multitool` on your PATH, run the daemon as a user
                                 # service, and install Claude Code's rules and self-check hook (CON-162)
 ./install.sh --local --no-service --no-agent-setup   # only the binary

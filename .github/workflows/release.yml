@@ -1,0 +1,86 @@
+# Builds the multitool bundles of the install line and publishes them on harness-multitool.dev
+# (CON-186): on a tag v*, or by hand. scripts/release-local.sh does the Linux x86_64 part from the
+# owner's machine while GitHub Actions cannot run on this account.
+#
+# Secrets: DEPLOY_SSH_KEY (a key of the site's harnessmt-deploy, restricted to its deploy command)
+# and DEPLOY_KNOWN_HOSTS (the server's host key line).
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+concurrency:
+  group: release
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)+$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+  build:
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Linux in the same image as scripts/release-local.sh: glibc 2.31, so the binary runs on
+          # every glibc the install line accepts.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            container: rust:1-bullseye
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            container: rust:1-bullseye
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            container: ''
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || null }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        if: matrix.container == ''
+        run: rustup default stable
+      - name: Build
+        run: cargo build --release --locked -p multitool
+      - name: Package
+        run: scripts/package-bundle.sh "${{ matrix.target }}" "${{ needs.version.outputs.version }}" target/release/multitool bundles
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: bundles/
+          if-no-files-found: error
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: bundles
+          merge-multiple: true
+      - name: Publish to harness-multitool.dev
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ls -la bundles
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          tar -czf - -C bundles . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
+          rm -f ~/.ssh/deploy
+          test "$(curl -fsS https://harness-multitool.dev/downloads/latest)" = "$VERSION"

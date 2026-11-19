@@ -22,7 +22,15 @@
 
 **A plugin-first agent harness in Rust.** An agent that writes code, runs tools and keeps a memory of why the project is the way it is, where almost every part is an interface you can replace.
 
-## Quick start
+## Install
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | sh
+```
+
+It downloads the prebuilt `multitool` for your machine (Linux x86_64 and aarch64, macOS on Apple silicon) and checks its SHA-256. Then it installs it the way `install.sh` does: on your PATH, with its daemon as a user service and Claude Code's rules. Options go after `sh -s --`, for example `| sh -s -- --no-service`. No Rust is needed. On another system it prints how to build from source (CON-186).
+
+## Quick start from source
 
 ```bash
 git clone https://github.com/codefather-labs/harness-multitool
