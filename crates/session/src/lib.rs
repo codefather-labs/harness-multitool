@@ -523,11 +523,13 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         registry.tool("debug_runs", move |_| Ok(Rc::new(host_tools::DebugRuns { root: root_debug.clone() })));
         // Other agents are reached through a daemon: with none, there is nobody to reach.
         if let (Some(client), Some(window)) = (harness_daemon::client::Client::find(&data_dir), host.window.clone()) {
-            selection.tools.extend(["agent_list".to_string(), "agent_send".to_string(), "callback_url".to_string(), "callback_check".to_string()]);
+            selection.tools.extend(["agent_list".to_string(), "agent_send".to_string(), "callback_url".to_string(), "callback_check".to_string(), "callback_handlers".to_string()]);
             let (url_client, url_window) = (client.clone(), window.clone());
             registry.tool("callback_url", move |_| Ok(Rc::new(host_tools::CallbackUrl { client: url_client.clone(), window: url_window.clone(), tab })));
             let (check_client, check_window) = (client.clone(), window.clone());
             registry.tool("callback_check", move |_| Ok(Rc::new(host_tools::CallbackCheck { client: check_client.clone(), window: check_window.clone(), tab })));
+            let (list_client, list_window) = (client.clone(), window.clone());
+            registry.tool("callback_handlers", move |_| Ok(Rc::new(host_tools::CallbackHandlers { client: list_client.clone(), window: list_window.clone(), tab })));
             selection.tools.extend(host_tools::MODE_TOOLS.iter().map(|name| name.to_string()));
             // Games between agents (ADR 0029): the daemon holds the tables.
             selection.tools.extend(host_tools::GAME_TOOLS.iter().map(|name| name.to_string()));

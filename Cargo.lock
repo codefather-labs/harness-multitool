@@ -1066,6 +1066,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-callback"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-daemon",
+ "serde_json",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "harness-context-default"
 version = "0.1.0-dev"
 dependencies = [
@@ -1097,6 +1107,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "socket2",
  "tempfile",
  "tiny_http",
@@ -1841,6 +1852,7 @@ dependencies = [
  "ratatui-image",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "tui-snapshot",
 ]

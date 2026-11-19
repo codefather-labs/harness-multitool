@@ -1,0 +1,15 @@
+[package]
+name = "harness-callback"
+description = "The contract of a multitool custom callback handler (CON-183): read the call, answer the daemon."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+
+[dev-dependencies]
+harness-daemon = { version = "0.1.0-dev", path = "../daemon" }
+tempfile = "3"

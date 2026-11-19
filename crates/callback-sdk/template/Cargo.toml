@@ -1,0 +1,10 @@
+[package]
+name = "{{name}}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+harness-callback = { path = "{{sdk}}" }
+
+# A callback is a project of its own, not a member of the project's workspace.
+[workspace]

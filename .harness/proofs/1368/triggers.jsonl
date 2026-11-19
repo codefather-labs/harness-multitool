@@ -1,0 +1,4 @@
+{"at_ms":1795085350370,"detail":"echo","outcome":"started","type":"ping","uuid":"pty-1","window":"session:1795085314975-2"}
+{"at_ms":1795085350393,"detail":"a handler's result","outcome":"handled","type":"echo","uuid":"handler-<token>-1","window":"session:1795085314975-2"}
+{"at_ms":1795085350421,"detail":"echo exited 0","outcome":"ran","type":"ping","uuid":"pty-1","window":"session:1795085314975-2"}
+{"at_ms":1795085350619,"detail":"not subscribed to echo","outcome":"rejected","type":"ping","uuid":"pty-2","window":"session:1795085314975-3"}

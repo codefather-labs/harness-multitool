@@ -1,0 +1,11 @@
+# The custom callback {{name}} (CON-183).
+description = "{{name}}"
+# The callback types it serves; a callback of one of them, POSTed to a conversation's callback URL,
+# runs this handler when the conversation is subscribed to it.
+types = ["{{name}}"]
+# Arguments given to the handler.
+args = []
+# Seconds it may run and answer; then it is stopped. At most 3600.
+timeout_s = 30
+# The handler, from this folder: the program `multitool callback build {{name}}` makes.
+handler = "target/release/{{name}}"

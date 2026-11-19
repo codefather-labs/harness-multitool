@@ -34,3 +34,4 @@ One file per decision: what was decided, by whom, why, and what was rejected. A 
 | [0028](0028-journal-todos-as-tracker-issues.md) | Journal todos become issues in a tracker, GitHub first, per project | accepted (journal#971); built: journal#990, journal#993 |
 | [0029](0029-agent-games.md) | Games between agents on the daemon, Texas hold'em first, with a dashboard | accepted (journal#971); built: journal#995, journal#998 |
 | [0030](0030-harness-skills.md) | Skills of the harness's own (.harness/skills), the same on every adapter | accepted (the owner's standing approval, journal#971) |
+| [0031](0031-custom-callbacks-are-project-handlers.md) | Custom callbacks are project handlers: Rust programs in .harness/callbacks, per conversation | accepted (the owner, 2026-11-19) |

@@ -183,6 +183,36 @@ impl Tool for CallbackUrl {
     }
 }
 
+/// The project's custom callbacks as they stand for this conversation (CON-183). Read only:
+/// approving and subscribing are the user's, in Settings > Callbacks.
+pub struct CallbackHandlers {
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+impl Tool for CallbackHandlers {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "callback_handlers".into(),
+            description: "List this project's custom callbacks (.harness/callbacks/<name>/, Rust programs on the harness-callback crate) as they stand for this conversation: for each its name, description, types, handler path, timeout, problem (what keeps it from running: not built, a script, a bad config.toml), standing (unapproved, approved, changed since it was approved) and subscribed (yes, no, stale: its folder changed since). Also your callback URL, where its types are POSTed. Read only: the user approves a handler and subscribes a conversation in Settings > Callbacks; ask them to. docs/callbacks.md holds the contract; callback_url explains the URL.".into(),
+            schema: json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, _input: &'a Value, cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match self.client.conversation_op(&json!({"window": self.window, "op": "project_callbacks", "tab": self.tab, "root": cx.root})) {
+            Ok(reply) => ToolOutput::ok(reply.to_string()),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
 /// An agent checks its own callbacks (CON-165): a test to its URL, and what the URL has seen.
 pub struct CallbackCheck {
     pub client: harness_daemon::client::Client,

@@ -1,0 +1,50 @@
+ harness-multitool / session/session-2                                                                    ▐ >_ new ▌ ▐ >_ session-2 ▌ ▐ + ▌
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  WELCOME
+ █  New session: session-2
+ █  plugin-first coding harness · Rust + ratatui
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  USER  12:48
+ █  hello from tab two
+ ━▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ █  ASSISTANT  12:╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ █  Noted.        │  Settings                                                                                         ×  │
+ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│  project and local build configuration                                                               │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                  │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+                  │                            │                                                                         │
+                  │    Provider                │  CALLBACKS   profile default                                            │
+                  │    Tools                   │  Standard types                                                         │
+                  │    Policy                  │   notification      built-in ▾                     into the agent's in  │
+                  │    Memory                  │   journal           built-in ▾                     writes a journal en  │
+                  │    Router                  │   flowstate_update  built-in ▾                     moves a flowchart i  │
+                  │    Frontend                │   skill             built-in ▾                     concept · starts a   │
+                  │  ▌ Callbacks               │                                                                         │
+                  │    Telegram                │  Custom callbacks                                                       │
+                  │    Speech to text          │   none in this build                                                    │
+                  │    Profiles                │                                                                         │
+                  │    Theme                   │  Conditions  .harness/conditions.toml                                   │
+                  │    Behaviour               │   none in this project                                                  │
+                  │    Journal                 │                                                                         │
+                  │    Chats                   │  This conversation's callbacks  .harness/callbacks · Space subscribe ·  │
+                  │    Games                   │   its URL http://127.0.0.1:37053/callback/<token>   │
+                  │                            │   9661dd65b                                                             │
+                  │                            │   ○ off echo                approved                                    │
+                  │                            │   types ping · says it back                                             │
+                  │                            │                                                                         │
+                  │                            │  Daemon  running on 127.0.0.1:37053   r reload                          │
+                  │                            │                                                                         │
+                  │──────────────────────────────────────────────────────────────────────────────────────────────────────│
+                  │          ↑↓ navigate   Tab change pane   Space select   Enter edit   Ctrl+S save   Esc close         │
+                  │                                                                                                      │
+                  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MODE  normal  ·  ADAPTER  anthropic  ·  MODEL  claude-opus-5-5  ·  PROFILE  default (your Claude)  ·  TOKENS  55 / 1M  ·  COST  $0.00  ·  B
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ ╭────────────╮
+ │ Ask about the repo, request an edit, or type / for commands…█                                                           │ │ ⚙ Settings │
+ │ Enter send  ·  Shift+Enter newline  ·  @ file  ·  / command                                                             │ │   Ctrl+,   │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ ╰────────────╯

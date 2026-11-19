@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use frontend_tui::{Theme, fixtures};
 use tui_snapshot::{Raster, side_by_side};
 
+mod callback_cmd;
 mod config;
 mod file_picker;
 mod plugins;
@@ -95,6 +96,23 @@ enum ProfileAction {
     List,
     /// A new profile, entirely clean: built-in defaults, no key, no sign-in.
     Add { name: String },
+}
+
+#[derive(Subcommand)]
+enum CallbackAction {
+    /// Make .harness/callbacks/<name>/ here: a Rust project on the harness-callback crate, with
+    /// its config.toml (journal#1373).
+    New {
+        name: String,
+        /// The callback types it serves, comma-separated; its name by default.
+        #[arg(long, value_delimiter = ',')]
+        types: Vec<String>,
+    },
+    /// Build its handler (cargo build --release in its folder). A new build is approved again in
+    /// Settings > Callbacks before it runs.
+    Build { name: String },
+    /// This project's callbacks, their types and what keeps one from running.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -201,6 +219,11 @@ enum Command {
         /// `claude-code`
         source: String,
         id: Option<String>,
+    },
+    /// This project's custom callbacks: Rust programs in .harness/callbacks (CON-183).
+    Callback {
+        #[command(subcommand)]
+        action: CallbackAction,
     },
     /// A conversation dumped to a .zip and loaded back, here or on another machine (CON-171).
     Chat {
@@ -413,6 +436,7 @@ fn main() -> Result<()> {
             println!("Open it in a browser on this machine. The token lets whoever has it see and start games: keep it to yourself.");
             Ok(())
         }
+        Command::Callback { action } => callback(action),
         Command::Chat { action } => chat(action),
         Command::Journal { action } => {
             let root = std::env::current_dir()?.to_string_lossy().into_owned();
@@ -1222,7 +1246,12 @@ impl Live {
             match event {
                 Connection::Connected { pid, again } => {
                     w.reconnecting = None;
-                    w.toast = Some(toast(if again { format!("Reconnected to the daemon, pid {pid}.") } else { format!("Connected to the daemon, pid {pid}.") }));
+                    let mut said = if again { format!("Reconnected to the daemon, pid {pid}.") } else { format!("Connected to the daemon, pid {pid}.") };
+                    // Said with the first connection, which would cover a toast of its own (CON-183).
+                    if !again && let Some(n) = self.callbacks_to_approve().filter(|n| *n > 0) {
+                        said.push_str(&format!(" This project has {n} callback handler{} to approve: Settings > Callbacks.", if n == 1 { "" } else { "s" }));
+                    }
+                    w.toast = Some(toast(said));
                 }
                 Connection::Lost => {
                     w.reconnecting = Some(frontend_tui::model::Reconnecting { attempt: 0, reason: String::new(), now_ms });
@@ -1340,6 +1369,66 @@ impl Live {
         state
     }
 
+    /// The project's callback handlers that could run and wait for the user's approval (CON-183).
+    fn callbacks_to_approve(&self) -> Option<usize> {
+        let found = harness_daemon::project_callbacks::found(&self.root);
+        if found.is_empty() {
+            return Some(0);
+        }
+        let trust = harness_daemon::project_callbacks::Trust::load(&config::data_dir().ok()?.join("daemon"));
+        Some(found.iter().filter(|f| f.problem.is_none() && trust.standing(&self.root, f) != harness_daemon::project_callbacks::Standing::Approved).count())
+    }
+
+    /// A project callback op of the daemon for a tab's conversation (CON-183).
+    fn project_callback_op(&self, tab: u64, mut op: serde_json::Value) -> Result<serde_json::Value, String> {
+        let window = self.sessions.window_id().ok_or("this window is not in the daemon")?;
+        let client = config::data_dir().ok().and_then(|d| harness_daemon::client::Client::find(&d)).ok_or("the daemon is not running")?;
+        op["window"] = serde_json::json!(window);
+        op["tab"] = serde_json::json!(tab);
+        op["root"] = serde_json::json!(self.root);
+        let said = client.conversation_op(&op)?;
+        match said["error"].as_str() {
+            Some(e) => Err(e.to_string()),
+            None => Ok(said),
+        }
+    }
+
+    /// The tab's project callbacks into the Callbacks tab, with a toast of what was just done.
+    fn project_callbacks(&self, w: &mut frontend_tui::model::Workspace, tab: u64, note: Option<String>) {
+        let (rows, status, url) = match self.project_callback_op(tab, serde_json::json!({"op": "project_callbacks"})) {
+            Ok(said) => {
+                let rows = said["callbacks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| frontend_tui::model::ProjectCallbackRow {
+                        name: c["name"].as_str().unwrap_or_default().to_string(),
+                        description: c["description"].as_str().unwrap_or_default().to_string(),
+                        types: c["types"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect(),
+                        standing: c["standing"].as_str().unwrap_or("unapproved").to_string(),
+                        subscribed: c["subscribed"].as_str().unwrap_or("no").to_string(),
+                        problem: c["problem"].as_str().map(str::to_string),
+                        handler: c["handler"].as_str().unwrap_or_default().to_string(),
+                    })
+                    .collect();
+                (rows, note.clone().unwrap_or_default(), said["url"].as_str().unwrap_or_default().to_string())
+            }
+            Err(e) => (Vec::new(), format!("Project callbacks not read: {e}"), String::new()),
+        };
+        for page in w.callbacks.iter_mut().chain(match &mut w.overlay {
+            Some(frontend_tui::model::Overlay::Settings(s)) => Some(&mut s.callbacks),
+            _ => None,
+        }) {
+            page.project = rows.clone();
+            page.project_status = status.clone();
+            page.project_url = url.clone();
+            page.cursor = page.cursor.min(page.rows().saturating_sub(1));
+        }
+        if let Some(note) = note {
+            w.toast = Some(frontend_tui::overlay::system_toast(&note));
+        }
+    }
+
     /// What the settings' Callbacks tab shows: this project's files and this build's handlers.
     fn callbacks_page(&self) -> frontend_tui::model::CallbacksPage {
         use frontend_tui::model::{CallbacksPage, ConditionRow, CustomRow};
@@ -1371,7 +1460,7 @@ impl Live {
             .map(|(name, types)| CustomRow { name: name.clone(), implementation: types.join(", "), on: !project.disabled.contains(name) })
             .collect();
         let daemon = client.map_or("not running".to_string(), |c| format!("running on 127.0.0.1:{}", c.port()));
-        CallbacksPage { standard, custom, conditions, daemon, cursor: 0, open: None }
+        CallbacksPage { standard, custom, conditions, daemon, cursor: 0, open: None, ..Default::default() }
     }
 
     fn voice_page(&self) -> frontend_tui::model::VoicePage {
@@ -2353,6 +2442,24 @@ impl Live {
                     });
                 }
                 // CON-181: Settings > Behaviour saved; the daemon hears the new loss at once.
+                Outgoing::ProjectCallbacks { tab } => self.project_callbacks(w, tab, None),
+                Outgoing::ApproveCallback { tab, name } => {
+                    let said = self.project_callback_op(tab, serde_json::json!({"op": "callback_approve", "name": name}));
+                    let note = match said {
+                        Ok(_) => format!("Approved {name} as it is now: a new build is to be approved again."),
+                        Err(e) => format!("{name} not approved: {e}"),
+                    };
+                    self.project_callbacks(w, tab, Some(note));
+                }
+                Outgoing::SubscribeCallback { tab, name, on } => {
+                    let said = self.project_callback_op(tab, serde_json::json!({"op": "callback_subscribe", "name": name, "on": on}));
+                    let note = match (said, on) {
+                        (Ok(_), true) => format!("This conversation now takes {name}'s callbacks through its handler."),
+                        (Ok(_), false) => format!("{name} is off for this conversation."),
+                        (Err(e), _) => format!("{name}: {e}"),
+                    };
+                    self.project_callbacks(w, tab, Some(note));
+                }
                 Outgoing::SaveBehaviour { on_exit, on_loss } => {
                     let said = config::load().and_then(|mut c| {
                         c.behaviour = config::Behaviour { on_exit: Some(on_exit.clone().unwrap_or_else(|| "ask".to_string())), on_loss: Some(on_loss.clone()) };
@@ -3399,6 +3506,32 @@ fn end_progress_line() {
 }
 
 /// `multitool chat dump|load|list` (CON-171): what the Chats tab runs, on the command line.
+fn callback(action: CallbackAction) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let data = config::data_dir()?;
+    match action {
+        CallbackAction::New { name, types } => {
+            let dir = callback_cmd::new(&root, &data, &name, &types)?;
+            println!("made {}\nwrite its logic in src/main.rs, then: multitool callback build {name}", dir.display());
+        }
+        CallbackAction::Build { name } => {
+            let program = callback_cmd::build(&root, &data, &name)?;
+            println!("built {}\napprove it in Settings > Callbacks, and subscribe the conversations it serves", program.display());
+        }
+        CallbackAction::List => {
+            let found = harness_daemon::project_callbacks::found(&root.to_string_lossy());
+            if found.is_empty() {
+                println!("no callbacks in {}", root.join(".harness/callbacks").display());
+            }
+            for f in found {
+                let state = f.problem.as_deref().unwrap_or("ready");
+                println!("{}\t{}\t{}", f.name, f.types.join(","), state);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn chat(action: ChatAction) -> Result<()> {
     use harness_session::chat_archive;
     let root = std::env::current_dir()?.to_string_lossy().into_owned();

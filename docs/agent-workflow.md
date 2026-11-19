@@ -69,6 +69,7 @@ Each entry stands alone: a later session reads it without this conversation. An 
 | W-46 | Put off. | A `todo` entry, tag `deferred`, at once. | That entry. |
 | W-47 | One thing cannot be solved until another in the journal is. | `blocked_by` that entry; work on the blocker first. If `released` or `blocker_dropped` names something, re-read it. | `blocked_by`, then work on the blocker. |
 | W-48 | A long task or a hunt for a cause. | Keep a mind map: where you are, what you suspect, what is ruled out. | A mind map and its updates. |
+| W-63 | A product needs a callback type of its own (an app should wake you, or do something first). | Write it as docs/callbacks.md says: `multitool callback new <name>`, its logic in Rust in src/main.rs (other languages only called from it), `multitool callback build <name>`; `callback_handlers` shows its state. Ask the user to approve it and subscribe this conversation in Settings > Callbacks; never a script as its handler, never approving or subscribing it yourself. | The folder under .harness/callbacks, the build, `callback_handlers`, the ask. |
 
 ## 6. In an orchestra
 

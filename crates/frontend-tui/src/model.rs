@@ -161,6 +161,12 @@ pub enum Outgoing {
     Leave { mode: String, remember: bool },
     /// Settings > Behaviour saved (CON-181).
     SaveBehaviour { on_exit: Option<String>, on_loss: String },
+    /// The active tab's project callbacks, as the daemon has them (CON-183).
+    ProjectCallbacks { tab: u64 },
+    /// Approve a project callback's handler as it is now: pinned by its SHA-256 (CON-183).
+    ApproveCallback { tab: u64, name: String },
+    /// Subscribe the active tab's conversation to a project callback, or take it off (CON-183).
+    SubscribeCallback { tab: u64, name: String, on: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
@@ -403,12 +409,42 @@ pub struct CallbacksPage {
     pub cursor: usize,
     /// The standard row whose implementations are unfolded.
     pub open: Option<usize>,
+    /// The project's own callbacks, as they stand for the active tab's conversation (CON-183).
+    pub project: Vec<ProjectCallbackRow>,
+    /// What the last approve or subscribe said, or why the list could not be read.
+    pub project_status: String,
+    /// The conversation's callback URL, where its callbacks are POSTed.
+    pub project_url: String,
+    /// The callback whose approval waits for a second `a` (CON-183).
+    pub approving: Option<String>,
 }
 
 impl CallbacksPage {
     pub fn rows(&self) -> usize {
-        self.standard.len() + self.custom.len() + self.conditions.len()
+        self.standard.len() + self.custom.len() + self.conditions.len() + self.project.len()
     }
+
+    /// The project callback under the cursor.
+    pub fn project_at(&self, cursor: usize) -> Option<&ProjectCallbackRow> {
+        cursor.checked_sub(self.standard.len() + self.custom.len() + self.conditions.len()).and_then(|i| self.project.get(i))
+    }
+}
+
+/// A callback of `.harness/callbacks/<name>/` (CON-183): its handler approved or not, and this
+/// conversation subscribed to it or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectCallbackRow {
+    pub name: String,
+    pub description: String,
+    pub types: Vec<String>,
+    /// `unapproved`, `approved` or `changed` (since it was approved).
+    pub standing: String,
+    /// `yes`, `no`, or `stale`: subscribed when its folder said otherwise.
+    pub subscribed: String,
+    /// What keeps it from running: a script, no build, a bad config.toml.
+    pub problem: Option<String>,
+    /// The handler's path.
+    pub handler: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

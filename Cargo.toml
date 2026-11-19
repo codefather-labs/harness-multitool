@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/auth-chatgpt", "crates/backend-claude-code", "crates/backend-codex", "crates/core", "crates/docs-mirror", "crates/doubles", "crates/scenarios", "crates/speech", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/memory-journal", "crates/tools-memory", "crates/session", "crates/daemon", "crates/games", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
+members = ["crates/api", "crates/auth-chatgpt", "crates/backend-claude-code", "crates/backend-codex", "crates/core", "crates/docs-mirror", "crates/doubles", "crates/scenarios", "crates/speech", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/memory-journal", "crates/tools-memory", "crates/session", "crates/daemon", "crates/callback-sdk", "crates/games", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0-dev"
@@ -12,3 +12,8 @@ repository = "https://github.com/codefather-labs/harness-multitool"
 # does not mind; a voice note must decode the same in every profile.
 [profile.dev.package.opus-decoder]
 overflow-checks = false
+
+# A custom callback's handler is hashed on every call to check its pin (CON-183); a debug build of
+# the hash takes seconds over a debug handler of tens of MB.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -1,0 +1,389 @@
+     Running unittests src/lib.rs (target/debug/deps/frontend_tui-89acce0124cf7a09)
+test debug::tests::exit_and_quit_close_the_harness ... ok
+test debug::tests::new_tab_takes_no_adapter_or_model_from_its_source ... ok
+test debug::tests::every_debug_command_publishes_its_item ... ok
+test debug::tests::plain_text_becomes_a_user_turn ... ok
+test debug::tests::plan_switches_a_live_session ... ok
+test debug::tests::tabs_open_and_keep_their_own_transcript ... ok
+test debug::tests::slash_skills_lists_the_harness_skills ... ok
+test debug::tests::tabs_card_lists_each_tab_with_its_own_adapter ... ok
+test debug::tests::task_arms_the_next_live_message_only ... ok
+test debug::tests::version_is_local_in_preview_and_live_sessions ... ok
+test flowchart::tests::right_ranks_are_columns_and_siblings_stack ... ok
+test flowchart::tests::down_ranks_are_rows_and_siblings_sit_side_by_side ... ok
+test images::tests::the_logo_blinks_twice_on_launch_then_stays_open ... ok
+test input::tests::clicking_a_journal_ref_unfolds_and_folds_its_ticket ... ok
+test input::tests::ctrl_c_stops_a_run_and_quits_only_when_meant ... ok
+test images::tests::every_logo_art_cell_needs_at_most_two_colours ... ok
+test input::tests::enter_leaves_the_splash ... ok
+test input::tests::only_one_ticket_and_one_entry_are_unfolded ... ok
+test live::activity_tests::a_tab_goes_by_the_name_its_agent_was_given ... ok
+test live::activity_tests::an_old_log_replayed_leaves_no_line ... ok
+test live::activity_tests::the_line_follows_the_run_and_counts_from_its_start ... ok
+test live::inbound_tests::a_launchers_prefix_gives_the_card_and_a_body_cannot_forge_one ... ok
+test live::inbound_tests::a_journal_call_over_mcp_gets_the_journal_card ... ok
+test live::inbound_tests::a_tab_in_output_keeps_its_columns ... ok
+test input::tests::ctrl_o_folds_and_unfolds_the_newest_finished_reasoning ... ok
+test live::inbound_tests::a_tool_reads_as_words ... ok
+test live::inbound_tests::background_tasks_keep_their_start_and_go_with_the_process ... ok
+test live::slave_questions::a_slaves_question_opens_no_panel_for_the_user ... ok
+test live::tests::a_permission_prompt_names_the_call_and_its_needs ... ok
+test live::inbound_tests::a_tool_of_the_harness_shows_no_json ... ok
+test live::tests::a_pulse_rises_falls_and_ends_and_an_open_card_has_none ... ok
+test live::tests::a_tool_or_the_end_of_a_run_folds_reasoning_too ... ok
+test live::inbound_tests::a_running_call_spins_with_the_run_and_a_finished_one_does_not ... ok
+test input::tests::session_keys_manage_tabs_and_scroll ... ok
+test live::tests::deltas_grow_one_message_and_keep_line_breaks ... ok
+test input::tests::startup_keys_move_and_choose ... ok
+test live::tests::an_edit_shows_as_a_diff_and_arguments_show_what_matters ... ok
+test live::tests::hooks_on_one_event_share_a_card ... ok
+test live::inbound_tests::reasoning_with_no_text_has_no_card ... ok
+test live::tests::usage_reaches_the_status_line_and_generating_follows_the_turn ... ok
+test live::tests::a_denied_call_stays_denied_when_its_error_result_arrives ... ok
+test markdown::tests::a_table_is_found_with_its_cells_and_alignment ... ok
+test markdown::tests::bold_and_code_lose_their_markers ... ok
+test live::tests::a_tool_card_goes_from_running_to_its_result ... ok
+test markdown::tests::code_inside_keeps_its_stars ... ok
+test markdown::tests::fences_and_headings_are_lines_of_their_own ... ok
+test markdown::tests::half_a_table_reads_as_text_and_a_fenced_one_stays_code ... ok
+test markdown::tests::lists_quotes_and_rules ... ok
+test markdown::tests::narrow_columns_keep_their_width_and_wide_ones_share ... ok
+test live::tests::one_instance_adds_cards_and_several_share_one_each_in_place ... ok
+test markdown::tests::the_other_inline_styles ... ok
+test markdown::tests::what_is_not_markup_stays_as_written ... ok
+test live::tests::text_after_a_tool_opens_a_new_message ... ok
+test mindmap::tests::a_mind_map_is_a_tree_with_the_parent_centred_on_its_children ... ok
+test mindmap::tests::flowchart_links_show_on_nodes_and_under_the_tree ... ok
+test live::tests::memory_tools_draw_their_own_cards ... ok
+test model::title_tests::a_busy_window_has_a_moon_in_its_title ... ok
+test model::title_tests::the_title_is_the_active_agent_and_the_folder ... ok
+test overlay::tests::a_key_is_typed_masked_and_never_printed ... ok
+test overlay::tests::a_signed_in_claude_code_profile_switches_account ... ok
+test overlay::tests::a_status_wraps_at_its_words ... ok
+test overlay::tests::a_models_name_can_be_typed_and_on_a_plan_is_chosen_from_its_list ... ok
+test overlay::tests::add_moves_onto_the_new_profile_and_says_what_a_name_cannot_hold ... ok
+test overlay::tests::choosing_a_row_chooses_its_sign_in_and_a_fitting_model ... ok
+test overlay::tests::a_locked_prompt_answers_only_deny ... ok
+test overlay::tests::closing_with_a_change_unsaved_says_so_and_with_none_does_not ... ok
+test overlay::tests::choosing_an_adapter_saves_it_at_once ... ok
+test overlay::tests::each_provider_has_its_own_models_and_none_keeps_anothers ... ok
+test overlay::tests::a_windows_outline_shows_nothing_of_what_is_under_it ... ok
+test overlay::tests::enter_uses_a_profile_and_edit_opens_the_provider_page ... ok
+test overlay::tests::one_page_holds_the_provider_and_its_sign_in ... ok
+test overlay::tests::left_goes_back_to_the_sections_from_every_page ... ok
+test overlay::tests::settings_move_between_panes_and_pick_a_provider ... ok
+test overlay::tests::settings_open_on_what_the_status_line_says_and_drop_old_news ... ok
+test overlay::tests::the_button_runs_the_chosen_rows_pipeline ... ok
+test overlay::tests::claude_codes_sign_in_is_the_profiles_own ... ok
+test overlay::tests::right_reaches_the_profiles_buttons ... ok
+test overlay::tests::the_callbacks_tab_toggles_chooses_and_saves ... ok
+test overlay::tests::the_claude_subscription_option_shows_and_cannot_be_chosen ... ok
+test overlay::tests::the_context_window_is_a_dropdown_and_is_locked_during_a_run ... ok
+test overlay::tests::the_delegates_row_shows_only_in_a_build_that_has_it ... ok
+test live::tests::reasoning_lives_in_the_turn_then_folds_when_the_answer_starts ... ok
+test overlay::tests::the_behaviour_page_changes_and_saves ... ok
+test markdown::tests::wrapping_counts_cells_and_breaks_at_spaces ... ok
+test overlay::tests::the_games_page_turns_games_on_and_saves ... ok
+test overlay::tests::exit_asks_how_to_leave ... ok
+test overlay::tests::the_input_device_is_default_until_chosen_and_the_test_records_from_it ... ok
+test overlay::tests::the_journal_page_saves_the_projects_tracker_settings ... ok
+test overlay::tests::the_memory_page_saves_the_typed_limit ... ok
+test overlay::tests::the_memory_page_saves_the_page_of_linked_entries ... ok
+test overlay::tests::the_memory_page_shows_what_the_config_holds ... ok
+test overlay::tests::the_permission_prompt_answers_with_keys ... ok
+test overlay::tests::the_profiles_tab_adds_deletes_uses_and_signs_in ... ok
+test overlay::tests::the_engine_and_the_model_are_two_dropdowns_and_a_download_is_one_at_a_time ... ok
+test overlay::tests::the_profiles_tab_draws_the_list_and_its_buttons ... ok
+test overlay::tests::codex_is_listed_where_it_is_installed_and_signs_in_by_its_own_login ... ok
+test overlay::tests::with_no_engine_there_is_nothing_to_fetch_or_test ... ok
+test overlay::tests::the_chats_page_works_by_buttons ... ok
+test overlay::tests::the_telegram_page_saves_and_never_shows_a_token ... ok
+test overlay::tests::zero_is_no_limit_and_a_blank_is_not_sent ... ok
+test flowchart::tests::every_svg_parses ... ok
+test theme::tests::dark_background_is_the_token_value ... ok
+test overlay::tests::the_test_runs_on_a_model_that_is_here_and_enter_stops_it ... ok
+test theme::tests::accent_line_defaults_to_accent_and_light_overrides_it ... ok
+test transcript::markdown_tests::a_wide_table_wraps_inside_its_cells_and_a_list_item_hangs ... ok
+test overlay::tests::the_callbacks_tab_subscribes_and_approves_a_project_callback ... ok
+test overlay::tests::the_provider_page_names_the_claude_account ... ok
+test mindmap::tests::the_gallery_svg_parses ... ok
+test transcript::markdown_tests::the_owners_table_lines_up_with_its_emoji ... ok
+test theme::tests::every_builtin_theme_parses ... ok
+test overlay::tests::the_page_shows_the_level_and_the_words_in_their_own_window ... ok
+test transcript::tests::bench_frame ... ignored
+test transcript::tests::bench_tall_turn ... ignored
+test transcript::tests::wrap_breaks_at_spaces_and_splits_long_words ... ok
+test transcript::tests::a_call_says_what_it_is_doing_while_it_runs ... ok
+test transcript::thinking_tests::no_card_says_generating ... ok
+test images::tests::every_icon_rasterizes ... ok
+test transcript::tests::a_panic_in_one_piece_of_drawing_is_caught ... ok
+test transcript::tests::a_turn_grows_with_its_text_and_attachments ... ok
+test overlay::tests::the_dropdowns_say_what_is_installed ... ok
+test transcript::tests::an_answer_draws_as_markdown_and_a_person_as_typed ... ok
+test transcript::thinking_tests::the_agents_name_replaces_the_word_and_a_persons_card_keeps_its_own ... ok
+test widgets::composer_tests::long_text_wraps_and_keeps_every_character ... ok
+test widgets::composer_tests::the_composer_grows_with_its_text_up_to_a_limit ... ok
+test transcript::thinking_tests::reasoning_has_a_small_window_in_the_message ... ok
+test transcript::tests::a_persons_message_sits_a_step_back_from_the_agents_in_every_theme ... ok
+test widgets::composer_tests::the_background_panel_lists_tasks_and_their_time ... ok
+test view::reconnecting_tests::the_reconnecting_toast_says_the_attempt_and_its_bar_pulses ... ok
+test widgets::composer_tests::the_cursor_shows_on_a_character_and_stays_in_view_in_long_text ... ok
+test widgets::composer_tests::the_cursor_moves_every_way_and_typing_goes_where_it_is ... ok
+test images::tests::logo_rasterizes_with_the_brand_handle ... ok
+test view::reconnecting_tests::a_moving_toast_counts_and_fills_its_bar ... ok
+test widgets::composer_tests::nothing_leaves_the_frame_and_the_end_stays_in_view ... ok
+test input::tests::a_click_on_a_drawn_ref_chip_reaches_its_map ... ok
+test input::tests::dragging_a_map_pans_it_and_a_drag_unfolds_nothing ... ok
+test input::tests::a_sideways_wheel_over_a_map_pans_it ... ok
+test view::reconnecting_tests::a_dumps_progress_shows_over_the_settings ... ok
+test theme::tests::the_light_themes_are_light_and_draw ... ok
+test images::tests::big_text_rasterizes ... ok
+test transcript::tests::a_long_turn_shows_its_map_and_says_what_it_cannot ... ok
+test transcript::tests::a_map_past_the_end_of_the_canvas_draws_what_fits_and_does_not_panic ... ok
+test result: ok. 139 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.06s
+     Running unittests src/lib.rs (target/debug/deps/harness_callback-4c4c477a89e67ee8)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/test-echo.rs (target/debug/deps/test_echo-5f50f063ddb6d514)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/test-liar.rs (target/debug/deps/test_liar-6d8b2eaf536c61e0)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/test-slow.rs (target/debug/deps/test_slow-e90df82bd0058cf1)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/project_callbacks.rs (target/debug/deps/project_callbacks-c14c27beb288a484)
+test a_project_handler_stands_between_the_daemon_and_the_conversation ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.14s
+     Running unittests src/lib.rs (target/debug/deps/harness_daemon-a463b2ccf42aa613)
+test games::tests::dashboard_fixture ... ok
+test own_program_tests::a_replaced_program_runs_by_its_path ... ok
+test known::tests::the_register_keeps_what_was_open ... ok
+test service::tests::only_the_default_data_directory_is_the_services ... ok
+test trackers::tests::a_github_remote_in_every_form_is_one_place ... ok
+test session_callbacks::tests::a_session_keeps_its_token ... ok
+test ws::tests::the_handshake_answers_as_the_rfc_says ... ok
+test trackers::tests::references_and_titles ... ok
+test games::tests::a_table_too_few_join_is_called_off ... ok
+test ws::tests::frames_go_out_and_come_in ... ok
+test telegram::done_tests::a_window_back_is_the_same_process_under_a_new_id ... ok
+test terminal::tests::the_display_comes_from_the_user_manager ... ok
+test terminal::tests::the_terminal_is_the_named_one_or_the_first_found ... ok
+test session_callbacks::tests::the_queue_keeps_the_newest_for_a_week ... ok
+test project_callbacks::tests::project_callbacks_are_read_approved_and_subscribed ... ok
+test games::tests::an_invitation_names_agents_online ... ok
+test games::tests::leaving_takes_a_player_off_the_table ... ok
+test games::tests::a_table_invites_starts_and_tells_each_agent_its_turn ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/callbacks.rs (target/debug/deps/callbacks-87f774dab1fdbc96)
+test a_notification_reaches_its_window_once ... ok
+test the_contract_is_enforced ... ok
+test a_payload_is_only_data ... ok
+test a_custom_handler_can_be_switched_off_or_chosen_over_a_standard_type ... ok
+test a_seen_uuid_stays_seen_across_a_restart ... ok
+test a_custom_handler_serves_its_type_once_and_can_tell_the_agent ... ok
+test signals_gather_silently_until_the_condition_is_true ... ok
+test windows_survive_a_restart ... ok
+test other_types_stay_refused_and_a_broken_file_costs_only_the_conditions ... ok
+test a_journal_callback_writes_only_to_the_journal ... ok
+test switching_off_refuses_and_a_reload_applies ... ok
+test a_flow_update_moves_an_instance_and_never_the_chart ... ok
+test a_poll_waits_for_the_next_event ... ok
+test long_polls_do_not_hold_up_other_requests ... ok
+test a_field_rule_counts_only_what_passes_and_a_window_forgets_old_signals ... ok
+test a_burst_is_one_message_and_every_signal_is_logged ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.46s
+     Running tests/dashboard_ws.rs (target/debug/deps/dashboard_ws-4f8cde76a74b09a6)
+test dashboard_live_demo ... ok
+test the_dashboard_feed_pushes_tables_as_they_change ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/lifetime.rs (target/debug/deps/lifetime-018cc027faa4d53c)
+test a_daemon_whose_address_another_took_stops ... ok
+test a_daemon_whose_folder_is_removed_stops ... ok
+test a_daemon_that_is_the_published_one_keeps_serving ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.00s
+     Running tests/memory.rs (target/debug/deps/memory-29b2dfea890dca51)
+test a_released_entry_is_told_to_the_session_that_wrote_it ... ok
+test every_call_answers_as_it_does_in_process ... ok
+test a_call_made_while_the_daemon_is_away_waits_and_goes_once ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
+     Running tests/session_callbacks.rs (target/debug/deps/session_callbacks-dee96ac5648a50c0)
+test a_session_url_reaches_that_session ... ok
+test an_agent_checks_its_callbacks ... ok
+test a_session_not_open_gets_it_later ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.05s
+     Running tests/socket.rs (target/debug/deps/socket-b71b24973afc2b17)
+test the_socket_is_named_in_the_address_and_only_its_user_can_open_it ... ok
+test a_client_of_the_same_protocol_is_welcomed_and_another_refused ... ok
+test a_stopped_daemon_closes_every_connection_and_removes_its_socket ... ok
+test events_of_one_window_never_reach_another ... ok
+test a_second_daemon_on_the_same_data_refuses_to_start ... ok
+test a_client_that_never_reads_holds_up_no_other ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.48s
+     Running tests/stepdebug.rs (target/debug/deps/stepdebug-5e228503158cc217)
+test the_contract_names_its_routes ... ok
+test a_conforming_router_passes_and_is_not_moved_on ... ok
+test a_restart_keeps_a_windows_mode ... ok
+test a_router_breaking_the_contract_fails ... ok
+test a_window_not_in_the_mode_creates_nothing_whatever_the_payload_says ... ok
+test a_window_in_the_mode_saves_each_cycle_and_starts_over ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+     Running tests/telegram.rs (target/debug/deps/telegram-212571b02862ade6)
+test a_message_held_more_than_a_day_is_dropped_and_said ... ok
+test a_plan_answered_in_the_window_is_said_on_telegram ... ok
+test off_without_a_token_and_a_callback_cannot_claim_the_label ... ok
+test a_voice_note_reaches_the_session_in_words_and_a_stranger_fetches_nothing ... ok
+test only_an_allowed_user_reaches_the_window_and_a_stranger_leaves_no_trace ... ok
+test switch_moves_a_chat_topics_go_apart_and_a_restart_keeps_them ... ok
+test a_nick_finds_a_session_and_is_set_from_its_chat ... ok
+test a_voice_note_that_cannot_be_heard_is_said_so ... ok
+test a_plan_is_approved_with_a_press ... ok
+test a_session_that_is_not_open_holds_the_message_and_a_stranger_can_press_nothing ... ok
+test one_session_binds_by_itself_and_several_are_chosen_from ... ok
+test a_picture_the_user_sends_reaches_the_agent_as_a_file ... ok
+test transcribing_holds_up_no_other_chat ... ok
+test a_reply_goes_to_the_last_allowed_chat_and_long_text_splits ... ok
+test with_no_speech_backend_the_user_is_told_and_the_agent_is_not ... ok
+test pictures_and_files_go_with_the_message ... ok
+test a_reload_says_when_its_windows_are_back ... ok
+test the_token_appears_in_no_error_or_status ... ok
+test a_held_message_goes_when_its_session_is_back_with_its_time ... ok
+test the_harness_is_run_from_telegram ... ok
+test the_service_button_opens_the_controls ... ok
+test flood_control_is_waited_out ... ok
+test a_daemon_restarted_from_telegram_says_so ... ok
+test an_empty_list_delivers_nothing ... ok
+test another_poller_is_named ... ok
+test with_no_window_listening_nothing_is_taken_and_a_restart_does_not_repeat ... ok
+test anyone_can_learn_their_own_id_and_nothing_else ... ok
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 40.08s
+     Running tests/trackers.rs (target/debug/deps/trackers-60b3ffd3a04a67a5)
+test the_other_trackers_say_they_are_not_built_yet ... ok
+test a_todo_opens_an_issue_its_branch_comments_and_its_close_closes ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.25s
+     Running unittests src/lib.rs (target/debug/deps/harness_platform_native-d95383b26969d5e6)
+test scope::tests::the_wrapper_keeps_the_program_and_its_arguments_as_they_are ... ok
+test scope::tests::an_agents_scope_names_its_starter_and_orphans_are_those_of_the_gone ... ok
+test scope::tests::a_missing_program_is_not_wrapped ... ok
+test tests::a_stop_ends_a_command_and_what_it_started ... ok
+test tests::a_command_left_running_is_watched_and_ended_with_what_holds_it ... ok
+test scope::tests::off_the_program_starts_itself ... ok
+test children::tests::every_registered_process_is_ended ... ok
+test tests::what_a_command_leaves_running_does_not_hold_it_up ... ok
+test tests::a_command_is_heard_whole ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+     Running unittests src/lib.rs (target/debug/deps/harness_session-566af33852ad2094)
+test chat_archive::tests::a_file_name_is_made_of_the_name ... ok
+test chat_archive::tests::a_taken_name_gets_the_next_number ... ok
+test remote::read_agent_tests::a_master_is_told_the_error_a_run_ended_on ... ok
+test chat_archive::tests::a_line_moves_its_project_paths_and_ids_and_an_unfinished_one_is_left_out ... ok
+test remote::read_agent_tests::a_long_field_does_not_hide_the_short_ones_after_it ... ok
+test remote::read_agent_tests::progress_crosses_the_socket ... ok
+test remote::wire_tests::ask_withdrawn_carries_its_answer ... ok
+test remote::read_agent_tests::a_read_mid_run_shows_the_run_so_far ... ok
+test remote::read_agent_tests::a_slaves_program_asks_its_master_only_beyond_the_basics ... ok
+test remote::read_agent_tests::a_master_is_reminded_every_ten_minutes_unless_told_otherwise_for_a_test ... ok
+test recent_title_tests::a_session_is_named_as_resume_names_it ... ok
+test skills::tests::the_projects_skill_wins_and_the_users_are_offered ... ok
+test every_tool::modes_stand_apart_from_utilities ... ok
+test every_tool::each_is_documented_and_says_enough_for_an_agent_to_act_on ... ok
+test mcp::tests::the_mcp_server_refuses_a_node_past_its_limit ... ok
+test mcp::tests::it_speaks_mcp_and_its_tools_write_the_journal ... ok
+test chat_archive::tests::a_conversation_goes_out_whole_and_comes_back_once ... ok
+test progress_tests::the_first_the_last_and_one_per_100_ms_pass ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+     Running tests/e2e.rs (target/debug/deps/e2e-8eb5041ad6e4f96e)
+test a_project_is_asked_about_its_docs_once ... ok
+test a_projects_checks_run_only_as_approved ... ok
+test a_build_without_the_delegate_says_so ... ok
+test a_missing_key_is_a_clear_message_and_the_session_goes_on_failing_softly ... ok
+test a_conversation_brought_in_goes_on_with_another_provider_and_valid_history ... ok
+test a_log_cut_off_mid_tool_resumes_with_an_interrupted_result ... ok
+test a_provider_on_a_plan_uses_the_sign_in_and_logs_no_token ... ok
+test a_conversation_moved_to_codex_is_resumed_from_its_codex_form ... ok
+test a_denied_write_does_not_happen_and_the_model_hears_it ... ok
+test a_journal_entry_stores_though_the_model_filled_its_optionals_with_nothing ... ok
+test a_coding_turn_runs_end_to_end_on_the_real_plugins ... ok
+test a_failing_check_goes_back_to_the_model_and_is_never_done ... ok
+test a_session_resumes_from_its_log ... ok
+test a_refused_plan_stays_on_and_a_resume_restores_the_mode ... ok
+test a_task_with_a_bad_file_or_nothing_to_check_is_refused ... ok
+test a_resumed_log_ends_the_background_tasks_of_a_gone_process ... ok
+test a_user_tabs_program_asks_the_user_in_the_tab ... ok
+test a_sessions_memory_goes_through_a_running_daemon ... ok
+test a_session_is_told_its_own_callback_url ... ok
+test a_slaves_plan_goes_to_its_orchestrator_and_its_words_approve_it ... ok
+test a_conversation_keeps_its_own_adapter ... ok
+test a_slave_needs_no_word_for_its_basics_and_asks_for_the_rest ... ok
+test a_conversation_runs_in_the_daemon_and_its_window_is_a_client ... ok
+test a_session_in_the_daemon_has_its_windows_environment ... ok
+test a_task_is_done_through_its_checks_and_leaves_evidence ... ok
+test an_openai_compatible_endpoint_runs_a_turn_with_a_tool ... ok
+test no_tool_acts_outside_what_was_granted ... ok
+test ask_user_ends_the_run_and_the_answer_is_the_next_message ... ok
+test a_plan_card_answered_on_telegram_is_withdrawn_and_approves ... ok
+test a_window_goes_on_when_another_daemon_takes_the_place_of_its_own ... ok
+test memory_tools_write_a_real_journal_shared_by_every_checkout ... ok
+test search_takes_a_file_a_folder_and_says_when_neither ... ok
+test plan_mode_refuses_changes_and_only_the_user_ends_it ... ok
+test the_agent_cannot_enter_debug_mode_while_planning ... ok
+test the_agent_lists_plugins_and_asks_for_a_reload ... ok
+test the_agents_name_is_set_by_the_tool_or_the_user_and_replayed ... ok
+test context_comes_from_memory_and_survives_compaction ... ok
+test the_claude_subscription_adapter_refuses_before_any_request ... ok
+test step_debug_is_switched_logged_and_replayed ... ok
+test shell_hooks_add_context_veto_and_fail ... ok
+test a_window_the_daemon_lost_opens_itself_again ... ok
+test the_docs_mirror_prompts_for_one_turn_and_blocks_nothing ... ok
+test the_wire_log_shows_bodies_and_never_keys ... ok
+test the_same_failure_is_said_at_the_third_time_and_stopped_at_the_fifth ... ok
+test the_user_switches_plan_mode_and_a_task_does_not_finish_in_it ... ok
+test the_rules_are_in_the_prompt_and_a_write_with_no_plan_is_noticed ... ok
+test a_question_with_no_window_waits_for_one ... ok
+test two_tabs_have_their_own_queues ... ok
+test what_a_window_leaving_with_stop_queued_does_not_start ... ok
+test a_message_sent_during_a_run_is_woven_in_at_the_next_step ... ok
+test a_nick_set_during_a_run_takes_hold_at_its_next_step ... ok
+test a_rebind_keeps_the_queue_and_delivers_it_once ... ok
+test inbound_during_run_shares_the_typed_fifo_before_run_end ... ok
+test plan_mode_switched_during_a_run_goes_ahead_of_the_message_after_it ... ok
+test the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going ... ok
+test a_window_takes_over_a_run_from_one_that_went_away ... ok
+test a_taken_back_message_never_reaches_the_agent_and_after_a_stop_the_queue_goes_at_once ... ok
+test a_window_rides_out_three_daemon_restarts_losing_and_doubling_nothing ... ok
+test a_window_leaves_its_conversations_as_it_says ... ok
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.10s
+     Running tests/lost_window.rs (target/debug/deps/lost_window-3b03e15c09f875b3)
+test a_lost_window_finishes_its_work_by_default ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.11s
+     Running unittests src/main.rs (target/debug/deps/multitool-23ddac8839e33713)
+test config::tests::a_broken_config_is_told_without_quoting_its_text ... ok
+test config::tests::a_profiles_codex_links_the_users_config_not_its_login ... ok
+test config::tests::a_fresh_install_starts_with_default ... ok
+test config::tests::profile_names_are_checked ... ok
+test config::tests::a_profile_sees_the_users_transcripts_through_a_link ... ok
+test config::tests::a_cross_device_move_leaves_one_copy ... ok
+test callback_cmd::tests::a_new_callback_is_a_rust_project_on_the_sdk ... ok
+test config::tests::the_map_node_limit_round_trips_and_defaults_to_200 ... ok
+test config::tests::config_round_trips_and_defaults_to_auto ... ok
+test config::tests::a_broken_profile_is_told_without_quoting_its_text ... ok
+test config::tests::the_users_own_folder_is_the_markers_and_never_a_profiles ... ok
+test file_picker::tests::the_picker_is_the_first_found_with_its_form ... ok
+test withdraw_tests::a_withdrawn_card_goes_and_no_other ... ok
+test file_picker::tests::a_pick_is_a_path_a_cancel_or_a_failure ... ok
+test config::tests::the_chatgpt_credential_moves_into_default_once ... ok
+test config::tests::the_behaviour_settings_default_round_trip_and_fall_back ... ok
+test config::tests::a_profile_shares_the_users_setup_and_keeps_its_login ... ok
+test config::tests::a_new_profile_is_clean_and_its_settings_its_own ... ok
+test config::tests::a_bare_start_runs_on_the_kept_profile ... ok
+test reload::tests::a_handoff_round_trips_once ... ok
+test withdraw_tests::the_toast_says_the_answer ... ok
+test config::tests::the_old_config_moves_into_default_once ... ok
+test config::tests::signed_in_is_read_from_claude_auth_status ... ok
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/tui_snapshot-1fb974902d9bee8a)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test crates/callback-sdk/src/lib.rs - (line 20) - compile ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -44,7 +44,7 @@ fn unit_name(adapter: &str) -> String {
 /// The pid of the program that started an agent's scope, from the scope's unit name
 /// (`multitool-agent-<adapter>-<pid>-<n>-<hex>.scope`), or None for any other unit (CON-182).
 pub fn starter_of(unit: &str) -> Option<u32> {
-    let name = unit.strip_prefix("multitool-agent-")?.strip_suffix(".scope")?;
+    let name = unit.strip_prefix("multitool-agent-").or_else(|| unit.strip_prefix("multitool-callback-"))?.strip_suffix(".scope")?;
     let parts: Vec<&str> = name.rsplitn(4, '-').collect();
     // From the end: hex, n, pid, adapter.
     if parts.len() != 4 || parts[0].is_empty() || !parts[0].chars().all(|c| c.is_ascii_hexdigit()) || parts[1].parse::<u64>().is_err() || parts[3].is_empty() {
@@ -70,7 +70,7 @@ pub fn reap() -> Vec<String> {
     if !available() {
         return Vec::new();
     }
-    let Ok(out) = Command::new("systemctl").args(["--user", "list-units", "--plain", "--no-legend", "--all", "multitool-agent-*"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() else {
+    let Ok(out) = Command::new("systemctl").args(["--user", "list-units", "--plain", "--no-legend", "--all", "multitool-agent-*", "multitool-callback-*"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() else {
         return Vec::new();
     };
     let listed = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -126,6 +126,27 @@ pub fn agent_command(program: &str, adapter: &str) -> Command {
     command
 }
 
+/// The command to run a project's callback handler with (CON-183): in a scope of its own named
+/// multitool-callback-<name>-<this pid>-…, so a timeout ends all it started and reap (CON-182)
+/// ends what a gone daemon left; else the handler itself. Answers the unit's name too.
+pub fn callback_command(handler: &str, name: &str) -> (Command, Option<String>) {
+    if !available() || !std::path::Path::new(handler).is_file() {
+        return (Command::new(handler), None);
+    }
+    let unit = unit_name(name).replacen("multitool-agent-", "multitool-callback-", 1);
+    let mut command = Command::new("systemd-run");
+    command.args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no"]);
+    command.arg(format!("--slice={SLICE}"));
+    command.arg(format!("--unit={unit}"));
+    command.args(["--", handler]);
+    (command, Some(format!("{unit}.scope")))
+}
+
+/// Ends a scope and all it runs, at once: a callback handler past its time (CON-183).
+pub fn kill_unit(unit: &str) {
+    let _ = Command::new("systemctl").args(["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+}
+
 /// Whether `program` can be run: a path that is a file, or a name found on PATH.
 fn found(program: &str) -> bool {
     let path = std::path::Path::new(program);
@@ -173,6 +194,7 @@ mod tests {
     fn an_agents_scope_names_its_starter_and_orphans_are_those_of_the_gone() {
         assert_eq!(starter_of("multitool-agent-claude-1872968-1-28550baf.scope"), Some(1872968));
         assert_eq!(starter_of("multitool-agent-codex-42-0-ff.scope"), Some(42));
+        assert_eq!(starter_of("multitool-callback-echo-77-3-1a2b.scope"), Some(77), "a callback handler's scope too (CON-183)");
         assert_eq!(starter_of("multitool-agent-claude-1872968-1-28550baf.service"), None);
         assert_eq!(starter_of("multitool-window-12-0-ab.scope"), None, "a window's scope is never reaped");
         assert_eq!(starter_of("multitool-agent-claude-x-1-ab.scope"), None);

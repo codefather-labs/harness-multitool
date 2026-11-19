@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use crate::input::{Key, Outcome};
 use crate::model::{AuthPage, ChatsPage, CODEX_PROVIDER, DELEGATE_PROVIDER, InboundKind, MemoryPage, ModelChoice, PLAN_PROVIDER, ProfilesMode, ProfilesPage, Toast};
 use crate::model::{
-    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow,
+    Item, Overlay, PermissionView, ProviderOption, Role, SettingsPane, SettingsView, Tone, ToolBody, ToolCall, ToolIcon, ToolState, Workspace, Outgoing, CallbacksPage, StandardRow, CustomRow, ConditionRow, ProjectCallbackRow,
 };
 use crate::theme::Theme;
 use crate::view::{Drawn, Hit, Target};
@@ -230,7 +230,19 @@ pub fn sample_callbacks() -> CallbacksPage {
         daemon: "running on 127.0.0.1:42849".into(),
         cursor: 0,
         open: None,
+        project: vec![
+            ProjectCallbackRow { name: "deploy-done".into(), description: "tells the agent a deploy ended".into(), types: vec!["deploy_done".into(), "deploy_failed".into()], standing: "approved".into(), subscribed: "yes".into(), problem: None, handler: "/work/acme/.harness/callbacks/deploy-done/target/release/deploy-done".into() },
+            ProjectCallbackRow { name: "nightly".into(), description: String::new(), types: vec!["nightly".into()], standing: "changed".into(), subscribed: "no".into(), problem: None, handler: "/work/acme/.harness/callbacks/nightly/target/release/nightly".into() },
+            ProjectCallbackRow { name: "notify".into(), description: String::new(), types: vec!["notify".into()], standing: "unapproved".into(), subscribed: "no".into(), problem: Some(project_callbacks_script_note()), handler: "/work/acme/.harness/callbacks/notify/run.sh".into() },
+        ],
+        project_status: String::new(),
+        project_url: "http://127.0.0.1:42849/callback/<token>".into(),
+        approving: None,
     }
+}
+
+fn project_callbacks_script_note() -> String {
+    "a handler is a compiled Rust program (CON-183), not a script: build it with multitool callback build".into()
 }
 
 /// The Callbacks tab (settings-callbacks-*): one list under three headings, rows at one cursor.
@@ -1011,19 +1023,72 @@ fn callbacks_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color
     }
     y += 1;
     if y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled("This conversation's callbacks", heading), Span::styled("  .harness/callbacks · Space subscribe · a approve · c URL to the composer", muted)], bg);
+        y += 1;
+    }
+    // Wrapped, not cut: the URL and the approval's path are to be read whole (CON-183).
+    let wrapped = |f: &mut Frame, y: &mut u16, words: &str, style: Style| {
+        for line in wrap_chars(words, r.width.saturating_sub(2) as usize, 6) {
+            if *y < bottom {
+                text(f, r.x, *y, r.width, vec![Span::styled(format!(" {line}"), style)], bg);
+                *y += 1;
+            }
+        }
+    };
+    if !p.project_url.is_empty() {
+        wrapped(f, &mut y, &format!("its URL {}", p.project_url), Style::default().fg(t.text));
+    }
+    if p.project.is_empty() && y < bottom {
+        text(f, r.x, y, r.width, vec![Span::styled(" none in this project: multitool callback new <name>", muted)], bg);
+        y += 1;
+    }
+    for c in &p.project {
+        let on = c.subscribed == "yes";
+        let (state, style) = match (&c.problem, c.standing.as_str()) {
+            (Some(_), _) => ("cannot run", Style::default().fg(t.error)),
+            (None, "approved") => ("approved", Style::default().fg(t.success)),
+            (None, "changed") => ("changed: approve again", Style::default().fg(t.warning)),
+            _ => ("not approved", Style::default().fg(t.warning)),
+        };
+        let mut spans = vec![toggle(on), Span::styled(format!("{:<20}", c.name), strong), Span::styled(state.to_string(), style)];
+        if c.subscribed == "stale" {
+            spans.push(Span::styled("  (its folder changed: subscribe again)", Style::default().fg(t.warning)));
+        }
+        row(f, &mut y, spans, &mut index, out);
+        let about = if c.description.is_empty() { String::new() } else { format!(" · {}", c.description) };
+        wrapped(f, &mut y, &format!("types {}{about}", c.types.join(", ")), muted);
+        if let Some(problem) = &c.problem {
+            wrapped(f, &mut y, problem, Style::default().fg(t.error));
+        }
+    }
+    if let Some(name) = &p.approving
+        && let Some(c) = p.project.iter().find(|c| &c.name == name)
+    {
+        wrapped(f, &mut y, &format!("a again approves {}: it runs as you, with your rights; any other key does not", c.handler), Style::default().fg(t.warning));
+    } else if !p.project_status.is_empty() {
+        wrapped(f, &mut y, &p.project_status, muted);
+    }
+    y += 1;
+    if y < bottom {
         text(f, r.x, y, r.width, vec![Span::styled("Daemon  ", strong), Span::styled(p.daemon.clone(), muted), Span::styled("   r reload", muted)], bg);
     }
 }
 
-/// Space or Enter on the Callbacks tab: unfold or pick an implementation, flip a toggle.
-fn activate_callback(p: &mut CallbacksPage) {
-    let (standard, custom) = (p.standard.len(), p.custom.len());
+/// Space or Enter on the Callbacks tab: unfold or pick an implementation, flip a toggle. On a
+/// project callback it asks the daemon at once to subscribe the conversation or take it off
+/// (CON-183): that is not saved with Ctrl+S.
+fn activate_callback(p: &mut CallbacksPage, tab: u64) -> Option<Outgoing> {
+    let (standard, custom, conditions) = (p.standard.len(), p.custom.len(), p.conditions.len());
     match p.cursor {
         i if i < standard => p.open = if p.open == Some(i) { None } else { Some(i) },
         i if i < standard + custom => p.custom[i - standard].on = !p.custom[i - standard].on,
-        i if i < p.rows() => p.conditions[i - standard - custom].on = !p.conditions[i - standard - custom].on,
-        _ => {}
+        i if i < standard + custom + conditions => p.conditions[i - standard - custom].on = !p.conditions[i - standard - custom].on,
+        i => {
+            let c = p.project_at(i)?;
+            return Some(Outgoing::SubscribeCallback { tab, name: c.name.clone(), on: c.subscribed != "yes" });
+        }
     }
+    None
 }
 
 /// Fills `r` with `bg`, frame cells included, and draws a rounded frame in `line` around it.
@@ -2039,6 +2104,8 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
         }
         Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Callbacks") && !matches!(k, Key::Esc) && (s.focus == SettingsPane::Page || matches!(k, Key::Ctrl('s'))) => {
             let p = &mut s.callbacks;
+            // An approval asks twice: any key but a second a lets it go (CON-183).
+            let approving = p.approving.take();
             match k {
                 Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
                 // An open dropdown takes the arrows; it closes on Space or Enter.
@@ -2049,7 +2116,24 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                 }
                 Key::Up => p.cursor = p.cursor.saturating_sub(1),
                 Key::Down => p.cursor = (p.cursor + 1).min(p.rows().saturating_sub(1)),
-                Key::Char(' ') | Key::Enter => activate_callback(p),
+                Key::Char(' ') | Key::Enter => {
+                    if let Some(out) = activate_callback(p, w.tabs[w.active].id) {
+                        w.outbox.push(out);
+                    }
+                }
+                Key::Char('a') if p.project_at(p.cursor).is_some() => {
+                    let name = p.project_at(p.cursor).map(|c| c.name.clone()).unwrap_or_default();
+                    if approving.as_ref() == Some(&name) {
+                        w.outbox.push(Outgoing::ApproveCallback { tab: w.tabs[w.active].id, name });
+                    } else {
+                        p.approving = Some(name);
+                    }
+                }
+                Key::Char('c') if !p.project_url.is_empty() => {
+                    let url = p.project_url.clone();
+                    w.overlay = None;
+                    w.view_mut().composer.insert(&url);
+                }
                 Key::Char('r') => w.outbox.push(Outgoing::ReloadCallbacks),
                 Key::Ctrl('s') => {
                     let handlers = p.standard.iter().map(|r| (r.name.clone(), r.implementations.get(r.chosen).cloned().unwrap_or_default())).collect();
@@ -2215,7 +2299,9 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
         (Some(Overlay::Settings(s)), Target::CallbackRow(i)) => {
             s.focus = SettingsPane::Page;
             s.callbacks.cursor = i;
-            activate_callback(&mut s.callbacks);
+            if let Some(out) = activate_callback(&mut s.callbacks, w.tabs[w.active].id) {
+                w.outbox.push(out);
+            }
         }
         (Some(Overlay::Settings(s)), Target::Provider(i)) => {
             s.cursor = i;
@@ -2812,6 +2898,60 @@ mod tests {
         assert!(handlers.contains(&("journal".to_string(), "off".to_string())));
         for name in ["deploy_done", "nightly_report", "pipeline keeps failing", "tests are flaky"] {
             assert!(disabled.iter().any(|d| d == name), "{name}");
+        }
+    }
+
+    /// CON-183: a project callback's row subscribes the conversation with Space and approves its
+    /// handler with a; both go to the daemon at once; its state and problem are drawn.
+    #[test]
+    fn the_callbacks_tab_subscribes_and_approves_a_project_callback() {
+        let mut w = workspace();
+        w.live = true;
+        let tab = w.tabs[w.active].id;
+        let mut s = sample_settings();
+        s.section = s.sections.iter().position(|n| n == "Callbacks").unwrap();
+        s.focus = SettingsPane::Page;
+        s.callbacks = sample_callbacks();
+        let first = s.callbacks.standard.len() + s.callbacks.custom.len() + s.callbacks.conditions.len();
+        s.callbacks.cursor = first;
+        w.overlay = Some(Overlay::Settings(s.clone()));
+        key(&mut w, Key::Char(' '));
+        assert_eq!(w.outbox.pop(), Some(Outgoing::SubscribeCallback { tab, name: "deploy-done".into(), on: false }), "subscribed: Space takes it off");
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char(' '));
+        assert_eq!(w.outbox.pop(), Some(Outgoing::SubscribeCallback { tab, name: "nightly".into(), on: true }));
+        key(&mut w, Key::Char('a'));
+        assert!(w.outbox.is_empty(), "the first a asks");
+        let asked = match &w.overlay {
+            Some(Overlay::Settings(s)) => s.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(asked.callbacks.approving.as_deref(), Some("nightly"));
+        key(&mut w, Key::Char('a'));
+        assert_eq!(w.outbox.pop(), Some(Outgoing::ApproveCallback { tab, name: "nightly".into() }));
+        assert!(w.outbox.is_empty());
+        key(&mut w, Key::Char('a'));
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Up);
+        key(&mut w, Key::Char('a'));
+        assert!(w.outbox.is_empty(), "another key in between lets the approval go");
+        // c: the URL into the composer, the settings closed.
+        key(&mut w, Key::Char('c'));
+        assert!(w.overlay.is_none());
+        assert!(w.view().composer.text.ends_with("http://127.0.0.1:42849/callback/<token>"), "inserted at the cursor: {}", w.view().composer.text);
+        // 'a' off a project row does nothing.
+        if let Some(Overlay::Settings(s)) = &mut w.overlay {
+            s.callbacks.cursor = 0;
+        }
+        key(&mut w, Key::Char('a'));
+        assert!(w.outbox.is_empty());
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        // As narrow as the settings' page is: the long lines wrap, whole.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 60)).unwrap();
+        terminal.draw(|f| callbacks_page(f, f.area(), &asked, &theme, Color::Reset, &mut Drawn::default())).unwrap();
+        let shown: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<Vec<_>>().chunks(70).map(|l| l.concat().trim().to_string()).collect::<Vec<_>>().join(" ");
+        for part in ["This conversation's callbacks", "deploy-done", "approved", "types deploy_done, deploy_failed · tells the agent a deploy ended", "changed: approve again", "cannot run", "compiled Rust program", "a again approves /work/acme/.harness/callbacks/nightly/target/release/nightly: it runs as you", "/callback/<token>"] {
+            assert!(shown.contains(part), "{part}:\n{shown}");
         }
     }
 
