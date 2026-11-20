@@ -598,6 +598,8 @@ pub fn session_tabs() -> AppState {
         archiving: Vec::new(),
         overlay: None,
         drag: None,
+        press: None,
+        selection: None,
         journal: crate::debug::known_entries(),
         live: false,
         outbox: Vec::new(),

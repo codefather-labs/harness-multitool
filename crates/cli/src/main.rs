@@ -9,6 +9,7 @@ use frontend_tui::{Theme, fixtures};
 use tui_snapshot::{Raster, side_by_side};
 
 mod callback_cmd;
+mod clipboard;
 mod config;
 mod file_picker;
 mod plugins;
@@ -3707,6 +3708,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     let mut pictures: HashMap<(Graphic, String, u16, u16), Protocol> = HashMap::new();
     let result = (|| -> Result<()> {
         let mut drawn = Drawn::default();
+        // The frame the selection was made on, to read its text from on release (CON-188).
+        let mut selected_frame: Option<ratatui::buffer::Buffer> = None;
         // Only a change is worth a frame: an idle session must not spin on drawing.
         let mut dirty = true;
         // The terminal tab's name as last set (CON-170), and the project folder it carries.
@@ -3871,6 +3874,14 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     dirty = false;
                     terminal.draw(|f| {
                     drawn = frontend_tui::draw(f, &state, &current);
+                    // The selection, drawn over the frame, and the frame kept for its text (CON-188).
+                    selected_frame = None;
+                    if let frontend_tui::model::Mode::Session(w) = &state.mode
+                        && let Some(sel) = &w.selection
+                    {
+                        selected_frame = Some(f.buffer_mut().clone());
+                        frontend_tui::selection::highlight(f.buffer_mut(), sel);
+                    }
                     let Some(picker) = &picker else { return };
                     for p in &drawn.placements {
                         let key = (p.graphic.clone(), current.id.clone(), p.rect.width, p.rect.height);
@@ -3981,7 +3992,25 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                     continue;
                 }
                 Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
-                    input::release(&mut state);
+                    // A release after a drag that selected copies the text (CON-188); where the
+                    // button was let go is the selection's end, as the last move may not be.
+                    if let frontend_tui::model::Mode::Session(w) = &state.mode
+                        && w.drag.is_none()
+                        && w.press.is_some()
+                    {
+                        input::drag(&mut state, m.column, m.row);
+                    }
+                    if let Outcome::Copy(sel) = input::release(&mut state)
+                        && let Some(frame) = &selected_frame
+                    {
+                        let text = frontend_tui::selection::text(frame, &sel);
+                        if !text.trim().is_empty() {
+                            let said = clipboard::copy(&text);
+                            if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                                w.toast = Some(frontend_tui::overlay::system_toast(&said));
+                            }
+                        }
+                    }
                     continue;
                 }
                 // A sideways wheel or touchpad swipe, or Shift with the wheel, over a map pans it
@@ -4031,7 +4060,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         _ => {}
                     }
                 }
-                Outcome::Stay | Outcome::OpenSettings => {}
+                Outcome::Stay | Outcome::OpenSettings | Outcome::Copy(_) => {}
             }
             live.send(&mut state);
             if settings_from_start && matches!(&state.mode, Mode::Session(w) if w.overlay.is_none()) {

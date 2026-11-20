@@ -90,6 +90,11 @@ pub struct Workspace {
     pub overlay: Option<Overlay>,
     /// A map being dragged with the mouse.
     pub drag: Option<Drag>,
+    /// Where the left button was last pressed, while it is held: a drag from there selects text
+    /// (CON-188).
+    pub press: Option<(u16, u16)>,
+    /// The text selected with the mouse, in screen cells (CON-188).
+    pub selection: Option<crate::selection::Selection>,
     /// Journal entries the transcript can unfold (the project's journal, as far as the session
     /// has fetched it).
     pub journal: Vec<JournalEvent>,
@@ -489,7 +494,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, behaviour: None, on_exit: None, in_daemon: false, chats: None, skills: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, press: None, selection: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, behaviour: None, on_exit: None, in_daemon: false, chats: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {

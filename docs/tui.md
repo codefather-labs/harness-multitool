@@ -106,6 +106,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | session | Ctrl+G · click a FLOW row | open or close the newest flowchart instance · that one |
 | session | Ctrl+O · click `▸ Thought for …` | fold or unfold the newest reasoning · that one |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
+| session | drag with the left button · Esc | select text and copy it on release (CON-188) · clear the selection; Shift+drag is the terminal's own selection |
 | session | click `⚙ Settings` | open the settings window |
 | permission prompt | 1 · 2 · 3 · ←→ / Tab · Enter · Esc · click a button | allow once · always allow · deny · choose · confirm · deny |
 | settings | Tab · ↑↓ · Space / Enter · Ctrl+S · Esc · click | change pane · move · select (provider, field, box) · save · close |
@@ -165,6 +166,14 @@ The agent also has the journal, mind-map and flowchart tools. Their results are 
 Each repository has one journal, in the OS's data directory under `journals/`. Every checkout shares it.
 
 The system prompt carries the project's specifications and constraints from the journal and the titles of its maps.
+
+### Selecting and copying text
+
+The window takes the mouse for its clicks, tabs and maps, so it selects text itself (CON-188). Press the left button and drag over messages, cards or the composer. The selection is drawn inverted and runs row by row, as a terminal's does. On release the text is copied, with each row's trailing spaces dropped. A selection of several rows leaves out the window's own drawing at each row's edges: a message's bar, a card's border, a toast beside it.
+
+The copy goes to the system's clipboard: wl-copy on Wayland; xclip or xsel under X11; pbcopy on macOS; clip.exe on Windows. It is also sent as OSC 52, which many terminals take, over SSH too. A toast says how many characters were copied.
+
+A click without a drag acts as before, and a drag that starts on a map still pans it. Esc, typing or a new press clears the selection. Shift+drag stays the terminal's own selection.
 
 ### Planning first
 

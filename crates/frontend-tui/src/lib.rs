@@ -16,6 +16,7 @@ pub mod input;
 pub mod live;
 pub mod model;
 pub mod overlay;
+pub mod selection;
 pub mod theme;
 pub mod transcript;
 pub mod view;

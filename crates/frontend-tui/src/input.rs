@@ -40,6 +40,8 @@ pub enum Outcome {
     /// Run quick action `i` of the startup page.
     Action(usize),
     OpenSettings,
+    /// Text was selected with the mouse and the button released: copy it (CON-188).
+    Copy(crate::selection::Selection),
 }
 
 /// How long a second Ctrl+C counts as meaning it.
@@ -112,6 +114,10 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
             Outcome::Stay
         }
         Mode::Session(w) => {
+            // A key clears the selection; Esc does only that (CON-188).
+            if w.selection.take().is_some() && k == Key::Esc {
+                return Outcome::Stay;
+            }
             if let Some(o) = crate::overlay::key(w, k) {
                 return o;
             }
@@ -213,10 +219,18 @@ fn map_pan(w: &mut Workspace, item: usize, sub: Option<usize>) -> Option<(u16, u
     }
 }
 
-/// The mouse moved with the button held: a map being dragged follows it.
+/// The mouse moved with the button held: a map being dragged follows it; anywhere else the
+/// text from the press to the pointer is selected (CON-188).
 pub fn drag(s: &mut AppState, col: u16, row: u16) {
     let Mode::Session(w) = &mut s.mode else { return };
-    let Some(mut d) = w.drag else { return };
+    let Some(mut d) = w.drag else {
+        if let Some(anchor) = w.press
+            && (anchor != (col, row) || w.selection.is_some())
+        {
+            w.selection = Some(crate::selection::Selection { anchor, head: (col, row) });
+        }
+        return;
+    };
     let (dx, dy) = (col as i32 - d.at.0 as i32, row as i32 - d.at.1 as i32);
     if dx == 0 && dy == 0 {
         return;
@@ -233,15 +247,23 @@ pub fn drag(s: &mut AppState, col: u16, row: u16) {
     }
 }
 
-/// The button was released: a press that did not move on a map part unfolds (or folds) it.
-pub fn release(s: &mut AppState) {
-    let Mode::Session(w) = &mut s.mode else { return };
+/// The button was released: a press that did not move on a map part unfolds (or folds) it; a
+/// selection made by the drag is to be copied (CON-188), and stays drawn until a key or a press.
+pub fn release(s: &mut AppState) -> Outcome {
+    let Mode::Session(w) = &mut s.mode else { return Outcome::Stay };
+    w.press = None;
+    if let Some(sel) = w.selection
+        && !sel.is_empty()
+    {
+        return Outcome::Copy(sel);
+    }
     if let Some(d) = w.drag.take()
         && !d.moved
         && let Some(part) = d.part
     {
         toggle_map_part(w, d.item, d.sub, part);
     }
+    Outcome::Stay
 }
 
 /// Unfolds the journal entries of a map part beside its map, or folds them when that part is
@@ -367,6 +389,11 @@ pub fn pan_at(s: &mut AppState, drawn: &Drawn, col: u16, row: u16, columns: i32)
 
 /// A left click at a cell, against what the last draw reported.
 pub fn click(s: &mut AppState, drawn: &Drawn, col: u16, row: u16) -> Outcome {
+    // A press clears the selection and may start a new one (CON-188).
+    if let Mode::Session(w) = &mut s.mode {
+        w.selection = None;
+        w.press = Some((col, row));
+    }
     let Some(target) = drawn.hit(col, row) else { return Outcome::Stay };
     match (&mut s.mode, target) {
         (Mode::Splash(_), Target::SplashOk) => Outcome::LeaveSplash,
@@ -581,6 +608,53 @@ mod tests {
         release(&mut s);
         assert_eq!(pan(&s).0.0, limit, "the pan stops at the map's edge");
         assert!(pan(&s).1.is_some(), "a drag leaves the open ticket as it was");
+        assert!(matches!(&s.mode, Mode::Session(w) if w.selection.is_none()), "a drag on a map selects nothing (CON-188)");
+    }
+
+    /// CON-188: a press and a drag selects text, its release asks to copy it; a press with no drag
+    /// is a click; Esc, typing or a new press clears the selection.
+    #[test]
+    fn a_drag_selects_text_and_its_release_copies_it() {
+        use crate::selection::Selection;
+        use ratatui::{Terminal, backend::TestBackend};
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut s = fixtures::welcome();
+        let mut term = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        let mut drawn = Drawn::default();
+        term.draw(|f| drawn = crate::draw(f, &s, &t)).unwrap();
+        let sel = |s: &AppState| match &s.mode {
+            Mode::Session(w) => w.selection,
+            _ => unreachable!(),
+        };
+        // A press with no drag: a click, nothing selected, nothing to copy.
+        click(&mut s, &drawn, 10, 5);
+        assert_eq!(release(&mut s), Outcome::Stay);
+        assert_eq!(sel(&s), None);
+        // A press and a drag: selected from the press to the pointer, copied on release.
+        click(&mut s, &drawn, 10, 5);
+        drag(&mut s, 30, 6);
+        assert_eq!(sel(&s), Some(Selection { anchor: (10, 5), head: (30, 6) }));
+        assert_eq!(release(&mut s), Outcome::Copy(Selection { anchor: (10, 5), head: (30, 6) }));
+        assert!(sel(&s).is_some(), "it stays drawn after the release");
+        // A drag after the release, with no press, selects nothing more.
+        drag(&mut s, 40, 7);
+        assert_eq!(sel(&s), Some(Selection { anchor: (10, 5), head: (30, 6) }));
+        // Esc clears it, and does nothing else.
+        assert_eq!(key(&mut s, Key::Esc), Outcome::Stay);
+        assert_eq!(sel(&s), None);
+        // Typing clears it and types.
+        click(&mut s, &drawn, 10, 5);
+        drag(&mut s, 12, 5);
+        release(&mut s);
+        key(&mut s, Key::Char('x'));
+        assert_eq!(sel(&s), None);
+        assert!(matches!(&s.mode, Mode::Session(w) if w.view().composer.text.ends_with('x')), "the key was typed");
+        // A new press clears it.
+        click(&mut s, &drawn, 10, 5);
+        drag(&mut s, 12, 5);
+        release(&mut s);
+        click(&mut s, &drawn, 50, 9);
+        assert_eq!(sel(&s), None);
     }
 
     /// journal#886: a sideways wheel over a map pans it, within its limit; elsewhere it does nothing.
