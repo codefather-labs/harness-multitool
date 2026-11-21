@@ -287,14 +287,14 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<f32>, String> {
         if channels == 1 {
             mono.extend_from_slice(&frame[..samples]);
         } else {
-            mono.extend(frame[..samples * 2].chunks_exact(2).map(|pair| 0.5 * (pair[0] + pair[1])));
+            mono.extend(frame[..samples * 2].as_chunks::<2>().0.iter().map(|[a, b]| 0.5 * (a + b)));
         }
     }
     if mono.is_empty() {
         return Err("the note has no sound".to_string());
     }
     // 48 kHz to 16: every third, blended; whisper's own processing dwarfs what this loses.
-    Ok(mono.chunks_exact(3).map(|three| (three[0] + three[1] + three[2]) / 3.0).collect())
+    Ok(mono.as_chunks::<3>().0.iter().map(|[a, b, c]| (a + b + c) / 3.0).collect())
 }
 
 /// One at a time: running side by side is slower than one after the other, on a busy machine.

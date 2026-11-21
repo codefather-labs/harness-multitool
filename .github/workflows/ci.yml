@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       # INV-1: the core and the interfaces build for the browser.
       - run: cargo check -p harness-api -p harness-core --target wasm32-unknown-unknown
       # CON-184: the terminal interface builds for the browser, for the site's in-page multitool.
@@ -27,4 +27,4 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast

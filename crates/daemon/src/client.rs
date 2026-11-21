@@ -596,14 +596,20 @@ fn dial(inner: &Inner) -> Result<(socket2::Socket, Lines, Value), String> {
     writer
         .write_all((json!({"hello": {"protocol": PROTOCOL, "build": crate::build_id(), "role": inner.role}}).to_string() + "\n").as_bytes())
         .map_err(|e| e.to_string())?;
-    let mut lines = BufReader::new(socket).lines();
-    let first: Value = serde_json::from_str(&lines.next().ok_or("closed at once")?.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(socket);
+    let mut line = String::new();
+    if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+        return Err("closed at once".to_string());
+    }
+    let first: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     if first.get("welcome").is_none() {
         return Err(first["refused"]["error"].as_str().unwrap_or("refused").to_string());
     }
-    // The same socket under both handles: the reader waits as long as it must from now on.
-    writer.set_read_timeout(None).map_err(|e| e.to_string())?;
-    Ok((writer, lines, first["welcome"].clone()))
+    // The reader waits as long as it must from now on. Cleared on the reader's own handle: on
+    // Windows a cloned socket keeps a timeout of its own, and a held request would drop the
+    // connection after 5 s (journal#1583).
+    reader.get_ref().set_read_timeout(None).map_err(|e| e.to_string())?;
+    Ok((writer, reader.lines(), first["welcome"].clone()))
 }
 
 /// The connection's own thread: makes it, hands its lines to a reader, and makes it again when it
