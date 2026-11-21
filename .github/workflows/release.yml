@@ -13,7 +13,8 @@ concurrency:
   group: release
   cancel-in-progress: false
 permissions:
-  contents: read
+  # The GitHub Release of the tag (CON-193).
+  contents: write
 jobs:
   version:
     runs-on: ubuntu-24.04
@@ -84,3 +85,19 @@ jobs:
           tar -czf - -C bundles . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
           rm -f ~/.ssh/deploy
           test "$(curl -fsS https://harness-multitool.dev/downloads/latest)" = "$VERSION"
+      # The tag's GitHub Release with every target's bundle (CON-193). scripts/release-local.sh may
+      # have made it already from the owner's machine: then only its assets are replaced.
+      - name: GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" bundles/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            pre=""
+            case "$VERSION" in *-*) pre="--prerelease" ;; esac
+            gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --title "multitool $VERSION" --generate-notes $pre --verify-tag
+          fi
