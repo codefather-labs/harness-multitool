@@ -111,9 +111,15 @@ jobs:
           & (Join-Path $dir 'install.ps1') -Local -NoBuild -Yes -NoService -NoAgentSetup
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with $LASTEXITCODE" }
           $exe = Join-Path $env:LOCALAPPDATA 'harness-multitool\bin\multitool.exe'
+          # The installed file is the zip's, byte for byte; the binary says its Cargo version (the
+          # commit is in the bundle's VERSION).
+          $packed = (Get-FileHash (Join-Path $dir 'target\release\multitool.exe')).Hash
+          $installed = (Get-FileHash $exe).Hash
+          if ($packed -ne $installed) { throw "the installed multitool.exe ($installed) is not the zip's ($packed)" }
           $said = & $exe --version
-          Write-Host "installed: $said"
-          if (-not "$said".Contains($env:VERSION)) { throw "the installed multitool says $said, not $env:VERSION" }
+          $cargo = $env:VERSION.Split('+')[0]
+          Write-Host "installed: $said, sha256 $installed"
+          if ("$said" -ne "multitool $cargo") { throw "the installed multitool says $said, not multitool $cargo" }
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.target }}
