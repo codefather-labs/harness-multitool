@@ -15,6 +15,7 @@ pub mod model;
 pub mod platform;
 pub mod sse;
 pub mod state;
+pub mod tool_names;
 
 pub use event::{CLAUDE_SUBSCRIPTION_REFUSED, Event, HARNESS_LABEL, LogEntry, MISSING_SPEECH_BACKEND, TELEGRAM_LABEL, TELEGRAM_VOICE_LABEL};
 pub use interfaces::*;

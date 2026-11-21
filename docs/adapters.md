@@ -86,6 +86,23 @@ When a conversation moves to another adapter or profile, the daemon writes it in
 
 What a provider receives is always valid for it: two user messages in a row become one, a tool call with no result gets "no result in the record", and a block another model signed goes only to the model that made it (CON-73).
 
+#### Tool names across adapters (CON-191)
+
+Each program names its tools its own way: Claude Code's `Read {file_path}`, `Bash`, `mcp__harness__journal_add` are the own loop's `read {path}`, `shell`, `journal_add`. A model imitates the history it is given, so a moved conversation is given in the names of the program it is now in. One table maps a past call and its arguments:
+
+| Claude Code | the own loop |
+|---|---|
+| `Read {file_path}` | `read {path}` |
+| `Edit {file_path, old_string, new_string}` | `edit {path, old_text, new_text}` |
+| `Write {file_path, content}` | `edit {path, old_text: "", new_text}` (one way) |
+| `Bash {command}` | `shell {command}` |
+| `Grep {pattern, path}` | `search {text, path}` |
+| `WebFetch {url}` | `fetch {url}` |
+| `mcp__harness__<name>` | `<name>` |
+| `mcp__mode__<name>` | `mode__<name>` |
+
+On the own loop the mapping is made on each request, and the log keeps what was said. In Claude Code's form the calls are written under Claude Code's names. A call to a tool the session does not have is answered with the one meant: "no tool named Read; this session's tool for it is read {path}". Codex's names (its calls run through a shell) are to come.
+
 You can also leave the harness: `claude --resume <id>` opens the same conversation in Claude Code, with every turn made in the harness already in its file. While Claude Code has it open, the harness shows it but refuses to send (CON-78).
 
 ## Using it

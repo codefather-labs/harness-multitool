@@ -82,6 +82,26 @@ impl StopFlag {
 
 /// The tools the engine answers itself. The first three are modes of the harness, not utilities: a
 /// mode changes what the agent may do and what it is told until it ends (CON-96).
+/// A history as this session names its tools (CON-191): a past call under another program's name
+/// (Claude Code's `Read {file_path}`, `mcp__harness__journal_add`) goes under its equivalent here,
+/// when that one is offered. Only the request is changed; the log keeps what was said.
+pub fn in_own_names(mut messages: Vec<harness_api::Message>, tools: &[ToolSpec]) -> Vec<harness_api::Message> {
+    let offered = |n: &str| tools.iter().any(|t| t.name == n);
+    for m in &mut messages {
+        for c in &mut m.content {
+            if let Content::ToolUse { name, input, .. } = c
+                && !offered(name)
+                && let Some((own, args)) = harness_api::tool_names::to_own_loop(name, input)
+                && offered(&own)
+            {
+                *name = own;
+                *input = args;
+            }
+        }
+    }
+    messages
+}
+
 /// The tool schemas a request carries, in tokens, estimated as the context strategy estimates the
 /// rest: four characters a token (journal#1536).
 pub fn tool_tokens(specs: &[ToolSpec]) -> u64 {
@@ -1135,11 +1155,12 @@ impl Engine {
         }
         let turn = self.state.borrow().turns + 1;
         self.emit(Event::TurnStarted { turn, provider: route.provider.clone(), model: route.model.clone() });
+        let tools = self.tool_specs();
         let request = ModelRequest {
             model: route.model.clone(),
             system: context.system,
-            messages: context.messages,
-            tools: self.tool_specs(),
+            messages: in_own_names(context.messages, &tools),
+            tools,
             max_tokens: route.max_tokens,
         };
         let calls = RefCell::new(Vec::new());
@@ -1231,7 +1252,14 @@ impl Engine {
             }
             None => {
                 self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
-                self.emit(Event::ToolResult { id: call.id.clone(), output: format!("no tool named {}", call.name), is_error: true });
+                // The tool meant, when another program's name for it was used (CON-191).
+                let specs = self.tool_specs();
+                let offered: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+                let output = match harness_api::tool_names::unknown_hint(&call.name, &offered) {
+                    Some(hint) => format!("no tool named {}; {hint}", call.name),
+                    None => format!("no tool named {}", call.name),
+                };
+                self.emit(Event::ToolResult { id: call.id.clone(), output, is_error: true });
                 return;
             }
         };
@@ -1358,3 +1386,33 @@ mod empty_optionals {
     }
 }
 
+
+#[cfg(test)]
+mod own_names_tests {
+    use super::*;
+    use harness_api::{Message, Role};
+    use serde_json::{Value, json};
+
+    /// CON-191: a history moved from Claude Code is sent under this session's names, the ids kept;
+    /// a name this session has no equivalent for stays.
+    #[test]
+    fn a_moved_history_is_sent_under_this_sessions_names() {
+        let spec = |n: &str| ToolSpec { name: n.into(), description: String::new(), schema: json!({}) };
+        let tools = vec![spec("read"), spec("journal_add")];
+        let history = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                Content::ToolUse { id: "t1".into(), name: "Read".into(), input: json!({"file_path": "/p/a"}) },
+                Content::ToolUse { id: "t2".into(), name: "mcp__harness__journal_add".into(), input: json!({"body": "b"}) },
+                Content::ToolUse { id: "t3".into(), name: "Glob".into(), input: json!({"pattern": "*"}) },
+                Content::ToolUse { id: "t4".into(), name: "Bash".into(), input: json!({"command": "ls"}) },
+            ],
+        }];
+        let out = in_own_names(history, &tools);
+        let calls: Vec<(String, String, Value)> = out[0].content.iter().filter_map(|c| if let Content::ToolUse { id, name, input } = c { Some((id.clone(), name.clone(), input.clone())) } else { None }).collect();
+        assert_eq!(calls[0], ("t1".into(), "read".into(), json!({"path": "/p/a"})));
+        assert_eq!(calls[1], ("t2".into(), "journal_add".into(), json!({"body": "b"})));
+        assert_eq!(calls[2].1, "Glob", "no equivalent: kept");
+        assert_eq!(calls[3].1, "Bash", "shell is not offered here: kept");
+    }
+}

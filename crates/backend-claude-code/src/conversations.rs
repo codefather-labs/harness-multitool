@@ -324,7 +324,11 @@ fn write_lines(out: &mut dyn std::io::Write, id: &str, root: &str, mut parent: O
         let uuid = uuid();
         let content: Vec<Value> = message.content.iter().filter_map(|c| match c {
             Content::Text { text } => Some(json!({"type": "text", "text": text})),
-            Content::ToolUse { id, name, input } => Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
+            Content::ToolUse { id, name, input } => {
+                // Under Claude Code's names, so it goes on with its own tools (CON-191).
+                let (name, input) = harness_api::tool_names::to_claude_code(name, input);
+                Some(json!({"type": "tool_use", "id": id, "name": name, "input": input}))
+            }
             Content::ToolResult { id, output, is_error } => Some(json!({"type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error})),
             Content::Opaque { .. } => None,
         }).collect();
@@ -672,6 +676,22 @@ mod tests {
     fn assistant(uuid: &str, parent: &str, id: &str, block: Value) -> String {
         line(uuid, Some(parent), json!({"type": "assistant", "message": {"id": id, "model": "m1", "role": "assistant", "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 4}, "content": [block]}}))
     }
+    /// CON-191: an own-loop history is written under Claude Code's names.
+    #[test]
+    fn a_form_holds_claude_codes_tool_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = vec![
+            Message::user("read it"),
+            Message { role: harness_api::Role::Assistant, content: vec![Content::ToolUse { id: "c1".into(), name: "read".into(), input: json!({"path": "a.txt"}) }, Content::ToolUse { id: "c2".into(), name: "journal_add".into(), input: json!({"body": "b"}) }] },
+            Message { role: harness_api::Role::User, content: vec![Content::ToolResult { id: "c1".into(), output: "x".into(), is_error: false }, Content::ToolResult { id: "c2".into(), output: "y".into(), is_error: false }] },
+        ];
+        let id = ClaudeCodeConversations::new(dir.path()).write("/work/p", "t", &history).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("projects").join("-work-p").join(format!("{id}.jsonl"))).unwrap();
+        assert!(text.contains(r#""name":"Read""#) && text.contains(r#""file_path":"a.txt""#), "{text}");
+        assert!(text.contains(r#""name":"mcp__harness__journal_add""#), "{text}");
+        assert!(!text.contains(r#""name":"read""#));
+    }
+
     /// journal#1537: a profile's projects link points at a folder that is not there yet.
     #[cfg(unix)]
     #[test]

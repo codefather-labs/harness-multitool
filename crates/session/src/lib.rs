@@ -100,8 +100,10 @@ impl Settings {
         self.providers.get(&self.provider).is_some_and(is_delegate_row)
     }
 
+    /// A model that takes the whole set of the journal's tools, as a delegate has them: a plan's, and
+    /// an Ollama row's, whose window is sent with it (CON-190, journal#1544).
     fn on_large_model(&self) -> bool {
-        self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "openai-responses") || self.auth.get(&self.provider).is_some_and(|a| a["oauth"] == "chatgpt")
+        self.providers.get(&self.provider).is_some_and(|p| p["kind"] == "openai-responses" || p["kind"] == "ollama") || self.auth.get(&self.provider).is_some_and(|a| a["oauth"] == "chatgpt")
     }
 
     fn selection(&self) -> Selection {
@@ -1487,6 +1489,26 @@ mod every_tool {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");
         }
         assert!(specs.iter().filter(|s| !s.name.starts_with("mode__")).all(|s| !s.description.starts_with("HARNESS MODE")));
+    }
+}
+
+#[cfg(test)]
+mod tool_set_tests {
+    use super::*;
+
+    /// journal#1544: an Ollama row's model has every memory tool a delegate has; a generic local
+    /// OpenAI-compatible row keeps the smaller set.
+    #[test]
+    fn an_ollama_row_has_the_whole_set_of_memory_tools() {
+        let mut s = Settings { provider: "ollama".into(), ..Default::default() };
+        s.providers.insert("ollama".into(), serde_json::json!({"kind": "ollama"}));
+        let tools = s.selection().tools;
+        for name in harness_tools_memory::MORE {
+            assert!(tools.iter().any(|t| t == name), "{name} missing: {tools:?}");
+        }
+        s.provider = "local".into();
+        s.providers.insert("local".into(), serde_json::json!({"kind": "openai", "base_url": "http://127.0.0.1:8000/v1"}));
+        assert!(!s.selection().tools.iter().any(|t| t == "journal_agenda"));
     }
 }
 
