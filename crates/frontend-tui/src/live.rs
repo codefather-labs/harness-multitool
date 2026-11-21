@@ -197,11 +197,13 @@ impl Feed {
             Event::BackendSession { .. } | Event::BackendCost { .. } | Event::BackendSessionLost | Event::FormSynced { .. } => {}
             Event::ContextWindow { tokens } => self.context_window = *tokens,
             Event::Notice { label, text } => {
-                let (mut kind, _) = inbound_kind(label);
+                let (mut kind, sender) = inbound_kind(label);
                 if matches!(kind, InboundKind::Voice { .. }) {
                     kind = InboundKind::Voice { duration: "not transcribed".to_string() };
                 }
-                v.transcript.push(Item::Inbound(Inbound { kind, from: "harness".to_string(), time, text: text.clone() }));
+                // Another session's message, seen and not sent again (journal#1528), is from its sender.
+                let from = if matches!(kind, InboundKind::Agent { .. }) { sender } else { "harness".to_string() };
+                v.transcript.push(Item::Inbound(Inbound { kind, from, time, text: text.clone() }));
             }
             Event::BackgroundTasks { tasks } => {
                 let known = std::mem::take(&mut v.background);

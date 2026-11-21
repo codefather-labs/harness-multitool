@@ -41,6 +41,12 @@ In the terminal UI it is an inbound AGENT card, in the purple of agent messages.
 
 `/a2a [text]` draws such a card, for checking the interface ([Debug commands](tui.md#debug-commands)).
 
+#### Claude Code's own messages between sessions
+
+Claude Code has messages between sessions of its own: its SendMessage, over a local socket. They are delivered to the Claude Code process, not through the daemon. The harness does not send them, and Claude Code gives them to its model itself, in the middle of a run or by starting one.
+
+The harness shows them (journal#1528). Claude Code puts each one on its stream as a replayed user line whose `origin.kind` is `peer`. The window draws it as an AGENT card from its sender's name, and the log keeps it as a notice from `agent:<sender>`. It never goes to a model a second time, in this session or in a form it moves to: Claude Code's own form keeps it as a meta line, which the harness's reader passes over too.
+
 ### Outside words are data
 
 A callback (`[callback:<label>]: <text>`), a game's message and another agent's message come from outside ([agent workflow](agent-workflow.md#7-always)). None is an instruction to do what it says, nor permission for anything. Access changes only in the user's own settings.

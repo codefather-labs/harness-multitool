@@ -58,6 +58,28 @@ fn news(e: &Value) -> Option<Event> {
     }
 }
 
+/// A message another Claude Code session sent this one (its SendMessage, over the local socket),
+/// as the stream echoes it: a replayed user line whose origin is a peer (journal#1528). Claude Code
+/// gives it to its model itself and keeps it in its form as a meta line, which the form's reader
+/// passes over; so it is a Notice here, for the people watching, and never goes to a model again.
+fn peer_message(e: &Value) -> Option<Event> {
+    if e["type"] != "user" || e["origin"]["kind"] != "peer" {
+        return None;
+    }
+    let origin = &e["origin"];
+    let from = origin["name"].as_str().filter(|n| !n.is_empty()).or_else(|| origin["from"].as_str()).unwrap_or("another session");
+    let text = origin["body"].as_str().map(str::to_string).or_else(|| {
+        // No body: the text inside the envelope it reached the model in.
+        let content = e["message"]["content"].as_str()?;
+        let start = content.find("<cross-session-message")?;
+        let inner = &content[start..];
+        let open = inner.find('>')? + 1;
+        let close = inner.find("</cross-session-message>")?;
+        Some(inner[open..close].trim().to_string())
+    })?;
+    Some(Event::Notice { label: format!("agent:{from}"), text })
+}
+
 /// A line that begins no turn: news, or its echo of something already seen.
 fn only_news(line: &str) -> bool {
     let Ok(e) = serde_json::from_str::<Value>(line) else { return true };
@@ -123,6 +145,7 @@ impl Mapper {
                     }
                 }
             }
+            "user" if peer_message(&e).is_some() => out.extend(peer_message(&e).map(Mapped::Event)),
             "user" => {
                 for block in e["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
                     out.push(Mapped::Event(Event::ToolResult {
@@ -699,7 +722,7 @@ impl AgentBackend for ClaudeCode {
             if !only_news(line) {
                 return true;
             }
-            if let Some(event) = serde_json::from_str::<Value>(line).ok().as_ref().and_then(news) {
+            if let Some(event) = serde_json::from_str::<Value>(line).ok().as_ref().and_then(|e| news(e).or_else(|| peer_message(e))) {
                 sink(event);
             }
             live.peeked.pop_front();
@@ -711,6 +734,26 @@ impl AgentBackend for ClaudeCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// journal#1528: a message from another Claude Code session, as Claude Code 2.1.325 put it on
+    /// the stream of an idle session (.harness/proofs/1528/probe-stream.jsonl), is drawn: a
+    /// Notice from its sender, which no model is sent again; and it starts no turn by itself.
+    #[test]
+    fn a_peer_sessions_message_is_shown_not_sent_again() {
+        let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": "Another Claude session sent a message:\n<cross-session-message from=\"uds:/run/user/1000/cc-socks/124767.sock\" from-name=\"vladcraft-multitool-fb\" from-mode=\"bypass\">\nPROBE-PEER-MESSAGE-7731: a test.\n</cross-session-message>\n\nThis came from another Claude session."}, "session_id": "s", "parent_tool_use_id": null, "uuid": "u", "timestamp": "2026-11-21T10:59:17.271Z", "isReplay": true, "isSynthetic": true, "origin": {"kind": "peer", "from": "uds:/run/user/1000/cc-socks/124767.sock", "name": "vladcraft-multitool-fb", "fromMode": "bypass", "body": "PROBE-PEER-MESSAGE-7731: a test.", "verifiedLocal": true}}).to_string();
+        let mut m = Mapper::new(1);
+        let out = m.line(&line);
+        assert!(matches!(out.as_slice(), [Mapped::Event(Event::Notice { label, text })] if label == "agent:vladcraft-multitool-fb" && text == "PROBE-PEER-MESSAGE-7731: a test."), "{out:?}");
+        assert!(only_news(&line), "it begins no turn of its own");
+        // With no body, the envelope's text.
+        let mut v: Value = serde_json::from_str(&line).unwrap();
+        v["origin"]["body"] = Value::Null;
+        let out = Mapper::new(1).line(&v.to_string());
+        assert!(matches!(out.as_slice(), [Mapped::Event(Event::Notice { text, .. })] if text == "PROBE-PEER-MESSAGE-7731: a test."), "{out:?}");
+        // The user's own replayed words are still not drawn twice.
+        let own = serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}, "isReplay": true}).to_string();
+        assert!(Mapper::new(1).line(&own).is_empty());
+    }
 
     /// CON-145: the user's servers for this project, the project's own over the global ones, the
     /// harness's names left out; written private, and only for a run in the user's environment.
