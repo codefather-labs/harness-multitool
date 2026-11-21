@@ -3,8 +3,10 @@
 //! (journal#1356). The handler only writes a byte to a pipe, which is async-signal-safe; a thread
 //! reads it and does the stop.
 
+#[cfg(unix)]
 use std::sync::atomic::{AtomicI32, Ordering};
 
+#[cfg(unix)]
 static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 #[cfg(unix)]

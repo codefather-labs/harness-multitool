@@ -147,6 +147,7 @@ fn shell_command(command: &str) -> std::process::Command {
 /// What a command had said, once it has ended; it gets this long to finish saying it, as something
 /// it left running can hold the pipe open for ever.
 const PIPE_GRACE: Duration = Duration::from_secs(1);
+#[cfg(unix)]
 const TERM_GRACE: Duration = Duration::from_secs(1);
 const CHECK: Duration = Duration::from_millis(30);
 

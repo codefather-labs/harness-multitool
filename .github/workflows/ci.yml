@@ -20,8 +20,10 @@ jobs:
   # CON-5: the other native targets build (the TLS library needs each OS's own toolchain).
   other-targets:
     strategy:
+      # Each OS says what fails on it, whatever the other one does.
+      fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

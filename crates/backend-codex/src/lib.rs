@@ -9,7 +9,9 @@ pub mod conversations;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use harness_api::event::Event;
 use harness_api::*;
@@ -18,6 +20,7 @@ use serde_json::Value;
 pub const NAME: &str = "codex";
 
 /// How long an asked-to-stop process has to end before it is killed.
+#[cfg(unix)]
 const ENDING: Duration = Duration::from_secs(3);
 
 /// What one line of `codex exec --json` comes to.
@@ -445,6 +448,7 @@ impl AgentBackend for Codex {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Instant;
 
     fn map(lines: &[Value]) -> Vec<Mapped> {
         let mut m = Mapper::new(1, "gpt-x");

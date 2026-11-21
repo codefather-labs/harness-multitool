@@ -1,14 +1,21 @@
 //! ADR 0028, CON-139 to CON-143: journal todos go to the project's tracker through the daemon,
 //! against a fake gh that records what it was asked, with which GH_CONFIG_DIR, and answers as gh.
 
+// The tracker's flow runs a fake gh script, so it is a Unix test; its helpers are gated with it.
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use harness_api::*;
+#[cfg(unix)]
 use harness_daemon::client::Client;
+#[cfg(unix)]
 use harness_daemon::memory::DaemonMemory;
 use harness_daemon::trackers::{self, Settings};
+#[cfg(unix)]
 use harness_daemon::*;
 
+#[cfg(unix)]
 fn now<T>(mut future: BoxFuture<'_, T>) -> T {
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match future.as_mut().poll(&mut cx) {
@@ -17,6 +24,7 @@ fn now<T>(mut future: BoxFuture<'_, T>) -> T {
     }
 }
 
+#[cfg(unix)]
 fn entry(body: &str, flags: &[&str]) -> JournalEntry {
     JournalEntry { blocked_by: None, proofs: Vec::new(), body: body.into(), category: "todo".into(), tags: vec!["t".into()], flags: flags.iter().map(|f| f.to_string()).collect(), salience: None, feature: None }
 }

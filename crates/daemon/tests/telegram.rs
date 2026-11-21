@@ -719,12 +719,19 @@ fn the_harness_is_run_from_telegram() {
     assert_eq!(buttons, ["o:0", "o:1"], "the open one first, as the one open most lately");
     // The closed one: a window in its own root, resuming it.
     fake.lock().unwrap().updates.push(tap(3, 42, -100, "o:1"));
-    until("the window was asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--resume")));
-    let asked = std::fs::read_to_string(&record).unwrap();
-    let lines: Vec<&str> = asked.lines().collect();
-    assert!(lines.ends_with(&["--dir", root2.as_str(), "--resume", "s2"]), "{asked}");
-    assert_eq!(lines[0], root2, "started in the conversation's own folder");
-    until("told", || said(&fake).iter().any(|t| t.contains("Opening beta in a new window")));
+    // With no desktop (a CI runner), no window can open, and the chat is told so (journal#1578).
+    let desktop = harness_daemon::terminal::graphical_session();
+    if desktop {
+        until("the window was asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--resume")));
+        let asked = std::fs::read_to_string(&record).unwrap();
+        let lines: Vec<&str> = asked.lines().collect();
+        assert!(lines.ends_with(&["--dir", root2.as_str(), "--resume", "s2"]), "{asked}");
+        assert_eq!(lines[0], root2, "started in the conversation's own folder");
+        until("told", || said(&fake).iter().any(|t| t.contains("Opening beta in a new window")));
+    } else {
+        until("told there is no desktop", || said(&fake).iter().any(|t| t.contains("Could not open beta: no graphical session is open")));
+        assert!(!record.exists(), "no terminal was started");
+    }
     // The open one: this chat goes to it.
     fake.lock().unwrap().updates.push(tap(4, 42, -100, "o:0"));
     until("switched", || said(&fake).iter().any(|t| t.contains("now goes to alpha")));
@@ -732,14 +739,19 @@ fn the_harness_is_run_from_telegram() {
     fake.lock().unwrap().updates.extend([message(5, -100, None, "/new")]);
     until("projects", || said(&fake).iter().any(|t| t.contains("which project")));
     fake.lock().unwrap().updates.push(tap(6, 42, -100, "n:1"));
-    until("a new session asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--new")));
-    assert!(std::fs::read_to_string(&record).unwrap().contains(&format!("--dir\n{root2}\n--new")));
+    if desktop {
+        until("a new session asked for", || std::fs::read_to_string(&record).is_ok_and(|t| t.contains("--new")));
+        assert!(std::fs::read_to_string(&record).unwrap().contains(&format!("--dir\n{root2}\n--new")));
+    } else {
+        until("told there is no desktop again", || said(&fake).iter().any(|t| t.contains("Could not open a window in") && t.contains("no graphical session is open")));
+    }
     // /restart: no, then yes with no service here.
     fake.lock().unwrap().updates.extend([message(7, -100, None, "/restart"), tap(8, 42, -100, "restart:n"), tap(9, 42, -100, "restart:y"), tap(10, 666, -100, "o:1"), tap(11, 42, -100, "o:9")]);
     until("not restarted", || said(&fake).iter().any(|t| t == "Not restarted."));
     until("no service", || said(&fake).iter().any(|t| t.contains("does not run as a service")));
     until("a stale button", || said(&fake).iter().any(|t| t.contains("That list is old")));
-    assert_eq!(std::fs::read_to_string(&record).unwrap().matches("--resume").count(), 1, "a stranger's press opened nothing");
+    let resumes = std::fs::read_to_string(&record).unwrap_or_default().matches("--resume").count();
+    assert_eq!(resumes, usize::from(desktop), "a stranger's press opened nothing");
     // The register now holds both, s1 with its root.
     let known = std::fs::read_to_string(data.path().join("daemon/known.json")).unwrap();
     assert!(known.contains("\"s1\"") && known.contains(&root1.replace('\\', "\\\\")), "{known}");

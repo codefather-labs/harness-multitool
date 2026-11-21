@@ -377,12 +377,12 @@ fn save_kept(daemon: &Daemon) {
     let Some(text) = text else { return };
     let path = kept_path(&daemon.data_dir);
     let partial = path.with_extension("partial");
-    let mut written = std::fs::write(&partial, text);
+    let written = std::fs::write(&partial, text);
     #[cfg(unix)]
-    {
+    let written = {
         use std::os::unix::fs::PermissionsExt;
-        written = written.and_then(|()| std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600)));
-    }
+        written.and_then(|()| std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600)))
+    };
     if written.is_ok() {
         let _ = std::fs::rename(&partial, &path);
     }

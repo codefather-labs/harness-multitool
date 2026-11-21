@@ -46,6 +46,16 @@ fn display_now() -> Vec<(String, String)> {
     vars
 }
 
+/// Whether these variables name a display a window can open on.
+fn shows(display: &[(String, String)]) -> bool {
+    display.iter().any(|(n, _)| n == "DISPLAY" || n == "WAYLAND_DISPLAY")
+}
+
+/// Whether a graphical session is open now, so that [`open`] can open a window.
+pub fn graphical_session() -> bool {
+    shows(&display_now())
+}
+
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(program).is_file()))
 }
@@ -59,7 +69,7 @@ pub fn open(configured: Option<&str>, root: &str, args: &[&str]) -> Result<Strin
         return Err(format!("{root} is not there any more"));
     }
     let display = display_now();
-    if !display.iter().any(|(n, _)| n == "DISPLAY" || n == "WAYLAND_DISPLAY") {
+    if !shows(&display) {
         return Err("no graphical session is open: log in to the desktop first".to_string());
     }
     let program = crate::own_program().map_err(|e| e.to_string())?;

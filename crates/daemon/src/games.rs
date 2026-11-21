@@ -613,15 +613,19 @@ mod tests {
         let mut live_no_you = live.clone();
         live_no_you.as_object_mut().unwrap().remove("you");
         assert_eq!(state["state"], live_no_you, "game_state answers from the databases");
-        // A step that cannot be written is refused, and nothing changes.
-        use std::os::unix::fs::PermissionsExt;
-        let to_act = live["to_act"].as_str().unwrap().to_string();
-        let session = if to_act == "ann" { "s-ann" } else { "s-bob" };
-        std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let refused = games.op(session, "game_act", &json!({"table": id, "do": "fold"}), &deliver);
-        std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(refused.as_ref().is_err_and(|e| e.contains("could not be written")), "{refused:?}");
-        assert_eq!(games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None), live, "a refused step changes nothing");
+        // A step that cannot be written is refused, and nothing changes. A read-only folder is a
+        // Unix mode: Windows has no such bit for a directory.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let to_act = live["to_act"].as_str().unwrap().to_string();
+            let session = if to_act == "ann" { "s-ann" } else { "s-bob" };
+            std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let refused = games.op(session, "game_act", &json!({"table": id, "do": "fold"}), &deliver);
+            std::fs::set_permissions(&hands, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(refused.as_ref().is_err_and(|e| e.contains("could not be written")), "{refused:?}");
+            assert_eq!(games.tables.lock().unwrap()[&id].engine.as_ref().unwrap().view(None), live, "a refused step changes nothing");
+        }
         // A table is kept on disk, and comes back with the daemon: its game from the databases.
         let again = Games::new(&dir);
         assert_eq!(again.table(&id).unwrap()["state"], "playing");
