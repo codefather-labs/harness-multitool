@@ -12,7 +12,7 @@
 #   scripts/release-local.sh --no-github  publish on the site only: no tag, no GitHub Release
 #
 # A release is made only from main as GitHub has it (HEAD = origin/main). After the site has the
-# bundle, the commit is tagged v<version> and a GitHub Release of that tag holds the bundle and its
+# bundle, a GitHub Release of v<version> is made at that commit, making the tag, and holds the bundle and its
 # checksum (CON-193). A version already released on GitHub is not made again: the script stops
 # before building, so the site and GitHub keep the same file.
 #
@@ -83,14 +83,10 @@ if [ "$upload" = true ] && [ "$github" = true ]; then
   head="$(git rev-parse HEAD)"
   remote="$(git ls-remote --tags origin "refs/tags/$tag^{}" | cut -f1)"
   [ -n "$remote" ] || remote="$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)"
-  if [ -z "$remote" ]; then
-    git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag -a "$tag" -m "multitool $version" HEAD
-    git push -q origin "refs/tags/$tag"
-    echo "release-local: tagged $tag"
-  elif [ "$remote" != "$head" ]; then
+  # The Release makes the tag itself, at HEAD: a tag pushed first would start release.yml before
+  # the Release exists, and the workflow would build and publish the version again.
+  if [ -n "$remote" ] && [ "$remote" != "$head" ]; then
     die "the tag $tag on origin points at $remote, not at HEAD $head"
-  else
-    echo "release-local: $tag is already at HEAD"
   fi
   assets=("$out"/multitool-"$version"-"$TARGET".tar.gz "$out"/multitool-"$version"-"$TARGET".tar.gz.sha256)
   if gh release view "$tag" -R "$repo" >/dev/null 2>&1; then
@@ -114,7 +110,8 @@ if [ "$upload" = true ] && [ "$github" = true ]; then
     } >"$notes"
     pre=()
     case "$version" in *-*) pre=(--prerelease) ;; esac
-    gh release create "$tag" "${assets[@]}" -R "$repo" --title "multitool $version" --notes-file "$notes" "${pre[@]}" --verify-tag
+    gh release create "$tag" "${assets[@]}" -R "$repo" --target "$head" --title "multitool $version" --notes-file "$notes" "${pre[@]}"
+    git fetch -q origin "refs/tags/$tag:refs/tags/$tag" || true
     rm -f "$notes"
     echo "release-local: GitHub Release $tag made"
   fi
