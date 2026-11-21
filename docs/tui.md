@@ -24,6 +24,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | 
 ./install.sh --uninstall        # remove the binary, the service and the agent setup; keep data and backups
 .\install.ps1 -Local            # Windows: the same, the daemon as the Scheduled Task multitool-daemon at logon,
                                 # the hook as harness-selfcheck-reminder.ps1; -NoService, -NoAgentSetup, -Uninstall
+.\install.ps1 -Local -NoBuild    # Windows, in a Release's unpacked multitool-<version>-x86_64-pc-windows-msvc.zip:
+                                # install its multitool.exe without building (CON-194)
 multitool                       # from any folder: the start page, on the profile last chosen with Use in the settings
 multitool --profile work        # on another profile for this run only, as autostart wants it (CON-127)
 multitool --dir ~/p --new         # a new session tab in that folder at once; --resume <id> opens that conversation (CON-167)

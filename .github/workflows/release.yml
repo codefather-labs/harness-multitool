@@ -1,75 +1,119 @@
-# Builds the multitool bundles of the install line and publishes them on harness-multitool.dev
-# (CON-186): on a tag v*, or by hand. scripts/release-local.sh does the Linux x86_64 part from the
-# owner's machine while GitHub Actions cannot run on this account.
+# Makes every release of the multitool (CON-194): when CI succeeds on main, or by hand. It builds
+# the four targets, publishes the Linux and macOS bundles on harness-multitool.dev (CON-186), and
+# makes the tag v<version> with its GitHub Release holding every bundle (CON-193).
+#
+# A version is published once: one released already is neither built again nor sent to the site,
+# whose cached file would then differ from GitHub's (journal#1568). Releases are immutable here, so
+# the Release gets all its files when it is made, and only after every target was built.
 #
 # Secrets: DEPLOY_SSH_KEY (a key of the site's harnessmt-deploy, restricted to its deploy command)
 # and DEPLOY_KNOWN_HOSTS (the server's host key line).
 name: release
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 concurrency:
   group: release
   cancel-in-progress: false
 permissions:
-  # The GitHub Release of the tag (CON-193).
-  contents: write
+  contents: read
 jobs:
+  lint:
+    # A push to main whose CI passed; a run by hand releases the head of the branch it is run on.
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
   version:
+    needs: lint
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
       released: ${{ steps.v.outputs.released }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            v="${GITHUB_REF_NAME#v}"
-          else
-            v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)+$(git rev-parse --short HEAD)"
-          fi
+          sha="$(git rev-parse HEAD)"
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)+$(git rev-parse --short HEAD)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          # A version is published once (CON-193): one released already, by scripts/release-local.sh,
-          # is neither built again nor sent to the site, whose cached file would then differ.
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           if gh release view "v$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v$v is released already: nothing to do"
             echo "released=true" >> "$GITHUB_OUTPUT"
           else
+            echo "releasing v$v at $sha"
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
   build:
     needs: version
     if: needs.version.outputs.released != 'true'
     strategy:
-      fail-fast: true
+      # Every target is built to the end, so one run says all that fails; the release needs all four.
+      fail-fast: false
       matrix:
         include:
-          # Linux in the same image as scripts/release-local.sh: glibc 2.31, so the binary runs on
-          # every glibc the install line accepts.
+          # Linux in rust:1-bullseye: glibc 2.31, so the binary runs on every glibc the install
+          # line accepts (CON-186); package-bundle.sh refuses a newer one.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
             container: rust:1-bullseye
+            exe: ''
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             container: rust:1-bullseye
+            exe: ''
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             container: ''
+            exe: ''
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            container: ''
+            exe: .exe
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container || null }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - name: Rust
         if: matrix.container == ''
         run: rustup default stable
       - name: Build
         run: cargo build --release --locked -p multitool
+      - name: Smoke test
+        run: target/release/multitool${{ matrix.exe }} --version
       - name: Package
-        run: scripts/package-bundle.sh "${{ matrix.target }}" "${{ needs.version.outputs.version }}" target/release/multitool bundles
+        run: bash scripts/package-bundle.sh "${{ matrix.target }}" "${{ needs.version.outputs.version }}" "target/release/multitool${{ matrix.exe }}" bundles
+      # The zip installs as a user would install it: unpacked, install.ps1 -Local -NoBuild.
+      - name: Install the Windows zip
+        if: matrix.exe == '.exe'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'multitool-zip'
+          Expand-Archive -Path "bundles/multitool-$env:VERSION-x86_64-pc-windows-msvc.zip" -DestinationPath $dir
+          & (Join-Path $dir 'install.ps1') -Local -NoBuild -Yes -NoService -NoAgentSetup
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with $LASTEXITCODE" }
+          $exe = Join-Path $env:LOCALAPPDATA 'harness-multitool\bin\multitool.exe'
+          $said = & $exe --version
+          Write-Host "installed: $said"
+          if (-not "$said".Contains($env:VERSION)) { throw "the installed multitool says $said, not $env:VERSION" }
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.target }}
@@ -79,39 +123,78 @@ jobs:
     needs: [version, build]
     if: needs.version.outputs.released != 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      # The tag and its GitHub Release.
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA: ${{ needs.version.outputs.sha }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: bundle-*
           path: bundles
           merge-multiple: true
+      - name: Check the bundles
+        run: |
+          ls -la bundles
+          test "$(find bundles -name 'multitool-*' ! -name '*.sha256' | wc -l)" = 4
+          (cd bundles && sha256sum -c ./*.sha256)
+      # The site takes the tarballs; Windows installs from the Release (journal#1580).
       - name: Publish to harness-multitool.dev
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          ls -la bundles
+          linux="multitool-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          # A rerun after the site took this version: the same files are sent again, other ones never.
+          if on_site="$(curl -fsS "https://harness-multitool.dev/downloads/$VERSION/$linux.sha256")"; then
+            if [ "$on_site" = "$(cat "bundles/$linux.sha256")" ]; then
+              echo "the site has $VERSION already, with these files"
+            else
+              echo "the site has another $linux for $VERSION: not published again" >&2
+              exit 1
+            fi
+          fi
+          mkdir site
+          cp bundles/*.tar.gz bundles/*.tar.gz.sha256 site/
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          tar -czf - -C bundles . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
+          tar -czf - -C site . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
           rm -f ~/.ssh/deploy
           test "$(curl -fsS https://harness-multitool.dev/downloads/latest)" = "$VERSION"
-      # The tag's GitHub Release with every target's bundle (CON-193). One that scripts/release-local.sh
-      # made already from the owner's machine stays as it is: releases are immutable on this repository.
       - name: GitHub Release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # Releases are immutable here: one made already, by scripts/release-local.sh, stays.
-            echo "$tag is released already"
-          else
-            pre=""
-            case "$VERSION" in *-*) pre="--prerelease" ;; esac
-            gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --title "multitool $VERSION" --generate-notes $pre --verify-tag
-          fi
+          tag="v$VERSION"
+          previous="$(git tag -l 'v*' --merged "$SHA" --sort=-creatordate | grep -vx "$tag" | sed -n 1p || true)"
+          {
+            echo "multitool $VERSION, built from $(git rev-parse --short "$SHA") of main."
+            echo
+            echo "Linux and macOS:"
+            echo
+            echo '```'
+            echo "curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | sh"
+            echo '```'
+            echo
+            echo "Windows: unpack multitool-$VERSION-x86_64-pc-windows-msvc.zip, then in it:"
+            echo
+            echo '```'
+            echo '.\install.ps1 -Local -NoBuild'
+            echo '```'
+            echo
+            if [ -n "$previous" ]; then echo "Changes since $previous:"; else echo "Changes:"; fi
+            echo
+            # --max-count, not head: with pipefail a closed pipe would end the step (SIGPIPE).
+            git log --no-merges --max-count=200 --format='- %s (%h)' ${previous:+"$previous"..}"$SHA"
+          } > notes.md
+          pre=()
+          case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+          gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --target "$SHA" --title "multitool $VERSION" --notes-file notes.md "${pre[@]}"
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName,isPrerelease,assets --jq '{tagName, isPrerelease, assets: [.assets[].name]}'

@@ -3,11 +3,13 @@
 # ============================================================================
 # Builds the harness from source, puts it on your PATH, runs the daemon as a
 # task at your logon, and sets Claude Code up for the harness (CON-162), as
-# install.sh does on Linux and macOS. No releases exist yet, so a Rust
-# toolchain is needed.
+# install.sh does on Linux and macOS.
 #
-#   .\install.ps1 -Local            from this checkout
-#   irm <raw url>/install.ps1 | iex   from a temporary clone
+#   .\install.ps1 -Local            build this checkout (a Rust toolchain is needed)
+#   .\install.ps1 -Local -NoBuild   install the build beside it: the unpacked
+#                                   multitool-<version>-x86_64-pc-windows-msvc.zip
+#                                   of a GitHub Release (CON-194)
+#   irm <raw url>/install.ps1 | iex   build a temporary clone
 #
 # Speech to text is not installed here: it is chosen and downloaded in the
 # harness's own settings, section Speech to text.
@@ -15,6 +17,7 @@
 param(
     [switch]$Yes,
     [switch]$Local,
+    [switch]$NoBuild,
     [switch]$NoClaudeCode,
     [switch]$NoService,
     [switch]$NoAgentSetup,
@@ -55,6 +58,8 @@ USAGE:
 OPTIONS:
   -Yes            Skip confirmation prompts
   -Local          Build this checkout instead of cloning
+  -NoBuild        With -Local: install target\release\multitool.exe beside
+                  this script, as a release's zip has it, without building
   -NoClaudeCode   Without Claude Code as an adapter
   -NoService      Do not run the daemon as a task at your logon
   -NoAgentSetup   Do not install Claude Code's rules and hook
@@ -207,12 +212,16 @@ if ($env:MULTITOOL_INSTALL_AGENT_ONLY -eq '1') {
     exit 0
 }
 
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+if ($NoBuild -and -not ($Local -and (Test-Path (Join-Path $PSScriptRoot 'target\release\multitool.exe')))) {
+    Log-Error '-NoBuild needs -Local and a build in target\release\multitool.exe beside this script'
+    exit 1
+}
+if (-not $NoBuild -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Log-Error 'no Rust toolchain: install it from https://rustup.rs and run this again'
     exit 1
 }
 $missing = @()
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $missing += 'git' }
+if (-not $NoBuild -and -not (Get-Command git -ErrorAction SilentlyContinue)) { $missing += 'git' }
 if ($missing.Count -gt 0) {
     Log-Warn ('needed to build, and missing: ' + ($missing -join ', '))
     $ids = @{ git = 'Git.Git' }
@@ -241,14 +250,18 @@ if ($Local) {
 $status = 0
 try {
     # Claude Code as an adapter is in the default build (ADR 0020); -NoClaudeCode leaves it out.
-    $cargoArgs = @('build', '--release', '-p', 'multitool')
-    if ($NoClaudeCode) { $cargoArgs += '--no-default-features' }
-    Log-Info ('building: cargo ' + ($cargoArgs -join ' '))
-    Push-Location $src
-    try {
-        & cargo @cargoArgs
-        if ($LASTEXITCODE -ne 0) { Log-Error 'the build failed'; exit 1 }
-    } finally { Pop-Location }
+    if ($NoBuild) {
+        Log-Info 'installing the build beside this script (-NoBuild)'
+    } else {
+        $cargoArgs = @('build', '--release', '-p', 'multitool')
+        if ($NoClaudeCode) { $cargoArgs += '--no-default-features' }
+        Log-Info ('building: cargo ' + ($cargoArgs -join ' '))
+        Push-Location $src
+        try {
+            & cargo @cargoArgs
+            if ($LASTEXITCODE -ne 0) { Log-Error 'the build failed'; exit 1 }
+        } finally { Pop-Location }
+    }
 
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     # A running daemon keeps its file open: it stops first, and the task starts the new one.
