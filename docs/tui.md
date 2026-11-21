@@ -296,7 +296,20 @@ A click on one (or Enter) shows a [ Dump ] button under it. It dumps the convers
 
 With no picker or no graphical session, the page says why. It lists the archives of multitool_dumps/ and the project's root, with a path to type (CON-173).
 
-Keys: d dump, l load. A loaded copy shows under 'native' until it is opened.
+Keys: d dump, l load, e edit. A loaded copy shows under 'native' until it is opened.
+
+#### Editing a conversation (CON-189)
+
+e on a conversation, or [ Edit ] under an opened one, opens the editor. It fills the window and draws the conversation as the chat does, from its log as it is at that moment.
+
+- Up and Down move between the cards: a message of yours, an answer of the agent, one tool call, a message from outside. PgUp, PgDn, Home, End and the wheel move too.
+- Enter, or a click, marks a card.
+- d deletes the marked cards, or the card under the cursor when none is marked. A tool call goes with its result, and an answer goes with the tool calls inside it.
+- u brings back the last deletion.
+- s saves.
+- Esc leaves, and asks first when there are unsaved deletions (y leaves, n stays, s saves).
+
+Saving writes a new conversation, '<name> (edited)', beside the original, which is left as it was: the session log stays append-only (INV-5). The copy has no link to the original's Claude Code or Codex form, so its first message writes that form fresh from the edited messages. Whatever is sent passes through the same history repair as every conversation, so a deletion cannot leave a provider a broken one. The copy's log ends with an `edited` event that names the original. The list shows the copy under 'native' until it is opened, as a loaded one.
 
 ### Behaviour
 

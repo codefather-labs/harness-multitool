@@ -356,6 +356,11 @@ pub fn scroll(s: &mut AppState, rows: i32) {
 }
 
 fn scroll_view(w: &mut Workspace, rows: i32) {
+    // The conversation editor's wheel moves its cursor (CON-189).
+    if let Some(crate::model::Overlay::ChatEdit(e)) = &mut w.overlay {
+        crate::chat_edit::wheel(e, rows);
+        return;
+    }
     let v = w.view_mut();
     v.scroll = (v.scroll as i64 + rows as i64).clamp(0, 100_000) as usize;
 }

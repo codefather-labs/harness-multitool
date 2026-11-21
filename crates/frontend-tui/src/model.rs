@@ -157,6 +157,10 @@ pub enum Outgoing {
     SaveGames { enabled: bool, texas_holdem: bool },
     /// A conversation of this project packed into a .zip in its folder (CON-171).
     ChatDump { session: String },
+    /// Open the editor on a conversation of this project (CON-189).
+    ChatEditOpen { session: String, name: String },
+    /// Save a copy of `session` without the `deleted` events, named '<name> (edited)' (CON-189).
+    ChatEditSave { session: String, name: String, last_seq: u64, deleted: Vec<u64>, cards: usize },
     /// A conversation brought in from a .zip, into this project (CON-171).
     ChatLoad { path: String },
     /// The system's file picker, for a .zip to load (CON-173).
@@ -236,6 +240,8 @@ pub enum Overlay {
     Settings(SettingsView),
     /// How to leave: asked on /exit and the Ctrl+C quit (CON-181).
     Leave(LeaveView),
+    /// A conversation being edited, from Settings > Chats (CON-189).
+    ChatEdit(crate::chat_edit::ChatEditView),
 }
 
 /// The ways a window leaves its conversations (CON-181), as the daemon names them, each with what

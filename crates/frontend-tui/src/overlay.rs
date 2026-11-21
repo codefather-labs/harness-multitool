@@ -695,14 +695,17 @@ fn chats_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color, ou
             if p.opened == Some(i) && y < bottom {
                 text(f, r.x + 5, y, 10, vec![Span::styled("[ Dump ]", button(false))], bg);
                 out.hits.push(Hit { rect: Rect::new(r.x + 5, y, 8, 1), target: Target::ChatDump });
+                text(f, r.x + 15, y, 10, vec![Span::styled("[ Edit ]", button(false))], bg);
+                out.hits.push(Hit { rect: Rect::new(r.x + 15, y, 8, 1), target: Target::ChatEdit });
                 y += 1;
             }
         }
     }
-    let help = if p.loading { "Up and Down choose, type a path on its row, Enter loads, Esc back." } else { "Click a conversation for Dump. Keys: Enter, d dump, l load." };
+    let help = if p.loading { "Up and Down choose, type a path on its row, Enter loads, Esc back." } else { "Click a conversation for Dump and Edit. Keys: Enter, d dump, e edit, l load." };
     // The status wraps, up to three lines, so a refusal's reason is read whole (journal#1278).
     let mut notes = wrap_chars(&p.status, r.width.saturating_sub(2) as usize, 3);
-    notes.push(help.to_string());
+    // The keys wrap too, so a narrow window still shows e edit (CON-189).
+    notes.extend(wrap_chars(help, r.width.saturating_sub(2) as usize, 2));
     let top = (r.y + r.height).saturating_sub(2 + notes.len() as u16);
     for (i, note) in notes.iter().enumerate() {
         text(f, r.x, top + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
@@ -790,6 +793,7 @@ fn chats_key(p: &mut ChatsPage, k: Key, outbox: &mut Vec<Outgoing>) {
         }
         Key::Enter => toggle_chat(p, p.cursor),
         Key::Char('d') => dump_chat(p, p.cursor, outbox),
+        Key::Char('e') => edit_chat(p, p.cursor, outbox),
         Key::Char('l') => pick_chat(p, outbox),
         _ => {}
     }
@@ -807,6 +811,14 @@ fn dump_chat(p: &mut ChatsPage, i: usize, outbox: &mut Vec<Outgoing>) {
     if let Some(row) = p.rows.get(i) {
         p.status = format!("Dumping {}...", row.name);
         outbox.push(Outgoing::ChatDump { session: row.session.clone() });
+    }
+}
+
+/// e, or [ Edit ]: the conversation opens in the editor (CON-189).
+fn edit_chat(p: &mut ChatsPage, i: usize, outbox: &mut Vec<Outgoing>) {
+    if let Some(row) = p.rows.get(i) {
+        p.status = format!("Opening {} in the editor...", row.name);
+        outbox.push(Outgoing::ChatEditOpen { session: row.session.clone(), name: row.name.clone() });
     }
 }
 
@@ -1144,6 +1156,7 @@ pub fn draw(f: &mut Frame, area: Rect, o: &Overlay, t: &Theme, out: &mut Drawn) 
         Overlay::Permission(p) => permission(f, area, p, t, out),
         Overlay::Settings(s) => settings(f, area, s, t, out),
         Overlay::Leave(l) => leave(f, area, l, t, out),
+        Overlay::ChatEdit(e) => crate::chat_edit::draw(f, area, e, t, out),
     }
 }
 
@@ -1830,6 +1843,11 @@ fn model_dropdown(f: &mut Frame, r: Rect, row_y: u16, at: usize, s: &SettingsVie
 
 /// What a key does while an overlay is open. Returns None when no overlay is open.
 pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
+    // The conversation editor takes every key while it is open (CON-189).
+    if matches!(w.overlay, Some(Overlay::ChatEdit(_))) {
+        crate::chat_edit::key(w, k);
+        return Some(Outcome::Stay);
+    }
     if let Some(Overlay::Settings(s)) = &mut w.overlay {
         if s.telegram.editing {
             let p = &mut s.telegram;
@@ -1892,6 +1910,8 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
     }
     let overlay = w.overlay.as_mut()?;
     match overlay {
+        // Taken at the top of this function.
+        Overlay::ChatEdit(_) => {}
         Overlay::Leave(l) => {
             let open = |i: usize| !l.local || i == 0;
             match k {
@@ -2283,6 +2303,7 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
     match (&mut w.overlay, target) {
         (Some(Overlay::Permission(_)), Target::Choice(i)) => answer(w, i),
         (Some(Overlay::Leave(_)), Target::LeaveChoice(i)) => return leave_with(w, i),
+        (Some(Overlay::ChatEdit(_)), Target::EditCard(i)) => crate::chat_edit::click(w, i),
         (Some(Overlay::Leave(l)), Target::LeaveRemember) => l.remember = !l.remember && !l.local,
         (Some(Overlay::Settings(s)), Target::Section(i)) => {
             s.section = i;
@@ -2317,6 +2338,12 @@ pub fn click(w: &mut Workspace, target: Target) -> Outcome {
             s.focus = SettingsPane::Page;
             if let Some(i) = s.chats.opened {
                 dump_chat(&mut s.chats, i, &mut w.outbox);
+            }
+        }
+        (Some(Overlay::Settings(s)), Target::ChatEdit) => {
+            s.focus = SettingsPane::Page;
+            if let Some(i) = s.chats.opened {
+                edit_chat(&mut s.chats, i, &mut w.outbox);
             }
         }
         (Some(Overlay::Settings(s)), Target::ChatLoad) if !s.chats.loading => {

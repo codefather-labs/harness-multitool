@@ -2433,6 +2433,43 @@ impl Live {
                     });
                 }
                 Outgoing::ChatLoad { path } => self.start_chat_load(w, path),
+                // CON-189: the editor opens on the log as it is now.
+                Outgoing::ChatEditOpen { session, name } => match config::data_dir() {
+                    Ok(data) => {
+                        let log = harness_session::read_log(&data.to_string_lossy(), &self.root, &session);
+                        use frontend_tui::chat_edit::CardKind as K;
+                        let cards = harness_session::chat_edit::cards(&log)
+                            .into_iter()
+                            .map(|c| {
+                                let kind = match c.kind {
+                                    harness_session::chat_edit::CardKind::User => K::User,
+                                    harness_session::chat_edit::CardKind::Inbound => K::Inbound,
+                                    harness_session::chat_edit::CardKind::Answer => K::Answer,
+                                    harness_session::chat_edit::CardKind::Tool => K::Tool,
+                                };
+                                (kind, c.seqs, c.children)
+                            })
+                            .collect();
+                        if let Some(frontend_tui::model::Overlay::Settings(s)) = w.overlay.take() {
+                            w.overlay = Some(frontend_tui::model::Overlay::ChatEdit(frontend_tui::chat_edit::ChatEditView::new(session, name, &log, cards, local_time, s)));
+                        }
+                    }
+                    Err(e) => self.chats_status(w, format!("Not opened: {e}"), false),
+                },
+                // CON-189: the copy is written off the window's thread; the list then shows it.
+                Outgoing::ChatEditSave { session, name, last_seq, deleted, cards } => {
+                    let root = self.root.clone();
+                    self.start_chat_job(w, format!("Saving {name} (edited)"), move |_| match config::data_dir() {
+                        Ok(data) => {
+                            let deleted: std::collections::HashSet<u64> = deleted.into_iter().collect();
+                            match harness_session::chat_edit::save(&data.to_string_lossy(), &root, &session, &name, last_seq, &deleted, cards) {
+                                Ok(saved) => format!("Saved \"{}\" as {}: {} left out. The original is kept as it was.", saved.name, saved.session, if saved.deleted == 1 { "1 card".to_string() } else { format!("{} cards", saved.deleted) }),
+                                Err(e) => format!("Not saved: {e}"),
+                            }
+                        }
+                        Err(e) => format!("Not saved: {e}"),
+                    });
+                }
                 // CON-173: the system's file picker, off the window's thread.
                 Outgoing::ChatPick => {
                     let dumps = std::path::Path::new(&self.root).join(harness_session::chat_archive::DUMPS_DIR);

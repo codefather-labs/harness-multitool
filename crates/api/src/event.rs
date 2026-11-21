@@ -187,6 +187,10 @@ pub enum Event {
     /// log is that conversation, drawn. On its own, with no `FormSynced` after it, its next message
     /// forks it: how a session brought in before ADR 0025 goes on.
     ConversationImported { source: String, id: String, title: String },
+    /// This conversation is an edited copy of the session `from` (CON-189): `deleted` cards were
+    /// taken out of it in Settings > Chats, and it goes by `title`. It closes the copy's log as
+    /// written, so a build that does not know it still reads every message before it.
+    Edited { from: String, title: String, deleted: usize },
     /// This session's form at `source` is `id` and has reached `cursor`, holding `holds` of the
     /// session's messages, or all of them so far (ADR 0025).
     FormSynced {

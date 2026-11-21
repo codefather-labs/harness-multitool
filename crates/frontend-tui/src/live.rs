@@ -228,6 +228,10 @@ impl Feed {
             Event::ConversationImported { source, title, .. } => {
                 v.transcript.push(Item::Tips { label: "BROUGHT IN".into(), lines: vec![format!("\"{title}\" from {source}. It is one conversation: what is said here is in its {source} form too, and it can be opened there at any time.")] });
             }
+            Event::Edited { title, deleted, .. } => {
+                let cards = if *deleted == 1 { "1 card".to_string() } else { format!("{deleted} cards") };
+                v.transcript.push(Item::Tips { label: "EDITED".into(), lines: vec![format!("\"{title}\" is an edited copy: {cards} taken out in Settings > Chats. The original is kept as it was.")] });
+            }
             Event::AgentName { name, .. } => v.agent_name = Some(name.clone()),
             Event::OrchestraRole { role, .. } => {
                 v.orchestra.clone_from(role);

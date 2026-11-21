@@ -68,6 +68,10 @@ pub enum Target {
     /// The Chats page (CON-173): a conversation's row, its Dump button, Load.
     ChatRow(usize),
     ChatDump,
+    /// The [ Edit ] button under an opened conversation (CON-189).
+    ChatEdit,
+    /// A card of the conversation editor (CON-189).
+    EditCard(usize),
     ChatLoad,
     /// A provider row on the settings window's provider page.
     Provider(usize),

@@ -172,7 +172,7 @@ impl SessionState {
                 self.messages.push(Message::user(format!("[a summary of the conversation so far]\n{text}")));
             }
             Event::BackendCost { total_micro_usd } => self.backend_cost_total = *total_micro_usd,
-            Event::BackgroundTasks { .. } | Event::BackgroundDone { .. } | Event::Notice { .. } | Event::BackendCompacted => {}
+            Event::BackgroundTasks { .. } | Event::BackgroundDone { .. } | Event::Notice { .. } | Event::BackendCompacted | Event::Edited { .. } => {}
             Event::ConversationImported { id, .. } => {
                 self.backend_session = Some(id.clone());
                 self.backend_fork = true;

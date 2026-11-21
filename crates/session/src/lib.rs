@@ -21,6 +21,7 @@ pub mod skills;
 
 pub mod remote;
 pub mod chat_archive;
+pub mod chat_edit;
 
 /// One `[[session.hooks]]`: a command run on a loop event (every event when it names none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,9 +390,16 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
                 Event::UserMessage { text } => Some(harness_api::event::telling_words(text).unwrap_or_else(|| text.lines().next().unwrap_or_default().to_string())),
                 _ => None,
             })?;
-            let named = log.iter().find_map(|e| match &e.event {
-                Event::ConversationImported { id, title, .. } if !title.is_empty() && title != id => Some(title.clone()),
+            // An edited copy goes by the name it was saved under (CON-189).
+            let named = log.iter().rev().find_map(|e| match &e.event {
+                Event::Edited { title, .. } if !title.is_empty() => Some(title.clone()),
                 _ => None,
+            });
+            let named = named.or_else(|| {
+                log.iter().find_map(|e| match &e.event {
+                    Event::ConversationImported { id, title, .. } if !title.is_empty() && title != id => Some(title.clone()),
+                    _ => None,
+                })
             });
             let title = named.unwrap_or(first);
             let model = log.iter().rev().find_map(|e| match &e.event {

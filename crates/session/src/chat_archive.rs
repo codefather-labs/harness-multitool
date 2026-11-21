@@ -92,7 +92,7 @@ fn claude_folder(claude: &Path, root: &str) -> PathBuf {
     claude.join("projects").join(slug)
 }
 
-fn log_path(data_dir: &str, root: &str, session: &str) -> PathBuf {
+pub(crate) fn log_path(data_dir: &str, root: &str, session: &str) -> PathBuf {
     PathBuf::from(crate::sessions_dir(data_dir, root)).join(format!("{session}.jsonl"))
 }
 
@@ -287,7 +287,7 @@ fn dump_with(data_dir: &str, root: &str, session: &str, out: Option<&Path>, clau
     Ok(Dumped { path, bytes, files, name, journal: journal.is_some() })
 }
 
-fn new_uuid() -> String {
+pub(crate) fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
@@ -325,7 +325,7 @@ fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str, counter:
     Ok(Some(bytes))
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
