@@ -85,8 +85,8 @@ jobs:
           tar -czf - -C bundles . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
           rm -f ~/.ssh/deploy
           test "$(curl -fsS https://harness-multitool.dev/downloads/latest)" = "$VERSION"
-      # The tag's GitHub Release with every target's bundle (CON-193). scripts/release-local.sh may
-      # have made it already from the owner's machine: then only its assets are replaced.
+      # The tag's GitHub Release with every target's bundle (CON-193). One that scripts/release-local.sh
+      # made already from the owner's machine stays as it is: releases are immutable on this repository.
       - name: GitHub Release
         if: github.ref_type == 'tag'
         env:
@@ -95,7 +95,8 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" bundles/* -R "$GITHUB_REPOSITORY" --clobber
+            # Releases are immutable here: one made already, by scripts/release-local.sh, stays.
+            echo "$tag is released already"
           else
             pre=""
             case "$VERSION" in *-*) pre="--prerelease" ;; esac

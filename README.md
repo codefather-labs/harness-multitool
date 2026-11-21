@@ -24,7 +24,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | 
 
 It downloads the prebuilt `multitool` for your machine and checks its SHA-256. A Linux x86_64 build is published today; Linux aarch64 and macOS on Apple silicon follow once CI can build them. Then it installs it the way `install.sh` does: on your PATH, with its daemon as a user service and Claude Code's rules. Options go after `sh -s --`, for example `| sh -s -- --no-service`. No Rust is needed. On another system it prints how to build from source (CON-186).
 
-Each release is the commit of `main` it was built from: the version is `<Cargo version>+<commit>` (for example `0.1.0-dev+9e5f4de`). Its bundle is served by harness-multitool.dev, and the same commit is tagged `v<version>` with a GitHub Release holding the bundle and its checksum. While the version is `-dev`, the Release is marked a pre-release (CON-193).
+Each release is the commit of `main` it was built from: the version is `<Cargo version>+<commit>` (for example `0.1.0-dev+9e5f4de`). Its bundle is served by harness-multitool.dev, and the same commit is tagged `v<version>` with a GitHub Release holding the bundle and its checksum. While the version is `-dev`, the Release is marked a pre-release. A version is published once and never changes: a fix is a new commit and a new version (CON-193).
 
 ## Quick start from source
 

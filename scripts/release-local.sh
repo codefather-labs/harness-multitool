@@ -13,7 +13,8 @@
 #
 # A release is made only from main as GitHub has it (HEAD = origin/main). After the site has the
 # bundle, the commit is tagged v<version> and a GitHub Release of that tag holds the bundle and its
-# checksum (CON-193). A rerun on the same commit keeps the tag and replaces the assets.
+# checksum (CON-193). A version already released on GitHub is not made again: the script stops
+# before building, so the site and GitHub keep the same file.
 #
 # Settings: DEPLOY_HOST (harnessmt-deploy@95.179.242.74), RELEASE_MEMORY (6g),
 # RELEASE_GH_CONFIG_DIR (gh's folder for the repository's account, ~/.config/gh-labs).
@@ -51,6 +52,14 @@ cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 version="$cargo_version+$(git rev-parse --short HEAD)"
 [ "$dirty" = true ] && [ -n "$(git status --porcelain --untracked-files=no -- crates Cargo.toml Cargo.lock install.sh assets)" ] && version="$version.dirty"
 echo "release-local: multitool $version for $TARGET in $RELEASE_IMAGE"
+# A version GitHub has released is not made again: its Release is immutable, and a new build
+# would leave the site with another file than GitHub's (CON-193).
+export GH_CONFIG_DIR="${RELEASE_GH_CONFIG_DIR:-$HOME/.config/gh-labs}"
+repo="$(git config remote.origin.url | sed -E 's#^(git@|ssh://git@|https://)github\.com[:/]##; s#\.git$##')"
+if [ "$upload" = true ] && [ "$github" = true ] && gh release view "v$version" -R "$repo" >/dev/null 2>&1; then
+  echo "release-local: v$version is released already (GitHub keeps it as it is): nothing to do"
+  exit 0
+fi
 
 # The build, in the container: the workspace read-only, its own target dir and cargo cache.
 mkdir -p target/release-container
@@ -83,12 +92,9 @@ if [ "$upload" = true ] && [ "$github" = true ]; then
   else
     echo "release-local: $tag is already at HEAD"
   fi
-  export GH_CONFIG_DIR="${RELEASE_GH_CONFIG_DIR:-$HOME/.config/gh-labs}"
-  repo="$(git config remote.origin.url | sed -E 's#^(git@|ssh://git@|https://)github\.com[:/]##; s#\.git$##')"
   assets=("$out"/multitool-"$version"-"$TARGET".tar.gz "$out"/multitool-"$version"-"$TARGET".tar.gz.sha256)
   if gh release view "$tag" -R "$repo" >/dev/null 2>&1; then
-    gh release upload "$tag" "${assets[@]}" -R "$repo" --clobber
-    echo "release-local: the assets of $tag replaced"
+    echo "release-local: $tag has its GitHub Release already"
   else
     previous="$(git tag -l 'v*' --sort=-creatordate | grep -vx "$tag" | sed -n 1p || true)"
     notes="$(mktemp)"
