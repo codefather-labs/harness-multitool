@@ -108,9 +108,10 @@ fn from_cut(messages: &[Message], upto: usize) -> Vec<Message> {
 }
 
 impl JournalAware {
-    /// A new cut if the conversation outgrew the budget: as early as leaves half the budget.
-    fn next_cut(&self, messages: &[Message], from: usize) -> Option<usize> {
-        let target = self.budget_tokens / 2;
+    /// A new cut if the conversation outgrew the budget: as early as leaves half the budget for
+    /// the whole prompt, `fixed` (the system prompt and the tools) included.
+    fn next_cut(&self, messages: &[Message], from: usize, fixed: u64) -> Option<usize> {
+        let target = (self.budget_tokens / 2).saturating_sub(fixed);
         cut_points(messages, from + 1).into_iter().find(|&i| estimate(&messages[i..]) <= target).or_else(|| cut_points(messages, from + 1).last().copied())
     }
 
@@ -174,18 +175,21 @@ impl JournalAware {
 }
 
 impl ContextStrategy for JournalAware {
-    fn build<'a>(&'a self, state: &'a SessionState, memory: &'a dyn Memory) -> BoxFuture<'a, PluginResult<TurnContext>> {
+    fn build<'a>(&'a self, state: &'a SessionState, memory: &'a dyn Memory, fixed_tokens: u64) -> BoxFuture<'a, PluginResult<TurnContext>> {
         Box::pin(async move {
             let system = self.system(state, memory).await;
+            // The whole prompt counts: the system prompt and the tools as well as the messages
+            // (journal#1536). On a local model's small window they are most of it.
+            let fixed = system.len() as u64 / 4 + fixed_tokens;
             let from = state.compacted_upto.min(state.messages.len());
-            let tokens_before = estimate(&state.messages[from..]);
+            let tokens_before = fixed + estimate(&state.messages[from..]);
             let mut compacted = None;
             let mut upto = from;
             if tokens_before > self.budget_tokens
-                && let Some(cut) = self.next_cut(&state.messages, from)
+                && let Some(cut) = self.next_cut(&state.messages, from, fixed)
             {
                 upto = cut;
-                compacted = Some(Compaction { upto: cut, tokens_before, tokens_after: estimate(&state.messages[cut..]) });
+                compacted = Some(Compaction { upto: cut, tokens_before, tokens_after: fixed + estimate(&state.messages[cut..]) });
             }
             Ok(TurnContext { system: Some(system), messages: harness_api::provider_ready(&from_cut(&state.messages, upto)), compacted })
         })
@@ -322,6 +326,32 @@ mod tests {
         assert!(!text.contains(" old"), "an older ask is shortened: {text}");
     }
 
+    /// journal#1536: the budget counts the whole prompt. A conversation under it alone, but over it
+    /// with the system prompt and the tool schemas, is cut; with room for them, it is not.
+    #[test]
+    fn the_budget_counts_the_system_prompt_and_the_tools() {
+        let built = |budget: u64, fixed: u64, m: &[Message]| {
+            let s = JournalAware { root: "/r".into(), note: None, budget_tokens: budget, mode_rules: true };
+            let state = SessionState { messages: m.to_vec(), ..Default::default() };
+            let mut f = std::pin::pin!(s.build(&state, &NoMemory, fixed));
+            match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+                std::task::Poll::Ready(r) => r.unwrap(),
+                std::task::Poll::Pending => panic!("the build waits on nothing"),
+            }
+        };
+        let mut m = Vec::new();
+        for i in 0..12 {
+            m.push(user(&format!("question {i}: {}", "x".repeat(400))));
+            m.push(Message { role: Role::Assistant, content: vec![Content::Text { text: "y".repeat(400) }] });
+        }
+        let messages = estimate(&m);
+        let budget = messages + 6000;
+        assert!(built(budget, 0, &m).compacted.is_none(), "messages alone fit");
+        let cut = built(budget, 8000, &m).compacted.expect("with 8000 tokens of tools, the prompt passes the budget");
+        assert!(cut.tokens_before > budget && cut.tokens_before >= messages + 8000, "{cut:?}");
+        assert!(cut.tokens_after <= budget / 2 + 400 || cut.upto > 0, "{cut:?}");
+    }
+
     #[test]
     fn a_single_long_turn_can_still_be_cut() {
         let mut m = vec![user("do everything")];
@@ -330,7 +360,7 @@ mod tests {
             m.push(result(&format!("c{i}")));
         }
         let s = JournalAware { root: "/r".into(), note: None, budget_tokens: 500, mode_rules: true };
-        let cut = s.next_cut(&m, 0).expect("a cut");
+        let cut = s.next_cut(&m, 0, 0).expect("a cut");
         assert_eq!(m[cut].role, Role::Assistant);
         let kept = from_cut(&m, cut);
         assert_valid(&kept);

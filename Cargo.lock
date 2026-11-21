@@ -1198,6 +1198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-provider-ollama"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-api",
+ "pollster",
+ "serde_json",
+]
+
+[[package]]
 name = "harness-provider-openai"
 version = "0.1.0-dev"
 dependencies = [
@@ -1243,6 +1252,7 @@ dependencies = [
  "harness-platform-native",
  "harness-policy-default",
  "harness-provider-anthropic",
+ "harness-provider-ollama",
  "harness-provider-openai",
  "harness-router-default",
  "harness-scenarios",
@@ -1842,6 +1852,7 @@ dependencies = [
  "harness-docs-mirror",
  "harness-platform-native",
  "harness-provider-anthropic",
+ "harness-provider-ollama",
  "harness-provider-openai",
  "harness-scenarios",
  "harness-session",

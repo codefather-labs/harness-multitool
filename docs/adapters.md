@@ -19,7 +19,8 @@ Every adapter writes the same events to the same log, so the transcript, a resum
 |---|---|---|
 | `anthropic` (the default, model `claude-opus-5-5`) | the Anthropic API | `ANTHROPIC_API_KEY`, or a key saved on the Provider page |
 | kind `openai` | OpenAI, Azure, Groq, OpenRouter and other OpenAI-compatible APIs | `<PROVIDER>_API_KEY`, or `[session.auth.<name>]` |
-| `local` | Ollama, vLLM, LM Studio and other local OpenAI-compatible servers; Ollama's usual address `http://127.0.0.1:11434/v1` is the default | none needed |
+| `ollama` (CON-190) | a local Ollama on its own API, `http://127.0.0.1:11434` | none needed |
+| `local` | vLLM, LM Studio and other local OpenAI-compatible servers, at `http://127.0.0.1:11434/v1` by default; a `local` row pointing at Ollama works as before | none needed |
 | `gpt-subscription` | your ChatGPT plan | OpenAI's own sign-in page |
 
 The ChatGPT plan is shipped because OpenAI documents a sign-in flow for open-source and locally hosted apps. The harness registers its own client under its own name ([ADR 0019](decisions/0019-vendor-documented-sign-in.md)).
@@ -27,6 +28,20 @@ The ChatGPT plan is shipped because OpenAI documents a sign-in flow for open-sou
 A Claude subscription is not offered on this loop. Anthropic's terms do not permit third-party apps to offer Claude.ai login or to collect, store or route its tokens, so Anthropic models here take a Console API key (CON-56).
 
 Ollama and other local models are a provider of this loop: a row of kind `openai` with a `base_url`, as in the example under [Provider, model and keys](tui.md#provider-model-and-keys). The provider reads the reasoning that Ollama streams apart from the answer (`crates/provider-openai/src/lib.rs`).
+
+#### Ollama on its own API (CON-190)
+
+The `ollama` row reaches Ollama on its native `/api/chat`, not on its OpenAI-compatible `/v1`. The reason: `/v1` cannot set the context size. Ollama 0.33.3 loads a model there with 32 768 tokens, while the harness counted on 128 000, so it compacted late and Ollama kept only part of the prompt (journal#1532).
+
+- **The context.** Every request sends `options.num_ctx` equal to the row's `context_window`: 65 536 by default, never more than the model's own length from `/api/show`. The window the status line shows is the one Ollama loads.
+- **Capabilities.** Read from `/api/show` once per model. Tools go only to a model that has `tools`; a model without them talks only, which the model list in Settings says (`no tools: talks only`). A model with `thinking` gets `think: true`, and its reasoning is drawn apart from the answer, folded as 'Thought for Ns'.
+- **Compaction** counts the whole prompt, the system prompt and the tool schemas as well as the messages (journal#1536): on a local model's window the tools alone are about 4.5k tokens.
+- **Usage.** From the last line of the stream: the prompt's count less its cached part, the cached part, and the answer's count. A local model costs nothing.
+- **When it fails:**
+  - nothing is listening: "Ollama is not running at <url>: start it with ollama serve, or systemctl start ollama";
+  - a model is not pulled: "the model <m> is not pulled here: ollama pull <m>".
+- **Models.** Settings > Provider lists the pulled ones from `/api/tags`, with size, context and capabilities. Choosing one sets its window.
+- **Moving a conversation** to and from it works as for every provider of this loop: the history is built from the log for each request (CON-134).
 
 ### Delegates
 
@@ -110,7 +125,7 @@ While the daemon writes a conversation's form for another adapter or profile, th
 
 - **Claude Code as a delegate is in the default build** (CON-57, Q-33 settled 2026-11-19). `--no-default-features`, or `--no-claude-code` in `run.sh` and `install.sh`, builds without it.
 
-- **Ollama is a provider of the harness's own loop, not a delegate.** Ollama has no agent program of its own. Full Ollama support as a delegate is planned and not designed yet: whether it means Codex or Claude Code run against a local Ollama server, the native loop made complete on Ollama, or both, is an open question (journal#1222).
+- **Ollama is a provider of the harness's own loop, not a delegate.** Ollama has no agent program of its own. The owner chose the own loop on Ollama's native API for now (CON-190, journal#1533). Codex or Claude Code run against a local Ollama server stays open (journal#1222).
 
 - The adapter, model and context window cannot be changed while a run of the window is on: the controls are disabled, and the daemon refuses (CON-79).
 

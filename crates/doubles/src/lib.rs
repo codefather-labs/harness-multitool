@@ -249,7 +249,7 @@ impl Memory for InMemoryJournal {
 pub struct WholeConversation;
 
 impl ContextStrategy for WholeConversation {
-    fn build<'a>(&'a self, state: &'a SessionState, _memory: &'a dyn Memory) -> BoxFuture<'a, PluginResult<TurnContext>> {
+    fn build<'a>(&'a self, state: &'a SessionState, _memory: &'a dyn Memory, _fixed_tokens: u64) -> BoxFuture<'a, PluginResult<TurnContext>> {
         let system = (!state.hook_context.is_empty()).then(|| state.hook_context.join("\n"));
         ready(Ok(TurnContext { system, messages: state.messages.clone(), compacted: None }))
     }

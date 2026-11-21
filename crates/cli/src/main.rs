@@ -1826,7 +1826,7 @@ impl Live {
         let mut page = keep.unwrap_or_default();
         let session = config::load().map(|c| c.session).unwrap_or_default();
         let keys = harness_auth_apikey::ApiKeyAuth::new(|name| std::env::var(name).ok(), &serde_json::json!(session.auth));
-        page.keys = ["Anthropic API", "OpenAI-compatible", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
+        page.keys = ["Anthropic API", "OpenAI-compatible", "Ollama", "Local"].iter().map(|row| (row.to_string(), keys.source(&provider_id(row)))).collect();
         page.delegate = cfg!(feature = "claude-code");
         // A row not there yet starts in the user's own environment, asking permissions.
         page.delegate_row = session.providers.get("claude-code").map_or((true, false), |row| (row["environment"] == "user", row["permissions"] == "skip"));
@@ -1943,6 +1943,9 @@ impl Live {
                 let answer = harness_auth_chatgpt::list_anthropic_models(&base, key.expose(), harness_provider_anthropic::API_VERSION);
                 let _ = sender.send(("Anthropic API".to_string(), answer.map(|m| choices("Anthropic API", m))));
             }
+            // Ollama's own list, with each model's capabilities and window (CON-190).
+            let answer = harness_auth_chatgpt::list_ollama_models(&provider_base_url(&session, "ollama"), harness_provider_ollama::DEFAULT_CONTEXT);
+            let _ = sender.send(("Ollama".to_string(), answer.map(|m| choices("Ollama", m))));
             for row in ["OpenAI-compatible", "Local"] {
                 let id = provider_id(row);
                 let token = pollster::block_on(harness_api::Auth::credentials(&keys, &id)).map(|k| k.expose().to_string()).ok();
@@ -2054,6 +2057,10 @@ impl Live {
         }
         if provider == "codex" {
             c.session.providers.entry("codex".to_string()).or_insert_with(|| serde_json::json!({"kind": "codex", "context_window": 272_000}));
+        }
+        if provider == "ollama" {
+            c.session.providers.entry("ollama".to_string()).or_insert_with(|| serde_json::json!({"kind": "ollama", "base_url": harness_provider_ollama::DEFAULT_BASE_URL}));
+            c.session.auth.entry("ollama".to_string()).or_insert_with(|| serde_json::json!({"none": true}));
         }
         if provider == "local" {
             c.session.providers.entry("local".to_string()).or_insert_with(|| serde_json::json!({"kind": "openai", "base_url": LOCAL_BASE_URL}));
@@ -2963,6 +2970,7 @@ fn provider_id(row: &str) -> String {
         "Anthropic API" => "anthropic".to_string(),
         "OpenAI-compatible" => "openai".to_string(),
         "Local" => "local".to_string(),
+        "Ollama" => "ollama".to_string(),
         frontend_tui::model::PLAN_PROVIDER => "chatgpt".to_string(),
         frontend_tui::model::DELEGATE_PROVIDER => "claude-code".to_string(),
         other => other.to_string(),
@@ -2980,7 +2988,11 @@ fn plan_base_url(session: &harness_session::Settings) -> String {
 
 /// Where a provider's server is: as configured, or its usual place.
 fn provider_base_url(session: &harness_session::Settings, id: &str) -> String {
-    let usual = if id == "local" { LOCAL_BASE_URL } else { "https://api.openai.com/v1" };
+    let usual = match id {
+        "local" => LOCAL_BASE_URL,
+        "ollama" => harness_provider_ollama::DEFAULT_BASE_URL,
+        _ => "https://api.openai.com/v1",
+    };
     session.providers.get(id).and_then(|p| p["base_url"].as_str()).unwrap_or(usual).to_string()
 }
 
@@ -3014,6 +3026,12 @@ fn choices(row: &str, models: Vec<harness_auth_chatgpt::ListedModel>) -> Vec<fro
             let known = m.per_million.or_else(|| if row == "Anthropic API" { harness_provider_anthropic::per_million(&m.id) } else { harness_provider_openai::prices::per_million(&m.id) });
             let cost = match (row, known) {
                 ("Local", _) => "local, free".to_string(),
+                // What it can do decides what the harness sends it (CON-190).
+                ("Ollama", _) => {
+                    let can: Vec<&str> = ["tools", "thinking", "vision"].into_iter().filter(|c| m.capabilities.iter().any(|x| x == c)).collect();
+                    let can = if can.first() == Some(&"tools") { can.join(", ") } else { std::iter::once("no tools: talks only").chain(can).collect::<Vec<_>>().join(", ") };
+                    format!("{}free · {can}", if m.name.is_empty() { String::new() } else { format!("{} · ", m.name) })
+                }
                 (frontend_tui::model::PLAN_PROVIDER, Some(price)) => format!("in your plan (API {})", money(price)),
                 (frontend_tui::model::PLAN_PROVIDER, None) => "in your plan".to_string(),
                 (_, Some(price)) => money(price),

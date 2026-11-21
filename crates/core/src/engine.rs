@@ -82,6 +82,12 @@ impl StopFlag {
 
 /// The tools the engine answers itself. The first three are modes of the harness, not utilities: a
 /// mode changes what the agent may do and what it is told until it ends (CON-96).
+/// The tool schemas a request carries, in tokens, estimated as the context strategy estimates the
+/// rest: four characters a token (journal#1536).
+pub fn tool_tokens(specs: &[ToolSpec]) -> u64 {
+    specs.iter().map(|t| t.name.len() + t.description.len() + t.schema.to_string().len()).sum::<usize>() as u64 / 4
+}
+
 pub fn own_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
@@ -771,7 +777,8 @@ impl Engine {
             }
             let state = self.state.borrow().clone();
             let prompt = if woken { String::new() } else if let Some(next) = next_prompt.take() { next } else { state.messages.iter().rev().find(|m| m.role == harness_api::Role::User).map_or(String::new(), |m| m.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")) };
-            let context = self.parts.context.build(&state, self.parts.memory.as_ref()).await;
+            // A delegate's own program holds its tools: only its system prompt is built here.
+            let context = self.parts.context.build(&state, self.parts.memory.as_ref(), 0).await;
             let system = context.ok().and_then(|c| c.system);
             let stopped = || self.stop.take();
             // Calls it made and gave no result for, should it be cut off.
@@ -1117,7 +1124,7 @@ impl Engine {
         let build = || async {
             let mut state = self.state.borrow().clone();
             state.enter_model(&route.provider, &route.model);
-            self.parts.context.build(&state, self.parts.memory.as_ref()).await.map_err(|e| format!("context: {e}"))
+            self.parts.context.build(&state, self.parts.memory.as_ref(), tool_tokens(&self.tool_specs())).await.map_err(|e| format!("context: {e}"))
         };
         let mut context = build().await?;
         if let Some(cut) = context.compacted.take() {

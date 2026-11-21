@@ -422,7 +422,9 @@ fn context_comes_from_memory_and_survives_compaction() {
     let (url, seen) = fake_endpoint(turns);
     std::fs::write(format!("{root}/big.txt"), &filler).unwrap();
     let mut s = settings(&url, "k");
-    s.compact_at_tokens = Some(1500);
+    // The budget counts the whole prompt (journal#1536): here the system prompt and the tool
+    // schemas are about 3.8k tokens, so 1500 for the messages on top of them.
+    s.compact_at_tokens = Some(5500);
     s.hooks = vec![HookSetting { event: Some("PostCompact".into()), command: "echo Re-read the specifications.".into(), name: Some("after-compact".into()) }];
     let mut sessions = Sessions::new(hermetic_factory(s, root.clone(), data.clone().into()), root.clone());
     let mut prompts: Vec<String> = vec!["remember these".to_string()];

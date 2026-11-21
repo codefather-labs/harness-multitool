@@ -128,14 +128,21 @@ provider = "anthropic"          # the default; or a name under [session.provider
 model = "claude-opus-5-5"       # the default
 max_cost_usd = 5.0              # optional budget; max_turns too
 
-[session.providers.local]       # any OpenAI-compatible endpoint; this one is Ollama
-kind = "openai"
-base_url = "http://127.0.0.1:11434/v1"
-context_window = 32000
+[session.providers.ollama]      # Ollama on its own API (CON-190)
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+context_window = 65536          # sent to Ollama as num_ctx; never more than the model's own
+# keep_alive = "10m"            # optional: how long Ollama keeps the model loaded
 
-[session.auth.local]
+[session.auth.ollama]
 none = true                     # no key needed
+
+[session.providers.local]       # any other OpenAI-compatible server: vLLM, LM Studio
+kind = "openai"
+base_url = "http://127.0.0.1:8000/v1"
 ```
+
+Settings > Provider has an Ollama row. Its models are the ones pulled into Ollama, each with its size and what it can do: `tools, thinking, vision`, or `no tools: talks only`. Choosing one sets its context window to the smaller of 64k and the model's own.
 
 Keys come from the environment: `ANTHROPIC_API_KEY`, or `<PROVIDER>_API_KEY` for a provider of that name. `[session.auth.<name>]` can name another variable with `env`, or hold the key as `key`.
 

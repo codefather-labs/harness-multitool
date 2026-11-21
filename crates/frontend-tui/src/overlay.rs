@@ -100,6 +100,7 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
                     "anthropic" | "anthropic-api" => "Anthropic API",
                     "openai" | "openai-compatible" => "OpenAI-compatible",
                     "local" => "Local",
+                    "ollama" => "Ollama",
                     "chatgpt" => PLAN_PROVIDER,
                     "claude-code" => DELEGATE_PROVIDER,
                     other => other,
@@ -136,6 +137,7 @@ fn chosen_context(s: &SettingsView) -> Option<u64> {
         "Anthropic API" => "anthropic",
         "OpenAI-compatible" => "openai",
         "Local" => "local",
+        "Ollama" => "ollama",
         PLAN_PROVIDER => "chatgpt",
         DELEGATE_PROVIDER => "claude-code",
         other => other,
@@ -152,7 +154,8 @@ pub fn sample_settings() -> SettingsView {
         providers: vec![
             p("Anthropic API", "Claude, official API", false),
             p("OpenAI-compatible", "OpenAI, Azure, Groq, OpenRouter, ...", false),
-            p("Local", "Ollama, vLLM, LM Studio, ...", false),
+            p("Ollama", "local models, on Ollama's own API", false),
+            p("Local", "vLLM, LM Studio, other OpenAI-compatible servers", false),
             p(PLAN_PROVIDER, "your ChatGPT plan, through gpt-subscription", false),
         ],
         provider: 0,
@@ -191,7 +194,7 @@ pub fn system_toast(text: &str) -> Toast {
 /// The design sample of the Auth tab.
 pub fn sample_auth() -> AuthPage {
     AuthPage {
-        keys: vec![("Anthropic API".into(), "not set".into()), ("OpenAI-compatible".into(), "from OPENAI_API_KEY".into()), ("Local".into(), "none needed".into())],
+        keys: vec![("Anthropic API".into(), "not set".into()), ("OpenAI-compatible".into(), "from OPENAI_API_KEY".into()), ("Ollama".into(), "none needed".into()), ("Local".into(), "none needed".into())],
         plan_status: "Signed in as you@example.com".into(),
         signed_in: true,
         models: vec![ModelChoice { id: "gpt-5.5".into(), detail: "in your plan · 272k context".into(), context: Some(272_000) }, ModelChoice { id: "gpt-5.5-mini".into(), detail: "in your plan · 128k context".into(), context: Some(128_000) }],
@@ -1462,7 +1465,7 @@ fn login_label(s: &SettingsView) -> &'static str {
         (true, true, _) => "Cancel",
         (true, false, true) => "Log out",
         (true, false, false) => "Login",
-        (false, ..) if s.providers.get(s.provider).is_some_and(|p| p.name == "Local") => "No key needed",
+        (false, ..) if s.providers.get(s.provider).is_some_and(|p| p.name == "Local" || p.name == "Ollama") => "No key needed",
         (false, ..) if on_delegate(s) => match s.auth.claude_signed {
             Some(true) => "Switch account",
             Some(false) => "Login",
@@ -1575,7 +1578,7 @@ fn press_sign_in(w: &mut Workspace) {
         (true, true, _) => w.outbox.push(Outgoing::LoginCancel),
         (true, false, true) => w.outbox.push(Outgoing::Logout),
         (true, false, false) => w.outbox.push(Outgoing::Login),
-        (false, ..) if s.providers[s.provider].name == "Local" => s.auth.message = vec!["A local model needs no key.".to_string()],
+        (false, ..) if s.providers[s.provider].name == "Local" || s.providers[s.provider].name == "Ollama" => s.auth.message = vec!["A local model needs no key.".to_string()],
         // Claude Code's own sign-in, in this profile's directory: the terminal is handed to it (CON-123).
         (false, ..) if on_delegate(s) => match s.auth.claude_signed {
             // Signed in: another account, its own login out then in again (journal#802).

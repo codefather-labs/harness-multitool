@@ -82,7 +82,16 @@ impl Default for Settings {
 impl Settings {
     /// The context window to show for the chosen model.
     pub fn context_window(&self) -> u64 {
-        self.providers.get(&self.provider).and_then(|p| p["context_window"].as_u64()).unwrap_or(if self.provider == "anthropic" { 1_000_000 } else { 128_000 })
+        let row = self.providers.get(&self.provider);
+        // An Ollama row runs its model with the window it is sent (CON-190).
+        let usual = if self.provider == "anthropic" {
+            1_000_000
+        } else if row.is_some_and(|p| p["kind"] == "ollama") {
+            harness_provider_ollama::DEFAULT_CONTEXT
+        } else {
+            128_000
+        };
+        row.and_then(|p| p["context_window"].as_u64()).unwrap_or(usual)
     }
 
     /// Whether the chosen provider row is a delegate program: Claude Code (ADR 0020) or Codex
@@ -247,6 +256,8 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
             let auth = cx.auth.clone().ok_or("the provider was built before Auth")?;
             let provider: Rc<dyn Provider> = if kind == "openai-responses" {
                 Rc::new(harness_provider_openai::responses::Responses::new(&provider_name, auth, cx.platform.net.clone(), cx.settings).on_plan(on_plan))
+            } else if kind == "ollama" {
+                Rc::new(harness_provider_ollama::Ollama::new(&provider_name, cx.platform.net.clone(), cx.settings))
             } else if kind == "anthropic" {
                 Rc::new(harness_provider_anthropic::Anthropic::new(auth, cx.platform.net.clone(), cx.platform.clock.clone(), cx.settings))
             } else {

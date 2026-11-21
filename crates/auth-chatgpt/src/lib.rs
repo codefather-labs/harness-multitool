@@ -500,6 +500,8 @@ pub struct ListedModel {
     pub context: Option<u64>,
     /// Price per 1M tokens, (input, output), where the server states one, as OpenRouter does.
     pub per_million: Option<(f64, f64)>,
+    /// What it can do, where the server says: Ollama's `tools`, `thinking`, `vision` (CON-190).
+    pub capabilities: Vec<String>,
 }
 
 /// The models a server offers, in its order. It reads both forms: a plan's `models` with `slug`
@@ -511,6 +513,34 @@ pub fn list_models(base_url: &str, token: &str) -> Result<Vec<ListedModel>, Stri
         request = request.header("authorization", &format!("Bearer {token}"));
     }
     read_models(request, base_url)
+}
+
+/// The models pulled into an Ollama server (CON-190), from its own API: /api/tags for the list,
+/// /api/show for each one's capabilities and context length. `context` is the window a row runs it
+/// with: its own length, never more than `cap`.
+pub fn list_ollama_models(base_url: &str, cap: u64) -> Result<Vec<ListedModel>, String> {
+    let base = base_url.trim_end_matches('/');
+    let base = base.strip_suffix("/v1").unwrap_or(base);
+    let mut response = agent(15).get(&format!("{base}/api/tags")).call().map_err(|e| format!("Ollama is not running at {base}: {e}"))?;
+    if response.status() != 200 {
+        return Err(format!("listing the models of {base}: {}", response.status()));
+    }
+    let tags: Value = response.body_mut().read_json().map_err(|e| format!("the model list: {e}"))?;
+    let mut out = Vec::new();
+    for m in tags["models"].as_array().into_iter().flatten() {
+        let Some(id) = m["name"].as_str() else { continue };
+        let show = agent(15)
+            .post(&format!("{base}/api/show"))
+            .send_json(serde_json::json!({"model": id}))
+            .ok()
+            .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+            .unwrap_or(Value::Null);
+        let capabilities: Vec<String> = show["capabilities"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
+        let own = show["model_info"].as_object().and_then(|info| info.iter().find(|(k, _)| k.ends_with(".context_length")).and_then(|(_, v)| v.as_u64()));
+        let size = m["details"]["parameter_size"].as_str().unwrap_or_default().to_string();
+        out.push(ListedModel { id: id.to_string(), name: size, context: Some(own.map_or(cap, |own| own.min(cap))), per_million: None, capabilities });
+    }
+    Ok(out)
 }
 
 /// The same from Anthropic's server, which takes its key in its own header.
@@ -530,7 +560,7 @@ fn read_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, base
         return Ok(list
             .iter()
             .filter(|m| m["visibility"] == "list")
-            .filter_map(|m| Some(ListedModel { id: m["slug"].as_str()?.to_string(), name: m["display_name"].as_str().unwrap_or_default().to_string(), context: m["context_window"].as_u64(), per_million: None }))
+            .filter_map(|m| Some(ListedModel { id: m["slug"].as_str()?.to_string(), name: m["display_name"].as_str().unwrap_or_default().to_string(), context: m["context_window"].as_u64(), per_million: None, capabilities: Vec::new() }))
             .collect());
     }
     let list = body["data"].as_array().cloned().unwrap_or_default();
@@ -542,7 +572,7 @@ fn read_models(request: ureq::RequestBuilder<ureq::typestate::WithoutBody>, base
                 return None;
             }
             let price = token_price(&m["pricing"]["prompt"]).zip(token_price(&m["pricing"]["completion"]));
-            Some(ListedModel { id: id.to_string(), name: m["display_name"].as_str().or(m["name"].as_str()).unwrap_or_default().to_string(), context: m["context_length"].as_u64().or(m["context_window"].as_u64()), per_million: price })
+            Some(ListedModel { id: id.to_string(), name: m["display_name"].as_str().or(m["name"].as_str()).unwrap_or_default().to_string(), context: m["context_length"].as_u64().or(m["context_window"].as_u64()), per_million: price, capabilities: Vec::new() })
         })
         .collect())
 }

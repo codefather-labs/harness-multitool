@@ -55,6 +55,20 @@ impl ClaudeCodeConversations {
     }
 }
 
+/// A profile's `projects` is a link to the user's own (CON-126). Before Claude Code has run once
+/// there it points at nothing, and a folder cannot be made through it (journal#1537): what a link on
+/// the way to `folder` points at is made first, as Claude Code itself would make it.
+fn make_link_targets(folder: &std::path::Path) {
+    for at in folder.ancestors() {
+        if let Ok(target) = std::fs::read_link(at)
+            && !at.exists()
+        {
+            let target = if target.is_absolute() { target } else { at.parent().map_or(target.clone(), |p| p.join(&target)) };
+            let _ = std::fs::create_dir_all(target);
+        }
+    }
+}
+
 impl ConversationFormat for ClaudeCodeConversations {
     fn name(&self) -> &str {
         NAME
@@ -107,6 +121,7 @@ impl ConversationFormat for ClaudeCodeConversations {
 
     fn write(&self, root: &str, title: &str, history: &[Message]) -> PluginResult<String> {
         let folder = self.folder(root);
+        make_link_targets(&folder);
         std::fs::create_dir_all(&folder).map_err(|e| PluginError::new(format!("{}: {e}", folder.display())))?;
         let id = uuid();
         let path = folder.join(format!("{id}.jsonl"));
@@ -657,6 +672,19 @@ mod tests {
     fn assistant(uuid: &str, parent: &str, id: &str, block: Value) -> String {
         line(uuid, Some(parent), json!({"type": "assistant", "message": {"id": id, "model": "m1", "role": "assistant", "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 4}, "content": [block]}}))
     }
+    /// journal#1537: a profile's projects link points at a folder that is not there yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_form_is_written_through_a_link_to_a_folder_not_made_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let users = dir.path().join("users-claude");
+        let profile = dir.path().join("profile-claude");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::os::unix::fs::symlink(users.join("projects"), profile.join("projects")).unwrap();
+        let id = ClaudeCodeConversations::new(&profile).write("/work/p", "t", &[Message::user("hi")]).unwrap();
+        assert!(users.join("projects").join("-work-p").join(format!("{id}.jsonl")).is_file(), "it lands in the link's target");
+    }
+
     fn import(lines: &[String]) -> ImportedConversation {
         let dir = tempfile::tempdir().unwrap();
         let root = "/work/my_project";

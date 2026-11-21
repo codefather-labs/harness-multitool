@@ -398,7 +398,9 @@ pub struct Compaction {
 
 /// IF-8. Reads memory and the session; writes nothing but the context.
 pub trait ContextStrategy {
-    fn build<'a>(&'a self, state: &'a SessionState, memory: &'a dyn Memory) -> BoxFuture<'a, PluginResult<TurnContext>>;
+    /// `fixed_tokens`: what the request carries besides the system prompt and the messages, the
+    /// tool schemas, estimated, so a budget counts the whole prompt (journal#1536).
+    fn build<'a>(&'a self, state: &'a SessionState, memory: &'a dyn Memory, fixed_tokens: u64) -> BoxFuture<'a, PluginResult<TurnContext>>;
 }
 
 /// IF-9. Persists the append-only log (INV-5).
