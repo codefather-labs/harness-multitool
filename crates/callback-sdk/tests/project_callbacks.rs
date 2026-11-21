@@ -140,6 +140,12 @@ fn a_project_handler_stands_between_the_daemon_and_the_conversation() {
     assert_eq!(op(1, "project_callbacks", json!({}))["callbacks"].as_array().unwrap().iter().find(|c| c["name"] == "echo").unwrap()["standing"], "changed");
     op(1, "callback_approve", json!({"name": "echo"}));
     assert_eq!(ping("u6", &url1).0, 202);
+    // u6 is answered at once and delivered after: it lands before the next count is taken.
+    let delivered = std::time::Instant::now();
+    while host.got.lock().unwrap().len() == runs {
+        assert!(delivered.elapsed() < Duration::from_secs(10), "u6 was approved again and delivers");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // Past its time: killed, and nothing comes.
     op(1, "callback_subscribe", json!({"name": "slow", "on": true}));
     op(1, "callback_approve", json!({"name": "slow"}));
