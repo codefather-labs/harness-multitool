@@ -90,7 +90,7 @@ if [ "$upload" = true ] && [ "$github" = true ]; then
     gh release upload "$tag" "${assets[@]}" -R "$repo" --clobber
     echo "release-local: the assets of $tag replaced"
   else
-    previous="$(git tag -l 'v*' --sort=-creatordate | grep -vx "$tag" | head -n 1 || true)"
+    previous="$(git tag -l 'v*' --sort=-creatordate | grep -vx "$tag" | sed -n 1p || true)"
     notes="$(mktemp)"
     {
       echo "multitool $version, built from $(git rev-parse --short HEAD) of main."
@@ -103,7 +103,8 @@ if [ "$upload" = true ] && [ "$github" = true ]; then
       echo
       if [ -n "$previous" ]; then echo "Changes since $previous:"; else echo "Changes:"; fi
       echo
-      git log --no-merges --format='- %s (%h)' ${previous:+"$previous"..}HEAD | head -n 200
+      # --max-count, not head: with pipefail a closed pipe would end the script (SIGPIPE).
+      git log --no-merges --max-count=200 --format='- %s (%h)' ${previous:+"$previous"..}HEAD
     } >"$notes"
     pre=()
     case "$version" in *-*) pre=(--prerelease) ;; esac
