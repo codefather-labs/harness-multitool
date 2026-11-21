@@ -1188,7 +1188,7 @@ fn the_guide_sends_an_empty_plan_back_and_keeps_an_approved_one_going() {
             FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
         }
     }
-    assert_eq!((asks, ends), (1, 1), "asked only for the second mode__plan_exit; one run");
+    assert_eq!((asks, ends), (1, 1), "asked only for the second mode__plan_exit; one run: {:?}", entries.iter().map(|e| &e.event).collect::<Vec<_>>());
     let back = entries.iter().find_map(|e| match &e.event {
         Event::ToolResult { id, output, is_error: true } if id == "g2" => Some(output.clone()),
         _ => None,
@@ -1720,6 +1720,9 @@ fn what_a_window_leaving_with_stop_queued_does_not_start() {
     assert_eq!(op(next, json!({"op": "left", "tab": 1, "text": session}))["messages"], json!([]), "once");
 }
 
+/// About 3 s of a command and then 'slept', in the shell the shell tool runs: sh, or cmd on Windows.
+const SLEEP_3: &str = if cfg!(windows) { "ping -n 4 127.0.0.1 >nul & echo slept" } else { "sleep 3; echo slept" };
+
 /// CON-181: a window leaves its conversations one of four ways. Its run is in a tool call
 /// (`sleep 3`), and a second message is queued, when it closes.
 /// - stop: nothing more is asked of the model;
@@ -1733,7 +1736,7 @@ fn a_window_leaves_its_conversations_as_it_says() {
         let root = temp_dir(&format!("leave-{leave}"));
         let data = temp_dir(&format!("leave-{leave}-data"));
         let (url, seen) = fake_endpoint(vec![
-            anthropic_turn(Some(("s1", "shell", json!({"command": "sleep 3; echo slept"}))), "Sleeping."),
+            anthropic_turn(Some(("s1", "shell", json!({"command": SLEEP_3}))), "Sleeping."),
             anthropic_turn(None, "DONE"),
             anthropic_turn(None, "QUEUED DONE"),
             anthropic_turn(None, "WOKEN"),

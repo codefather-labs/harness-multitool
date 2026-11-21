@@ -751,7 +751,7 @@ mod tests {
     fn the_runtime_runs_a_real_model() {
         let dir = std::env::var("MULTITOOL_TEST_SPEECH_DIR").unwrap();
         let wav = std::fs::read(std::env::var("MULTITOOL_TEST_WAV").unwrap()).unwrap();
-        let samples: Vec<f32> = wav[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+        let samples: Vec<f32> = wav[44..].as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b) as f32 / 32768.0).collect();
         for name in std::env::var("MULTITOOL_TEST_MODELS").unwrap().split(',') {
             let wanted = model(name).unwrap();
             install(Path::new(&dir), wanted, &mut |_| {}).unwrap();

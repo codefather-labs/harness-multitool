@@ -573,9 +573,11 @@ mod tests {
         // Claude Code's form at B's place, paths moved, sidecars there.
         let folder_b = claude_folder(&claude_b, &root_b_s);
         let transcript = std::fs::read_to_string(folder_b.join(format!("{new_cid}.jsonl"))).unwrap();
-        assert!(transcript.contains(&format!("\"cwd\":\"{root_b_s}\"")) && !transcript.contains(&root_a_s) && !transcript.contains(cid), "{transcript}");
+        // A path as JSON writes it: Windows' backslashes are escaped there.
+        let in_json = |path: &str| serde_json::to_string(path).unwrap().trim_matches('"').to_string();
+        assert!(transcript.contains(&format!("\"cwd\":\"{}\"", in_json(&root_b_s))) && !transcript.contains(&in_json(&root_a_s)) && !transcript.contains(cid), "{transcript}");
         let subagent = std::fs::read_to_string(folder_b.join(&new_cid).join("subagents/agent-1.jsonl")).unwrap();
-        assert!(subagent.contains(&format!("{root_b_s}/sub")) && subagent.contains(&new_cid));
+        assert!(subagent.contains(&format!("{}/sub", in_json(&root_b_s))) && subagent.contains(&new_cid));
         assert_eq!(std::fs::read(folder_b.join(&new_cid).join("tool-results/out.txt")).unwrap(), b"spilled");
         assert_eq!(std::fs::read(claude_b.join("file-history").join(&new_cid).join("backup@v1")).unwrap(), b"before");
         // The journal: A's entry under a new id, its map pointing at it.

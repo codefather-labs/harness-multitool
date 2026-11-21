@@ -177,7 +177,8 @@ mod tests {
         assert_eq!(named, [("bare", "No frontmatter: the first line describes it.", "user"), ("deploy", "Ship the project's way", "project"), ("review", "Review a change", "user")]);
         let (_, _, body) = parse("---\nname: x\n---\nbody here\n");
         assert_eq!(body, "body here\n");
-        assert_eq!(files_of(&project.join(".harness/skills/deploy")), [project.join(".harness/skills/deploy/ship.sh").to_string_lossy().into_owned()]);
+        let deploy = project.join(".harness/skills/deploy");
+        assert_eq!(files_of(&deploy), [deploy.join("ship.sh").to_string_lossy().into_owned()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

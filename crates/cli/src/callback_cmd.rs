@@ -44,7 +44,13 @@ fn folder(root: &Path, name: &str) -> PathBuf {
 }
 
 fn fill(template: &str, name: &str, sdk: &Path) -> String {
-    template.replace("{{name}}", name).replace("{{sdk}}", &sdk.to_string_lossy())
+    template.replace("{{name}}", name).replace("{{sdk}}", &toml_text(&sdk.to_string_lossy()))
+}
+
+/// Text as it goes inside a TOML basic string: a Windows path's backslashes would be escapes there
+/// and break the Cargo.toml (journal#1584).
+fn toml_text(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Makes `.harness/callbacks/<name>/` from the template; never over an existing folder.
@@ -95,7 +101,8 @@ mod tests {
         let dir = new(root.path(), data.path(), "deploy-done", &["deploy_done".into(), "deploy_failed".into()]).unwrap();
         let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         let sdk = data.path().join("sdk/harness-callback");
-        assert!(cargo.contains("name = \"deploy-done\"") && cargo.contains(&format!("path = \"{}\"", sdk.display())), "{cargo}");
+        assert!(cargo.parse::<toml::Table>().is_ok(), "the Cargo.toml is TOML on every OS: {cargo}");
+        assert!(cargo.contains("name = \"deploy-done\"") && cargo.contains(&format!("path = \"{}\"", toml_text(&sdk.to_string_lossy()))), "{cargo}");
         let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(config.contains("types = [\"deploy_done\", \"deploy_failed\"]") && config.contains("handler = \"target/release/deploy-done\""), "{config}");
         assert!(std::fs::read_to_string(dir.join("src/main.rs")).unwrap().contains("harness_callback::run"));

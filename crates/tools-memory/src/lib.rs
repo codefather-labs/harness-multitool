@@ -53,6 +53,12 @@ fn resolve(file: &str, root: &str) -> PathBuf {
 /// named by its path in the project; one from elsewhere is copied in, to `.harness/proofs/journal/`,
 /// and named by its copy, so what the journal links to lasts with the project. A folder, or a file
 /// over 50 MB, is refused, saying why. Answers the input with `proof_file` so named.
+/// A path inside the project as the journal keeps it: parts joined by `/` on every OS, so one
+/// project's proofs read the same wherever it is checked out (journal#1584).
+fn in_project(path: &Path) -> String {
+    path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
+}
+
 fn place_proofs(input: &Value, root: &str) -> PluginResult<Value> {
     check_proofs(input, root)?;
     let files = strings(&input["proof_file"]);
@@ -67,7 +73,7 @@ fn place_proofs(input: &Value, root: &str) -> PluginResult<Value> {
         let real = path.canonicalize().map_err(|e| PluginError::new(format!("proof_file `{file}`: {e}")))?;
         if inside.as_ref().is_some_and(|inside| real.starts_with(inside)) {
             let within = real.strip_prefix(inside.as_ref().expect("checked")).expect("checked");
-            placed.push(Path::new(PROOFS_DIR).join(within).to_string_lossy().into_owned());
+            placed.push(in_project(Path::new(PROOFS_DIR).join(within).as_path()));
             continue;
         }
         let meta = std::fs::metadata(&real).map_err(|e| PluginError::new(format!("proof_file `{file}`: {e}")))?;
@@ -98,7 +104,7 @@ fn place_proofs(input: &Value, root: &str) -> PluginResult<Value> {
                 }
             }
         };
-        placed.push(Path::new(PROOFS_DIR).join(PROOFS_COPIED).join(target.file_name().expect("a file")).to_string_lossy().into_owned());
+        placed.push(in_project(Path::new(PROOFS_DIR).join(PROOFS_COPIED).join(target.file_name().expect("a file")).as_path()));
     }
     let mut input = input.clone();
     input["proof_file"] = json!(placed);
