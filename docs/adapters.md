@@ -101,7 +101,7 @@ Each program names its tools its own way: Claude Code's `Read {file_path}`, `Bas
 | `mcp__harness__<name>` | `<name>` |
 | `mcp__mode__<name>` | `mode__<name>` |
 
-On the own loop the mapping is made on each request, and the log keeps what was said. In Claude Code's form the calls are written under Claude Code's names. A call to a tool the session does not have is answered with the one meant: "no tool named Read; this session's tool for it is read {path}". Codex's names (its calls run through a shell) are to come.
+On the own loop the mapping is made on each request, and the log keeps what was said. In Claude Code's form the calls are written under Claude Code's names. A call to a tool the session does not have is answered with the one meant: "no tool named Read; this session's tool for it is read {path}". Codex names the harness's tools `harness__<name>`, which the own loop takes as `<name>`; its shell calls keep their own names, and the own loop's names going into Codex's form are to come.
 
 You can also leave the harness: `claude --resume <id>` opens the same conversation in Claude Code, with every turn made in the harness already in its file. While Claude Code has it open, the harness shows it but refuses to send (CON-78).
 

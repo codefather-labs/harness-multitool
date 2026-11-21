@@ -22,6 +22,8 @@ const PAIRS: &[Pair] = &[
 /// The prefixes the harness's MCP servers give its tools in Claude Code.
 const HARNESS_PREFIX: &str = "mcp__harness__";
 const MODE_PREFIX: &str = "mcp__mode__";
+/// The prefix Codex gives the harness's tools (CON-191).
+const CODEX_HARNESS_PREFIX: &str = "harness__";
 
 fn renamed(input: &Value, args: &[(&str, &str)], forward: bool) -> Value {
     let Some(object) = input.as_object() else { return input.clone() };
@@ -49,6 +51,10 @@ pub fn to_own_loop(name: &str, input: &Value) -> Option<(String, Value)> {
         return Some((format!("mode__{rest}"), input.clone()));
     }
     if let Some(rest) = name.strip_prefix(HARNESS_PREFIX) {
+        return Some((rest.to_string(), input.clone()));
+    }
+    // Codex names an MCP server's tool <server>__<tool>: its mode__<n> is already the own loop's.
+    if let Some(rest) = name.strip_prefix(CODEX_HARNESS_PREFIX) {
         return Some((rest.to_string(), input.clone()));
     }
     None
@@ -107,6 +113,8 @@ mod tests {
         // An argument with no equivalent is left out; a name with no row stays.
         assert_eq!(to_own_loop("WebFetch", &json!({"url": "u", "prompt": "summarise"})).unwrap().1, json!({"url": "u"}));
         assert_eq!(to_own_loop("Glob", &json!({"pattern": "*"})), None);
+        // Codex's name for a harness tool.
+        assert_eq!(to_own_loop("harness__journal_add", &json!({"body": "b"})), Some(("journal_add".to_string(), json!({"body": "b"}))));
         assert_eq!(to_own_loop("read", &json!({"path": "a"})), None, "already the own loop's");
         // Claude Code's own names stay as they are going to Claude Code.
         assert_eq!(to_claude_code("Read", &json!({"file_path": "a"})).0, "Read");
