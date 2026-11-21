@@ -100,7 +100,7 @@ mod tests {
         assert!(new(root.path(), data.path(), "Bad Name", &[]).is_err());
         let dir = new(root.path(), data.path(), "deploy-done", &["deploy_done".into(), "deploy_failed".into()]).unwrap();
         let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-        let sdk = data.path().join("sdk/harness-callback");
+        let sdk = data.path().join("sdk").join("harness-callback");
         assert!(cargo.parse::<toml::Table>().is_ok(), "the Cargo.toml is TOML on every OS: {cargo}");
         assert!(cargo.contains("name = \"deploy-done\"") && cargo.contains(&format!("path = \"{}\"", toml_text(&sdk.to_string_lossy()))), "{cargo}");
         let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
