@@ -3838,6 +3838,14 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
             dirty |= live.receive_daemon(&mut state);
             dirty |= live.receive_connection(&mut state);
             dirty |= live.tick_reload(&mut state, &current.id)?;
+            // Telegram's Exit (CON-192): this window leaves as /exit with that choice would.
+            if let Some(mode) = live.sessions.exit_asked() {
+                if let frontend_tui::model::Mode::Session(w) = &mut state.mode {
+                    w.outbox.push(frontend_tui::model::Outgoing::Leave { mode, remember: false });
+                }
+                live.leave_now(&mut state);
+                return Ok(());
+            }
             if let Some(path) = live.sessions.screenshot_asked() {
                 let size = terminal.size()?;
                 // A failure here is the debug call's to report, by its timeout: the window goes on.

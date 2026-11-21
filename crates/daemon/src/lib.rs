@@ -132,6 +132,14 @@ pub trait ConversationHost: Send + Sync {
     fn windows(&self) -> Vec<String> {
         Vec::new()
     }
+    /// The windows open now, each with its folder and the sessions open in it (CON-192).
+    fn open_windows(&self) -> Vec<OpenWindow> {
+        Vec::new()
+    }
+    /// Asks a window to leave as /exit with `leave` does (CON-192). False if it is not open.
+    fn exit_window(&self, _window: &str, _leave: &str) -> bool {
+        false
+    }
     /// A message for this session as an inbound. False if it is not open.
     fn deliver_to(&self, _session: &str, _label: &str, _text: &str) -> bool {
         false
@@ -162,6 +170,15 @@ pub trait ConversationHost: Send + Sync {
 
 /// The Telegram channel's settings, as they stand when asked.
 pub type TelegramSource = Arc<dyn Fn() -> Option<telegram::Config> + Send + Sync>;
+
+/// A window open now, with the sessions open in it (CON-192).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OpenWindow {
+    pub id: String,
+    /// Its project folder.
+    pub root: String,
+    pub sessions: Vec<OpenSession>,
+}
 
 /// A session open in a window.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

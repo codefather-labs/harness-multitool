@@ -70,7 +70,10 @@ struct Kept {
 pub const SERVICE: &str = "🛠 Service";
 
 /// What the Service button opens: each a command the channel already has.
-const SERVICE_MENU: [[(&str, &str); 2]; 3] = [[("📂 Open", "open"), ("➕ New", "new")], [("🔄 Reload windows", "reload"), ("♻️ Restart daemon", "restart")], [("💬 Sessions", "agents"), ("❓ Which session", "whoami")]];
+const SERVICE_MENU: &[&[(&str, &str)]] = &[&[("📂 Open", "open"), ("➕ New", "new")], &[("🔄 Reload windows", "reload"), ("♻️ Restart daemon", "restart")], &[("💬 Sessions", "agents"), ("❓ Which session", "whoami")], &[("🚪 Exit", "exit")]];
+
+/// How long a window asked to leave from Telegram is waited for (CON-192).
+const EXIT_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Binding {
@@ -124,6 +127,8 @@ pub(crate) struct Channel {
     picks: std::collections::HashMap<Key, (std::time::Instant, Vec<Pick>)>,
     /// A /reload waiting to be said done: the chat, when, the windows asked (journal#1243).
     reloading: Option<(Key, std::time::Instant, Vec<String>)>,
+    /// Windows asked to leave from Telegram (CON-192): the chat, when, the window, its label.
+    exiting: Vec<(Key, std::time::Instant, String, String)>,
 }
 
 /// One thing a button of /open or /new stands for.
@@ -133,6 +138,8 @@ enum Pick {
     Conversation { session: String, root: String, title: String },
     /// A project to start a new session in.
     Project(String),
+    /// An open window to close (CON-192): its id, and its agents and project as said.
+    Window { id: String, label: String },
 }
 
 /// How long a list's buttons stay good.
@@ -156,7 +163,7 @@ impl Channel {
     pub(crate) fn new(config: Config) -> Channel {
         let timeout = Duration::from_secs(config.poll_timeout_s + 10);
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(timeout)).build().into();
-        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default(), picks: Default::default(), reloading: None }
+        Channel { config, agent, kept: Kept::default(), reply_to: None, delivered: 0, ignored: 0, last_error: None, say_error: None, plans: Default::default(), picks: Default::default(), reloading: None, exiting: Vec::new() }
     }
 
     pub(crate) fn status(&self) -> Value {
@@ -410,6 +417,7 @@ pub(crate) fn run(daemon: Arc<Daemon>, generation: u64) {
             {"command": "open", "description": "Known conversations: switch, or open a closed one"},
             {"command": "new", "description": "A new session in a project, in a new window"},
             {"command": "reload", "description": "Reload every open window"},
+            {"command": "exit", "description": "Close a multitool window, as /exit in it does"},
             {"command": "restart", "description": "Restart the daemon"},
             {"command": "service", "description": "The harness's controls, as buttons"},
         ]}),
@@ -662,6 +670,7 @@ fn command(daemon: &Daemon, requester: &Requester, key: Key, text: &str) -> bool
             say(daemon, requester, key, "Restart the daemon? The runs going on now stop; the windows reopen their conversations.", Some(buttons));
         }
         "/open" => open_list(daemon, requester, key),
+        "/exit" => exit_list(daemon, requester, key),
         "/service" => {
             service_button(daemon, requester, key);
             service_menu(daemon, requester, key);
@@ -768,7 +777,7 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
     }
     // A Service menu button: its command, as if typed (CON-169).
     if let Some(name) = data.strip_prefix("svc:")
-        && SERVICE_MENU.iter().flatten().any(|(_, n)| *n == name)
+        && SERVICE_MENU.iter().flat_map(|row| row.iter()).any(|(_, n)| *n == name)
     {
         command(daemon, requester, key, &format!("/{name}"));
         return;
@@ -780,6 +789,20 @@ fn button(daemon: &Daemon, requester: &Requester, query: &Value, allowed: &[i64]
             return;
         }
         restart(daemon, requester, key);
+        return;
+    }
+    // Exit (CON-192): 'x:<n>' picks a window, 'xm:<n>:<mode>' says how it leaves.
+    if let Some(n) = data.strip_prefix("x:").and_then(|n| n.parse::<usize>().ok()) {
+        exit_ask(daemon, requester, key, n);
+        return;
+    }
+    if let Some(rest) = data.strip_prefix("xm:") {
+        let _ = requester.call("editMessageReplyMarkup", &json!({"chat_id": chat, "message_id": query["message"]["message_id"], "reply_markup": {"inline_keyboard": []}}));
+        if let Some((n, mode)) = rest.split_once(':')
+            && let Ok(n) = n.parse::<usize>()
+        {
+            exit_do(daemon, requester, key, n, mode);
+        }
         return;
     }
     if let Some((kind, n)) = data.split_once(':').filter(|(k, _)| matches!(*k, "o" | "n"))
@@ -848,6 +871,22 @@ fn say_done(daemon: &Daemon, requester: &Requester, started: std::time::Instant)
             say(daemon, requester, (chat, asked["topic"].as_i64()), &what, None);
         }
     }
+    // Windows asked to leave from Telegram (CON-192).
+    let exiting = daemon.telegram.lock().expect("telegram").as_ref().map(|c| c.exiting.clone()).unwrap_or_default();
+    if !exiting.is_empty() {
+        let open = daemon.conversations().map_or_else(Vec::new, |h| h.windows());
+        let (gone, late) = exits_settled(&exiting, &open, EXIT_WAIT);
+        for &i in &gone {
+            let (key, _, _, label) = &exiting[i];
+            say(daemon, requester, *key, &format!("✅ Окно закрыто: {label}."), None);
+        }
+        for &i in &late {
+            let (key, _, _, label) = &exiting[i];
+            say(daemon, requester, *key, &format!("⚠️ Окно не закрылось за {} с: {label}. Возможно, оно старой сборки: закройте его в терминале.", EXIT_WAIT.as_secs()), None);
+        }
+        let done: Vec<String> = gone.iter().chain(&late).map(|&i| exiting[i].2.clone()).collect();
+        daemon.with_channel(|c| c.exiting.retain(|(_, _, id, _)| !done.contains(id)));
+    }
     let reloading = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.reloading.clone());
     if let Some((key, at, asked)) = reloading {
         let now = daemon.conversations().map_or_else(Vec::new, |h| h.windows());
@@ -898,6 +937,76 @@ fn keep_picks(daemon: &Daemon, key: Key, picks: Vec<Pick>) {
         c.picks.retain(|_, (at, _)| at.elapsed() < PICKS_LIVE);
         c.picks.insert(key, (std::time::Instant::now(), picks));
     });
+}
+
+/// What a window is called in Exit's list: its agents' names, and its project (CON-192).
+pub fn window_label(w: &crate::OpenWindow) -> String {
+    let project = project_name(&w.root);
+    // A title starts with its folder ('shop: fix the cart'); the project is said once, at the end.
+    let names: Vec<String> = w.sessions.iter().map(|s| s.nick.clone().unwrap_or_else(|| short(s.title.strip_prefix(&format!("{project}: ")).unwrap_or(&s.title), 32))).collect();
+    let who = if names.is_empty() { "an empty window".to_string() } else { names.join(", ") };
+    format!("{who} · {project}")
+}
+
+/// /exit: the open windows, one button each, to close as /exit in it would (CON-192).
+fn exit_list(daemon: &Daemon, requester: &Requester, key: Key) {
+    let windows = daemon.conversations().map_or_else(Vec::new, |h| h.open_windows());
+    if windows.is_empty() {
+        say(daemon, requester, key, "Открытых окон нет.", None);
+        return;
+    }
+    let picks: Vec<Pick> = windows.iter().map(|w| Pick::Window { id: w.id.clone(), label: window_label(w) }).collect();
+    let rows: Vec<Value> = picks.iter().enumerate().filter_map(|(n, p)| if let Pick::Window { label, .. } = p { Some(json!([{"text": format!("🚪 {}", short(label, 56)), "callback_data": format!("x:{n}")}])) } else { None }).collect();
+    keep_picks(daemon, key, picks);
+    say(daemon, requester, key, "Какое окно закрыть? Оно закроется целиком, как по /exit в нём.", Some(json!({"inline_keyboard": rows})));
+}
+
+/// A window picked to close: how it leaves, as the window's exit dialog asks (CON-181).
+fn exit_ask(daemon: &Daemon, requester: &Requester, key: Key, n: usize) {
+    let pick = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.picks.get(&key).filter(|(at, _)| at.elapsed() < PICKS_LIVE).and_then(|(_, picks)| picks.get(n).cloned()));
+    let Some(Pick::Window { label, .. }) = pick else {
+        say(daemon, requester, key, "That list is old: ask again with /exit.", None);
+        return;
+    };
+    let buttons = json!({"inline_keyboard": [
+        [{"text": "⛔ Закрыть сразу", "callback_data": format!("xm:{n}:stop")}],
+        [{"text": "⏳ Дать закончить работу", "callback_data": format!("xm:{n}:finish-work")}],
+        [{"text": "✖ Отмена", "callback_data": format!("xm:{n}:cancel")}],
+    ]});
+    say(daemon, requester, key, &format!("Закрыть окно: {label}?\n⛔ сразу: работа останавливается, процесс делегата завершается.\n⏳ дать закончить: текущая работа доходит до конца в демоне, окно закрывается сейчас."), Some(buttons));
+}
+
+/// The window leaves with `mode`, or nothing happens on cancel; the chat hears when it has gone.
+fn exit_do(daemon: &Daemon, requester: &Requester, key: Key, n: usize, mode: &str) {
+    let pick = daemon.telegram.lock().expect("telegram").as_ref().and_then(|c| c.picks.get(&key).filter(|(at, _)| at.elapsed() < PICKS_LIVE).and_then(|(_, picks)| picks.get(n).cloned()));
+    let Some(Pick::Window { id, label }) = pick else {
+        say(daemon, requester, key, "That list is old: ask again with /exit.", None);
+        return;
+    };
+    if !matches!(mode, "stop" | "finish-work") {
+        say(daemon, requester, key, &format!("Отменено: окно {label} остаётся."), None);
+        return;
+    }
+    if !daemon.conversations().is_some_and(|h| h.exit_window(&id, mode)) {
+        say(daemon, requester, key, &format!("Окно {label} уже закрыто."), None);
+        return;
+    }
+    say(daemon, requester, key, &format!("Закрываю окно: {label}…"), None);
+    daemon.with_channel(|c| c.exiting.push((key, std::time::Instant::now(), id, label)));
+}
+
+/// Which windows asked to leave have gone, and which are late (CON-192). Answers (gone, late).
+pub fn exits_settled(asked: &[(Key, std::time::Instant, String, String)], open: &[String], wait: Duration) -> (Vec<usize>, Vec<usize>) {
+    let mut gone = Vec::new();
+    let mut late = Vec::new();
+    for (i, (_, at, id, _)) in asked.iter().enumerate() {
+        if !open.contains(id) {
+            gone.push(i);
+        } else if at.elapsed() >= wait {
+            late.push(i);
+        }
+    }
+    (gone, late)
 }
 
 /// /open: the known conversations by project, the one open most lately first (CON-167).

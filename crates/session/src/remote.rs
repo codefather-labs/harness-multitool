@@ -1416,6 +1416,39 @@ impl ConversationHost for DaemonHost {
         self.windows.lock().expect("windows").iter().filter(|(_, w)| !w.closed).map(|(id, _)| id.clone()).collect::<Vec<_>>()
     }
 
+    fn open_windows(&self) -> Vec<harness_daemon::OpenWindow> {
+        let windows = self.windows.lock().expect("windows");
+        let data = self.data_dir.to_string_lossy();
+        let mut out: Vec<harness_daemon::OpenWindow> = windows
+            .iter()
+            .filter(|(_, w)| !w.closed && w.reachable())
+            .map(|(id, window)| {
+                let sessions = window
+                    .sessions
+                    .open()
+                    .into_iter()
+                    .map(|(_, session)| {
+                        let nick = self.nicks.lock().expect("nicks").get(&session).cloned();
+                        let title = nick.clone().unwrap_or_else(|| crate::title_of(&data, &window.root, &session));
+                        harness_daemon::OpenSession { title, nick, id: session, root: window.root.clone() }
+                    })
+                    .collect();
+                harness_daemon::OpenWindow { id: id.clone(), root: window.root.clone(), sessions }
+            })
+            .collect();
+        out.sort_by(|a, b| a.root.cmp(&b.root).then(a.id.cmp(&b.id)));
+        out
+    }
+
+    fn exit_window(&self, window: &str, leave: &str) -> bool {
+        let mut windows = self.windows.lock().expect("windows");
+        let Some(w) = windows.get_mut(window).filter(|w| !w.closed) else { return false };
+        w.say(json!({"kind": "exit", "leave": leave}));
+        drop(windows);
+        self.wake.notify_all();
+        true
+    }
+
     fn rename(&self, session: &str, nick: &str) -> bool {
         let mut windows = self.windows.lock().expect("windows");
         for window in windows.values_mut().filter(|w| w.reachable()) {
@@ -1669,6 +1702,8 @@ pub struct RemoteSessions {
     asked_by: Arc<std::sync::atomic::AtomicU64>,
     /// Where a debug call has asked this window to draw itself.
     shot: Arc<Mutex<Option<String>>>,
+    /// How Telegram's Exit asked this window to leave (CON-192).
+    exit: Arc<Mutex<Option<String>>>,
 }
 
 /// The daemon a window speaks to, and what it takes to open the window again in another one: a
@@ -1745,8 +1780,9 @@ impl RemoteSessions {
         let (tabs, stopped): (Arc<Mutex<HashSet<u64>>>, Arc<AtomicBool>) = (Arc::default(), Arc::default());
         let asked_by: Arc<std::sync::atomic::AtomicU64> = Arc::default();
         let shot: Arc<Mutex<Option<String>>> = Arc::default();
-        listen(link.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), Asks { reload, asked_by: asked_by.clone(), shot: shot.clone() });
-        Ok(RemoteSessions { link, window, incoming, tabs, stopped, say: sender, asked_by, shot })
+        let exit: Arc<Mutex<Option<String>>> = Arc::default();
+        listen(link.clone(), window.clone(), sender.clone(), tabs.clone(), stopped.clone(), Asks { reload, asked_by: asked_by.clone(), shot: shot.clone(), exit: exit.clone() });
+        Ok(RemoteSessions { link, window, incoming, tabs, stopped, say: sender, asked_by, shot, exit })
     }
 
     /// One operation of this window, through whichever daemon now answers.
@@ -1823,13 +1859,14 @@ struct Asks {
     reload: Arc<AtomicBool>,
     asked_by: Arc<std::sync::atomic::AtomicU64>,
     shot: Arc<Mutex<Option<String>>>,
+    exit: Arc<Mutex<Option<String>>>,
 }
 
 /// Hears the window's conversation events, pushed by the daemon on the window's connection
 /// (CON-130). The client subscribes again by itself after a loss, from where it was, or from the
 /// start in a new daemon, which numbers them afresh.
 fn listen(link: Arc<Mutex<Link>>, window: String, sender: Sender<FromSession>, _tabs: Arc<Mutex<HashSet<u64>>>, stopped: Arc<AtomicBool>, asks: Asks) {
-    let Asks { reload, asked_by, shot } = asks;
+    let Asks { reload, asked_by, shot, exit } = asks;
     std::thread::spawn(move || {
         let client = link.lock().expect("link").client.clone();
         let batches = client.subscribe("conversations", &window, 0);
@@ -1838,7 +1875,10 @@ fn listen(link: Arc<Mutex<Link>>, window: String, sender: Sender<FromSession>, _
                 return;
             }
             for event in events {
-                if event["event"]["kind"] == "screenshot" {
+                if event["event"]["kind"] == "exit" {
+                    // Telegram's Exit: this window leaves as /exit with that choice (CON-192).
+                    *exit.lock().expect("exit") = Some(event["event"]["leave"].as_str().unwrap_or("stop").to_string());
+                } else if event["event"]["kind"] == "screenshot" {
                     *shot.lock().expect("shot") = event["event"]["path"].as_str().map(str::to_string);
                 } else if event["event"]["kind"] == "reload" {
                     // Which tab asked, if the asking came from outside this process.
@@ -1996,6 +2036,14 @@ impl SessionLink {
         match self {
             SessionLink::Local(_) => None,
             SessionLink::Remote(r) => r.shot.lock().expect("shot").take(),
+        }
+    }
+
+    /// How this window was asked from outside to leave, if it was (CON-192).
+    pub fn exit_asked(&self) -> Option<String> {
+        match self {
+            SessionLink::Local(_) => None,
+            SessionLink::Remote(r) => r.exit.lock().expect("exit").take(),
         }
     }
 

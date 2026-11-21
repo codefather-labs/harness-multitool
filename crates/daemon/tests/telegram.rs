@@ -284,6 +284,9 @@ struct FakeHost {
     plans: Mutex<Vec<(String, bool)>>,
     reloads: Mutex<u32>,
     windows: Mutex<Vec<String>>,
+    /// The windows with their sessions, for Exit (CON-192), and the exits asked.
+    open_windows: Mutex<Vec<OpenWindow>>,
+    exits: Mutex<Vec<(String, String)>>,
 }
 
 impl ConversationHost for FakeHost {
@@ -314,6 +317,13 @@ impl ConversationHost for FakeHost {
     fn reload_all(&self) -> Vec<String> {
         *self.reloads.lock().unwrap() += 1;
         self.windows.lock().unwrap().clone()
+    }
+    fn open_windows(&self) -> Vec<OpenWindow> {
+        self.open_windows.lock().unwrap().clone()
+    }
+    fn exit_window(&self, window: &str, leave: &str) -> bool {
+        self.exits.lock().unwrap().push((window.to_string(), leave.to_string()));
+        self.open_windows.lock().unwrap().iter().any(|w| w.id == window)
     }
     fn windows(&self) -> Vec<String> {
         self.windows.lock().unwrap().clone()
@@ -832,7 +842,7 @@ fn the_service_button_opens_the_controls() {
     until("the menu", || said(&w.fake).iter().any(|t| t == "What should the harness do?"));
     let menu = w.fake.lock().unwrap().sent.iter().find(|b| b["text"] == "What should the harness do?").cloned().unwrap();
     let names: Vec<String> = menu["reply_markup"]["inline_keyboard"].as_array().unwrap().iter().flat_map(|row| row.as_array().unwrap().iter().map(|b| b["callback_data"].as_str().unwrap().to_string())).collect();
-    assert_eq!(names, ["svc:open", "svc:new", "svc:reload", "svc:restart", "svc:agents", "svc:whoami"]);
+    assert_eq!(names, ["svc:open", "svc:new", "svc:reload", "svc:restart", "svc:agents", "svc:whoami", "svc:exit"], "Exit is the last (CON-192)");
     assert_eq!(w.host.got.lock().unwrap().len(), 1, "the button's text reached no session");
     // Its buttons.
     w.fake.lock().unwrap().updates.extend([tap(3, 666, -100, "svc:reload"), tap(4, 42, -100, "svc:reload"), tap(5, 42, -100, "svc:restart"), tap(6, 42, -100, "svc:whoami")]);
@@ -842,4 +852,62 @@ fn the_service_button_opens_the_controls() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(*w.host.reloads.lock().unwrap(), 1, "the stranger's press did nothing");
     assert_eq!(with_button(&w.fake), 1, "the button is sent once");
+}
+
+/// CON-192: Exit in Telegram's Service lists the open windows with their agents and project, asks
+/// how, and the window is asked to leave so; the chat is told when it has gone. A cancel, a
+/// stranger and an old list do nothing.
+#[test]
+fn a_window_is_closed_from_telegram() {
+    let w = bound_world(vec![session("s1", "alpha")], vec![]);
+    // No window: said so.
+    w.fake.lock().unwrap().updates.push(message(1, -100, None, "/exit"));
+    until("none", || said(&w.fake).iter().any(|t| t == "Открытых окон нет."));
+    // Two windows, one holding two agents.
+    let win = |id: &str, root: &str, sessions: Vec<OpenSession>| OpenWindow { id: id.into(), root: root.into(), sessions };
+    *w.host.open_windows.lock().unwrap() = vec![
+        win("conv-1-1", "/work/shop", vec![OpenSession { nick: Some("lead".into()), ..session("s1", "alpha") }, OpenSession { nick: Some("qa".into()), ..session("s2", "beta") }]),
+        win("conv-2-1", "/work/site", vec![session("s3", "site: gamma")]),
+    ];
+    *w.host.windows.lock().unwrap() = vec!["conv-1-1".into(), "conv-2-1".into()];
+    // The Service menu has Exit.
+    w.fake.lock().unwrap().updates.push(message(2, -100, None, "🛠 Service"));
+    until("menu", || w.fake.lock().unwrap().sent.iter().any(|b| b["reply_markup"].to_string().contains("svc:exit")));
+    w.fake.lock().unwrap().updates.push(tap(3, 42, -100, "svc:exit"));
+    until("the list", || said(&w.fake).iter().any(|t| t.contains("Какое окно закрыть")));
+    let list = w.fake.lock().unwrap().sent.iter().rev().find(|b| b["text"].as_str().unwrap_or_default().contains("Какое окно закрыть")).cloned().unwrap();
+    let rows: Vec<(String, String)> = list["reply_markup"]["inline_keyboard"].as_array().unwrap().iter().map(|r| (r[0]["text"].as_str().unwrap().to_string(), r[0]["callback_data"].as_str().unwrap().to_string())).collect();
+    assert_eq!(rows, [("🚪 lead, qa · shop".to_string(), "x:0".to_string()), ("🚪 gamma · site".to_string(), "x:1".to_string())]);
+    // A pick asks how; a cancel changes nothing.
+    w.fake.lock().unwrap().updates.extend([tap(4, 42, -100, "x:0"), tap(5, 42, -100, "xm:0:cancel")]);
+    until("asked how", || said(&w.fake).iter().any(|t| t.starts_with("Закрыть окно: lead, qa · shop?")));
+    until("cancelled", || said(&w.fake).iter().any(|t| t.contains("Отменено: окно lead, qa · shop остаётся.")));
+    assert!(w.host.exits.lock().unwrap().is_empty());
+    // A stranger's tap does nothing.
+    w.fake.lock().unwrap().updates.push(tap(6, 666, -100, "xm:0:stop"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(w.host.exits.lock().unwrap().is_empty(), "a stranger closes nothing");
+    // Stop: the window is asked to leave so, and the chat hears when it has gone.
+    w.fake.lock().unwrap().updates.push(tap(7, 42, -100, "xm:0:stop"));
+    until("asked to leave", || w.host.exits.lock().unwrap().as_slice() == [("conv-1-1".to_string(), "stop".to_string())]);
+    until("closing said", || said(&w.fake).iter().any(|t| t == "Закрываю окно: lead, qa · shop…"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!said(&w.fake).iter().any(|t| t.starts_with("✅ Окно закрыто")), "not before it has gone");
+    *w.host.windows.lock().unwrap() = vec!["conv-2-1".into()];
+    until("done", || said(&w.fake).iter().any(|t| t == "✅ Окно закрыто: lead, qa · shop."));
+    // finish-work goes as it is.
+    w.fake.lock().unwrap().updates.push(tap(8, 42, -100, "xm:1:finish-work"));
+    until("asked finish-work", || w.host.exits.lock().unwrap().last() == Some(&("conv-2-1".to_string(), "finish-work".to_string())));
+}
+
+/// CON-192: a window still there after the wait is said not closed.
+#[test]
+fn a_window_that_does_not_leave_is_said_late() {
+    use harness_daemon::telegram::exits_settled;
+    let key = (-100_i64, None);
+    let long_ago = Instant::now() - Duration::from_secs(40);
+    let asked = vec![(key, long_ago, "conv-1-1".to_string(), "a".to_string()), (key, Instant::now(), "conv-2-1".to_string(), "b".to_string()), (key, Instant::now(), "conv-3-1".to_string(), "c".to_string())];
+    let (gone, late) = exits_settled(&asked, &["conv-1-1".to_string(), "conv-2-1".to_string()], Duration::from_secs(30));
+    assert_eq!(gone, [2], "conv-3-1 has gone");
+    assert_eq!(late, [0], "conv-1-1 waited too long; conv-2-1 is still within the wait");
 }

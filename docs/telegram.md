@@ -91,7 +91,14 @@ A message with no binding goes to the only open session, and says so. With sever
 
 ### The Service button
 
-A `🛠 Service` button stays at the bottom of each chat (CON-169). It reaches no agent, and opens these controls as buttons: Open, New, Reload windows, Restart daemon, Sessions and Which session.
+A `🛠 Service` button stays at the bottom of each chat (CON-169). It reaches no agent, and opens these controls as buttons: Open, New, Reload windows, Restart daemon, Sessions, Which session and Exit.
+
+**Exit** (CON-192) closes a multitool window from the phone, as `/exit` in the window does. It lists the open windows, each with its agents and project. A pick asks how:
+- ⛔ close at once: every run stops, the delegate's process ends, and the window quits;
+- ⏳ let it finish: the run goes on to its end in the daemon, and the window quits now;
+- ✖ cancel.
+
+The chat is told when the window has gone (`✅ Окно закрыто`), or that it has not after 30 s. `/exit` typed in the chat does the same.
 
 ### Status
 
