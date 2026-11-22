@@ -40,13 +40,7 @@ A decision that fails 1, 2 or 3 is reconsidered, not committed. A decision that 
 
 ## Project journal
 
-The journal carries these checks across sessions (`~/.claude/rules/project-journal.md`). Before deciding, search it (`journal_search` with your keywords) and cite the entries you rely on as `journal#<id>`. After deciding, add one entry per decision, finding or falsified assumption, plus an `update` entry per change.
-
-- An assumption you go on with is journaled flagged `unverified`, and closed only after a separate `Verifies journal#N` entry says what was checked.
-- An open question for the user is journaled flagged `question`; a choice only the user makes, left for later, is journaled flagged `wait-for-decision` with its options, and closed with their decision.
-- A hack's removal path is journaled flagged `todo`.
-
-Before relying on an entry, read it with `journal_get`: a `deprecated` entry is not evidence, and an `unverified` one is an assumption.
+What these checks settle outlives the answer in the project's journal (`project-journal.md`): an assumption you go on with is an entry flagged `unverified`, a question for the user is flagged `question` or `wait-for-decision`, a hack's removal path a `todo`. A `deprecated` entry is not evidence, and an `unverified` one is an assumption.
 
 ## TL;DR
 

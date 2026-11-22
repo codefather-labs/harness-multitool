@@ -122,6 +122,7 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
             out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
         }
         out.push(Rc::new(crate::host_tools::PermissionAsk { client: client.clone(), window: window.clone(), tab: *tab }));
+        out.push(Rc::new(crate::host_tools::AskUser));
         out.push(Rc::new(crate::host_tools::AgentList { client: client.clone(), window: window.clone() }));
         out.push(Rc::new(crate::host_tools::AgentSend { client: client.clone(), window: window.clone(), tab: *tab }));
         out.push(Rc::new(crate::host_tools::CallbackUrl { client: client.clone(), window: window.clone(), tab: *tab }));

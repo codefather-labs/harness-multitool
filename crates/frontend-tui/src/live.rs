@@ -55,7 +55,7 @@ impl Feed {
     pub fn apply(&mut self, v: &mut SessionView, entry: &LogEntry) {
         self.note_activity(v, entry);
         match &entry.event {
-            Event::ToolRequested { call, .. } if call.name == "ask_user" => {
+            Event::ToolRequested { call, .. } if harness_api::tool_names::is_ask_user(&call.name) => {
                 // A slave's question is its orchestrator's to answer, not the user's (CON-100).
                 if v.orchestra.as_deref() != Some("slave") {
                     v.question = harness_api::question::Question::parse(&call.input).ok().map(|q| (q, 0));
@@ -1362,5 +1362,16 @@ mod slave_questions {
         let mut slave = SessionView { orchestra: Some("slave".into()), ..Default::default() };
         Feed::new(|_| String::new(), 1000).apply(&mut slave, &ask);
         assert!(slave.question.is_none(), "its orchestrator's to answer");
+    }
+
+    /// CON-200: a delegate's ask_user, by Claude Code's or Codex's name, opens the same panel.
+    #[test]
+    fn a_delegates_question_opens_the_panel() {
+        for name in ["mcp__mode__ask_user", "mode__ask_user"] {
+            let ask = LogEntry { seq: 1, at_ms: 0, event: Event::ToolRequested { call: harness_api::ToolCall { id: "q".into(), name: name.into(), input: serde_json::json!({"question": "Which?", "options": [{"label": "A"}]}) }, capabilities: vec![] } };
+            let mut v = SessionView::default();
+            Feed::new(|_| String::new(), 1000).apply(&mut v, &ask);
+            assert_eq!(v.question.as_ref().map(|(q, _)| q.text.as_str()), Some("Which?"), "{name}");
+        }
     }
 }

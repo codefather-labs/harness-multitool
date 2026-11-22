@@ -1078,7 +1078,7 @@ impl DaemonHost {
                         }
                         // A slave's question goes to its master (CON-100).
                         if let harness_api::Event::ToolRequested { call, .. } = &entry.event
-                            && call.name == "ask_user"
+                            && harness_api::tool_names::is_ask_user(&call.name)
                             && let Some(session) = window.sessions.session_of(*tab)
                             && let Ok(question) = harness_api::question::Question::parse(&call.input)
                         {

@@ -4,7 +4,7 @@ How an agent works through this harness. It binds every agent on every adapter (
 
 Read this file before acting, and again after a compaction or a resume: the harness gives you its path then. Tools and modes are described in their own definitions.
 
-Where a tool is named `mode__x`, on a program running as an agent backend it is `mcp__mode__x`; `journal_x`, `mindmap_x`, `flowchart_x`, `map_x` and `agent_x` are `mcp__harness__x` there, such as `mcp__harness__journal_agenda`. These tools are this project's only journal and maps: a command-line journal or other instructions that name one reach a different store, and do not count.
+Where a tool is named `mode__x`, on a program running as an agent backend it is `mcp__mode__x`, and `ask_user` is `mcp__mode__ask_user` there (CON-200); `journal_x`, `mindmap_x`, `flowchart_x`, `map_x` and `agent_x` are `mcp__harness__x` there, such as `mcp__harness__journal_agenda`. These tools are this project's only journal and maps: a command-line journal or other instructions that name one reach a different store, and do not count.
 
 ## 1. What the user says
 

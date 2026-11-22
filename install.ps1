@@ -202,6 +202,23 @@ function Find-Claudebase {
     if ((Test-Path $md) -and (Select-String -Path $md -Pattern 'claudebase|claude-code-sdlc' -Quiet)) { $found += $md }
     foreach ($d in (Join-Path $ClaudeDir 'plugins/claudebase'), (Join-Path $ClaudeDir 'plugins/marketplaces/claudebase-dev'), (Join-Path $UserHome '.claudebase')) { if (Test-Path $d) { $found += $d } }
     if (Test-Path $ClaudeDir) { $found += Get-ChildItem $ClaudeDir -Directory | Where-Object { $_.Name -like 'claudebase-backup-*' } | ForEach-Object { $_.FullName } }
+    # The agents and commands of the claude-code-sdlc pipeline, and the on-demand agents it generated.
+    $pipelineAgents = 'architect', 'ba-analyst', 'build-runner', 'changelog-writer', 'code-reviewer', 'consolidator', 'corporate-code-style-reviewer', 'doc-updater', 'e2e-runner', 'planner', 'prd-writer', 'qa-engineer', 'qa-planner', 'red-team', 'refactor-cleaner', 'reflection', 'release-engineer', 'resource-architect', 'role-planner', 'security-auditor', 'test-writer', 'verifier'
+    $pipelineCommands = 'bootstrap-feature', 'consolidate', 'context-refresh', 'develop-feature', 'implement-slice', 'knowledge-ingest', 'merge-ready', 'qa-cycle', 'reflect', 'release', 'update-claudebase'
+    $sdlc = 'claudebase|claude-code-sdlc|sdlc|scratchpad|role-planner'
+    $agents = Join-Path $ClaudeDir 'agents'
+    if (Test-Path $agents) {
+        foreach ($f in Get-ChildItem $agents -File -Filter '*.md') {
+            $ondemand = $f.Name -like 'ondemand-*' -and (Select-String -Path $f.FullName -Pattern 'scope: on-demand' -Quiet)
+            if ($ondemand -or (($pipelineAgents -contains $f.BaseName) -and (Select-String -Path $f.FullName -Pattern $sdlc -Quiet))) { $found += $f.FullName }
+        }
+    }
+    $commands = Join-Path $ClaudeDir 'commands'
+    if (Test-Path $commands) {
+        foreach ($f in Get-ChildItem $commands -File -Filter '*.md') {
+            if (($pipelineCommands -contains $f.BaseName) -and (Select-String -Path $f.FullName -Pattern $sdlc -Quiet)) { $found += $f.FullName }
+        }
+    }
     $found
 }
 

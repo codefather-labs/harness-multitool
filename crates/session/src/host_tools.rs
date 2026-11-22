@@ -360,6 +360,33 @@ impl Tool for GameTool {
 /// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
 pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close"];
 
+/// ask_user for a delegate's program (CON-200), on the mode server: the own loop's engine has its
+/// own. The question is in the call itself, which the window shows as the own loop's; the call
+/// only tells the program to end its turn, so the answer comes as its next message.
+pub struct AskUser;
+
+impl Tool for AskUser {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "mode__ask_user".into(),
+            description: "Ask the user what only they can decide, and wait: the question is shown, you end your turn, and the answer comes as their next message. Offer options when the answers are known: the user picks one or types their own. One question per call.".into(),
+            schema: json!({"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "maxItems": harness_api::question::MAX_OPTIONS, "description": "The likely answers, best first.", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string", "description": "What choosing this means."}}, "required": ["label"]}}}, "required": ["question"]}),
+        }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let answer = match harness_api::question::Question::parse(input) {
+            Ok(_) => ToolOutput::ok("Asked: the question is shown to the user. End your turn now, saying nothing more; their answer comes as your next message."),
+            Err(e) => ToolOutput::error(e),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
 /// The plan and debug modes over MCP: on a native loop the engine answers them itself.
 pub const DELEGATE_MODE_TOOLS: [&str; 3] = ["mode__plan_enter", "mode__plan_exit", "mode__debug"];
 
@@ -487,5 +514,22 @@ impl Tool for ModeTool {
             Err(error) => ToolOutput::error(error),
         };
         Box::pin(std::future::ready(answer))
+    }
+}
+
+#[cfg(test)]
+mod ask_user_tests {
+    use super::*;
+
+    /// CON-200: a delegate's ask_user is on the mode server; its call tells the program to end its turn.
+    #[test]
+    fn a_delegate_asks_and_is_told_to_end_its_turn() {
+        let tool = AskUser;
+        assert_eq!(tool.spec().name, "mode__ask_user", "served as ask_user on the mode server: mcp__mode__ask_user");
+        let cx = ToolContext { platform: harness_platform_native::platform(std::env::temp_dir()), granted: vec![], root: ".".into() };
+        let asked = pollster::block_on(tool.execute(&json!({"question": "Which one?", "options": [{"label": "A"}, {"label": "B"}]}), &cx));
+        assert!(!asked.is_error && asked.text.contains("End your turn now"), "{asked:?}");
+        let bad = pollster::block_on(tool.execute(&json!({"options": []}), &cx));
+        assert!(bad.is_error, "a question is required");
     }
 }

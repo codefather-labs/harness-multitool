@@ -47,6 +47,10 @@ pub fn to_own_loop(name: &str, input: &Value) -> Option<(String, Value)> {
         // The own loop's edit with old_text empty writes the whole file.
         return Some(("edit".to_string(), json!({"path": input["file_path"], "old_text": "", "new_text": input["content"]})));
     }
+    // ask_user is the own loop's own tool, without mode__ (CON-200).
+    if is_ask_user(name) && name != "ask_user" {
+        return Some(("ask_user".to_string(), input.clone()));
+    }
     if let Some(rest) = name.strip_prefix(MODE_PREFIX) {
         return Some((format!("mode__{rest}"), input.clone()));
     }
@@ -65,6 +69,9 @@ pub fn to_claude_code(name: &str, input: &Value) -> (String, Value) {
     if let Some((cc, _, args)) = PAIRS.iter().find(|(_, own, _)| *own == name) {
         return (cc.to_string(), renamed(input, args, false));
     }
+    if name == "ask_user" {
+        return (format!("{MODE_PREFIX}ask_user"), input.clone());
+    }
     let claude_codes = name.starts_with("mcp__") || name.chars().next().is_some_and(char::is_uppercase);
     if claude_codes {
         return (name.to_string(), input.clone());
@@ -73,6 +80,12 @@ pub fn to_claude_code(name: &str, input: &Value) -> (String, Value) {
         return (format!("{MODE_PREFIX}{rest}"), input.clone());
     }
     (format!("{HARNESS_PREFIX}{name}"), input.clone())
+}
+
+/// Whether a call is ask_user under any adapter's name for it: the own loop's `ask_user`, Claude
+/// Code's `mcp__mode__ask_user`, Codex's `mode__ask_user` (CON-200).
+pub fn is_ask_user(name: &str) -> bool {
+    matches!(name, "ask_user" | "mode__ask_user" | "mcp__mode__ask_user")
 }
 
 /// For an unknown tool's answer: the tool this session has for it, with its arguments.
@@ -120,6 +133,17 @@ mod tests {
         assert_eq!(to_claude_code("Read", &json!({"file_path": "a"})).0, "Read");
         assert_eq!(to_claude_code("mcp__harness__journal_get", &json!({})).0, "mcp__harness__journal_get");
         assert_eq!(to_claude_code("set_nick", &json!({"nick": "x"})).0, "mcp__harness__set_nick");
+    }
+
+    #[test]
+    fn ask_user_is_known_by_every_adapters_name() {
+        for name in ["ask_user", "mode__ask_user", "mcp__mode__ask_user"] {
+            assert!(is_ask_user(name), "{name}");
+        }
+        assert!(!is_ask_user("mcp__harness__ask_user") && !is_ask_user("AskUserQuestion"));
+        assert_eq!(to_own_loop("mcp__mode__ask_user", &json!({"question": "q"})), Some(("ask_user".to_string(), json!({"question": "q"}))));
+        assert_eq!(to_own_loop("mode__ask_user", &json!({})).unwrap().0, "ask_user", "Codex's name");
+        assert_eq!(to_claude_code("ask_user", &json!({})).0, "mcp__mode__ask_user");
     }
 
     #[test]

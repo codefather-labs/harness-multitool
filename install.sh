@@ -397,6 +397,27 @@ for n in own + (sdlc if marked else []):
         found.append(("file", j(rules, n)))
 if names_it(j(claude, "CLAUDE.md")):
     found.append(("file", j(claude, "CLAUDE.md")))
+# The agents and commands of the claude-code-sdlc pipeline, and the on-demand agents it generated.
+pipeline_agents = ["architect", "ba-analyst", "build-runner", "changelog-writer", "code-reviewer", "consolidator", "corporate-code-style-reviewer", "doc-updater", "e2e-runner", "planner", "prd-writer", "qa-engineer", "qa-planner", "red-team", "refactor-cleaner", "reflection", "release-engineer", "resource-architect", "role-planner", "security-auditor", "test-writer", "verifier"]
+pipeline_commands = ["bootstrap-feature", "consolidate", "context-refresh", "develop-feature", "implement-slice", "knowledge-ingest", "merge-ready", "qa-cycle", "reflect", "release", "update-claudebase"]
+def sdlc(path):
+    try:
+        return re.search(r"claudebase|claude-code-sdlc|sdlc|scratchpad|role-planner", open(path, errors="replace").read(), re.I) is not None
+    except OSError:
+        return False
+agents = j(claude, "agents")
+for n in sorted(os.listdir(agents)) if os.path.isdir(agents) else []:
+    p = j(agents, n)
+    if not os.path.isfile(p):
+        continue
+    ondemand = n.startswith("ondemand-") and "scope: on-demand" in open(p, errors="replace").read()
+    if ondemand or (n[:-3] in pipeline_agents and n.endswith(".md") and sdlc(p)):
+        found.append(("file", p))
+commands = j(claude, "commands")
+for n in sorted(os.listdir(commands)) if os.path.isdir(commands) else []:
+    p = j(commands, n)
+    if os.path.isfile(p) and n.endswith(".md") and n[:-3] in pipeline_commands and sdlc(p):
+        found.append(("file", p))
 for d in [j(claude, "plugins", "claudebase"), j(claude, "plugins", "marketplaces", "claudebase-dev"), j(home, ".claudebase")]:
     if os.path.isdir(d):
         found.append(("dir", d))
