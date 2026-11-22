@@ -1385,6 +1385,17 @@ pub struct Composer {
     pub back: usize,
     /// The width of its last drawing, for moving up and down its rows.
     pub drawn_width: std::cell::Cell<u16>,
+    /// Where Up and Down stand in the messages sent before (CON-199).
+    pub walk: Option<Walk>,
+}
+
+/// A walk through the sent messages: which one is shown, what was typed before, and the text as
+/// shown, so an edit is seen as the end of the walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Walk {
+    pub index: usize,
+    pub draft: String,
+    pub shown: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1468,6 +1479,38 @@ impl Composer {
         let rows = crate::widgets::text_rows(&self.text, self.drawn_width.get());
         let row = crate::widgets::row_of(&rows, at);
         self.move_to(rows[row].0 + rows[row].1);
+    }
+
+    /// The message sent before the one shown, or the newest when none is shown (CON-199): what was
+    /// typed is kept as the draft, the cursor goes to the start, and the oldest stays. False when
+    /// nothing was sent.
+    pub fn history_back(&mut self, sent: &[String]) -> bool {
+        if sent.is_empty() {
+            return false;
+        }
+        let (index, draft) = match &self.walk {
+            Some(w) if w.shown == self.text => (w.index, w.draft.clone()),
+            _ => (sent.len(), self.text.clone()),
+        };
+        let index = index.saturating_sub(1).min(sent.len() - 1);
+        self.text = sent[index].clone();
+        self.move_to(0);
+        self.walk = Some(Walk { index, draft, shown: self.text.clone() });
+        true
+    }
+
+    /// The message sent after the one shown, and past the newest the draft back, the cursor at the
+    /// end (CON-199). False when no walk is on.
+    pub fn history_forward(&mut self, sent: &[String]) -> bool {
+        let Some(w) = self.walk.take().filter(|w| w.shown == self.text) else { return false };
+        if w.index + 1 < sent.len() {
+            self.text = sent[w.index + 1].clone();
+            self.walk = Some(Walk { index: w.index + 1, draft: w.draft, shown: self.text.clone() });
+        } else {
+            self.text = w.draft;
+        }
+        self.back = 0;
+        true
     }
 
     /// One row up or down, keeping the column. False if there is no row that way.

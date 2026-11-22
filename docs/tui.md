@@ -110,6 +110,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | session | `/exit`, `/quit`, `/q`, Ctrl+C | quit |
 | session | Esc | stop a generating agent, else close the notification toast |
 | session | PageUp / PageDown · Home / End · mouse wheel | scroll the transcript · to the start / back to the newest |
+| session | ↑ on the composer's top row · ↓ on its last row | the message sent before · the one after, and past the newest what you were typing (CON-199) |
 | session | Ctrl+G · click a FLOW row | open or close the newest flowchart instance · that one |
 | session | Ctrl+O · click `▸ Thought for …` | fold or unfold the newest reasoning · that one |
 | session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
@@ -168,7 +169,7 @@ Reads inside the project run. Writes, commands and network use ask:
 ### Sending messages during a run
 
 - A message sent during a run waits above the composer. It reaches the agent at its next step, without interrupting it.
-- `↑` on an empty composer takes the last one back.
+- `↑` on an empty composer takes the last one back. With nothing queued, `↑` on the composer's top row recalls what you sent before in this tab, and `Enter` sends it again (CON-199).
 - `Esc` stops the run, and then what is queued goes at once. Esc stops a generating agent at its next chunk, and the next message continues the conversation.
 
 When the agent asks a question, its options wait above the composer. `↑`/`↓` and `Enter`, or a number, pick one. Typing answers in your own words.

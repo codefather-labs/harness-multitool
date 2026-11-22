@@ -159,6 +159,12 @@ pub fn key(s: &mut AppState, k: Key) -> Outcome {
                 Key::End if !w.view().composer.text.is_empty() => w.view_mut().composer.end(),
                 Key::Up if w.view_mut().composer.vertical(true) => {}
                 Key::Down if w.view_mut().composer.vertical(false) => {}
+                // On the top or last row: the messages sent before (CON-199).
+                Key::Up | Key::Down => {
+                    let sent = sent_texts(w.view());
+                    let composer = &mut w.view_mut().composer;
+                    if k == Key::Up { composer.history_back(&sent) } else { composer.history_forward(&sent) };
+                }
                 Key::Home => scroll_view(w, 100_000),
                 Key::End => {
                     w.view_mut().scroll = 0;
@@ -478,6 +484,15 @@ fn answer_question(w: &mut Workspace, k: Key) -> bool {
     true
 }
 
+
+/// The messages the user sent in this tab, oldest first, as they were typed (CON-199).
+fn sent_texts(v: &crate::model::SessionView) -> Vec<String> {
+    v.transcript.iter().filter_map(|it| match it {
+        crate::model::Item::Turn { role: crate::model::Role::User, lines, .. } => Some(lines.join("\n")),
+        _ => None,
+    }).filter(|t| !t.trim().is_empty()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +516,100 @@ mod tests {
         let Mode::Session(w) = &s.mode else { unreachable!() };
         assert!(matches!(w.overlay, Some(crate::model::Overlay::Settings(_))));
         assert!(w.outbox.contains(&crate::model::Outgoing::ProjectCallbacks { tab }), "{:?}", w.outbox);
+    }
+
+    /// A session whose tab sent 'a', 'b' and 'c', with `draft` typed.
+    fn sent_abc(draft: &str) -> AppState {
+        let mut s = fixtures::main_session();
+        let Mode::Session(w) = &mut s.mode else { unreachable!() };
+        let v = w.view_mut();
+        v.queued.clear();
+        v.transcript.retain(|it| !matches!(it, crate::model::Item::Turn { role: crate::model::Role::User, .. }));
+        for t in ["a", "b", "c"] {
+            v.transcript.push(crate::model::Item::Turn { role: crate::model::Role::User, time: String::new(), lines: vec![t.into()], attached: vec![] });
+        }
+        v.composer.text = draft.into();
+        v.composer.back = 0;
+        v.composer.drawn_width.set(60);
+        s
+    }
+
+    fn typed(s: &AppState) -> String {
+        let Mode::Session(w) = &s.mode else { unreachable!() };
+        w.view().composer.text.clone()
+    }
+
+    /// CON-199: Up on the top row goes back through what was sent, Down comes forward to the draft.
+    #[test]
+    fn up_and_down_walk_the_sent_messages() {
+        let mut s = sent_abc("dr");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            key(&mut s, Key::Up);
+            seen.push(typed(&s));
+        }
+        assert_eq!(seen, ["c", "b", "a", "a"], "back to the oldest, and it stays");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            key(&mut s, Key::Down);
+            seen.push(typed(&s));
+        }
+        assert_eq!(seen, ["b", "c", "dr"], "forward, then the draft");
+        key(&mut s, Key::Down);
+        assert_eq!(typed(&s), "dr", "past the draft nothing happens");
+    }
+
+    /// CON-199: within a text of several rows the arrows only move the cursor.
+    #[test]
+    fn inside_a_text_the_arrows_move_the_cursor() {
+        let mut s = sent_abc("one\ntwo\nthree");
+        {
+            let Mode::Session(w) = &mut s.mode else { unreachable!() };
+            w.view_mut().composer.back = "three".len() + 1 + 2;
+        }
+        key(&mut s, Key::Up);
+        assert_eq!(typed(&s), "one\ntwo\nthree", "a row up, the text as it is");
+        key(&mut s, Key::Down);
+        key(&mut s, Key::Down);
+        assert_eq!(typed(&s), "one\ntwo\nthree");
+    }
+
+    /// CON-199: an edited recalled message is the new draft; Enter sends what is shown.
+    #[test]
+    fn an_edited_message_is_the_new_draft() {
+        let mut s = sent_abc("");
+        key(&mut s, Key::Up);
+        key(&mut s, Key::Up);
+        assert_eq!(typed(&s), "b");
+        {
+            let Mode::Session(w) = &mut s.mode else { unreachable!() };
+            w.view_mut().composer.back = 0;
+        }
+        key(&mut s, Key::Char('x'));
+        assert_eq!(typed(&s), "bx");
+        key(&mut s, Key::Up);
+        assert_eq!(typed(&s), "c", "a new walk from the newest");
+        key(&mut s, Key::Down);
+        assert_eq!(typed(&s), "bx", "the edit is the draft");
+    }
+
+    /// CON-199: a queued message still comes back first; with nothing sent, Up changes nothing.
+    #[test]
+    fn a_queued_message_comes_first_and_no_history_changes_nothing() {
+        let mut s = sent_abc("");
+        {
+            let Mode::Session(w) = &mut s.mode else { unreachable!() };
+            w.view_mut().queued.push(harness_api::PendingMessage::User { text: "waiting".into() });
+        }
+        key(&mut s, Key::Up);
+        assert_eq!(typed(&s), "waiting");
+        let mut s = sent_abc("draft");
+        {
+            let Mode::Session(w) = &mut s.mode else { unreachable!() };
+            w.view_mut().transcript.clear();
+        }
+        key(&mut s, Key::Up);
+        assert_eq!(typed(&s), "draft");
     }
 
     #[test]
