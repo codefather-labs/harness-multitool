@@ -65,14 +65,42 @@ pub fn font_blocks(env: impl Fn(&str) -> Option<String>) -> bool {
     env("TERM_PROGRAM").as_deref() == Some("Apple_Terminal")
 }
 
-/// Full and half blocks as cells filled with their colour: a cell's background fills its whole
-/// height, a font's block glyph may not. A half block becomes a whole cell, a little wider.
+static FONT_BLOCKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Says, for this process, that the terminal draws blocks from its font (journal#1642): what
+/// draws half rows, the spacers between cards, then keeps to whole cells.
+pub fn set_font_blocks(on: bool) {
+    FONT_BLOCKS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`set_font_blocks`] said so.
+pub fn font_blocks_on() -> bool {
+    FONT_BLOCKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn is_block(symbol: &str) -> bool {
+    matches!(symbol, "█" | "▌" | "▐" | "▀" | "▄" | "▖" | "▗" | "▘" | "▝" | "▙" | "▛" | "▜" | "▟")
+}
+
+/// Blocks as cells filled with their colour: a cell's background fills its whole height, a
+/// font's block glyph may not (journal#1619). A full block always; a half block only when it stands
+/// alone in its row, as a card's bar does, so a picture made of blocks, the logo, keeps its shape
+/// (journal#1642).
 pub fn fill_blocks(buf: &mut Buffer) {
-    for cell in buf.content.iter_mut() {
-        if matches!(cell.symbol(), "█" | "▌" | "▐") && cell.fg != Color::Reset {
-            let fill = cell.fg;
+    let width = buf.area.width as usize;
+    let symbols: Vec<bool> = buf.content.iter().map(|c| is_block(c.symbol())).collect();
+    for (i, cell) in buf.content.iter_mut().enumerate() {
+        let x = if width == 0 { 0 } else { i % width };
+        let alone = !(x > 0 && symbols[i - 1]) && !(x + 1 < width && symbols[i + 1]);
+        let fill = match cell.symbol() {
+            "█" => true,
+            "▌" | "▐" => alone,
+            _ => false,
+        };
+        if fill && cell.fg != Color::Reset {
+            let color = cell.fg;
             cell.set_symbol(" ");
-            cell.bg = fill;
+            cell.bg = color;
         }
     }
 }
@@ -122,16 +150,25 @@ mod tests {
     fn blocks_become_filled_cells_in_macos_terminal() {
         assert!(font_blocks(env(&[("TERM_PROGRAM", "Apple_Terminal")])));
         assert!(!font_blocks(env(&[("TERM_PROGRAM", "iTerm.app")])));
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
-        for (i, s) in ["▌", "█", "▐", "x"].iter().enumerate() {
+        // A card's bar, alone in its row, and a full block: filled.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        for (i, s) in ["▌", " ", "█", " ", "x"].iter().enumerate() {
             buf.content[i].set_symbol(s);
             buf.content[i].fg = Color::Indexed(214);
         }
         fill_blocks(&mut buf);
-        for cell in &buf.content[..3] {
-            assert_eq!((cell.symbol(), cell.bg), (" ", Color::Indexed(214)));
+        for i in [0, 2] {
+            assert_eq!((buf.content[i].symbol(), buf.content[i].bg), (" ", Color::Indexed(214)));
         }
-        assert_eq!(buf.content[3].symbol(), "x", "text stays");
+        assert_eq!(buf.content[4].symbol(), "x", "text stays");
+        // journal#1642: a half block beside other blocks is part of a picture, and keeps its shape.
+        let mut logo = Buffer::empty(Rect::new(0, 0, 3, 1));
+        for (i, s) in ["▐", "█", "▌"].iter().enumerate() {
+            logo.content[i].set_symbol(s);
+            logo.content[i].fg = Color::Indexed(214);
+        }
+        fill_blocks(&mut logo);
+        assert_eq!((logo.content[0].symbol(), logo.content[2].symbol()), ("▐", "▌"));
     }
 
     #[test]

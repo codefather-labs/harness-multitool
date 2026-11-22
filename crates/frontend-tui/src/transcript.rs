@@ -1189,8 +1189,20 @@ fn edge(d: &Drawn, row: u16, t: &Theme) -> Edge {
 /// for the card on each side, and between two cards a hair of the page colour, so text sits off
 /// the edges and the cards stay close (the owner's choice, 2026-11-01).
 fn spacer(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme) -> Drawn {
+    spacer_for(above, below, width, t, crate::colors::font_blocks_on())
+}
+
+fn spacer_for(above: Option<Edge>, below: Option<Edge>, width: u16, t: &Theme, font_blocks: bool) -> Drawn {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
     let page = t.background;
+    // A terminal whose font draws half blocks loosely (macOS Terminal) gets a clean row of the
+    // page instead: its half rows put a piece of a card's stripe into the next one (journal#1642).
+    if font_blocks {
+        for x in 0..width {
+            buf[(x, 0)].set_symbol(" ").set_fg(page).set_bg(page);
+        }
+        return Drawn { buf, placements: Vec::new(), hits: Vec::new(), item: None };
+    }
     let (sa, sb) = (above.as_ref().and_then(|e| e.surface), below.as_ref().and_then(|e| e.surface));
     let (ta, tb) = (above.as_ref().and_then(|e| e.stripe), below.as_ref().and_then(|e| e.stripe));
     for x in 0..width {
@@ -1436,6 +1448,18 @@ mod thinking_tests {
 
 #[cfg(test)]
 mod tests {
+    /// journal#1642: in macOS Terminal the row between two cards is the page's, with no half block
+    /// that could carry a piece of a stripe into the next card; elsewhere it keeps its half rows.
+    #[test]
+    fn the_spacer_keeps_to_whole_cells_where_fonts_draw_blocks() {
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let card = || Some(Edge { surface: Some(t.surface), stripe: Some(t.accent_line) });
+        let loose = spacer_for(card(), card(), 6, &t, true);
+        assert!(loose.buf.content.iter().all(|c| c.symbol() == " " && c.bg == t.background), "a clean row of the page");
+        let exact = spacer_for(card(), card(), 6, &t, false);
+        assert_eq!(exact.buf[(0, 0)].symbol(), "━", "the hairline between two cards, elsewhere");
+    }
+
     use super::*;
 
     /// journal#595: maps of a turn that outgrew the canvas, wholly and partly past its end, with

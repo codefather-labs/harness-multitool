@@ -3708,6 +3708,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     let color_depth = frontend_tui::colors::depth(|k| std::env::var(k).ok());
     // Blocks as filled cells where the font's leave gaps between rows (journal#1619).
     let font_blocks = frontend_tui::colors::font_blocks(|k| std::env::var(k).ok());
+    frontend_tui::colors::set_font_blocks(font_blocks);
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     // ratatui's own hook gives the terminal back, but knows nothing of these: after a panic the
     // shell would be typed mouse reports at (journal#595).
