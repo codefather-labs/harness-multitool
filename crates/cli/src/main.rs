@@ -3704,6 +3704,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     let mut current = Theme::builtin(BUILTIN[theme_idx].0)?;
 
     let mut terminal = ratatui::init();
+    // 256 colours where the terminal has no 24-bit colour, as macOS Terminal (journal#1615).
+    let color_depth = frontend_tui::colors::depth(|k| std::env::var(k).ok());
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     // ratatui's own hook gives the terminal back, but knows nothing of these: after a panic the
     // shell would be typed mouse reports at (journal#595).
@@ -3945,7 +3947,7 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                         selected_frame = Some(f.buffer_mut().clone());
                         frontend_tui::selection::highlight(f.buffer_mut(), sel);
                     }
-                    let Some(picker) = &picker else { return };
+                    if let Some(picker) = &picker {
                     for p in &drawn.placements {
                         let key = (p.graphic.clone(), current.id.clone(), p.rect.width, p.rect.height);
                         if !pictures.contains_key(&key) {
@@ -3963,6 +3965,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                             f.render_widget(Image::new(proto), p.rect);
                         }
                     }
+                    }
+                    frontend_tui::colors::fit_buffer(f.buffer_mut(), color_depth);
                     })?;
                 }
                 // The launch blink: redraw when the eyes change.

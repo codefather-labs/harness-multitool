@@ -64,7 +64,9 @@ It is a link, not a shell alias. An alias works only in an interactive shell of 
 
 ### Graphics
 
-Graphics default to `auto` without `MULTITOOL_GRAPHICS`. Nothing in the harness reads `COLORTERM`.
+Graphics default to `auto` without `MULTITOOL_GRAPHICS`.
+
+**Colours.** The themes are 24-bit. A terminal without 24-bit colour gets every colour as the nearest of xterm's 256 (crates/frontend-tui/src/colors.rs, journal#1615). That is macOS Terminal (`TERM_PROGRAM=Apple_Terminal`), unless it sets `COLORTERM=truecolor`. Terminal 2.14 of macOS 15 reads 38;2;r;g;b's numbers as attributes of their own, so the window fell apart in black blocks and underlines. `MULTITOOL_COLORS=256` or `truecolor` overrides it.
 
 **Text first.** Text mode is the primary target. The owner works in Ptyxis (VTE), which draws no pictures, so every screen must read well without them.
 

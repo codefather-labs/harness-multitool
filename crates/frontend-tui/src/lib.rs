@@ -5,6 +5,7 @@
 //! (docs/design/concept holds the mockups they are checked against).
 
 pub mod chat_edit;
+pub mod colors;
 pub mod debug;
 pub mod fixtures;
 pub mod flowchart;
