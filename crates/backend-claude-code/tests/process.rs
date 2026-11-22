@@ -90,6 +90,16 @@ fn a_missing_binary_a_silent_exit_and_an_error_result_are_errors() {
     assert!(end.unwrap_err().to_string().contains("Not logged in"));
 }
 
+/// journal#1619: a Claude Code too old for --permission-prompts is told how to update.
+#[test]
+fn an_old_claude_code_says_how_to_update() {
+    let _serial = serial();
+    let f = fake(r#"if [ "$1" = --version ]; then echo '2.1.251 (Claude Code)'; exit 0; fi; echo "error: unknown option '--permission-prompts'" >&2; exit 1"#);
+    let (_, end) = run(&f.backend(), &NEVER);
+    let error = end.unwrap_err().to_string();
+    assert!(error.contains("Claude Code 2.1.251 is too old") && error.contains("claude update"), "{error}");
+}
+
 #[test]
 fn a_stop_ends_the_process_at_once() {
     let _serial = serial();

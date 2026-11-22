@@ -603,6 +603,10 @@ impl ClaudeCode {
                     let status = live.child.wait().ok();
                     let stderr = live.errors();
                     let tail: String = stderr.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+                    let binary = self.binary.clone();
+                    if let Some(old) = too_old_by(&tail, || said_within(&binary, "--version")) {
+                        return Err(PluginError::new(old));
+                    }
                     return Err(PluginError::new(format!("{} ended with no result ({}): {}", self.binary, status.map_or("unknown".to_string(), |s| s.to_string()), tail.trim())));
                 }
             }
@@ -731,8 +735,49 @@ impl AgentBackend for ClaudeCode {
     }
 }
 
+/// What `binary <arg>` prints within 5 s; nothing when it takes longer, is not there or fails.
+fn said_within(binary: &str, arg: &str) -> String {
+    let Ok(mut child) = std::process::Command::new(binary).arg(arg).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return String::new() };
+    let mut out = child.stdout.take().expect("piped above");
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        text
+    });
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < until {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return reader.join().unwrap_or_default();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    String::new()
+}
+
+/// The error of a Claude Code too old for the harness: one that does not know
+/// --permission-prompts, which the harness's permission rules need (journal#1619).
+fn too_old_by(stderr: &str, version: impl FnOnce() -> String) -> Option<String> {
+    if !stderr.contains("unknown option '--permission-prompts'") {
+        return None;
+    }
+    let version = version().trim().trim_end_matches("(Claude Code)").trim().to_string();
+    let which = if version.is_empty() { "This Claude Code".to_string() } else { format!("Claude Code {version}") };
+    Some(format!("{which} is too old for multitool: it has no --permission-prompts, which the harness's permission rules need. Update it with `claude update`, then send again."))
+}
+
 #[cfg(test)]
 mod tests {
+    /// journal#1619: the 'unknown option' of an old Claude Code becomes how to update it.
+    #[test]
+    fn an_old_claude_code_is_told_to_update() {
+        let old = "error: unknown option '--permission-prompts'";
+        let said = super::too_old_by(old, || "2.1.251 (Claude Code)".to_string()).unwrap();
+        assert!(said.starts_with("Claude Code 2.1.251 is too old") && said.contains("claude update"), "{said}");
+        assert_eq!(super::too_old_by("error: something else", String::new), None, "another error is said as it is");
+    }
+
     use super::*;
 
     /// journal#1528: a message from another Claude Code session, as Claude Code 2.1.325 put it on

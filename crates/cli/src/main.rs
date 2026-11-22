@@ -3706,6 +3706,8 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
     let mut terminal = ratatui::init();
     // 256 colours where the terminal has no 24-bit colour, as macOS Terminal (journal#1615).
     let color_depth = frontend_tui::colors::depth(|k| std::env::var(k).ok());
+    // Blocks as filled cells where the font's leave gaps between rows (journal#1619).
+    let font_blocks = frontend_tui::colors::font_blocks(|k| std::env::var(k).ok());
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     // ratatui's own hook gives the terminal back, but knows nothing of these: after a panic the
     // shell would be typed mouse reports at (journal#595).
@@ -3965,6 +3967,9 @@ fn preview(name: &str, theme: &str, script: Option<&str>, handoff: Option<&std::
                             f.render_widget(Image::new(proto), p.rect);
                         }
                     }
+                    }
+                    if font_blocks {
+                        frontend_tui::colors::fill_blocks(f.buffer_mut());
                     }
                     frontend_tui::colors::fit_buffer(f.buffer_mut(), color_depth);
                     })?;

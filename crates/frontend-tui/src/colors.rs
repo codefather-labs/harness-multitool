@@ -59,6 +59,24 @@ pub fn fit(c: Color, depth: Depth) -> Color {
     }
 }
 
+/// Whether the terminal draws block elements from its font, so that rows of them show gaps:
+/// macOS Terminal (journal#1619). Others draw them as boxes of their own.
+pub fn font_blocks(env: impl Fn(&str) -> Option<String>) -> bool {
+    env("TERM_PROGRAM").as_deref() == Some("Apple_Terminal")
+}
+
+/// Full and half blocks as cells filled with their colour: a cell's background fills its whole
+/// height, a font's block glyph may not. A half block becomes a whole cell, a little wider.
+pub fn fill_blocks(buf: &mut Buffer) {
+    for cell in buf.content.iter_mut() {
+        if matches!(cell.symbol(), "█" | "▌" | "▐") && cell.fg != Color::Reset {
+            let fill = cell.fg;
+            cell.set_symbol(" ");
+            cell.bg = fill;
+        }
+    }
+}
+
 /// Every colour of a frame, as the terminal can show it.
 pub fn fit_buffer(buf: &mut Buffer, depth: Depth) {
     if depth == Depth::TrueColor {
@@ -98,6 +116,22 @@ mod tests {
         assert_eq!(nearest_index(0x80, 0x80, 0x80), 244, "a mid grey is the ramp's");
         assert_eq!(nearest_index(0xF5, 0xA6, 0x23), 214, "the brand orange");
         assert_eq!(nearest_index(0x0B, 0x0E, 0x14), 233, "the dark theme's background, a near black");
+    }
+
+    #[test]
+    fn blocks_become_filled_cells_in_macos_terminal() {
+        assert!(font_blocks(env(&[("TERM_PROGRAM", "Apple_Terminal")])));
+        assert!(!font_blocks(env(&[("TERM_PROGRAM", "iTerm.app")])));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        for (i, s) in ["▌", "█", "▐", "x"].iter().enumerate() {
+            buf.content[i].set_symbol(s);
+            buf.content[i].fg = Color::Indexed(214);
+        }
+        fill_blocks(&mut buf);
+        for cell in &buf.content[..3] {
+            assert_eq!((cell.symbol(), cell.bg), (" ", Color::Indexed(214)));
+        }
+        assert_eq!(buf.content[3].symbol(), "x", "text stays");
     }
 
     #[test]

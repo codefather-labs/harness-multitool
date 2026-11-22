@@ -99,6 +99,7 @@ What is for the project's owner, not for the users:
 - Built: Claude Code in the `oneshot` mode, and Codex. The `session` mode, one long process per tab, is a choice left to measurement (Q-34). Long sessions are Q-35.
 - Ollama runs in the harness's own loop, on its own API (CON-190), not as a delegate. A delegate against Ollama stays open (journal#1222).
 - What a delegate can do depends on its own program and version; the harness shows its events and does not change them.
+- Claude Code must know `--permission-prompts`, which the harness's permission rules use. An older one (2.1.251 had none) answers 'unknown option'; the harness then says its version and to run `claude update` (journal#1619).
 
 ## Specs and decisions
 
