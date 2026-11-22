@@ -1,6 +1,6 @@
 # Makes every release of the multitool (CON-194): when CI succeeds on main, or by hand. It builds
 # the four targets, publishes the Linux and macOS bundles on harness-multitool.dev (CON-186), and
-# makes the tag v<version> with its GitHub Release holding every bundle (CON-193).
+# makes the tag v<version> with its GitHub Release holding every bundle, marked Latest (CON-193).
 #
 # A version is published once: one released already is neither built again nor sent to the site,
 # whose cached file would then differ from GitHub's (journal#1568). Releases are immutable here, so
@@ -200,7 +200,7 @@ jobs:
             # --max-count, not head: with pipefail a closed pipe would end the step (SIGPIPE).
             git log --no-merges --max-count=200 --format='- %s (%h)' ${previous:+"$previous"..}"$SHA"
           } > notes.md
-          pre=()
-          case "$VERSION" in *-*) pre=(--prerelease) ;; esac
-          gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --target "$SHA" --title "multitool $VERSION" --notes-file notes.md "${pre[@]}"
+          # Marked Latest, so the repository's page and /releases/latest lead to the newest build for
+          # every OS; each version keeps its own tag and title (journal#1600).
+          gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --target "$SHA" --title "multitool $VERSION" --notes-file notes.md --latest
           gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName,isPrerelease,assets --jq '{tagName, isPrerelease, assets: [.assets[].name]}'

@@ -26,7 +26,7 @@ It downloads the prebuilt `multitool` for your machine (Linux x86_64 and aarch64
 
 On Windows, download `multitool-<version>-x86_64-pc-windows-msvc.zip` from the [latest Release](https://github.com/codefather-labs/harness-multitool/releases), unpack it, and run `.\install.ps1 -Local -NoBuild` in it.
 
-Every commit of `main` that passes CI is released by GitHub Actions (CON-194). The version is `<Cargo version>+<commit>`, for example `0.1.0-dev+9e5f4de`. The commit is tagged `v<version>`, and its GitHub Release holds the builds for Linux x86_64 and aarch64, macOS on Apple silicon and Windows x86_64, each with its checksum. harness-multitool.dev serves the same Linux and macOS files. While the version is `-dev`, the Release is marked a pre-release. A version is published once and never changes: a fix is a new commit and a new version (CON-193).
+Every commit of `main` that passes CI is released by GitHub Actions (CON-194). The version is `<Cargo version>+<commit>`, for example `0.1.0-dev+9e5f4de`. The commit is tagged `v<version>`, and its GitHub Release holds the builds for Linux x86_64 and aarch64, macOS on Apple silicon and Windows x86_64, each with its checksum. harness-multitool.dev serves the same Linux and macOS files. The newest Release is marked Latest, and each version keeps its own tag. A version is published once and never changes: a fix is a new commit and a new version (CON-193).
 
 ## Quick start from source
 
