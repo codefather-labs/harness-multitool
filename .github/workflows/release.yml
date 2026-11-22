@@ -1,13 +1,11 @@
 # Makes every release of the multitool (CON-194): when CI succeeds on main, or by hand. It builds
-# the four targets, publishes the Linux and macOS bundles on harness-multitool.dev (CON-186), and
-# makes the tag v<version> with its GitHub Release holding every bundle, marked Latest (CON-193).
+# the four targets and makes the tag v<version> with its GitHub Release holding every bundle,
+# marked Latest (CON-193). Every installer downloads from that Release (CON-195): the site's
+# install lines, install.sh and install.ps1. install-check then installs it each of those ways on
+# Linux, macOS and Windows and wants that release's exact binary.
 #
-# A version is published once: one released already is neither built again nor sent to the site,
-# whose cached file would then differ from GitHub's (journal#1568). Releases are immutable here, so
-# the Release gets all its files when it is made, and only after every target was built.
-#
-# Secrets: DEPLOY_SSH_KEY (a key of the site's harnessmt-deploy, restricted to its deploy command)
-# and DEPLOY_KNOWN_HOSTS (the server's host key line).
+# A version is published once: one released already is not built again. Releases are immutable
+# here, so the Release gets all its files when it is made, and only after every target was built.
 name: release
 on:
   workflow_run:
@@ -150,30 +148,6 @@ jobs:
           ls -la bundles
           test "$(find bundles -name 'multitool-*' ! -name '*.sha256' | wc -l)" = 4
           (cd bundles && sha256sum -c ./*.sha256)
-      # The site takes the tarballs; Windows installs from the Release (journal#1580).
-      - name: Publish to harness-multitool.dev
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          linux="multitool-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-          # A rerun after the site took this version: the same files are sent again, other ones never.
-          if on_site="$(curl -fsS "https://harness-multitool.dev/downloads/$VERSION/$linux.sha256")"; then
-            if [ "$on_site" = "$(cat "bundles/$linux.sha256")" ]; then
-              echo "the site has $VERSION already, with these files"
-            else
-              echo "the site has another $linux for $VERSION: not published again" >&2
-              exit 1
-            fi
-          fi
-          mkdir site
-          cp bundles/*.tar.gz bundles/*.tar.gz.sha256 site/
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          tar -czf - -C site . | ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes harnessmt-deploy@95.179.242.74 bundle "$VERSION"
-          rm -f ~/.ssh/deploy
-          test "$(curl -fsS https://harness-multitool.dev/downloads/latest)" = "$VERSION"
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -204,3 +178,69 @@ jobs:
           # every OS; each version keeps its own tag and title (journal#1600).
           gh release create "$tag" bundles/* -R "$GITHUB_REPOSITORY" --target "$SHA" --title "multitool $VERSION" --notes-file notes.md --latest
           gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName,isPrerelease,assets --jq '{tagName, isPrerelease, assets: [.assets[].name]}'
+  # Each install line and script installs this release's exact binary (CON-195).
+  install-check:
+    needs: [version, publish]
+    if: needs.version.outputs.released != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA: ${{ needs.version.outputs.sha }}
+    steps:
+      - name: The site's line and install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "$RUNNER_OS-$(uname -m)" in
+            Linux-x86_64) target=x86_64-unknown-linux-gnu ;;
+            macOS-arm64) target=aarch64-apple-darwin ;;
+            *) echo "no release build for $RUNNER_OS $(uname -m)"; exit 1 ;;
+          esac
+          enc="${VERSION//+/%2B}"
+          curl -fsSL -o bundle.tgz "https://github.com/$GITHUB_REPOSITORY/releases/download/v$enc/multitool-$enc-$target.tar.gz"
+          mkdir bundle && tar -xzf bundle.tgz -C bundle
+          want="$(shasum -a 256 bundle/target/release/multitool | cut -d' ' -f1)"
+          bin="$HOME/.local/share/harness-multitool/bin/multitool"
+          check() {
+            have="$(shasum -a 256 "$bin" | cut -d' ' -f1)"
+            echo "$1: installed $have, release $want, says: $("$bin" --version)"
+            test "$have" = "$want"
+            test "$("$bin" --version)" = "multitool ${VERSION%%+*}"
+            rm -f "$bin"
+          }
+          curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | sh -s -- --yes --no-service --no-agent-setup
+          check "the site's line"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$SHA/install.sh" | bash -s -- --yes --no-service --no-agent-setup
+          check "install.sh from GitHub"
+      - name: The site's line and install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $enc = $env:VERSION.Replace('+', '%2B')
+          Invoke-WebRequest -UseBasicParsing -OutFile bundle.zip "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$enc/multitool-$enc-x86_64-pc-windows-msvc.zip"
+          Expand-Archive bundle.zip -DestinationPath bundle
+          $want = (Get-FileHash bundle\target\release\multitool.exe).Hash
+          $exe = Join-Path $env:LOCALAPPDATA 'harness-multitool\bin\multitool.exe'
+          $cargo = $env:VERSION.Split('+')[0]
+          function Check($how) {
+            $have = (Get-FileHash $exe).Hash
+            $said = & $exe --version
+            Write-Host "${how}: installed $have, release $want, says: $said"
+            if ($have -ne $want) { throw "$how installed another multitool.exe" }
+            if ("$said" -ne "multitool $cargo") { throw "$how installed one that says $said" }
+            # The daemon it started holds the file: it ends before the next install.
+            Get-Process multitool -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 1
+            Remove-Item $exe -Force
+          }
+          & ([scriptblock]::Create((Invoke-RestMethod https://harness-multitool.dev/install.ps1))) -Yes -NoService -NoAgentSetup
+          Check "the site's line"
+          Invoke-WebRequest -UseBasicParsing -OutFile install.ps1 "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:SHA/install.ps1"
+          & .\install.ps1 -Yes -NoService -NoAgentSetup
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with $LASTEXITCODE" }
+          Check 'install.ps1 from GitHub'
+          exit 0

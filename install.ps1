@@ -1,15 +1,20 @@
 ﻿# ============================================================================
 # harness-multitool installer (Windows)
 # ============================================================================
-# Builds the harness from source, puts it on your PATH, runs the daemon as a
-# task at your logon, and sets Claude Code up for the harness (CON-162), as
-# install.sh does on Linux and macOS.
+# Installs the harness, puts it on your PATH, runs the daemon as a task at
+# your logon, and sets Claude Code up for the harness (CON-162), as install.sh
+# does on Linux and macOS.
 #
+#   irm https://harness-multitool.dev/install.ps1 | iex
+#   irm <raw url>/install.ps1 | iex   the prebuilt multitool of the latest
+#                                   GitHub Release, its SHA-256 checked; no
+#                                   Rust (CON-195)
+#   .\install.ps1 -Version 0.1.0-dev+f5bd7a9   that release instead
+#   .\install.ps1 -FromSource       build a temporary clone of main
 #   .\install.ps1 -Local            build this checkout (a Rust toolchain is needed)
 #   .\install.ps1 -Local -NoBuild   install the build beside it: the unpacked
 #                                   multitool-<version>-x86_64-pc-windows-msvc.zip
 #                                   of a GitHub Release (CON-194)
-#   irm <raw url>/install.ps1 | iex   build a temporary clone
 #
 # Speech to text is not installed here: it is chosen and downloaded in the
 # harness's own settings, section Speech to text.
@@ -18,6 +23,8 @@ param(
     [switch]$Yes,
     [switch]$Local,
     [switch]$NoBuild,
+    [switch]$FromSource,
+    [string]$Version = '',
     [switch]$NoClaudeCode,
     [switch]$NoService,
     [switch]$NoAgentSetup,
@@ -57,7 +64,9 @@ USAGE:
 
 OPTIONS:
   -Yes            Skip confirmation prompts
-  -Local          Build this checkout instead of cloning
+  -Version V      Install release V instead of the latest
+  -FromSource     Build a clone of main instead of installing a release
+  -Local          Build this checkout instead of installing a release
   -NoBuild        With -Local: install target\release\multitool.exe beside
                   this script, as a release's zip has it, without building
   -NoClaudeCode   Without Claude Code as an adapter
@@ -204,6 +213,62 @@ if ($Uninstall) {
     Log-Info "  $AppData (sessions, journals, speech models, the daemon)"
     Log-Info "  $UserHome\.harness (profiles: settings and sign-ins; may hold a bot token)"
     exit 0
+}
+
+# The prebuilt multitool of a GitHub Release (CON-195): its zip and checksum, checked, then the
+# zip's own install.ps1 -Local -NoBuild with the switches given. Nothing is installed when a
+# download or a check fails.
+function Install-Release {
+    $releases = if ($env:MULTITOOL_RELEASES_URL) { $env:MULTITOOL_RELEASES_URL } else { 'https://github.com/codefather-labs/harness-multitool/releases' }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -ne 'AMD64') { Log-Error "no prebuilt multitool for ${arch}: build it with -FromSource"; exit 1 }
+    $target = 'x86_64-pc-windows-msvc'
+    $v = $Version
+    if (-not $v) {
+        # The latest release, from where /releases/latest leads: no API, no rate limit.
+        $request = [System.Net.HttpWebRequest]::Create("$releases/latest")
+        $request.AllowAutoRedirect = $false
+        $request.Method = 'HEAD'
+        try { $response = $request.GetResponse() } catch [System.Net.WebException] { $response = $_.Exception.Response }
+        $location = if ($response) { $response.Headers['Location'] } else { $null }
+        if ($response) { $response.Close() }
+        if (-not $location -or $location -notmatch '/tag/v(.+)$') { Log-Error "cannot find the latest release at $releases/latest"; exit 1 }
+        $v = [Uri]::UnescapeDataString($Matches[1])
+    }
+    $v = $v.TrimStart('v')
+    if ($v -notmatch '^[0-9A-Za-z.+_-]+$') { Log-Error "not a version: $v"; exit 1 }
+    $name = "multitool-$v-$target.zip"
+    $at = "$releases/download/v$($v.Replace('+', '%2B'))/$($name.Replace('+', '%2B'))"
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("multitool-install-" + [Guid]::NewGuid())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        Log-Info "downloading multitool $v for $target"
+        $zip = Join-Path $tmp $name
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $at -OutFile $zip
+            Invoke-WebRequest -UseBasicParsing -Uri "$at.sha256" -OutFile "$zip.sha256"
+        } catch { Log-Error "no download of $name at ${at}: $_"; exit 1 }
+        $want = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0]
+        $have = (Get-FileHash $zip -Algorithm SHA256).Hash
+        if (-not $want -or $want -ne $have.ToLower() -and $want -ne $have) { Log-Error "the checksum of $name does not match: nothing installed"; exit 1 }
+        Log-Ok 'checksum ok'
+        $bundle = Join-Path $tmp 'bundle'
+        Expand-Archive -Path $zip -DestinationPath $bundle
+        $script = Join-Path $bundle 'install.ps1'
+        if (-not (Test-Path $script) -or -not (Test-Path (Join-Path $bundle 'target\release\multitool.exe'))) { Log-Error 'the download is not a multitool bundle: nothing installed'; exit 1 }
+        if ($NoClaudeCode) { Log-Warn '-NoClaudeCode only changes a build: the release has Claude Code in it (use -FromSource)' }
+        $pass = @{ Local = $true; NoBuild = $true; Yes = $Yes; NoService = $NoService; NoAgentSetup = $NoAgentSetup }
+        & $script @pass
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    exit $code
+}
+
+if (-not $Local -and -not $FromSource -and $env:MULTITOOL_INSTALL_AGENT_ONLY -ne '1') {
+    Install-Release
 }
 
 # The agent setup alone, for checking it off Windows (journal#1209): nothing is built or installed.

@@ -2,14 +2,16 @@
 # ============================================================================
 # harness-multitool installer (Linux and macOS)
 # ============================================================================
-# Builds the harness from source, puts it on your PATH, runs its daemon as a user
-# service, and sets up Claude Code's rules and hook for it (CON-162). Building needs a
-# Rust toolchain; the install line of harness-multitool.dev needs none (CON-186): it runs
-# this script from a prebuilt bundle with --local --no-build.
+# Installs the harness, puts it on your PATH, runs its daemon as a user service, and sets
+# up Claude Code's rules and hook for it (CON-162).
 #
-#   ./install.sh --local                  from this checkout
 #   curl -fsSL https://raw.githubusercontent.com/codefather-labs/harness-multitool/main/install.sh | bash
-#                                         from a temporary clone
+#                                         the prebuilt multitool of the latest GitHub Release for
+#                                         this machine, its SHA-256 checked; no Rust (CON-195)
+#   ./install.sh --local                  build this checkout
+#   ./install.sh --from-source            build a temporary clone of main
+#
+# A prebuilt bundle runs its own copy of this script with --local --no-build.
 #
 # Speech to text is not installed here: it is chosen and downloaded in the
 # harness's own settings, section Speech to text.
@@ -41,6 +43,10 @@ WITH_AGENT_SETUP=true
 WITH_LINGER=true
 BUILD=true
 FORCE=false
+FROM_SOURCE=false
+WANT_VERSION=""
+# Where the releases are (CON-195); a test points it at a server of its own.
+RELEASES_URL="${MULTITOOL_RELEASES_URL:-https://github.com/codefather-labs/harness-multitool/releases}"
 # How the installer waits for working agents before a daemon restart (CON-176), in seconds.
 WAIT_STEP="${MULTITOOL_INSTALL_WAIT_STEP:-5}"
 WAIT_MAX="${MULTITOOL_INSTALL_WAIT_MAX:-900}"
@@ -61,7 +67,9 @@ USAGE:
 
 OPTIONS:
   --yes              Skip confirmation prompts
-  --local            Build this checkout instead of cloning
+  --version V        Install release V (as 0.1.0-dev+f5bd7a9) instead of the latest
+  --from-source      Build a clone of main instead of installing a release (needs Rust)
+  --local            Build this checkout instead of installing a release
   --no-claude-code   Without Claude Code as an adapter
   --no-service       Do not run the daemon as a user service
   --no-linger        Do not enable linger (Linux): the service then stops when you log out
@@ -87,7 +95,16 @@ WHAT GETS INSTALLED:
 HELP
 }
 
+# What a release's own installer is given: everything but how to fetch it.
+PASS=()
 while [ $# -gt 0 ]; do
+  case "$1" in
+    --from-source) FROM_SOURCE=true; shift; continue ;;
+    --version)
+      [ $# -ge 2 ] || { log_error "--version needs a version"; exit 2; }
+      WANT_VERSION="$2"; shift 2; continue ;;
+  esac
+  PASS+=("$1")
   case "$1" in
     --yes|-y) ASSUME_YES=true ;;
     --local) LOCAL_MODE=true ;;
@@ -450,6 +467,74 @@ trap cleanup EXIT
 if [ "$UNINSTALL" = true ]; then
   uninstall
   exit 0
+fi
+
+# The prebuilt multitool of a release for this machine (CON-195): its bundle and checksum from
+# the GitHub Release, checked, then the bundle's own installer. Answers 1, having said why, when
+# there is no prebuilt build here; exits when a download or a check fails.
+install_release() {
+  local os arch target
+  case "$(uname -s)" in
+    Linux) os=unknown-linux-gnu ;;
+    Darwin) os=apple-darwin ;;
+    *) log_warn "no prebuilt multitool for $(uname -s)"; return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x86_64 ;;
+    aarch64 | arm64) arch=aarch64 ;;
+    *) log_warn "no prebuilt multitool for $(uname -m)"; return 1 ;;
+  esac
+  target="$arch-$os"
+  case "$target" in
+    x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu | aarch64-apple-darwin) ;;
+    *) log_warn "no prebuilt multitool for $target"; return 1 ;;
+  esac
+  if [ "$os" = unknown-linux-gnu ]; then
+    # Built on Debian 11: glibc 2.31 or newer; musl cannot run it.
+    local glibc older
+    glibc="$(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+$' || true)"
+    [ -n "$glibc" ] || { log_warn "this Linux has no glibc (musl?): the prebuilt multitool needs glibc 2.31 or newer"; return 1; }
+    older="$(printf '%s\n%s\n' 2.31 "$glibc" | sort -t. -k1,1n -k2,2n | head -n 1)"
+    [ "$older" = 2.31 ] || { log_warn "glibc $glibc is older than the 2.31 the prebuilt multitool needs"; return 1; }
+  fi
+  command -v curl >/dev/null 2>&1 || { log_error "curl is needed to download multitool"; exit 1; }
+  command -v tar >/dev/null 2>&1 || { log_error "tar is needed to unpack multitool"; exit 1; }
+  local get=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3)
+  case "$RELEASES_URL" in http://127.0.0.1* | http://localhost*) get=(curl -fsSL) ;; esac
+  local version="$WANT_VERSION"
+  if [ -z "$version" ]; then
+    # The latest release, from where GitHub's /releases/latest leads: no API, no rate limit.
+    local location
+    location="$(curl -fsSI --retry 3 "$RELEASES_URL/latest" 2>/dev/null | tr -d '\r' | sed -n 's/^[Ll]ocation: *//p' | tail -n 1)" || true
+    version="${location##*/tag/v}"
+    version="${version//%2B/+}"
+    [ -n "$location" ] && [ "$version" != "$location" ] || { log_error "cannot find the latest release at $RELEASES_URL/latest"; exit 1; }
+  fi
+  version="${version#v}"
+  case "$version" in "" | *[!0-9A-Za-z.+_-]*) log_error "not a version: $version"; exit 1 ;; esac
+  local name="multitool-$version-$target.tar.gz"
+  local at="$RELEASES_URL/download/v${version//+/%2B}/${name//+/%2B}"
+  local tmp
+  tmp="$(mktemp -d)"
+  CLONE_DIR="$tmp"
+  log_info "downloading multitool $version for $target"
+  "${get[@]}" -o "$tmp/$name" "$at" || { log_error "no download of $name at $at"; exit 1; }
+  "${get[@]}" -o "$tmp/$name.sha256" "$at.sha256" || { log_error "no checksum for $name"; exit 1; }
+  local want have
+  want="$(cut -d' ' -f1 <"$tmp/$name.sha256")"
+  if command -v sha256sum >/dev/null 2>&1; then have="$(sha256sum "$tmp/$name" | cut -d' ' -f1)"; else have="$(shasum -a 256 "$tmp/$name" | cut -d' ' -f1)"; fi
+  [ -n "$want" ] && [ "$want" = "$have" ] || { log_error "the checksum of $name does not match: nothing installed"; exit 1; }
+  log_ok "checksum ok"
+  mkdir "$tmp/bundle"
+  tar -xzf "$tmp/$name" -C "$tmp/bundle"
+  [ -f "$tmp/bundle/install.sh" ] && [ -x "$tmp/bundle/target/release/multitool" ] || { log_error "the download is not a multitool bundle: nothing installed"; exit 1; }
+  [ "$WITH_CLAUDE_CODE" = true ] || log_warn "--no-claude-code only changes a build: the release has Claude Code in it (use --from-source)"
+  bash "$tmp/bundle/install.sh" --local --no-build "${PASS[@]}"
+  exit $?
+}
+
+if [ "$LOCAL_MODE" = false ] && [ "$FROM_SOURCE" = false ]; then
+  install_release || log_info "building from source instead (needs Rust and git); --from-source does this at once"
 fi
 
 if [ "$BUILD" = true ]; then ensure_build_deps; fi

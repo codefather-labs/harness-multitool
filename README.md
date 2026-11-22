@@ -18,15 +18,23 @@
 
 ## Install
 
+Linux and macOS:
+
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://harness-multitool.dev/install.sh | sh
 ```
 
-It downloads the prebuilt `multitool` for your machine (Linux x86_64 and aarch64, macOS on Apple silicon) and checks its SHA-256. Then it installs it the way `install.sh` does: on your PATH, with its daemon as a user service and Claude Code's rules. Options go after `sh -s --`, for example `| sh -s -- --no-service`. No Rust is needed. On another system it prints how to build from source (CON-186).
+Windows, in PowerShell:
 
-On Windows, download `multitool-<version>-x86_64-pc-windows-msvc.zip` from the [latest Release](https://github.com/codefather-labs/harness-multitool/releases), unpack it, and run `.\install.ps1 -Local -NoBuild` in it.
+```powershell
+irm https://harness-multitool.dev/install.ps1 | iex
+```
 
-Every commit of `main` that passes CI is released by GitHub Actions (CON-194). The version is `<Cargo version>+<commit>`, for example `0.1.0-dev+9e5f4de`. The commit is tagged `v<version>`, and its GitHub Release holds the builds for Linux x86_64 and aarch64, macOS on Apple silicon and Windows x86_64, each with its checksum. harness-multitool.dev serves the same Linux and macOS files. The newest Release is marked Latest, and each version keeps its own tag. A version is published once and never changes: a fix is a new commit and a new version (CON-193).
+Each line downloads the prebuilt `multitool` for your machine from the [latest Release](https://github.com/codefather-labs/harness-multitool/releases/latest), checks its SHA-256, and installs it: on your PATH, with its daemon as a user service (a task at logon on Windows) and Claude Code's rules. The builds are Linux x86_64 and aarch64 (glibc 2.31 or newer), macOS on Apple silicon and Windows x86_64. No Rust is needed. Options go after `sh -s --`, for example `| sh -s -- --no-service`; on Windows, `& ([scriptblock]::Create((irm https://harness-multitool.dev/install.ps1))) -NoService`. On another system the line says how to build from source, and installs nothing (CON-186, CON-195).
+
+`install.sh` and `install.ps1` of this repository do the same when run on their own: they install the latest release, or the one given with `--version` / `-Version`. They build only when asked: `--from-source` / `-FromSource`, or `--local` / `-Local` in a checkout.
+
+Every commit of `main` that passes CI is released by GitHub Actions (CON-194). The version is `<Cargo version>+<commit>`, for example `0.1.0-dev+9e5f4de`. The commit is tagged `v<version>`, and its GitHub Release holds the builds for Linux x86_64 and aarch64, macOS on Apple silicon and Windows x86_64, each with its checksum. Every install line downloads from it. The newest Release is marked Latest, and each version keeps its own tag. A version is published once and never changes: a fix is a new commit and a new version (CON-193).
 
 ## Quick start from source
 
