@@ -370,8 +370,131 @@ print("changed")
 PY
 }
 
+# A legacy claudebase / claude-code-sdlc setup, found and, on the user's word, deleted (CON-198):
+# its hooks and rules, a CLAUDE.md that names it, its settings, MCP server, plugin and marketplace,
+# ~/.claudebase, a claudebase binary of the user's on PATH, and its lines in the shell profiles.
+# No binary, environment or instruction of it is left; every JSON file keeps the rest of itself.
+CLAUDEBASE_PY='
+import json, os, re, shutil, sys
+mode, home, claude = sys.argv[1], sys.argv[2], sys.argv[3]
+j = os.path.join
+found = []
+hooks = j(claude, "hooks")
+for n in sorted(os.listdir(hooks)) if os.path.isdir(hooks) else []:
+    if n.startswith(("claudebase-", "sdlc-")):
+        found.append(("file", j(hooks, n)))
+def names_it(path):
+    try:
+        return re.search(r"claudebase|claude-code-sdlc", open(path, errors="replace").read(), re.I) is not None
+    except OSError:
+        return False
+rules = j(claude, "rules")
+own = ["knowledge-base.md", "knowledge-base-tool.md", "subagent-onboarding.md", "session-changelog.md"]
+sdlc = ["scratchpad.md", "error-recovery.md", "git.md", "tool-limitations.md"]
+marked = bool(found) or any(os.path.exists(j(rules, n)) for n in own) or os.path.exists(j(home, ".claudebase"))
+for n in own + (sdlc if marked else []):
+    if os.path.isfile(j(rules, n)) and (n in sdlc or names_it(j(rules, n))):
+        found.append(("file", j(rules, n)))
+if names_it(j(claude, "CLAUDE.md")):
+    found.append(("file", j(claude, "CLAUDE.md")))
+for d in [j(claude, "plugins", "claudebase"), j(claude, "plugins", "marketplaces", "claudebase-dev"), j(home, ".claudebase")]:
+    if os.path.isdir(d):
+        found.append(("dir", d))
+if os.path.isdir(claude):
+    for n in sorted(os.listdir(claude)):
+        if n.startswith("claudebase-backup-"):
+            found.append(("dir", j(claude, n)))
+for b in [j(home, ".local", "bin", "claudebase"), j(home, ".cargo", "bin", "claudebase")]:
+    if os.path.lexists(b):
+        found.append(("file", b))
+profiles = [j(home, n) for n in [".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile"]]
+for p in profiles:
+    try:
+        lines = [l for l in open(p, errors="replace") if re.search(r"claudebase", l, re.I)]
+    except OSError:
+        continue
+    if lines:
+        found.append(("lines", p))
+def load(p):
+    try:
+        return json.load(open(p))
+    except (OSError, ValueError):
+        return None
+def legacy_hook(h):
+    return os.path.basename(h.get("command", "").split()[0] if h.get("command") else "").startswith(("claudebase-", "sdlc-"))
+settings = j(claude, "settings.json"); s = load(settings)
+if isinstance(s, dict):
+    hk = s.get("hooks") or {}
+    if any(legacy_hook(h) for g in sum(hk.values(), []) for h in g.get("hooks", [])) or "claudebase-dev" in (s.get("extraKnownMarketplaces") or {}) or any("claudebase" in k for k in (s.get("enabledPlugins") or {})):
+        found.append(("json", settings))
+cj = j(home, ".claude.json"); c = load(cj)
+if isinstance(c, dict) and ("claudebase" in (c.get("mcpServers") or {}) or any("claudebase" in ((p or {}).get("mcpServers") or {}) for p in (c.get("projects") or {}).values() if isinstance(p, dict))):
+    found.append(("json", cj))
+km = j(claude, "plugins", "known_marketplaces.json"); k = load(km)
+if isinstance(k, dict) and "claudebase-dev" in k:
+    found.append(("json", km))
+ip = j(claude, "plugins", "installed_plugins.json"); i = load(ip)
+if isinstance(i, dict) and any("claudebase" in n for n in (i.get("plugins") or {})):
+    found.append(("json", ip))
+if mode == "list":
+    for kind, p in found:
+        print({"file": "", "dir": "folder ", "lines": "its lines in ", "json": "its entries in "}[kind] + p)
+    sys.exit(0)
+def save(p, d):
+    open(p + ".tmp", "w").write(json.dumps(d, indent=2) + "\n")
+    os.replace(p + ".tmp", p)
+for kind, p in found:
+    if kind == "file":
+        os.remove(p)
+    elif kind == "dir":
+        shutil.rmtree(p)
+    elif kind == "lines":
+        keep = [l for l in open(p, errors="replace") if not re.search(r"claudebase", l, re.I)]
+        open(p, "w").write("".join(keep))
+    elif p == settings:
+        hk = s.get("hooks") or {}
+        for ev in list(hk):
+            groups = [dict(g, hooks=[h for h in g.get("hooks", []) if not legacy_hook(h)]) for g in hk[ev]]
+            hk[ev] = [g for g in groups if g["hooks"]]
+            if not hk[ev]:
+                del hk[ev]
+        (s.get("extraKnownMarketplaces") or {}).pop("claudebase-dev", None)
+        for n in [n for n in (s.get("enabledPlugins") or {}) if "claudebase" in n]:
+            del s["enabledPlugins"][n]
+        save(p, s)
+    elif p == cj:
+        (c.get("mcpServers") or {}).pop("claudebase", None)
+        for pr in (c.get("projects") or {}).values():
+            if isinstance(pr, dict):
+                (pr.get("mcpServers") or {}).pop("claudebase", None)
+        save(p, c)
+    elif p == km:
+        k.pop("claudebase-dev", None)
+        save(p, k)
+    elif p == ip:
+        for n in [n for n in i["plugins"] if "claudebase" in n]:
+            del i["plugins"][n]
+        save(p, i)
+    print(p)
+'
+
+remove_claudebase() {
+  command -v python3 >/dev/null 2>&1 || { [ -d "$HOME/.claudebase" ] && log_warn "no python3 to find and remove the legacy claudebase setup in $CLAUDE_DIR"; return 0; }
+  local found
+  found="$(python3 -c "$CLAUDEBASE_PY" list "$HOME" "$CLAUDE_DIR")" || return 0
+  [ -n "$found" ] || return 0
+  log_warn "a legacy claudebase setup is here; its rules and hooks contradict the harness's:"
+  printf '%s\n' "$found" | sed 's/^/         /'
+  if confirm "Delete it, all of it (no backup)?"; then
+    python3 -c "$CLAUDEBASE_PY" apply "$HOME" "$CLAUDE_DIR" >/dev/null && log_ok "deleted the legacy claudebase setup"
+  else
+    log_warn "kept: its instructions will contradict the harness's until it is gone"
+  fi
+}
+
 agent_setup() {
   local src="$1/assets/claude"
+  remove_claudebase
   [ -d "$src" ] || { log_warn "no assets/claude in the source: Claude Code's agent setup skipped"; return 0; }
   mkdir -p "$DATA_HOME"
   put_file "$src/rules/project-journal.md" "$CLAUDE_DIR/rules/project-journal.md"

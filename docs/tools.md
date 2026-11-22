@@ -77,7 +77,7 @@ Mind maps hold where a long task stands; flowcharts draw how something flows.
 | `mindmap_show`, `flowchart_show` | Reading one back. | It as an outline. |
 | `map_edit` | A node's text or kind. | The map. |
 | `map_node_state` | A node done, dropped, or open again. | The map. |
-| `map_link` | An arrow between two nodes, with a label. | The map. |
+| `map_link` | An arrow between two nodes, with a label. With `to_map`, the second node is another map's: where maps cross, the link joins their graphs, and both maps show it (CON-196). | The map, or the cross link. |
 | `map_ref` | Pointing a node at journal entries. | The map. |
 | `map_close` | Closing a map whose task is done. It stays readable. | The map. |
 

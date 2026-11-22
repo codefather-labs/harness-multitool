@@ -263,7 +263,16 @@ pub enum MemoryOp {
     JournalTags { category: Option<String> },
     MapEdit { map: u64, node: u64, text: Option<String>, kind: Option<String> },
     MapNodeState { map: u64, node: u64, state: String },
-    MapLink { map: u64, from: u64, to: u64, label: String, refs: Vec<u64> },
+    /// `to_map`: the map of `to` when it is another map's node (CON-196).
+    MapLink {
+        map: u64,
+        from: u64,
+        to: u64,
+        label: String,
+        refs: Vec<u64>,
+        #[serde(default)]
+        to_map: Option<u64>,
+    },
     MapRef { map: u64, node: u64, entries: Vec<u64> },
     MapClose { map: u64 },
 }
@@ -335,6 +344,16 @@ pub struct MapEdge {
     pub refs: Vec<u64>,
 }
 
+/// A link between a node of one map and a node of another, joining their graphs (CON-196).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MapCrossLink {
+    pub from_map: u64,
+    pub from_node: u64,
+    pub to_map: u64,
+    pub to_node: u64,
+    pub label: String,
+}
+
 /// A map as a whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapData {
@@ -345,6 +364,9 @@ pub struct MapData {
     pub root: u64,
     pub nodes: Vec<MapNode>,
     pub edges: Vec<MapEdge>,
+    /// Its links to and from other maps' nodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<MapCrossLink>,
 }
 
 /// A new node: under `parent` in a mind map, after `after` in a flowchart.

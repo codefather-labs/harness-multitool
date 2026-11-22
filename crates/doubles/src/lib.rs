@@ -222,7 +222,7 @@ impl Memory for InMemoryJournal {
     fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
         let id = self.maps.borrow().len() as u64 + 1;
         let root = MapNode { id: 1, parent: None, kind: "topic".into(), text: title.into(), state: "open".into(), refs: vec![] };
-        let map = MapData { id, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![] };
+        let map = MapData { id, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![], links: vec![] };
         self.maps.borrow_mut().push(map.clone());
         ready(Ok(map))
     }

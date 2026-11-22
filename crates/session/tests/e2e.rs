@@ -485,8 +485,7 @@ fn a_sessions_memory_goes_through_a_running_daemon() {
     assert_eq!(ends, ["AwaitingInput"]);
     let ops = client.stats().unwrap()["memory_ops"].as_u64().unwrap();
     assert!(ops >= 5, "two turns of context, and the add: {ops}");
-    let key = harness_memory_journal::project::key_for(None, std::path::Path::new(&root));
-    let store = harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(&data).join("journals"), &key, "t").unwrap();
+    let store = project_store(&data, &root);
     let found = pollster::block_on(harness_api::Memory::journal_search(&store, "daemon")).unwrap();
     assert_eq!(found.len(), 1);
 }
@@ -507,9 +506,10 @@ fn drive_task(sessions: &mut Sessions, text: &str, steps: &[&str]) -> (Vec<LogEn
     }
 }
 
+/// The project's journal where the harness keeps it (CON-197): a test's root is no repository.
 fn project_store(data: &str, root: &str) -> harness_memory_journal::plugin::JournalMemory {
-    let key = harness_memory_journal::project::key_for(None, std::path::Path::new(root));
-    harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(data).join("journals"), &key, "t").unwrap()
+    let place = harness_memory_journal::project::place(std::path::Path::new(data), std::path::Path::new(root), None);
+    harness_memory_journal::plugin::JournalMemory::open_at(&place.file, &place.key, "t").unwrap()
 }
 
 fn spec(body: &str, flags: &[&str]) -> JournalEntry {

@@ -68,6 +68,7 @@ fn map_data(map: mindmap::Map) -> MapData {
             .map(|n| MapNode { id: n.id as u64, parent: n.parent.map(|p| p as u64), kind: n.kind.clone(), text: n.text.clone(), state: n.state.clone(), refs: n.refs.iter().map(|r| *r as u64).collect() })
             .collect(),
         edges: map.edges.iter().map(|e| MapEdge { from: e.from as u64, to: e.to as u64, label: e.label.clone(), refs: e.refs.iter().map(|r| *r as u64).collect() }).collect(),
+        links: map.links.iter().map(|l| harness_api::MapCrossLink { from_map: l.from_map as u64, from_node: l.from_node as u64, to_map: l.to_map as u64, to_node: l.to_node as u64, label: l.label.clone() }).collect(),
     }
 }
 
@@ -94,6 +95,12 @@ impl JournalMemory {
     /// What closing `id` set free: open entries that waited only for it (CON-91).
     pub fn released_by(&self, id: u64) -> Vec<u64> {
         journal::released_by(&self.conn.borrow(), id as i64).map(|ids| ids.into_iter().map(|i| i as u64).collect()).unwrap_or_default()
+    }
+
+    /// Opens the journal of `key` kept in the file `file`, creating it when new (CON-197).
+    pub fn open_at(file: &Path, key: &Path, owner: &str) -> Result<Self, String> {
+        let conn = journal::open_at(file, key, true).map_err(|e| format!("{e:#}"))?.ok_or("the journal did not open")?;
+        Ok(JournalMemory { conn: RefCell::new(conn), owner: mindmap::Owner { nick: owner.to_string(), host: None } })
     }
 
     /// Opens the journal of `key` under `dir`, creating it when new.
@@ -280,7 +287,10 @@ impl JournalMemory {
                 mindmap::set_node_state(&mut conn, map as i64, node as i64, &state, now())?;
                 json!({"map": map, "node": node, "state": state})
             }
-            MemoryOp::MapLink { map, from, to, label, refs } => {
+            MemoryOp::MapLink { map, from, to, label, to_map: Some(to_map), .. } if to_map != map => {
+                json!({"map": map, "to_map": to_map, "link": mindmap::add_cross_link(&mut conn, map as i64, from as i64, to_map as i64, to as i64, &label, now())?})
+            }
+            MemoryOp::MapLink { map, from, to, label, refs, .. } => {
                 let refs: Vec<i64> = refs.iter().map(|r| *r as i64).collect();
                 json!({"map": map, "edge": mindmap::add_edge(&mut conn, map as i64, from as i64, to as i64, &label, &refs, now())?})
             }
@@ -440,12 +450,23 @@ mod tests {
         let nodes: Vec<u64> = added.nodes.iter().filter(|n| n.text != "topic").map(|n| n.id).collect();
         more(MemoryOp::MapEdit { map: map.id, node: nodes[0], text: Some("a2".into()), kind: Some("fact".into()) }).unwrap();
         more(MemoryOp::MapNodeState { map: map.id, node: nodes[0], state: "done".into() }).unwrap();
-        more(MemoryOp::MapLink { map: map.id, from: nodes[0], to: nodes[1], label: "leads to".into(), refs: vec![todo] }).unwrap();
+        more(MemoryOp::MapLink { map: map.id, from: nodes[0], to: nodes[1], label: "leads to".into(), refs: vec![todo], to_map: None }).unwrap();
         assert_eq!(more(MemoryOp::MapRef { map: map.id, node: nodes[1], entries: vec![other] }).unwrap()["added"], 1);
         let read = pollster_free(m.map_read(map.id)).unwrap().unwrap();
         let first = read.nodes.iter().find(|n| n.id == nodes[0]).unwrap();
         assert_eq!((first.text.as_str(), first.state.as_str()), ("a2", "done"));
         assert_eq!(read.edges[0].label, "leads to");
+        // CON-196: where two maps cross, a link joins their graphs; both maps show it.
+        let other_map = pollster_free(m.map_new(MapKind::Flowchart, "flow", None)).unwrap();
+        let step = pollster_free(m.map_add(other_map.id, NewMapNode { text: "step".into(), kind: "process".into(), ..Default::default() })).unwrap();
+        let step = step.nodes.iter().find(|n| n.text == "step").unwrap().id;
+        let linked = more(MemoryOp::MapLink { map: map.id, from: nodes[1], to: step, label: "is built by".into(), refs: vec![], to_map: Some(other_map.id) }).unwrap();
+        assert_eq!(linked["to_map"], other_map.id);
+        let (here, there) = (pollster_free(m.map_read(map.id)).unwrap().unwrap(), pollster_free(m.map_read(other_map.id)).unwrap().unwrap());
+        let link = harness_api::MapCrossLink { from_map: map.id, from_node: nodes[1], to_map: other_map.id, to_node: step, label: "is built by".into() };
+        assert_eq!((here.links.clone(), there.links.clone()), (vec![link.clone()], vec![link]), "both maps show it");
+        assert_eq!(here.edges.len(), 1, "a cross link is not an edge of the map");
+        assert!(more(MemoryOp::MapLink { map: map.id, from: nodes[1], to: nodes[0], label: "x".into(), refs: vec![], to_map: Some(other_map.id) }).is_err(), "the node must be in the map named");
         more(MemoryOp::MapClose { map: map.id }).unwrap();
         assert!(!pollster_free(m.map_list()).unwrap().iter().any(|(id, _)| *id == map.id), "a closed map is off the list");
     }

@@ -209,7 +209,7 @@ pub fn script_edit(command: &str) -> ScriptEdit {
     }
 }
 
-const NEXT: &str = "journal_add, mindmap_new, flowchart_new, then mode__plan_exit.";
+const NEXT: &str = "journal_add; the maps and flowcharts this change touches brought up to date (mindmap_add, flowchart_add, map_edit), mindmap_new and flowchart_new only for what none covers; then mode__plan_exit.";
 
 /// The project's documentation, the one thing written while planning: a feature is described
 /// before it is built. A path that climbs out does not count.
@@ -288,7 +288,8 @@ impl ModeGuide {
     /// A plan with nothing recorded goes back once; under `enforce`, until it is recorded.
     fn plan_exit(&self) -> HookOutcome {
         let Stage::Planning { journal, map, chart, sent_back } = self.stage.get() else { return HookOutcome::Ok };
-        let missing: Vec<&str> = [(journal, "journal_add"), (map, "mindmap_new"), (chart, "flowchart_new")].iter().filter(|(done, _)| !done).map(|(_, name)| *name).collect();
+        // A map or flowchart brought up to date counts as one made (CON-196).
+        let missing: Vec<&str> = [(journal, "journal_add"), (map, "mindmap_new or mindmap_add to a map that covers it"), (chart, "flowchart_new or flowchart_add to a flowchart that covers it")].iter().filter(|(done, _)| !done).map(|(_, name)| *name).collect();
         if missing.is_empty() || (sent_back && self.plan_first != PlanFirst::Enforce) {
             return HookOutcome::Ok;
         }
@@ -299,7 +300,9 @@ impl ModeGuide {
     /// What using this tool counts towards the plan.
     fn note(&self, name: &str) {
         if let Stage::Planning { journal, map, chart, sent_back } = self.stage.get() {
-            self.stage.set(Stage::Planning { journal: journal || name == "journal_add", map: map || name == "mindmap_new", chart: chart || name == "flowchart_new", sent_back });
+            let map = map || matches!(name, "mindmap_new" | "mindmap_add");
+            let chart = chart || matches!(name, "flowchart_new" | "flowchart_add");
+            self.stage.set(Stage::Planning { journal: journal || name == "journal_add", map, chart, sent_back });
         }
     }
 }
@@ -575,6 +578,20 @@ mod tests {
         for name in ["journal_add", "mindmap_new", "flowchart_new"] {
             run(&g, HookPoint::PreToolUse { call: &call(name, serde_json::json!({})) });
         }
+        assert_eq!(run(&g, HookPoint::PreToolUse { call: &exit }), HookOutcome::Ok);
+    }
+
+    /// CON-196: a plan that brings existing maps up to date passes, as one that makes new ones does.
+    #[test]
+    fn a_plan_that_updates_existing_maps_passes() {
+        let exit = call(EXIT_TOOL, serde_json::json!({"plan": "p"}));
+        let g = ModeGuide::new(PlanFirst::Enforce);
+        run(&g, HookPoint::PlanEnter);
+        run(&g, HookPoint::PreToolUse { call: &call("journal_add", serde_json::json!({})) });
+        run(&g, HookPoint::PreToolUse { call: &call("mindmap_add", serde_json::json!({"map": 94, "text": "t", "refs": [1]})) });
+        let back = run(&g, HookPoint::PreToolUse { call: &exit });
+        assert!(matches!(&back, HookOutcome::Blocked { reason } if reason.contains("flowchart_add") && !reason.contains("mindmap")), "the map counts, the chart is still wanted: {back:?}");
+        run(&g, HookPoint::PreToolUse { call: &call("flowchart_add", serde_json::json!({"map": 95, "text": "t", "kind": "process"})) });
         assert_eq!(run(&g, HookPoint::PreToolUse { call: &exit }), HookOutcome::Ok);
     }
 

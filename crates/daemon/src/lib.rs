@@ -1427,8 +1427,9 @@ impl Daemon {
     }
 
     fn memory_of(&self, root: &str, owner: &str) -> Result<JournalMemory, String> {
-        let key = key_for(git_origin(root).as_deref(), Path::new(root));
-        JournalMemory::open(&self.data_dir.join("journals"), &key, owner)
+        // A folder that is no repository keeps its journal under the harness's home (CON-197).
+        let place = harness_memory_journal::project::place(&self.data_dir, Path::new(root), git_origin(root).as_deref());
+        JournalMemory::open_at(&place.file, &place.key, owner)
     }
 
     /// CON-20: a session's Memory call, against the journal of the project it names.

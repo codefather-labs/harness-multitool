@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS mindmap_chain_steps (
     entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
     PRIMARY KEY(chain_id, pos)
 );
+CREATE TABLE IF NOT EXISTS mindmap_xlinks (
+    id        INTEGER PRIMARY KEY,
+    from_map  INTEGER NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+    from_node INTEGER NOT NULL REFERENCES mindmap_nodes(id) ON DELETE CASCADE,
+    to_map    INTEGER NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+    to_node   INTEGER NOT NULL REFERENCES mindmap_nodes(id) ON DELETE CASCADE,
+    label     TEXT NOT NULL DEFAULT '',
+    UNIQUE(from_node, to_node, label)
+);
 ";
 
 /// Columns added after v0.23.1, whose journals already hold the tables:
@@ -191,6 +200,19 @@ pub struct Map {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     pub chains: Vec<Chain>,
+    /// Links to and from nodes of other maps (CON-196), which join the maps' graphs.
+    #[serde(default)]
+    pub links: Vec<CrossLink>,
+}
+
+/// A link between a node of one map and a node of another (CON-196).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossLink {
+    pub from_map: i64,
+    pub from_node: i64,
+    pub to_map: i64,
+    pub to_node: i64,
+    pub label: String,
 }
 
 impl Map {
@@ -489,7 +511,8 @@ pub fn load(conn: &Connection, map: i64) -> Result<Option<Map>> {
         }
         v
     };
-    Ok(Some(Map { summary, root, nodes, edges, chains }))
+    let links = cross_links(conn, map)?;
+    Ok(Some(Map { summary, root, nodes, edges, chains, links }))
 }
 
 fn touch(conn: &Connection, map: i64, now: i64) -> Result<()> {
@@ -752,6 +775,39 @@ pub fn add_edge(conn: &mut Connection, map: i64, from: i64, to: i64, label: &str
     touch(&t, map, now)?;
     t.commit()?;
     Ok(id)
+}
+
+/// Links a node of `map` to a node of another map (CON-196): crossings between maps join their
+/// graphs. Both maps must be open.
+pub fn add_cross_link(conn: &mut Connection, map: i64, from: i64, to_map: i64, to: i64, label: &str, now: i64) -> Result<i64> {
+    if to_map == map {
+        bail!("a link to a node of the same map is map_link without to_map");
+    }
+    let label = label.trim();
+    if label.chars().count() > MAX_TITLE_CHARS {
+        bail!("a link label is longer than {MAX_TITLE_CHARS} characters");
+    }
+    let t = tx(conn)?;
+    is_open(&t, map)?;
+    is_open(&t, to_map)?;
+    node_in(&t, map, from)?;
+    node_in(&t, to_map, to)?;
+    t.execute(
+        "INSERT OR IGNORE INTO mindmap_xlinks(from_map, from_node, to_map, to_node, label) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![map, from, to_map, to, label],
+    )?;
+    let id: i64 = t.query_row("SELECT id FROM mindmap_xlinks WHERE from_node = ?1 AND to_node = ?2 AND label = ?3", params![from, to, label], |r| r.get(0))?;
+    touch(&t, map, now)?;
+    touch(&t, to_map, now)?;
+    t.commit()?;
+    Ok(id)
+}
+
+/// The links that join `map` to other maps, from it and to it.
+fn cross_links(conn: &Connection, map: i64) -> Result<Vec<CrossLink>> {
+    let mut stmt = conn.prepare("SELECT from_map, from_node, to_map, to_node, label FROM mindmap_xlinks WHERE from_map = ?1 OR to_map = ?1 ORDER BY id")?;
+    let rows = stmt.query_map(params![map], |r| Ok(CrossLink { from_map: r.get(0)?, from_node: r.get(1)?, to_map: r.get(2)?, to_node: r.get(3)?, label: r.get(4)? }))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
 pub fn remove_edge(conn: &mut Connection, map: i64, edge: i64, now: i64) -> Result<()> {

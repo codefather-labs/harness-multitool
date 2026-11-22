@@ -212,8 +212,8 @@ fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String
             if let Some(client) = harness_daemon::client::Client::find(&data_d) {
                 return Ok(Rc::new(harness_daemon::memory::DaemonMemory::new(client, data_d.clone(), &root_d, "multitool")));
             }
-            let key = harness_memory_journal::project::key_for(git_origin(&root_d).as_deref(), std::path::Path::new(&root_d));
-            Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open(&data_d.join("journals"), &key, "multitool")?))
+            let place = harness_memory_journal::project::place(&data_d, std::path::Path::new(&root_d), git_origin(&root_d).as_deref());
+            Ok(Rc::new(harness_memory_journal::plugin::JournalMemory::open_at(&place.file, &place.key, "multitool")?))
         })
         .context("journal-aware", move |_| Ok(Rc::new(harness_context_default::JournalAware { root: root_b.clone(), note: note.clone(), budget_tokens: context_budget, mode_rules: !delegate_session })))
         .store("files", move |cx| Ok(Rc::new(harness_session_files::FileSessions::new(cx.platform.fs.clone(), &sessions_dir))))
@@ -820,14 +820,20 @@ impl Auth for ProviderAuth {
 /// Brings a whole journal, as a stream of JSON documents, into this project's. With `aside`, what
 /// was here is moved out of the way first, not deleted.
 pub fn journal_import(data_dir: &str, root: &str, text: &str, aside: bool) -> Result<harness_memory_journal::transfer::Report, String> {
-    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
-    harness_memory_journal::transfer::import(&std::path::Path::new(data_dir).join("journals"), &key, text, aside).map_err(|e| format!("{e:#}"))
+    let place = journal_place(data_dir, root);
+    harness_memory_journal::transfer::import_at(&place.file, &place.key, text, aside).map_err(|e| format!("{e:#}"))
 }
 
 /// This project's whole journal as such a stream.
 pub fn journal_export(data_dir: &str, root: &str) -> Result<String, String> {
-    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
-    harness_memory_journal::transfer::export(&std::path::Path::new(data_dir).join("journals"), &key).map_err(|e| format!("{e:#}"))
+    let place = journal_place(data_dir, root);
+    harness_memory_journal::transfer::export_at(&place.file, &place.key).map_err(|e| format!("{e:#}"))
+}
+
+/// Where a project's journal is (CON-197): in the data dir for a repository, under the harness's
+/// home for a folder that is none.
+pub fn journal_place(data_dir: &str, root: &str) -> harness_memory_journal::project::Place {
+    harness_memory_journal::project::place(std::path::Path::new(data_dir), std::path::Path::new(root), git_origin(root).as_deref())
 }
 
 /// Where a project's tracker settings and queue are (ADR 0028, CON-142), as the daemon has them.
@@ -852,8 +858,8 @@ pub fn open_todos(data_dir: &str, root: &str) -> Result<Vec<u64>, String> {
 
 /// The journal of a project, opened directly: for a look from the command line.
 pub fn project_memory(data_dir: &str, root: &str) -> Result<harness_memory_journal::plugin::JournalMemory, String> {
-    let key = harness_memory_journal::project::key_for(git_origin(root).as_deref(), std::path::Path::new(root));
-    harness_memory_journal::plugin::JournalMemory::open(&std::path::Path::new(data_dir).join("journals"), &key, "multitool")
+    let place = journal_place(data_dir, root);
+    harness_memory_journal::plugin::JournalMemory::open_at(&place.file, &place.key, "multitool")
 }
 
 /// Whether to ask about initializing this project: true once, when it has neither `docs/` nor

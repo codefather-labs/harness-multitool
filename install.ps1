@@ -185,7 +185,66 @@ function Set-SettingsHook([string]$action) {
     return $true
 }
 
+# A legacy claudebase / claude-code-sdlc setup, found and, on the user's word, deleted (CON-198), as
+# install.sh does: its hooks and rules, a CLAUDE.md that names it, its settings, MCP server, plugin
+# and marketplace, ~/.claudebase, and its lines in the PowerShell profile.
+function Find-Claudebase {
+    $found = @()
+    $hooks = Join-Path $ClaudeDir 'hooks'
+    if (Test-Path $hooks) { $found += Get-ChildItem $hooks -File | Where-Object { $_.Name -match '^(claudebase-|sdlc-)' } | ForEach-Object { $_.FullName } }
+    $rules = Join-Path $ClaudeDir 'rules'
+    $own = 'knowledge-base.md', 'knowledge-base-tool.md', 'subagent-onboarding.md', 'session-changelog.md'
+    $sdlc = 'scratchpad.md', 'error-recovery.md', 'git.md', 'tool-limitations.md'
+    $marked = ($found.Count -gt 0) -or [bool]($own | Where-Object { Test-Path (Join-Path $rules $_) }) -or (Test-Path (Join-Path $UserHome '.claudebase'))
+    foreach ($n in $own) { $p = Join-Path $rules $n; if ((Test-Path $p) -and (Select-String -Path $p -Pattern 'claudebase|claude-code-sdlc' -Quiet)) { $found += $p } }
+    if ($marked) { foreach ($n in $sdlc) { $p = Join-Path $rules $n; if (Test-Path $p) { $found += $p } } }
+    $md = Join-Path $ClaudeDir 'CLAUDE.md'
+    if ((Test-Path $md) -and (Select-String -Path $md -Pattern 'claudebase|claude-code-sdlc' -Quiet)) { $found += $md }
+    foreach ($d in (Join-Path $ClaudeDir 'plugins/claudebase'), (Join-Path $ClaudeDir 'plugins/marketplaces/claudebase-dev'), (Join-Path $UserHome '.claudebase')) { if (Test-Path $d) { $found += $d } }
+    if (Test-Path $ClaudeDir) { $found += Get-ChildItem $ClaudeDir -Directory | Where-Object { $_.Name -like 'claudebase-backup-*' } | ForEach-Object { $_.FullName } }
+    $found
+}
+
+function Remove-Claudebase {
+    $found = @(Find-Claudebase)
+    $settings = Join-Path $ClaudeDir 'settings.json'
+    $claudeJson = Join-Path $UserHome '.claude.json'
+    $legacyJson = @()
+    if ((Test-Path $settings) -and ((Get-Content $settings -Raw) -match 'claudebase-|sdlc-|claudebase-dev')) { $legacyJson += $settings }
+    if ((Test-Path $claudeJson) -and ((Get-Content $claudeJson -Raw) -match '"claudebase"')) { $legacyJson += $claudeJson }
+    $profileHas = $PROFILE -and (Test-Path $PROFILE) -and (Select-String -Path $PROFILE -Pattern 'claudebase' -Quiet)
+    if ($found.Count -eq 0 -and $legacyJson.Count -eq 0 -and -not $profileHas) { return }
+    Log-Warn "a legacy claudebase setup is here; its rules and hooks contradict the harness's:"
+    $lines = @($found) + @($legacyJson | ForEach-Object { "its entries in $_" })
+    if ($profileHas) { $lines += "its lines in $PROFILE" }
+    $lines | ForEach-Object { Write-Host "         $_" }
+    $go = $Yes
+    if (-not $go) { $go = (Read-Host 'Delete it, all of it (no backup)? [y/N]') -match '^(y|yes)$' }
+    if (-not $go) { Log-Warn "kept: its instructions will contradict the harness's until it is gone"; return }
+    foreach ($p in $found) { Remove-Item $p -Recurse -Force }
+    if ($legacyJson -contains $settings) {
+        $s = Get-Content $settings -Raw | ConvertFrom-Json
+        if ($s.hooks) {
+            foreach ($ev in @($s.hooks.PSObject.Properties.Name)) {
+                $groups = @($s.hooks.$ev | ForEach-Object { $_.hooks = @($_.hooks | Where-Object { (Split-Path -Leaf (($_.command -split ' ')[0])) -notmatch '^(claudebase-|sdlc-)' }); $_ } | Where-Object { $_.hooks.Count -gt 0 })
+                if ($groups.Count -gt 0) { $s.hooks.$ev = $groups } else { $s.hooks.PSObject.Properties.Remove($ev) }
+            }
+        }
+        if ($s.extraKnownMarketplaces) { $s.extraKnownMarketplaces.PSObject.Properties.Remove('claudebase-dev') }
+        $s | ConvertTo-Json -Depth 32 | Set-Content $settings -Encoding UTF8
+    }
+    if ($legacyJson -contains $claudeJson) {
+        $c = Get-Content $claudeJson -Raw | ConvertFrom-Json
+        if ($c.mcpServers) { $c.mcpServers.PSObject.Properties.Remove('claudebase') }
+        if ($c.projects) { foreach ($pr in $c.projects.PSObject.Properties) { if ($pr.Value.mcpServers) { $pr.Value.mcpServers.PSObject.Properties.Remove('claudebase') } } }
+        $c | ConvertTo-Json -Depth 64 | Set-Content $claudeJson -Encoding UTF8
+    }
+    if ($profileHas) { (Get-Content $PROFILE | Where-Object { $_ -notmatch 'claudebase' }) | Set-Content $PROFILE }
+    Log-Ok 'deleted the legacy claudebase setup'
+}
+
 function Install-AgentSetup($src) {
+    Remove-Claudebase
     $assets = Join-Path $src 'assets/claude'
     if (-not (Test-Path $assets)) { Log-Warn "no assets/claude in the source: Claude Code's agent setup skipped"; return }
     Put-File (Join-Path $assets 'rules/project-journal.md') (Join-Path $ClaudeDir 'rules/project-journal.md')

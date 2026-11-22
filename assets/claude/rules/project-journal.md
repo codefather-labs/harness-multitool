@@ -121,9 +121,10 @@ The journal and the maps are also the project's documentation. Product and techn
 
 For a long task, a research question or a hunt for a cause, keep a mind map next to the journal. The journal holds what is settled; the map holds where you are: the topic, what you know, what you suspect, what you ruled out.
 
-- `mindmap_new`, then `mindmap_add` nodes (kinds: fact, hypothesis, question, decision, task, idea, goal, dead-end, note), each pointing at the journal entries it rests on with `refs`; `map_link` connects nodes; `map_node_state` marks one done or dropped; `mindmap_show` reads it back; `map_close` when the task is done.
+- `mindmap_new`, then `mindmap_add` nodes (kinds: fact, hypothesis, question, decision, task, idea, goal, dead-end, note), each pointing at the journal entries it rests on with `refs`; `map_link` connects nodes; `map_node_state` marks one done or dropped; `mindmap_show` reads it back.
 - A **flowchart** is a block diagram of a process or a piece of logic: `flowchart_new`, then `flowchart_add` symbols (start, end, process, decision, io, data, …) with an arrow from `after` and its `label`.
 - In plan mode a plan holds both: a mind map of the strategy and a flowchart of the logic.
+- **The graph outlives the plan.** Before making new maps, find what of the knowledge graph the change touches (journal entries, mind maps, flowcharts) and bring each up to date where the change makes it wrong: an entry by one that replaces it, the old one marked `deprecated`; a map by editing nodes, adding, marking dropped. Make a new map only for what none covers, and where it crosses another map, link the two (`map_link` with `to_map`) so the graphs join. Maps stay current for every later plan that crosses them: `map_close` only a map whose subject is gone.
 
 ## Telegram
 

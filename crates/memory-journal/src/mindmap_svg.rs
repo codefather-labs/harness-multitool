@@ -698,7 +698,7 @@ mod tests {
         } else {
             vec![]
         };
-        Map { summary, root: 1, nodes, edges, chains: vec![Chain { id: 1, name: "фикс".into(), entries: vec![1, 2, 3] }] }
+        Map { summary, root: 1, nodes, edges, chains: vec![Chain { id: 1, name: "фикс".into(), entries: vec![1, 2, 3] }], links: Vec::new() }
     }
 
     fn overlap(a: &Placed, b: &Placed) -> bool {

@@ -21,6 +21,11 @@ pub struct Report {
 /// Brings this stream into the journal of `key`. With `aside`, the journal there is moved out of
 /// the way first, renamed and not deleted, and only if it is not the one being updated.
 pub fn import(dir: &Path, key: &Path, text: &str, aside: bool) -> Result<Report> {
+    import_at(&journal::journal_path(dir, key), key, text, aside)
+}
+
+/// [`import`] into the journal kept in the file `file`.
+pub fn import_at(file: &Path, key: &Path, text: &str, aside: bool) -> Result<Report> {
     let mut entries: Vec<journal::ImportedEntry> = Vec::new();
     let mut maps: Vec<mindmap::Map> = Vec::new();
     for document in serde_json::Deserializer::from_str(text).into_iter::<Value>() {
@@ -35,9 +40,9 @@ pub fn import(dir: &Path, key: &Path, text: &str, aside: bool) -> Result<Report>
     entries.dedup_by_key(|e| e.id);
     let mut report = Report::default();
     if aside {
-        report.aside = journal::retire(dir, key, "before-import")?.map(|p| p.display().to_string());
+        report.aside = journal::retire_at(file, "before-import")?.map(|p| p.display().to_string());
     }
-    let mut conn = journal::open(dir, key, true)?.context("no journal")?;
+    let mut conn = journal::open_at(file, key, true)?.context("no journal")?;
     (report.new, report.updated) = journal::import_exact(&mut conn, &entries)?;
     for map in &maps {
         mindmap::import_exact(&mut conn, map, journal::now_secs())?;
@@ -48,7 +53,12 @@ pub fn import(dir: &Path, key: &Path, text: &str, aside: bool) -> Result<Report>
 
 /// The journal of `key` as such a stream.
 pub fn export(dir: &Path, key: &Path) -> Result<String> {
-    let conn = journal::open(dir, key, false)?.context("no journal here")?;
+    export_at(&journal::journal_path(dir, key), key)
+}
+
+/// [`export`] of the journal kept in the file `file`.
+pub fn export_at(file: &Path, key: &Path) -> Result<String> {
+    let conn = journal::open_at(file, key, false)?.context("no journal here")?;
     let mut out = String::new();
     let mut offset = 0;
     loop {

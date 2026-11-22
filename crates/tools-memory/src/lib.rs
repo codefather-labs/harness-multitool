@@ -530,9 +530,9 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_l
         ),
         "map_link" => tool(
             "map_link",
-            "Draw an arrow between two nodes of a map, with a label such as contradicts, a condition, or a loop back. `refs` are journal entries.",
-            || object(json!({"map": {"type": "integer"}, "from": {"type": "integer"}, "to": {"type": "integer"}, "label": {"type": "string"}, "refs": {"type": "array", "items": {"type": "integer"}}}), &["map", "from", "to"]),
-            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapLink { map, from: number(input, "from")?, to: number(input, "to")?, label: input["label"].as_str().unwrap_or_default().to_string(), refs: ids(&input["refs"]) }))),
+            "Draw an arrow between two nodes of a map, with a label such as contradicts, a condition, or a loop back. `refs` are journal entries. With `to_map`, `to` is a node of that other map: where two maps cross, link them so their graphs join (CON-196); both maps show the link.",
+            || object(json!({"map": {"type": "integer"}, "from": {"type": "integer"}, "to": {"type": "integer"}, "to_map": {"type": "integer", "description": "The map `to` is in, when it is another map."}, "label": {"type": "string"}, "refs": {"type": "array", "items": {"type": "integer"}}}), &["map", "from", "to"]),
+            |memory, input| more(memory, number(input, "map").and_then(|map| Ok(MemoryOp::MapLink { map, from: number(input, "from")?, to: number(input, "to")?, label: input["label"].as_str().unwrap_or_default().to_string(), refs: ids(&input["refs"]), to_map: input["to_map"].as_u64() }))),
         ),
         "map_ref" => tool(
             "map_ref",
@@ -696,7 +696,7 @@ mod tests {
         }
         fn map_new(&self, kind: MapKind, title: &str, direction: Option<&str>) -> BoxFuture<'_, PluginResult<MapData>> {
             let root = MapNode { id: 1, parent: None, kind: "topic".into(), text: title.into(), state: "open".into(), refs: vec![] };
-            let map = MapData { id: self.maps.borrow().len() as u64 + 1, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![] };
+            let map = MapData { id: self.maps.borrow().len() as u64 + 1, title: title.into(), kind, direction: direction.unwrap_or("right").into(), root: 1, nodes: vec![root], edges: vec![], links: vec![] };
             self.maps.borrow_mut().push(map.clone());
             Box::pin(std::future::ready(Ok(map)))
         }

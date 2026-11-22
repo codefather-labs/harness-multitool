@@ -1158,6 +1158,7 @@ version = "0.1.0-dev"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs",
  "harness-api",
  "resvg",
  "rusqlite",

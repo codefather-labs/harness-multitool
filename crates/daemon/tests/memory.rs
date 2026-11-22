@@ -7,7 +7,6 @@ use harness_daemon::client::Client;
 use harness_daemon::memory::DaemonMemory;
 use harness_daemon::*;
 use harness_memory_journal::plugin::JournalMemory;
-use harness_memory_journal::project::key_for;
 
 fn now<T>(mut future: BoxFuture<'_, T>) -> T {
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -59,8 +58,8 @@ fn every_call_answers_as_it_does_in_process() {
     assert!(client.stats().unwrap()["memory_ops"].as_u64().unwrap() >= 14);
 
     // It really is in the project's own journal.
-    let key = key_for(None, Path::new(&root_path));
-    let store = JournalMemory::open(&data.path().join("journals"), &key, "s").unwrap();
+    let place = harness_memory_journal::project::place(data.path(), Path::new(&root_path), None);
+    let store = JournalMemory::open_at(&place.file, &place.key, "s").unwrap();
     assert_eq!(now(store.journal_search("cents")).unwrap().len(), 1);
 }
 

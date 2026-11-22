@@ -397,12 +397,19 @@ pub fn adopt_path_journal(dir: &Path, key: &Path, path: &Path) -> Result<bool> {
 /// been written, so a read from an unrelated directory does not leave an empty
 /// file behind.
 pub fn open(dir: &Path, project: &Path, create: bool) -> Result<Option<Connection>> {
-    let path = journal_path(dir, project);
+    open_at(&journal_path(dir, project), project, create)
+}
+
+/// Open the journal of `project` kept in the file `path` (CON-197: a folder with no repository keeps
+/// its journal at a place of its own, not under the data dir's name for it).
+pub fn open_at(path: &Path, project: &Path, create: bool) -> Result<Option<Connection>> {
     if !create && !path.exists() {
         return Ok(None);
     }
-    create_private_dir(dir)?;
-    let conn = open_file(&path)?;
+    if let Some(dir) = path.parent() {
+        create_private_dir(dir)?;
+    }
+    let conn = open_file(path)?;
     let recorded: Option<String> = conn
         .query_row("SELECT value FROM journal_meta WHERE key = 'project_path'", [], |r| r.get(0))
         .optional()?;
@@ -2294,7 +2301,12 @@ pub fn import_exact(conn: &mut Connection, entries: &[ImportedEntry]) -> Result<
 /// Move the journal of `key` out of the way — renamed, not deleted, and out of
 /// what `list_journals` reads. `None` when it has none.
 pub fn retire(dir: &Path, key: &Path, why: &str) -> Result<Option<PathBuf>> {
-    let from = journal_path(dir, key);
+    retire_at(&journal_path(dir, key), why)
+}
+
+/// The journal in the file `from` moved out of the way, as [`retire`].
+pub fn retire_at(from: &Path, why: &str) -> Result<Option<PathBuf>> {
+    let from = from.to_path_buf();
     if !from.exists() {
         return Ok(None);
     }

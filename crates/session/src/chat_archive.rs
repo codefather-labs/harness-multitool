@@ -421,8 +421,8 @@ pub fn merge_journal(data_dir: &str, root: &str, stream: &str) -> Result<(usize,
     let result = (|| -> Result<(usize, usize), String> {
         harness_memory_journal::transfer::import(&scratch, key, stream, false).map_err(|e| format!("the archive's journal: {e:#}"))?;
         let src = journal::open(&scratch, key, false).map_err(|e| e.to_string())?.ok_or("the archive's journal did not open")?;
-        let here = harness_memory_journal::project::key_for(crate::git_origin(root).as_deref(), Path::new(root));
-        let mut dst = journal::open(&Path::new(data_dir).join("journals"), &here, true).map_err(|e| e.to_string())?.ok_or("this project's journal did not open")?;
+        let here = crate::journal_place(data_dir, root);
+        let mut dst = journal::open_at(&here.file, &here.key, true).map_err(|e| e.to_string())?.ok_or("this project's journal did not open")?;
         journal::merge_into(&mut dst, &src).map_err(|e| format!("{e:#}"))
     })();
     let _ = std::fs::remove_dir_all(&scratch);
@@ -516,8 +516,8 @@ mod tests {
         write(&folder.join(cid).join("subagents/agent-1.jsonl"), line(serde_json::json!({"cwd": format!("{root_a_s}/sub"), "sessionId": cid})).as_bytes()).unwrap();
         write(&folder.join(cid).join("tool-results/out.txt"), b"spilled").unwrap();
         write(&claude_a.join("file-history").join(cid).join("backup@v1"), b"before").unwrap();
-        let key = harness_memory_journal::project::key_for(None, Path::new(&root_a_s));
-        let mut conn = journal::open(&Path::new(&data_a).join("journals"), &key, true).unwrap().unwrap();
+        let place_a = crate::journal_place(&data_a, &root_a_s);
+        let mut conn = journal::open_at(&place_a.file, &place_a.key, true).unwrap().unwrap();
         let (_, e1) = journal::add(&mut conn, &journal::NewEntry { body: "the first finding of A".into(), category: "finding".into(), tags: vec!["t".into()], ..Default::default() }, 100).unwrap();
         let spec = harness_memory_journal::mindmap::NewMap { title: "plan", layout: "mindmap", direction: "right", shared: true };
         let owner = harness_memory_journal::mindmap::Owner { nick: "nick-a".into(), host: None };
@@ -551,8 +551,8 @@ mod tests {
         assert!(dump_with(&data_a, &root_a_s, "imported-11111111-1", Some(&dumped.path), Some(claude_a.clone()), &|_, _| {}).unwrap_err().contains("never written over"), "a named --out is still refused");
 
         // B: a filler entry first, so the journal's ids there differ from A's.
-        let key_b = harness_memory_journal::project::key_for(None, Path::new(&root_b_s));
-        let mut conn = journal::open(&Path::new(&data_b).join("journals"), &key_b, true).unwrap().unwrap();
+        let place_b = crate::journal_place(&data_b, &root_b_s);
+        let mut conn = journal::open_at(&place_b.file, &place_b.key, true).unwrap().unwrap();
         journal::add(&mut conn, &journal::NewEntry { body: "B's own older entry".into(), category: "note".into(), tags: vec!["t".into()], ..Default::default() }, 50).unwrap();
         drop(conn);
         let seen = std::cell::RefCell::new(Vec::<(u64, u64)>::new());
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(std::fs::read(folder_b.join(&new_cid).join("tool-results/out.txt")).unwrap(), b"spilled");
         assert_eq!(std::fs::read(claude_b.join("file-history").join(&new_cid).join("backup@v1")).unwrap(), b"before");
         // The journal: A's entry under a new id, its map pointing at it.
-        let conn = journal::open(&Path::new(&data_b).join("journals"), &key_b, false).unwrap().unwrap();
+        let conn = journal::open_at(&place_b.file, &place_b.key, false).unwrap().unwrap();
         let (total, page) = journal::list(&conn, &journal::Filter::default(), 0, 10).unwrap();
         assert_eq!(total, 2);
         let moved = page.iter().find(|e| e.body == "the first finding of A").unwrap().id;

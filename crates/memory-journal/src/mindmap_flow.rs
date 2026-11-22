@@ -781,7 +781,7 @@ mod tests {
             .enumerate()
             .map(|(i, (f, t, l))| Edge { id: i as i64 + 1, from: f, to: t, label: l.into(), refs: if i == 1 { vec![42] } else { vec![] } })
             .collect();
-        Map { summary, root: 1, nodes: all, edges, chains: vec![Chain { id: 1, name: "путь".into(), entries: vec![3, 4] }] }
+        Map { summary, root: 1, nodes: all, edges, chains: vec![Chain { id: 1, name: "путь".into(), entries: vec![3, 4] }], links: Vec::new() }
     }
 
     /// Every symbol and gate, with a decision that loops back.

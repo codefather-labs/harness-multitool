@@ -6,7 +6,7 @@ The journal is a project's record of why it is the way it is: its decisions, fin
 
 Each project has one journal (CON-22). A project is its repository remote, or its folder when it has none, so every checkout of a repository shares the same journal.
 
-The harness's daemon keeps the journals, in the OS's data directory under `journals/` (CON-20). An agent reaches its project's journal only through the journal tools; a journal tool works on that project's journal only. The browser build implements the same interface over browser storage.
+The harness's daemon keeps the journals, in the OS's data directory under `journals/` (CON-20). A folder that is no git repository keeps its journal at `~/.harness/projects/<name>-<hex>/journal.db` instead (MULTITOOL_HOME when set; CON-197); a harness run on a data dir of its own, a test's, keeps those under that data dir's `home/`. An agent reaches its project's journal only through the journal tools; a journal tool works on that project's journal only. The browser build implements the same interface over browser storage.
 
 An entry is a short note, up to 20,000 characters, with:
 
