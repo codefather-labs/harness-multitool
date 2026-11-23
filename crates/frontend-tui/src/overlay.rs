@@ -60,6 +60,9 @@ pub fn settings_for(w: &Workspace) -> SettingsView {
     if let Some(page) = &w.memory {
         s.memory = page.clone();
     }
+    if let Some(page) = &w.tools {
+        s.tools = page.clone();
+    }
     if let Some(page) = &w.journal_issues {
         s.journal = page.clone();
     }
@@ -167,6 +170,7 @@ pub fn sample_settings() -> SettingsView {
         telegram: Default::default(),
         voice: Default::default(),
         memory: MemoryPage { map_max_nodes: 200, search_max_linked: 100, ..Default::default() },
+        tools: crate::model::ToolsPage::default(),
         journal: Default::default(),
         games: crate::model::GamesPage { texas_holdem: true, ..Default::default() },
         behaviour: Default::default(),
@@ -928,6 +932,58 @@ fn memory_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     }
 }
 
+/// The MCP servers of Claude Code, Codex and the harness on the own loop, each on or off (CON-201).
+fn tools_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
+    let p = &s.tools;
+    let focus = s.focus == SettingsPane::Page;
+    let muted = Style::default().fg(t.text_muted);
+    let strong = Style::default().fg(t.text);
+    text(f, r.x, r.y + 1, r.width, vec![Span::styled(" MCP SERVERS", muted.add_modifier(Modifier::BOLD))], bg);
+    // The name, then what it listed, then where it is from, which the edge may cut.
+    let name_w = p.servers.iter().map(|row| row.name.chars().count()).max().unwrap_or(0).min((r.width as usize).saturating_sub(7 + 15 + 18).max(12));
+    let room = r.height.saturating_sub(10) as usize;
+    let first = p.cursor.saturating_sub(room.saturating_sub(1));
+    for (i, row) in p.servers.iter().enumerate().skip(first).take(room) {
+        let under = focus && p.cursor == i;
+        let (mark, mark_style) = if row.on { ("● on ", Style::default().fg(t.accent)) } else { ("○ off", muted) };
+        let tools = match row.tools {
+            Some(1) => "1 tool".to_string(),
+            Some(n) => format!("{n} tools"),
+            None => "not listed yet".to_string(),
+        };
+        let line = vec![
+            Span::styled(format!(" {mark}  "), mark_style),
+            Span::styled(format!("{:<name_w$}  ", fit_chars(&row.name, name_w)), if row.on { strong } else { muted }),
+            Span::styled(format!("{tools:<15}"), muted),
+            Span::styled(row.source.clone(), muted),
+        ];
+        text(f, r.x, r.y + 2 + (i - first) as u16, r.width, line, if under { t.surface_raised } else { bg });
+    }
+    if p.servers.is_empty() {
+        text(f, r.x, r.y + 2, r.width, vec![Span::styled(" None found: none in Claude Code's, its plugins', the project's .mcp.json or Codex's settings.", muted)], bg);
+    }
+    let shown = p.servers.len().clamp(1, room.max(1)) as u16;
+    let notes = [
+        p.status.as_str(),
+        "",
+        "The MCP servers that Claude Code and Codex run here, for the harness's own loop",
+        "(Ollama, an API key, a ChatGPT plan). A delegate runs its own. A server off is neither",
+        "started nor offered. Its tools are offered by name and loaded with tool_search when needed.",
+        "Enter or Space turns one on or off and saves; a running session keeps its tools until it restarts.",
+    ];
+    for (i, note) in notes.iter().enumerate() {
+        text(f, r.x, r.y + 3 + shown + i as u16, r.width, vec![Span::styled(format!(" {note}"), muted)], bg);
+    }
+}
+
+/// `text` in at most `width` characters, its end marked with … when cut.
+fn fit_chars(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    text.chars().take(width.saturating_sub(1)).chain(['…']).collect()
+}
+
 /// The bot's token and who may speak to it. The token shows only as dots.
 fn telegram_page(f: &mut Frame, r: Rect, s: &SettingsView, t: &Theme, bg: Color) {
     let p = &s.telegram;
@@ -1432,6 +1488,8 @@ fn settings(f: &mut Frame, area: Rect, s: &SettingsView, t: &Theme, out: &mut Dr
         voice_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg, out);
     } else if name == "Telegram" {
         telegram_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
+    } else if name == "Tools" {
+        tools_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == "Memory" {
         memory_page(f, Rect::new(px, body_y + 1, pw, footer_y.saturating_sub(body_y + 2)), s, t, bg);
     } else if name == CHATS_SECTION {
@@ -2090,6 +2148,21 @@ pub fn key(w: &mut Workspace, k: Key) -> Option<Outcome> {
                     let (tracker, _) = crate::model::TRACKERS.get(p.tracker).copied().unwrap_or(("github", true));
                     p.status = "Saved for this project.".to_string();
                     w.outbox.push(Outgoing::SaveJournalIssues { tracker: tracker.to_string(), gh_dir: p.gh_dir.clone(), enabled: p.enabled, public_ok: p.public_ok });
+                }
+                _ => {}
+            }
+        }
+        Overlay::Settings(s) if s.sections.get(s.section).is_some_and(|n| n == "Tools") && !matches!(k, Key::Esc) && s.focus == SettingsPane::Page => {
+            let p = &mut s.tools;
+            match k {
+                Key::Tab | Key::Left | Key::Right => s.focus = SettingsPane::Sections,
+                Key::Up => p.cursor = p.cursor.saturating_sub(1),
+                Key::Down => p.cursor = (p.cursor + 1).min(p.servers.len().saturating_sub(1)),
+                Key::Enter | Key::Char(' ') if !p.servers.is_empty() => {
+                    let row = &mut p.servers[p.cursor];
+                    row.on = !row.on;
+                    p.status = format!("Saved: {} is {}. A running session keeps its tools until it restarts.", row.name, if row.on { "on" } else { "off" });
+                    w.outbox.push(Outgoing::SaveMcpServer { name: row.name.clone(), on: row.on });
                 }
                 _ => {}
             }
@@ -3557,6 +3630,38 @@ mod tests {
         key(&mut w, Key::Char(' '));
         key(&mut w, Key::Ctrl('s'));
         assert!(w.outbox.iter().any(|o| matches!(o, Outgoing::SaveGames { enabled: true, texas_holdem: false })), "{:?}", w.outbox);
+    }
+
+    /// CON-201: Settings > Tools lists the MCP servers with their source and count, and Enter or
+    /// Space turns the one under the cursor on or off and saves it at once.
+    #[test]
+    fn the_tools_page_lists_servers_and_turns_one_off() {
+        let mut w = Workspace::one(Default::default(), "t");
+        let row = |name: &str, source: &str, on: bool, tools: Option<usize>| crate::model::McpServerRow { name: name.into(), source: source.into(), on, tools };
+        w.tools = Some(crate::model::ToolsPage { servers: vec![row("rea", "claude: user", true, Some(207)), row("plugin_chrome-devtools-mcp_chrome-devtools", "plugin cd", false, None)], ..Default::default() });
+        let mut s = settings_for(&w);
+        s.section = s.sections.iter().position(|n| n == "Tools").unwrap();
+        s.focus = SettingsPane::Page;
+        w.overlay = Some(Overlay::Settings(s));
+        let theme = crate::theme::Theme::builtin("dark").unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| draw(f, f.area(), w.overlay.as_ref().unwrap(), &theme, &mut Drawn::default())).unwrap();
+        let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        for want in ["MCP SERVERS", "● on", "rea", "claude: user", "207 tools", "○ off", "plugin_chrome-devtools-mcp", "plugin cd", "not listed yet"] {
+            let rows: Vec<String> = terminal.backend().buffer().content().chunks(140).map(|l| l.iter().map(|c| c.symbol()).collect()).collect();
+            assert!(screen.contains(want), "{want} on the page:\n{}", rows.join("\n"));
+        }
+        key(&mut w, Key::Enter);
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveMcpServer { name, on: false }) if name == "rea"));
+        key(&mut w, Key::Down);
+        key(&mut w, Key::Char(' '));
+        assert!(matches!(w.outbox.pop(), Some(Outgoing::SaveMcpServer { name, on: true }) if name.starts_with("plugin_chrome")));
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(s.tools.servers.iter().map(|r| r.on).collect::<Vec<_>>(), [false, true]);
+        assert!(s.tools.status.starts_with("Saved"));
+        key(&mut w, Key::Left);
+        let Some(Overlay::Settings(s)) = &w.overlay else { panic!() };
+        assert_eq!(s.focus, SettingsPane::Sections);
     }
 
     /// CON-118: the second row saves its own setting and leaves the first.

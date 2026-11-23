@@ -107,6 +107,8 @@ pub struct Workspace {
     pub telegram: Option<TelegramPage>,
     pub voice: Option<VoicePage>,
     pub memory: Option<MemoryPage>,
+    /// Settings > Tools, as the app finds the servers (CON-201).
+    pub tools: Option<ToolsPage>,
     /// The Journal page, the window's project's tracker (ADR 0028).
     pub journal_issues: Option<JournalPage>,
     /// The Games page (ADR 0029).
@@ -178,6 +180,8 @@ pub enum Outgoing {
     SubscribeCallback { tab: u64, name: String, on: bool, approve: bool },
     /// The Memory page saved: the most linked entries a journal answer holds, 0 for no paging (CON-118).
     SaveSearchPage { limit: u64 },
+    /// An MCP server turned on or off for this profile (CON-201).
+    SaveMcpServer { name: String, on: bool },
     /// The Profiles tab (CON-125): a new clean profile, one deleted, this window moved onto one, and
     /// Claude Code signed in or out of one, which hands the terminal to `claude auth`.
     ProfileAdd { name: String },
@@ -321,6 +325,7 @@ pub struct SettingsView {
     pub telegram: TelegramPage,
     pub voice: VoicePage,
     pub memory: MemoryPage,
+    pub tools: ToolsPage,
     pub journal: JournalPage,
     pub games: GamesPage,
     pub behaviour: BehaviourPage,
@@ -500,7 +505,7 @@ pub struct ProviderOption {
 
 impl Workspace {
     pub fn one(view: SessionView, title: &str) -> Workspace {
-        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, press: None, selection: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, journal_issues: None, games: None, behaviour: None, on_exit: None, in_daemon: false, chats: None, skills: None, profiles: None }
+        Workspace { new_tab_runs_on: None, tabs: vec![Tab::new(title, TabIcon::Prompt, TabMark::None, view)], active: 0, toast: None, reconnecting: None, moving: Vec::new(), archiving: Vec::new(), overlay: None, drag: None, press: None, selection: None, journal: Vec::new(), live: false, outbox: Vec::new(), auth: None, callbacks: None, telegram: None, voice: None, memory: None, tools: None, journal_issues: None, games: None, behaviour: None, on_exit: None, in_daemon: false, chats: None, skills: None, profiles: None }
     }
 
     pub fn view(&self) -> &SessionView {
@@ -1287,6 +1292,25 @@ pub struct JournalPage {
     pub typed: String,
     /// A public repository's sending waits for `y`.
     pub confirming: bool,
+    pub status: String,
+}
+
+/// A row of Settings > Tools: an MCP server found for the own loop (CON-201).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpServerRow {
+    pub name: String,
+    /// Where it was found: `claude: user`, `plugin chrome-devtools-mcp`, `codex`, `harness`…
+    pub source: String,
+    pub on: bool,
+    /// How many tools it listed when it last ran; None before it has.
+    pub tools: Option<usize>,
+}
+
+/// Settings > Tools: the MCP servers the own loop finds, each on or off for this profile (CON-201).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolsPage {
+    pub servers: Vec<McpServerRow>,
+    pub cursor: usize,
     pub status: String,
 }
 

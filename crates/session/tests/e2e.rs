@@ -2396,3 +2396,45 @@ fn a_window_the_daemon_lost_opens_itself_again() {
     link.prompt(1, "still there?".to_string());
     assert_eq!(wait_end(&link).as_deref(), Some("Back again."));
 }
+
+/// CON-201: an MCP server's tools on the own loop. They are deferred: tool_search names them and
+/// loads one, the call is asked as a command is, and a server turned off is in no request.
+#[cfg(unix)]
+#[test]
+fn the_own_loop_finds_and_calls_an_mcp_servers_tool() {
+    let root = temp_dir("mcp-root");
+    let data = temp_dir("mcp-data");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../tools-mcp/tests/fake_server.py");
+    let (url, seen) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "tool_search", json!({"query": "select:mcp__fake__echo"}))), "Finding it."),
+        anthropic_turn(Some(("t2", "mcp__fake__echo", json!({"text": "hi"}))), "Calling it."),
+        anthropic_turn(None, "It said hi."),
+    ]);
+    let mut s = settings(&url, "k");
+    s.mcp_servers.insert("fake".into(), json!({"command": "python3", "args": [script]}));
+    s.mcp_servers.insert("other".into(), json!({"command": "python3", "args": [script], "env": {"X": "1"}}));
+    s.mcp_off = vec!["other".into()];
+    let mut sessions = Sessions::new(with_host(s, root.clone(), data.clone().into(), Host::default()), root);
+    let (entries, ends, asked) = drive(&mut sessions, &["use the fake server"], Answer::AllowOnce);
+    assert_eq!(ends, vec!["AwaitingInput"]);
+    assert_eq!(asked, 1, "the call asks; tool_search does not");
+    let asked_for: Vec<Vec<Capability>> = entries.iter().filter_map(|e| match &e.event {
+        Event::ToolRequested { call, capabilities } if call.name == "mcp__fake__echo" => Some(capabilities.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(asked_for, [vec![Capability::Command("mcp:fake/echo".into())]]);
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { output, is_error: false, .. } if output.starts_with("echo: hi"))), "the server's answer came back");
+    let requests = seen.lock().unwrap();
+    let tools = |i: usize| -> Vec<serde_json::Value> {
+        let body: serde_json::Value = serde_json::from_str(requests[i].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        body["tools"].as_array().unwrap().clone()
+    };
+    let names = |i: usize| tools(i).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let search = tools(0).into_iter().find(|t| t["name"] == "tool_search").expect("tool_search is offered");
+    assert!(search["description"].as_str().unwrap().contains("- mcp__fake__: die, echo, fail, roots, sleep"), "{}", search["description"]);
+    assert!(!names(0).iter().any(|n| n.starts_with("mcp__")), "deferred: no server's spec before it is found: {:?}", names(0));
+    assert!(names(1).contains(&"mcp__fake__echo".to_string()), "found, it is sent: {:?}", names(1));
+    assert!(!names(1).iter().any(|n| n.starts_with("mcp__fake__") && n != "mcp__fake__echo"));
+    assert!(!requests.iter().any(|r| r.contains("mcp__other__")), "a server turned off is in no request");
+    assert!(std::path::Path::new(&format!("{data}/mcp")).read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("fake-")), "its list is kept");
+}

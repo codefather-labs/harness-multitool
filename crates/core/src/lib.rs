@@ -4,6 +4,7 @@
 pub mod engine;
 pub mod plan;
 pub mod registry;
+pub mod tool_search;
 
 pub use engine::{Engine, Inbox, ModeChange, Modes, RunEnd, StopFlag};
 pub use registry::{BuildContext, Parts, Registry, RegistryError, Selection};

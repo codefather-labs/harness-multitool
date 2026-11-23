@@ -17,6 +17,8 @@ const PAIRS: &[Pair] = &[
     ("Bash", "shell", &[("command", "command"), ("run_in_background", "run_in_background")]),
     ("Grep", "search", &[("pattern", "text"), ("path", "path")]),
     ("WebFetch", "fetch", &[("url", "url")]),
+    // Deferred tools are found the same way on both (CON-201).
+    ("ToolSearch", "tool_search", &[("query", "query"), ("max_results", "max_results")]),
 ];
 
 /// The prefixes the harness's MCP servers give its tools in Claude Code.

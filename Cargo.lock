@@ -1259,6 +1259,7 @@ dependencies = [
  "harness-scenarios",
  "harness-session-files",
  "harness-tools-builtin",
+ "harness-tools-mcp",
  "harness-tools-memory",
  "harness-verifier-protocol",
  "pollster",
@@ -1299,6 +1300,18 @@ version = "0.1.0-dev"
 dependencies = [
  "harness-api",
  "serde_json",
+]
+
+[[package]]
+name = "harness-tools-mcp"
+version = "0.1.0-dev"
+dependencies = [
+ "harness-api",
+ "harness-platform-native",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

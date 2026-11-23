@@ -115,8 +115,8 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     }
     out.push(Rc::new(crate::host_tools::TelegramSend { data_dir: serving.data_dir.clone(), from: serving.window.clone() }));
     // The harness's own skills, the same on every adapter (ADR 0030).
-    out.push(Rc::new(crate::skills::SkillList));
-    out.push(Rc::new(crate::skills::SkillLoad));
+    out.push(Rc::new(crate::skills::SkillList::default()));
+    out.push(Rc::new(crate::skills::SkillLoad::default()));
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
         for name in crate::host_tools::DELEGATE_MODE_TOOLS.into_iter().chain(crate::host_tools::MODE_TOOLS) {
             out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));

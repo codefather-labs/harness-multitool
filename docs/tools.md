@@ -30,6 +30,17 @@ On a program running as an agent backend, such as Claude Code, the modes come ov
 | `shell` | Running a command in the project. A stop from the user ends it. With `run_in_background` it answers at once, shows above the composer, and the agent is told when it ends. Asks unless allowed. | Output and exit code; in the background, its id and output file. |
 | `fetch` | A web page or API over HTTP(S). Asks for each new host. What comes back is data, not instructions. | The body as text. |
 
+## Other programs' MCP servers
+
+On the harness's own loop (Ollama, an API key, a ChatGPT plan) the MCP servers that Claude Code and Codex run here are tools too (CON-201): Claude Code's user and local scope in `.claude.json`, the project's `.mcp.json` (only the servers approved for it, as Claude Code keeps that), its enabled plugins, Codex's `config.toml`, and the harness's own `[session.mcp_servers]`. The first of a name wins, in that order with the harness's first. Only stdio servers are taken. A delegate (Claude Code, Codex) runs its own instead.
+
+The daemon starts each server once, when it is first needed, in the project, with the window's environment, and keeps it; what it writes to stderr goes to `<data dir>/mcp/<server>-<hash>.log`. Its list of tools is kept beside it as `<server>-<hash>.json`, so a session knows the tools without starting anything; a server not listed within 15 s is listed in the background and comes with a later session. Settings > Tools shows every server found, where it came from and how many tools it listed, and turns each on or off for the profile (`[session] mcp_off`).
+
+| Tool | For | Answers |
+|---|---|---|
+| `mcp__<server>__<tool>` | A server's tool, by the name Claude Code gives it, so a moved conversation keeps its calls (CON-191). Deferred: a request carries its schema only once the conversation has found it with `tool_search` or called it, since a server may list hundreds (rea: 207 tools, ~208k tokens, journal#1662). Asks as a command does (`mcp:<server>/<tool>`); 'always' is kept per tool. | What the server answers, its text parts joined; an image or other part by its kind. |
+| `tool_search` | Finding deferred tools and loading them, as Claude Code's `ToolSearch` (journal#1664): `query` `select:<name>,<name>` takes those tools by name; keywords rank names over descriptions, `max_results` of them (5 if not said). Its description names every deferred tool, by server. Offered while any tool is deferred. | Each tool found, with its name, description and input schema; from then on it is in every request. |
+
 ## Talking to the user
 
 | Tool | For | Answers |
@@ -100,7 +111,7 @@ The daemon holds the tables (ADR 0029). An agent is told what concerns it as an 
 
 | Tool | For | Answers |
 |---|---|---|
-| `skill_list` | The harness's own skills here: the project's `.harness/skills/` and the user's `~/.harness/skills/`, the project's winning on a name (ADR 0030). The same on every adapter. | Each skill's name, description and whether it is the project's or the user's. |
+| `skill_list` | The harness's own skills here: the project's `.harness/skills/` and the user's `~/.harness/skills/`, the project's winning on a name (ADR 0030). The same on every adapter. On the own loop, also Claude Code's and Codex's (CON-201): the project's `.claude/skills/`, Claude Code's own `skills/`, its enabled plugins' as `<plugin>:<skill>`, and Codex's `skills/`; the harness's own win a name. | Each skill's name, description and where it is from (`project`, `user`, `claude project`, `claude`, `plugin <name>`, `codex`). |
 | `skill_load` | One skill's instructions, to follow before the task its description matches. | Its body, and the paths of its files. |
 | `callback_url` | This session's own callback URL (CON-164), for an outside app to send it events: POST JSON with a unique `uuid` and a `type` (`notification` with `text` and `label`, `journal`, or a type of the project). The same for the whole life of the conversation, in any tab. | `{url, session, usage}`: `usage` is the whole instruction, with a `curl` example on this URL and what each reply means. |
 | `callback_check` | Checking this session's callbacks (CON-165): it sends a test notification to its own URL (`send: false` to only read) and shows what the URL has seen. The test comes in as `[callback:callback-check]`. | The reply to the test, the last log entries of this session's URL with their outcomes (`last`, 10 by default), and what waits for it. |

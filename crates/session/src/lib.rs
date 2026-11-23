@@ -57,6 +57,10 @@ pub struct Settings {
     pub providers: BTreeMap<String, Value>,
     /// `{"anthropic": {"env": "..."}, "local": {"none": true}}`.
     pub auth: BTreeMap<String, Value>,
+    /// The harness's own MCP servers for the own loop, `{name: {command, args, env}}` (CON-201).
+    pub mcp_servers: BTreeMap<String, Value>,
+    /// The MCP servers found that this profile leaves off: neither started nor sent (CON-201).
+    pub mcp_off: Vec<String>,
 }
 
 impl Default for Settings {
@@ -75,6 +79,8 @@ impl Default for Settings {
             hooks: Vec::new(),
             providers: BTreeMap::new(),
             auth: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+            mcp_off: Vec::new(),
         }
     }
 }
@@ -185,6 +191,79 @@ fn agent_workflow_file(data_dir: &str) -> String {
         }
     }
     path.to_string_lossy().into_owned()
+}
+
+/// How long a session waits for a server that has not listed its tools yet; one slower lists them
+/// in the background, for a later session (CON-201).
+const MCP_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Whether this harness finds the user's own MCP servers: its own data dir does; another, a
+/// test's or a debug run's, is a harness of its own and starts only the servers it is given, as
+/// it keeps its journals in itself (CON-197).
+fn finds_users_servers(data_dir: &std::path::Path) -> bool {
+    harness_memory_journal::project::home_for(data_dir) != data_dir.join("home")
+}
+
+/// Every MCP server found for the project, on or off, as the user's Claude Code and Codex and this
+/// harness name them.
+pub fn mcp_found(settings: &Settings, root: &str, data_dir: &std::path::Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<harness_tools_mcp::discovery::Server> {
+    let places = if finds_users_servers(data_dir) {
+        harness_tools_mcp::discovery::Places::from_env(env, root, settings.mcp_servers.clone())
+    } else {
+        harness_tools_mcp::discovery::Places { root: root.to_string(), own: settings.mcp_servers.clone(), ..Default::default() }
+    };
+    harness_tools_mcp::discovery::servers(&places, env)
+}
+
+/// The MCP servers that are on.
+pub fn mcp_servers(settings: &Settings, root: &str, data_dir: &std::path::Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<harness_tools_mcp::discovery::Server> {
+    let mut servers = mcp_found(settings, root, data_dir, env);
+    servers.retain(|s| !settings.mcp_off.contains(&s.name));
+    servers
+}
+
+/// A server as Settings > Tools shows it (CON-201).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRow {
+    pub name: String,
+    pub source: String,
+    pub on: bool,
+    /// How many tools it listed when it last ran; None before it has.
+    pub tools: Option<usize>,
+}
+
+/// Every server found, with whether it is on and what it listed last.
+pub fn mcp_rows(settings: &Settings, root: &str, data_dir: &std::path::Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<McpRow> {
+    let start = harness_tools_mcp::Start { base: None, root: root.to_string(), dir: data_dir.join("mcp") };
+    mcp_found(settings, root, data_dir, env)
+        .into_iter()
+        .map(|s| McpRow { on: !settings.mcp_off.contains(&s.name), tools: harness_tools_mcp::cached(&s, &start).map(|t| t.len()), name: s.name, source: s.source })
+        .collect()
+}
+
+/// Every tool of the servers that are on, by its name: listed from disk, or by the server within
+/// [`MCP_LIST_WAIT`], every server at once.
+fn mcp_tools(settings: &Settings, root: &str, data_dir: &std::path::Path, read: &WindowEnvRead, environment: Option<WindowEnv>) -> Vec<(String, harness_tools_mcp::McpTool)> {
+    let servers = mcp_servers(settings, root, data_dir, &|name| read(name));
+    let start = harness_tools_mcp::Start { base: environment, root: root.to_string(), dir: data_dir.join("mcp") };
+    let listed: Vec<(harness_tools_mcp::discovery::Server, Vec<harness_tools_mcp::client::Listed>)> = std::thread::scope(|scope| {
+        let running: Vec<_> = servers.into_iter().map(|server| {
+            let start = start.clone();
+            scope.spawn(move || {
+                let tools = harness_tools_mcp::tools(&server, &start, MCP_LIST_WAIT).ok().flatten().unwrap_or_default();
+                (server, tools)
+            })
+        }).collect();
+        running.into_iter().filter_map(|r| r.join().ok()).collect()
+    });
+    let mut out = Vec::new();
+    for (server, tools) in listed {
+        let server = Arc::new(server);
+        for tool in tools {
+            out.push((harness_tools_mcp::tool_name(&server.name, &tool.name), harness_tools_mcp::McpTool { server: server.clone(), tool, start: start.clone() }));
+        }
+    }
+    out
 }
 
 fn registry(settings: &Settings, root: &str, data_dir: &str, note: Option<String>, env: WindowEnvRead) -> Registry {
@@ -607,12 +686,23 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             let window = host.window.clone().map(|window| (window, tab));
             registry.tool("telegram_send", move |_| Ok(Rc::new(host_tools::TelegramSend { data_dir: data_dir.clone(), from: window.clone() })));
         }
+        // The MCP servers of Claude Code, Codex and the harness, on the own loop (CON-201): a
+        // delegate runs its own.
+        if !settings.runs_delegate() {
+            for (name, tool) in mcp_tools(&settings, &root, &data_dir, &read, host.environment.clone()) {
+                selection.tools.push(name.clone());
+                registry.tool(&name, move |_| Ok(Rc::new(harness_tools_mcp::McpTool { server: tool.server.clone(), tool: tool.tool.clone(), start: tool.start.clone() })));
+            }
+        }
         // The harness's own skills, on every adapter (ADR 0030).
         for name in ["skill_list", "skill_load"] {
             selection.tools.push(name.to_string());
         }
-        registry.tool("skill_list", |_| Ok(Rc::new(skills::SkillList)));
-        registry.tool("skill_load", |_| Ok(Rc::new(skills::SkillLoad)));
+        // On the own loop, Claude Code's and Codex's skills too (CON-201): a delegate has its own.
+        let agents = (!settings.runs_delegate() && finds_users_servers(&data_dir)).then(|| Arc::new(harness_tools_mcp::discovery::Places::from_env(&|name| read(name), &root, BTreeMap::new())));
+        let agents_load = agents.clone();
+        registry.tool("skill_list", move |_| Ok(Rc::new(skills::SkillList { agents: agents.clone() })));
+        registry.tool("skill_load", move |_| Ok(Rc::new(skills::SkillLoad { agents: agents_load.clone() })));
         // What a session runs on its own loop can leave running; a delegate has its own.
         let background = (!settings.runs_delegate()).then(|| Rc::new(harness_tools_builtin::Background::new(&data_dir.join("background").to_string_lossy())));
         let shell_background = background.clone();

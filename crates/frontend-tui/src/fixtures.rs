@@ -607,6 +607,7 @@ pub fn session_tabs() -> AppState {
         telegram: None,
         voice: None,
         memory: None,
+        tools: None,
         journal_issues: None,
         chats: None, games: None, behaviour: None, on_exit: None, in_daemon: false,
         skills: None,

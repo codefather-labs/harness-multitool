@@ -27,6 +27,8 @@ The ChatGPT plan is shipped because OpenAI documents a sign-in flow for open-sou
 
 A Claude subscription is not offered on this loop. Anthropic's terms do not permit third-party apps to offer Claude.ai login or to collect, store or route its tokens, so Anthropic models here take a Console API key (CON-56).
 
+On this loop the MCP servers that Claude Code and Codex run here are tools too, under the names Claude Code gives them, `mcp__<server>__<tool>`, and so are their skills (CON-201). A server's tools are deferred and found with `tool_search`, so a small local model is not handed hundreds of schemas ([tools.md](tools.md#other-programs-mcp-servers)).
+
 Ollama and other local models are a provider of this loop: a row of kind `openai` with a `base_url`, as in the example under [Provider, model and keys](tui.md#provider-model-and-keys). The provider reads the reasoning that Ollama streams apart from the answer (`crates/provider-openai/src/lib.rs`).
 
 #### Ollama on its own API (CON-190)
@@ -100,6 +102,8 @@ Each program names its tools its own way: Claude Code's `Read {file_path}`, `Bas
 | `WebFetch {url}` | `fetch {url}` |
 | `mcp__harness__<name>` | `<name>` |
 | `mcp__mode__<name>` | `mode__<name>` |
+| `ToolSearch {query, max_results}` | `tool_search {query, max_results}` |
+| `mcp__<server>__<tool>` of another server | the same name (CON-201) |
 
 On the own loop the mapping is made on each request, and the log keeps what was said. In Claude Code's form the calls are written under Claude Code's names. A call to a tool the session does not have is answered with the one meant: "no tool named Read; this session's tool for it is read {path}". Codex names the harness's tools `harness__<name>`, which the own loop takes as `<name>`; its shell calls keep their own names, and the own loop's names going into Codex's form are to come.
 

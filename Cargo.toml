@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/auth-chatgpt", "crates/backend-claude-code", "crates/backend-codex", "crates/core", "crates/docs-mirror", "crates/doubles", "crates/scenarios", "crates/speech", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/provider-ollama", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/memory-journal", "crates/tools-memory", "crates/session", "crates/daemon", "crates/callback-sdk", "crates/games", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
+members = ["crates/api", "crates/auth-chatgpt", "crates/backend-claude-code", "crates/backend-codex", "crates/core", "crates/docs-mirror", "crates/doubles", "crates/scenarios", "crates/speech", "crates/platform-native", "crates/auth-apikey", "crates/provider-anthropic", "crates/provider-openai", "crates/provider-ollama", "crates/tools-builtin", "crates/policy-default", "crates/context-default", "crates/session-files", "crates/verifier-protocol", "crates/router-default", "crates/hooks-shell", "crates/memory-journal", "crates/tools-memory", "crates/tools-mcp", "crates/session", "crates/daemon", "crates/callback-sdk", "crates/games", "crates/frontend-tui", "crates/tui-snapshot", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0-dev"

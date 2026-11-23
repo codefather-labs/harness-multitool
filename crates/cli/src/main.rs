@@ -954,6 +954,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -1054,6 +1055,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -1358,6 +1360,7 @@ impl Live {
             w.telegram = Some(self.telegram_page());
             w.voice = Some(self.voice_page());
             w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -1632,6 +1635,7 @@ impl Live {
     fn refresh_pages(&self, w: &mut frontend_tui::model::Workspace) {
         w.auth = Some(self.auth_page(None));
         w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -1799,6 +1803,16 @@ impl Live {
             return Ok(format!("Saved for this project: on, {} open todos queued.", todos.len()));
         }
         Ok(format!("Saved for this project: {}.", if enabled { "on" } else { "off" }))
+    }
+
+    /// Settings > Tools: the MCP servers found for the own loop, as this window's environment and
+    /// profile find them (CON-201).
+    fn tools_page(&self, status: String) -> frontend_tui::model::ToolsPage {
+        let settings = config::load().map(|c| c.session).unwrap_or_default();
+        let data = config::data_dir().unwrap_or_default();
+        let rows = harness_session::mcp_rows(&settings, &self.root, &data, &|name| std::env::var(name).ok());
+        let servers = rows.into_iter().map(|r| frontend_tui::model::McpServerRow { name: r.name, source: r.source, on: r.on, tools: r.tools }).collect();
+        frontend_tui::model::ToolsPage { servers, status, cursor: 0 }
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
@@ -2418,6 +2432,7 @@ impl Live {
                     };
                     w.profiles = Some(self.profiles_page(status));
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -2649,6 +2664,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -2664,11 +2680,24 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
             w.skills = Some(harness_session::skills::skills(&self.root, harness_session::skills::users_skills_dir().as_deref()).into_iter().map(|s| (s.name, s.description, s.from.to_string())).collect());
             w.profiles = Some(self.profiles_page(String::new()));
+                }
+                Outgoing::SaveMcpServer { name, on } => {
+                    let saved = config::load().and_then(|mut c| {
+                        c.session.mcp_off.retain(|n| *n != name);
+                        if !on {
+                            c.session.mcp_off.push(name.clone());
+                        }
+                        config::save(&c)
+                    });
+                    if let Err(error) = saved && let Some(frontend_tui::model::Overlay::Settings(s)) = &mut w.overlay {
+                        s.tools.status = format!("Could not save: {error}");
+                    }
                 }
                 Outgoing::SaveSearchPage { limit } => {
                     let saved = config::load().and_then(|mut c| {
@@ -2679,6 +2708,7 @@ impl Live {
                         s.memory.status = format!("Could not save: {error}");
                     }
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -2726,6 +2756,7 @@ impl Live {
                     }
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));
@@ -2755,6 +2786,7 @@ impl Live {
                     w.telegram = Some(self.telegram_page());
                     w.voice = Some(self.voice_page());
                     w.memory = Some(self.memory_page());
+            w.tools = Some(self.tools_page(String::new()));
             w.journal_issues = Some(self.journal_issues_page(String::new()));
             w.games = Some(games_page(String::new()));
             w.chats = Some(chats_page(&self.root, String::new()));

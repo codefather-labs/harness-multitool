@@ -283,6 +283,10 @@ The model row opens a dropdown of what the provider's API lists, each with its p
 
 Ctrl+S saves the choice, and the open sessions go on under it with their history.
 
+### Tools
+
+Settings > Tools lists the MCP servers the harness's own loop finds here (CON-201): Claude Code's, its plugins', the project's approved `.mcp.json`, Codex's and the harness's own `[session.mcp_servers]`. Each row shows on or off, the server's name, how many tools it listed when it last ran (or 'not listed yet') and where it came from. Enter or Space turns the row under the cursor on or off and saves it for the profile (`[session] mcp_off`); a server off is neither started nor offered. A session already running keeps its tools until it restarts. A delegate runs its own servers and is not changed by this page.
+
 ### Memory
 
 The Memory page sets `map_max_nodes` (CON-114): the most nodes a mind map or flowchart holds before an add is refused. It is 200 by default, and 0 means no limit.

@@ -139,6 +139,11 @@ pub trait Tool {
     /// What this call needs. A call that needs nothing declared here must not touch anything.
     fn capabilities(&self, input: &Value) -> Result<Vec<Capability>, String>;
     fn execute<'a>(&'a self, input: &'a Value, cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput>;
+    /// Whether a request carries its spec only once the conversation has found it with
+    /// tool_search or called it, as an MCP server's tools (CON-201). Callable either way.
+    fn deferred(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

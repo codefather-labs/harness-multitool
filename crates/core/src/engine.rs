@@ -16,6 +16,7 @@ use harness_api::{
 };
 
 use crate::plan;
+use crate::tool_search;
 use crate::registry::Parts;
 
 /// Asks the loop to stop at its next step. Safe to set from another thread.
@@ -460,7 +461,17 @@ impl Engine {
     fn tool_specs(&self) -> Vec<ToolSpec> {
         let is_master = self.state.borrow().orchestra_role.as_deref() == Some("master");
         let is_slave = self.state.borrow().orchestra_role.as_deref() == Some("slave");
-        let mut specs: Vec<ToolSpec> = self.parts.tools.values().map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && (s.name == ORCHESTRATE_TOOL || s.name == "plugins_reload"))).collect();
+        let mut specs: Vec<ToolSpec> = self.parts.tools.values().filter(|t| !t.deferred()).map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && (s.name == ORCHESTRATE_TOOL || s.name == "plugins_reload"))).collect();
+        // Deferred tools come once found or called; tool_search finds the rest (CON-201).
+        let deferred = self.deferred_specs();
+        if !deferred.is_empty() {
+            let found = tool_search::found(&self.state.borrow().messages, &deferred);
+            let (loaded, waiting): (Vec<ToolSpec>, Vec<ToolSpec>) = deferred.into_iter().partition(|t| found.contains(&t.name));
+            specs.extend(loaded);
+            if !waiting.is_empty() {
+                specs.push(tool_search::spec(&waiting));
+            }
+        }
         // A small model believes a tool's description over the system prompt.
         if self.state.borrow().plan_mode {
             for spec in &mut specs {
@@ -473,6 +484,11 @@ impl Engine {
         }
         specs.extend(own_tool_specs());
         specs
+    }
+
+    /// The specs of the deferred tools, an MCP server's (CON-201).
+    fn deferred_specs(&self) -> Vec<ToolSpec> {
+        self.parts.tools.values().filter(|t| t.deferred()).map(|t| t.spec()).collect()
     }
 
     /// This conversation's place in an orchestra.
@@ -1202,6 +1218,13 @@ impl Engine {
                 Err(e) => (e, true),
             };
             self.emit(Event::ToolResult { id: call.id.clone(), output, is_error });
+            return;
+        }
+        if call.name == tool_search::SEARCH_TOOL {
+            self.emit(Event::ToolRequested { call: call.clone(), capabilities: vec![] });
+            let deferred = self.deferred_specs();
+            let output = tool_search::answer(&tool_search::search(&deferred, &call.input));
+            self.emit(Event::ToolResult { id: call.id.clone(), output, is_error: false });
             return;
         }
         if call.name == NICK_TOOL {
