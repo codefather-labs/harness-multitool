@@ -125,7 +125,7 @@ fn server_map(v: &Value) -> Map<String, Value> {
 /// Claude Code's settings files for `root`, in order: the user's, the project's, its local one.
 fn settings(places: &Places) -> Vec<Value> {
     let root = Path::new(&places.root);
-    places.claude_dir.iter().map(|d| d.join("settings.json")).chain([root.join(".claude/settings.json"), root.join(".claude/settings.local.json")]).filter_map(|p| json_file(&p)).collect()
+    places.claude_dir.iter().map(|d| d.join("settings.json")).chain([root.join(".claude").join("settings.json"), root.join(".claude").join("settings.local.json")]).filter_map(|p| json_file(&p)).collect()
 }
 
 /// Whether a server of the project's `.mcp.json` was approved, as Claude Code keeps it: every one
@@ -216,7 +216,7 @@ fn plugins(places: &Places, settings: &[Value]) -> Vec<Plugin> {
             on.insert(id, value == true);
         }
     }
-    let installed = json_file(&dir.join("plugins/installed_plugins.json")).unwrap_or_default();
+    let installed = json_file(&dir.join("plugins").join("installed_plugins.json")).unwrap_or_default();
     let root = Path::new(&places.root);
     on.into_iter()
         .filter(|(_, on)| *on)
@@ -225,7 +225,7 @@ fn plugins(places: &Places, settings: &[Value]) -> Vec<Plugin> {
             let entries = installed["plugins"][&id].as_array()?;
             let entry = entries.iter().find(|e| e["scope"] == "user").or_else(|| entries.iter().find(|e| e["projectPath"].as_str().is_some_and(|p| root.starts_with(p))))?;
             let at = PathBuf::from(entry["installPath"].as_str()?);
-            Some(Plugin { name: name.to_string(), marketplace: marketplace.to_string(), data: dir.join("plugins/data").join(format!("{name}-{marketplace}")), root: at })
+            Some(Plugin { name: name.to_string(), marketplace: marketplace.to_string(), data: dir.join("plugins").join("data").join(format!("{name}-{marketplace}")), root: at })
         })
         .collect()
 }
@@ -240,7 +240,7 @@ fn plugin_servers(plugin: &Plugin, vars: &dyn Fn(&str) -> Option<String>) -> Vec
         "CLAUDE_PLUGIN_DATA" => Some(data.clone()),
         _ => vars(name),
     };
-    let declared = json_file(&plugin.root.join(".claude-plugin/plugin.json")).and_then(|p| p.get("mcpServers").cloned());
+    let declared = json_file(&plugin.root.join(".claude-plugin").join("plugin.json")).and_then(|p| p.get("mcpServers").cloned());
     let map = match declared {
         Some(Value::Object(map)) => map,
         Some(Value::String(file)) => json_file(&plugin.root.join(expand(&file, &vars))).map(|v| server_map(&v)).unwrap_or_default(),
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(get("rea").env["K"], "dflt", "a default of an unset variable");
         assert_eq!(get("ok").args, [format!("{root_s}/x")]);
         assert_eq!(get("plugin_cd_chrome-devtools").args, [format!("{}/s.js", installed("cd").display())]);
-        assert_eq!(get("plugin_uv_browser-use").args, [claude.join("plugins/data/uv-m").to_string_lossy().into_owned()]);
+        assert_eq!(get("plugin_uv_browser-use").args, [claude.join("plugins").join("data").join("uv-m").to_string_lossy().into_owned()]);
         assert_eq!(get("plugin_uv_browser-use").env["CLAUDE_PLUGIN_ROOT"], installed("uv").to_string_lossy());
         assert_eq!(get("cx").env["T"], "1");
     }

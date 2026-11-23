@@ -118,7 +118,10 @@ fn a_project_handler_stands_between_the_daemon_and_the_conversation() {
     assert_eq!((stdin["uuid"].as_str(), stdin["payload"]["n"].as_u64()), (Some("u3"), Some(7)), "the callback on stdin");
     assert_eq!(std::fs::read_to_string(project.path().join("echo-sessions.txt")).unwrap(), "s1");
     assert_eq!(std::fs::read_to_string(project.path().join("echo-args.txt")).unwrap(), "--from-config");
-    assert_eq!(std::fs::read_to_string(project.path().join("echo-reply.txt")).unwrap(), "delivered", "the SDK's reply");
+    // The handler writes its reply after the delivery the host has already seen.
+    let reply = project.path().join("echo-reply.txt");
+    assert!(wait(|| reply.exists(), 10), "the handler noted the SDK's reply");
+    assert_eq!(std::fs::read_to_string(&reply).unwrap(), "delivered", "the SDK's reply");
     let label = host.got.lock().unwrap().iter().find(|(s, _, _)| s == "s1").map(|(_, l, _)| l.clone()).unwrap();
     assert_eq!(label, "echo", "the label is the callback's name");
     // The same uuid: nothing runs again.
