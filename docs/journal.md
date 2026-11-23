@@ -32,6 +32,7 @@ An entry carries any number of flags (CON-21). Some are work items that stay ope
 | `specification`, `constraint` | how something must behave, a rule or a limit; binding |
 | `invariant`, `principle` | binding, mirrored to `docs/spec/invariants.md` and `docs/spec/principles.md` with their doc id (CON-115) |
 | `research` | the result of a research or an analysis, with its sources; not open work (CON-179) |
+| `finding` | the entry records something learned and not obvious, whatever its category: a decision, an update, a bug or a verification can carry it; an entry of category `finding` gets it by itself; not open work (CON-202) |
 | `important`, `idea`, `concept`, `comment` | keep in view, or thinking that does not bind |
 | `verified` | the check passed, with its proof |
 | `deprecated` | no longer true: history only |
@@ -144,6 +145,7 @@ The tab lists GitLab, Asana and ClickUp as trackers that are not available yet: 
 - CON-115: `invariant` and `principle` flags
 - CON-118, CON-119: the graph in answers, lexical search
 - CON-178, CON-179: `wait-for-decision` and `research`
+- CON-202: `finding` on any entry
 - CON-139 to CON-143: journal todos as GitHub issues
 - [ADR 0017](decisions/0017-docs-mirror-memory.md): the docs mirror the journal
 - [ADR 0028](decisions/0028-journal-todos-as-tracker-issues.md): journal todos as tracker issues

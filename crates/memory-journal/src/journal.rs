@@ -259,7 +259,8 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 ///   CON-115), `important`,
 ///   `idea`, `concept`, `comment`, `research` (the result of a research or an
 ///   analysis: what was asked, how, its sources, the result and how sure it
-///   is; CON-179), `verified` (a declaration that the check
+///   is; CON-179), `finding` (the entry, whatever its category, records
+///   something learned and not obvious; CON-202), `verified` (a declaration that the check
 ///   passed — the entry carries it, its `--proof`s point at the evidence; what
 ///   lets its todo's branch close), `deprecated` (no longer true; ranked last
 ///   in a search).
@@ -270,7 +271,7 @@ fn backfill_links(conn: &mut Connection) -> Result<()> {
 /// An open work item, a specification, a constraint, an invariant, a principle
 /// or an important mark keeps its entry past retention; the other marks do not
 /// (salience decides).
-pub const FLAGS: [&str; 20] = [
+pub const FLAGS: [&str; 21] = [
     "todo",
     "question",
     "wait-for-decision",
@@ -289,16 +290,17 @@ pub const FLAGS: [&str; 20] = [
     "concept",
     "comment",
     "research",
+    "finding",
     "verified",
     "deprecated",
 ];
 
-const MARKS: [&str; 11] =
-    ["specification", "constraint", "invariant", "principle", "important", "idea", "concept", "comment", "research", "verified", "deprecated"];
+const MARKS: [&str; 12] =
+    ["specification", "constraint", "invariant", "principle", "important", "idea", "concept", "comment", "research", "finding", "verified", "deprecated"];
 
 /// Marks that neither hold an entry past retention nor belong in the agenda:
 /// history, evidence, and notes kept for what they say.
-pub const PASSIVE: [&str; 6] = ["idea", "concept", "comment", "research", "verified", "deprecated"];
+pub const PASSIVE: [&str; 7] = ["idea", "concept", "comment", "research", "finding", "verified", "deprecated"];
 
 /// The marks, for SQL to tell them from work items.
 fn marks_json() -> String {
@@ -2708,6 +2710,22 @@ mod tests {
         assert!(agenda(&c, 10).unwrap().is_empty(), "no open work: {:?}", agenda(&c, 10).unwrap().iter().map(|(f, n, _)| (f.clone(), *n)).collect::<Vec<_>>());
         assert!(close(&mut c, id, &["research".into()], None, None, 20).is_err(), "a mark is taken off, not closed");
         assert_eq!(unmark(&mut c, id, &["research".into()]).unwrap(), vec!["research"]);
+    }
+
+    /// CON-202: `finding` goes on an entry of any category, as a passive mark like research.
+    #[test]
+    fn a_finding_flag_marks_an_entry_of_any_category() {
+        let (_d, mut c) = journal();
+        assert_eq!(normalize_flags(&["Finding"]).unwrap(), vec!["finding"]);
+        assert!(!closable("finding"));
+        let mut e = entry("Chose keep_alive -1; found on the way that Ollama unloads after 5 idle minutes by default.", "decision", &["ollama"]);
+        e.flags = vec!["finding".into()];
+        let (_, id) = add(&mut c, &e, 10).unwrap();
+        let f = Filter { flags: vec!["finding".into()], ..Default::default() };
+        assert_eq!(list(&c, &f, 0, 10).unwrap().1.iter().map(|e| e.id).collect::<Vec<_>>(), vec![id]);
+        assert!(agenda(&c, 10).unwrap().is_empty(), "not open work");
+        assert!(close(&mut c, id, &["finding".into()], None, None, 20).is_err(), "a mark is taken off, not closed");
+        assert_eq!(unmark(&mut c, id, &["finding".into()]).unwrap(), vec!["finding"]);
     }
 
     #[test]

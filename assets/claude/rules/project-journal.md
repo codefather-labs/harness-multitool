@@ -38,6 +38,7 @@ What counts:
 - **assumption-falsified** — something believed that turned out wrong, and what is true instead.
 - **lesson** — a correction from the operator, or a mistake of your own, worth not repeating.
 - **research** — not a category but a flag: the result of any research or analysis (a cause hunted, options compared, a system or a codebase read, a measurement), flagged `research` on its entry (a finding, a decision…). It stands alone: what was asked; how it was looked into (method, commands, data, conditions); its sources named exactly (`path:line`, a URL, a version, a command and its output); the result, with numbers where there are any; how sure it is and what it does not cover. Give it `salience` high when it should be kept for good.
+- **finding** — also a flag, for something learned inside an entry of another category: a decision that found a cause on the way, an update or a verification that showed a behaviour. Put `finding` in its `flags`, so `journal_list` with flags `finding` finds every finding of the journal (CON-202).
 - **update** — a change you made to the project: code, config, docs, dependencies, infrastructure. What changed and where (files, the commit hash once there is one), and why — cite the `journal#<id>` of the decision behind it when there is one. These entries are the changelog.
 
 Reuse the categories and tags the journal already has before inventing new ones.
@@ -78,6 +79,7 @@ Any entry can carry flags, any number at once:
 | `important` | keep in view | `journal_mark` remove |
 | `idea`, `concept`, `comment` | thinking, not binding | `journal_mark` remove |
 | `research` | the result of a research or an analysis: what was asked, how, its sources named exactly, the result, how sure it is | `journal_mark` remove |
+| `finding` | the entry, whatever its category, records something learned and not obvious: a decision, an update, a bug or a verification can carry it; an entry of category `finding` gets it by itself | `journal_mark` remove |
 | `verified` | declares that the check passed, with its proof | `journal_mark` remove |
 | `deprecated` | no longer true: history only | `journal_mark` remove |
 

@@ -320,7 +320,7 @@ fn map_show<'a>(memory: &'a dyn Memory, input: &'a Value) -> BoxFuture<'a, Plugi
 /// A category that is itself a flag sets it: an entry of these kinds is open work (todo, question,
 /// problem) or binds the project (invariant, principle), and without its flag nothing would show it.
 fn flags_with_category(category: &str, mut flags: Vec<String>) -> Vec<String> {
-    if ["todo", "question", "problem", "invariant", "principle"].contains(&category) && !flags.iter().any(|f| f == category) {
+    if ["todo", "question", "problem", "invariant", "principle", "finding"].contains(&category) && !flags.iter().any(|f| f == category) {
         flags.push(category.to_string());
     }
     flags
@@ -333,7 +333,7 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_l
     match name {
         "journal_add" => tool(
             "journal_add",
-            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, wait-for-decision (a choice only the user makes; close it with the decision), problem, unverified, verified, specification, constraint, invariant, principle, important, idea, concept, comment, research (the result of a research or an analysis: what was asked, how, its sources named exactly, the result, how sure it is; look for earlier research before starting one), deprecated. An invariant or principle entry is mirrored to docs/spec/invariants.md or docs/spec/principles.md and needs its doc id (INV- or P-).",
+            "Record a decision, finding or update in the project's journal, one per entry, with the why. The category says what kind of entry it is. Flags are optional, any of: todo, question, wait-for-decision (a choice only the user makes; close it with the decision), problem, unverified, verified, specification, constraint, invariant, principle, important, idea, concept, comment, research (the result of a research or an analysis: what was asked, how, its sources named exactly, the result, how sure it is; look for earlier research before starting one), finding (the entry, whatever its category, records something learned and not obvious; a category of finding sets it), deprecated. An invariant or principle entry is mirrored to docs/spec/invariants.md or docs/spec/principles.md and needs its doc id (INV- or P-).",
             || {
                 object(
                     json!({
@@ -552,6 +552,16 @@ pub fn tool(memory: Rc<dyn Memory>, name: &str, map_max_nodes: u64, search_max_l
 
 #[cfg(test)]
 mod tests {
+
+    /// CON-202: a category of finding sets the flag, once; another category does not.
+    #[test]
+    fn a_finding_category_sets_the_finding_flag() {
+        assert_eq!(flags_with_category("finding", vec![]), vec!["finding"]);
+        assert_eq!(flags_with_category("finding", vec!["finding".into()]), vec!["finding"]);
+        assert!(flags_with_category("decision", vec![]).is_empty());
+        assert_eq!(flags_with_category("decision", vec!["finding".into()]), vec!["finding"]);
+    }
+
     use super::*;
 
     /// A fresh folder for one test, under the system's temporary folder.
