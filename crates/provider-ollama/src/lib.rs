@@ -5,8 +5,10 @@
 //! sends `options.num_ctx` equal to the window the harness counts with, never more than the
 //! model's own. What a model can do, tools and thinking, comes from /api/show, read once.
 
+pub mod held;
+
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use harness_api::platform::{Net, NetRequest};
@@ -43,9 +45,14 @@ pub struct Ollama {
     net: Rc<dyn Net>,
     base_url: String,
     context_window: u64,
-    /// How long Ollama keeps the model after a request: -1, until it stops, unless the row says
-    /// otherwise (CON-190 point 11). Ollama's own default would drop it after 5 idle minutes.
+    /// How long Ollama keeps the model after a request: -1 while a session holds it, unless the row
+    /// gives its own, which leaves the timing to Ollama (CON-190 point 11, journal#1686).
     keep_alive: Value,
+    /// No keep_alive of the row's own: the harness holds what this provider uses, and unloads a
+    /// model when the last session holding it ends.
+    holding: bool,
+    /// The models this provider, one session's, holds.
+    holds: RefCell<BTreeSet<String>>,
     facts: RefCell<HashMap<String, Facts>>,
 }
 
@@ -61,6 +68,8 @@ impl Ollama {
             base_url: base,
             context_window: settings["context_window"].as_u64().unwrap_or(DEFAULT_CONTEXT),
             keep_alive: settings.get("keep_alive").filter(|v| !v.is_null()).cloned().unwrap_or(json!(-1)),
+            holding: settings.get("keep_alive").is_none_or(Value::is_null),
+            holds: RefCell::new(BTreeSet::new()),
             facts: RefCell::new(HashMap::new()),
         }
     }
@@ -283,6 +292,10 @@ impl Provider for Ollama {
     fn turn<'a>(&'a self, request: &'a ModelRequest, sink: &'a mut dyn FnMut(ModelEvent) -> bool) -> BoxFuture<'a, PluginResult<TurnEnd>> {
         Box::pin(async move {
             let facts = self.facts(&request.model).await?;
+            // From its first request on a model, this session holds it loaded (CON-190 point 11).
+            if self.holding && self.holds.borrow_mut().insert(request.model.clone()) {
+                held::acquire(&self.base_url, &request.model);
+            }
             let mut response = self.post("/api/chat", &self.body(request, &facts)).await?;
             if response.status != 200 {
                 let body = Self::read_all(&mut response).await;
@@ -297,6 +310,18 @@ impl Provider for Ollama {
             }
             reader.finish(sink).map_err(|e| if e.contains("not found") { self.refused(&request.model, 404, &json!({"error": e}).to_string()) } else { PluginError::new(format!("{}: {e}", self.name)) })
         })
+    }
+}
+
+/// The session that used this provider has ended: what it held is let go, and a model no other
+/// session holds is unloaded now (CON-190 point 11).
+impl Drop for Ollama {
+    fn drop(&mut self) {
+        for model in std::mem::take(&mut *self.holds.borrow_mut()) {
+            if held::release(&self.base_url, &model) {
+                held::unload(self.net.as_ref(), &self.base_url, &model);
+            }
+        }
     }
 }
 
@@ -403,10 +428,89 @@ mod tests {
         assert_eq!(end.cost_micro_usd, Some(0));
     }
 
+    /// The hold count is the process's: tests that read it, or clear it all, take turns.
+    static HOLDS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn holds_turn() -> std::sync::MutexGuard<'static, ()> {
+        HOLDS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What a fake server was asked to unload: the /api/chat requests with no messages.
+    fn unloads(net: &Fake) -> Vec<Value> {
+        net.sent.borrow().iter().filter(|(u, b)| u.ends_with("/api/chat") && b["messages"] == json!([])).map(|(_, b)| b.clone()).collect()
+    }
+
+    /// CON-190 point 11 (journal#1686): a model is held by the sessions that used it, and unloaded
+    /// when the last of them ends, not before; another server's count is its own.
+    #[test]
+    fn a_model_is_unloaded_when_the_last_session_using_it_ends() {
+        let _turn = holds_turn();
+        let url = "http://127.0.0.1:19001";
+        let provider = |net: &Rc<Fake>| Ollama::new("ollama", net.clone(), &json!({"base_url": url}));
+        let (net1, net2) = (Fake::new(show(&["completion"], 131_072), lines(RECORDED)), Fake::new(show(&["completion"], 131_072), lines(RECORDED)));
+        let (one, two) = (provider(&net1), provider(&net2));
+        run(&one, &request(), None).1.unwrap();
+        run(&one, &request(), None).1.unwrap();
+        run(&two, &request(), None).1.unwrap();
+        assert_eq!(held::count(url, "gemma4:e2b"), 2, "one hold per session, however many requests");
+        let other = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
+        let elsewhere = Ollama::new("ollama", other.clone(), &json!({"base_url": "http://127.0.0.1:19002"}));
+        run(&elsewhere, &request(), None).1.unwrap();
+        drop(one);
+        assert!(unloads(&net1).is_empty(), "another session still holds it");
+        assert_eq!(held::count(url, "gemma4:e2b"), 1);
+        drop(two);
+        assert_eq!(unloads(&net2), vec![json!({"model": "gemma4:e2b", "messages": [], "keep_alive": 0})], "the last one unloads it");
+        assert_eq!(held::count(url, "gemma4:e2b"), 0);
+        assert_eq!(held::count("http://127.0.0.1:19002", "gemma4:e2b"), 1, "another server counts apart");
+        drop(elsewhere);
+        assert_eq!(unloads(&other).len(), 1);
+    }
+
+    /// A session that sent nothing holds nothing; a row with its own keep_alive leaves the timing
+    /// to Ollama and is never unloaded by the harness.
+    #[test]
+    fn nothing_is_held_without_a_request_or_with_the_rows_own_keep_alive() {
+        let _turn = holds_turn();
+        let idle_net = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
+        drop(Ollama::new("ollama", idle_net.clone(), &json!({"base_url": "http://127.0.0.1:19003"})));
+        assert!(idle_net.sent.borrow().is_empty());
+        let own = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
+        let timed = Ollama::new("ollama", own.clone(), &json!({"base_url": "http://127.0.0.1:19004", "keep_alive": "30m"}));
+        run(&timed, &request(), None).1.unwrap();
+        assert_eq!(held::count("http://127.0.0.1:19004", "gemma4:e2b"), 0);
+        drop(timed);
+        assert!(unloads(&own).is_empty());
+    }
+
+    /// A daemon that died left its holds in the ledger: the next one unloads them as it starts,
+    /// keeps its own there, and unloads what it still holds when it stops.
+    #[test]
+    fn the_ledger_carries_holds_past_a_daemon_that_died() {
+        let _turn = holds_turn();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ollama-held.json");
+        std::fs::write(&path, json!([{"base_url": "http://127.0.0.1:19005", "model": "qwen:27b"}]).to_string()).unwrap();
+        let net = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
+        let left = held::take_leftovers(&path, net.as_ref());
+        assert_eq!(left, vec![("http://127.0.0.1:19005".to_string(), "qwen:27b".to_string())]);
+        assert_eq!(unloads(&net), vec![json!({"model": "qwen:27b", "messages": [], "keep_alive": 0})]);
+        let mine = Ollama::new("ollama", net.clone(), &json!({"base_url": "http://127.0.0.1:19006"}));
+        run(&mine, &request(), None).1.unwrap();
+        let ledger: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(ledger.as_array().unwrap().contains(&json!({"base_url": "http://127.0.0.1:19006", "model": "gemma4:e2b"})), "{ledger}");
+        // The daemon stops with the session's thread not unwound: release_all unloads it.
+        std::mem::forget(mine);
+        held::release_all(net.as_ref());
+        assert!(unloads(&net).iter().any(|b| b["model"] == "gemma4:e2b"));
+        let ledger: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!ledger.as_array().unwrap().iter().any(|e| e["base_url"] == "http://127.0.0.1:19006"), "{ledger}");
+    }
+
     /// CON-190 point 11 (journal#1679): with no keep_alive of the row's own, the model stays loaded
     /// (-1), instead of Ollama's 5 idle minutes; a row's own value goes as it is.
     #[test]
     fn the_model_stays_loaded_unless_the_row_says_otherwise() {
+        let _turn = holds_turn();
         let sent_keep_alive = |settings: Value| {
             let net = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
             run(&Ollama::new("ollama", net.clone(), &settings), &request(), None).1.unwrap();

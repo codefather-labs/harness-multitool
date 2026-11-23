@@ -345,12 +345,19 @@ fn switch_tab(w: &mut Workspace, i: usize) {
     }
 }
 
-/// Closes the active tab; the last tab stays (closing it would leave no session).
+/// Closes the active tab and ends its session at once, a run in it stopped (journal#1690). The
+/// last one is closed too, and a new empty session tab takes its place: a window always has a tab.
 fn close_tab(w: &mut Workspace) {
-    if w.tabs.len() > 1 {
-        w.tabs.remove(w.active);
-        w.active = w.active.min(w.tabs.len() - 1);
+    let closing = w.tabs[w.active].id;
+    if w.live {
+        w.outbox.push(crate::model::Outgoing::CloseTab { tab: closing });
     }
+    if w.tabs.len() == 1 {
+        crate::debug::open_tab(w, "session-1");
+    }
+    let at = w.tabs.iter().position(|t| t.id == closing).unwrap_or(w.active);
+    w.tabs.remove(at);
+    w.active = w.active.min(w.tabs.len() - 1);
 }
 
 /// Scrolls the active transcript by `rows` (positive: back in time). The view clamps it to
@@ -641,8 +648,21 @@ mod tests {
         assert_eq!(tabs(&s), (2, 0));
         key(&mut s, Key::Ctrl('w'));
         assert_eq!(tabs(&s), (1, 0));
+        let first = match &s.mode {
+            Mode::Session(w) => w.tabs[0].id,
+            _ => unreachable!(),
+        };
         key(&mut s, Key::Ctrl('w'));
-        assert_eq!(tabs(&s), (1, 0), "the last tab stays");
+        assert_eq!(tabs(&s), (1, 0), "the last tab is replaced by a new one (journal#1690)");
+        assert!(matches!(&s.mode, Mode::Session(w) if w.tabs[0].id != first), "a new tab, not the closed one");
+        // A live window tells the sessions: the closed tab's session ends at once.
+        if let Mode::Session(w) = &mut s.mode {
+            w.live = true;
+            let closing = w.tabs[0].id;
+            close_tab(w);
+            assert!(w.outbox.iter().any(|o| matches!(o, crate::model::Outgoing::CloseTab { tab } if *tab == closing)), "{:?}", w.outbox);
+            w.live = false;
+        }
         assert_eq!(key(&mut s, Key::Esc), Outcome::Stay, "Esc does not quit a session");
         for c in "/exit".chars() {
             key(&mut s, Key::Char(c));

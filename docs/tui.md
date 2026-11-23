@@ -118,7 +118,7 @@ splash (the key points of the harness as bullets, ideas and concepts tagged; OK 
 | session | ↑ on the composer's top row · ↓ on its last row | the message sent before · the one after, and past the newest what you were typing (CON-199) |
 | session | Ctrl+G · click a FLOW row | open or close the newest flowchart instance · that one |
 | session | Ctrl+O · click `▸ Thought for …` | fold or unfold the newest reasoning · that one |
-| session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab · switch tab |
+| session | Ctrl+T · Ctrl+W · Alt+1..9 · click a tab or `+` | new session tab · close the tab and end its session at once, a run in it stopped (the last tab gives way to a new empty one, journal#1690) · switch tab |
 | session | drag with the left button · Esc | select text and copy it on release (CON-188) · clear the selection; Shift+drag is the terminal's own selection |
 | session | click `⚙ Settings` | open the settings window |
 | permission prompt | 1 · 2 · 3 · ←→ / Tab · Enter · Esc · click a button | allow once · always allow · deny · choose · confirm · deny |
@@ -145,8 +145,8 @@ max_cost_usd = 5.0              # optional budget; max_turns too
 kind = "ollama"
 base_url = "http://127.0.0.1:11434"
 context_window = 65536          # sent to Ollama as num_ctx; never more than the model's own
-# keep_alive = "30m"            # optional: how long Ollama keeps the model loaded after a request;
-                                # -1 by default, kept until Ollama stops; 0 unloads it at once
+# keep_alive = "30m"            # optional: Ollama's own timing for this row. Without it the model stays
+                                # loaded while a session uses it, and is unloaded when the last one ends
 
 [session.auth.ollama]
 none = true                     # no key needed

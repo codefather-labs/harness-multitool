@@ -250,6 +250,13 @@ impl Window {
                 self.sessions.answer(tab, answer_from_json(&op["answer"]));
             }
             "stop" => self.sessions.stop(tab),
+            // Ctrl+W (journal#1690): the run stopped, the session let go; its thread ends, and
+            // what it held with it (an Ollama model, CON-190 point 11).
+            "close_tab" => {
+                self.sessions.stop(tab);
+                self.sessions.forget(tab);
+                self.asking.remove(&tab);
+            }
             "resume" => self.sessions.resume(tab, &text()),
             "rebind" => return Ok(json!({"ok": self.sessions.rebind(tab)})),
             "unqueue" => return Ok(json!({"ok": self.sessions.unqueue(tab, &text())})),
@@ -1271,6 +1278,13 @@ impl DaemonHost {
                 Ok(json!({"ok": true}))
             }
             "note" | "close" | "on_loss" => window.apply(name, op),
+            // A tab showing another window's run closes: it stops following; that run is the
+            // other window's to end.
+            "close_tab" => {
+                window.asking.remove(&tab);
+                window.following.remove(&tab);
+                Ok(json!({"ok": true}))
+            }
             _ => {
                 follow.pending.push(op.clone());
                 Ok(json!({"ok": true}))
@@ -2176,6 +2190,20 @@ impl SessionLink {
             SessionLink::Local(s) => s.stop(tab),
             SessionLink::Remote(r) => {
                 r.call("stop", tab, json!({}));
+            }
+        }
+    }
+
+    /// A tab closed (Ctrl+W): its session ends at once, a run in it stopped, so what it holds
+    /// goes with it (journal#1690).
+    pub fn close_tab(&mut self, tab: u64) {
+        match self {
+            SessionLink::Local(s) => {
+                s.stop(tab);
+                s.forget(tab);
+            }
+            SessionLink::Remote(r) => {
+                r.call("close_tab", tab, json!({}));
             }
         }
     }

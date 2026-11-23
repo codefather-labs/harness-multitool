@@ -213,6 +213,9 @@ pub enum Outgoing {
     /// The answer to a permission prompt: 0 allow once, 1 always allow, 2 deny.
     Answer { tab: u64, choice: usize },
     Stop { tab: u64 },
+    /// Ctrl+W: the tab's session ends at once, a run in it stopped, so what it holds (an Ollama
+    /// model) is let go (journal#1690).
+    CloseTab { tab: u64 },
     /// The Callbacks tab saved: each standard type's implementation, and what is switched off.
     SaveCallbacks { handlers: Vec<(String, String)>, disabled: Vec<String> },
     /// Rebuild and swap the binary (ADR 0015).

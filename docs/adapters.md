@@ -37,7 +37,12 @@ The `ollama` row reaches Ollama on its native `/api/chat`, not on its OpenAI-com
 
 - **The context.** Every request sends `options.num_ctx` equal to the row's `context_window`: 65 536 by default, never more than the model's own length from `/api/show`. The window the status line shows is the one Ollama loads.
 - **Capabilities.** Read from `/api/show` once per model. Tools go only to a model that has `tools`; a model without them talks only, which the model list in Settings says (`no tools: talks only`). A model with `thinking` gets `think: true`, and its reasoning is drawn apart from the answer, folded as 'Thought for Ns'.
-- **The model stays loaded.** Every request sends `keep_alive: -1`, so Ollama keeps the model in memory between messages instead of dropping it after its default 5 idle minutes; a big model would otherwise make the next answer wait for a reload (journal#1678). A row's own `keep_alive` (`"30m"`, a number of seconds, or `0` to unload at once) replaces it. `ollama stop <model>` frees the memory. The `Local` `/v1` row cannot send it: its model follows Ollama's own `OLLAMA_KEEP_ALIVE` (CON-190 point 11).
+- **The model stays loaded while it is used.** Ollama would drop a model after 5 idle minutes, and a big one would then make the next answer wait for a reload (journal#1678). Instead, the process that runs the sessions, the daemon, counts the sessions using each model of each Ollama server:
+  - a session holds a model from its first request on it, and every request then sends `keep_alive: -1`;
+  - when the last session holding it ends (its tab is closed with Ctrl+W, which ends the session at once, or its window closes, or the conversation moves to another adapter or model), the harness asks Ollama to unload it (`/api/chat` with no messages and `keep_alive: 0`);
+  - a daemon that stops unloads what it held. One that died without stopping does so at its next start, from `<data dir>/ollama-held.json`.
+
+  A row's own `keep_alive` (`"30m"`, a number of seconds, or `0`) leaves the timing to Ollama, and the harness then unloads nothing for that row. The `Local` `/v1` row cannot send it: its model follows Ollama's own `OLLAMA_KEEP_ALIVE` (CON-190 point 11, journal#1686).
 - **Compaction** counts the whole prompt, the system prompt and the tool schemas as well as the messages (journal#1536): on a local model's window the tools alone are about 4.5k tokens.
 - **Usage.** From the last line of the stream: the prompt's count less its cached part, the cached part, and the answer's count. A local model costs nothing.
 - **When it fails:**

@@ -404,8 +404,10 @@ fn main() -> Result<()> {
             // A window: it never hangs on the daemon (CON-132).
             harness_daemon::client::this_is_a_window();
             let shown = preview(&name, &theme, script.as_deref(), handoff.as_deref());
-            // A window that ran its sessions itself (Local) ends their delegates too (journal#1021).
+            // A window that ran its sessions itself (Local) ends their delegates too (journal#1021),
+            // and unloads the Ollama models they held (CON-190 point 11).
             harness_platform_native::children::end_all(std::time::Duration::from_secs(3));
+            harness_provider_ollama::held::release_all(&harness_platform_native::NativeNet::default());
             shown
         }
         Command::Trace { name, json } => trace(name.as_deref(), json),
@@ -535,7 +537,12 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Run { prompt, yes, verify, task, plan, step_debug } => run_once(&prompt, yes, plan, step_debug, (task || !verify.is_empty()).then_some(verify)),
+        Command::Run { prompt, yes, verify, task, plan, step_debug } => {
+            let ran = run_once(&prompt, yes, plan, step_debug, (task || !verify.is_empty()).then_some(verify));
+            // Its one session has ended: the Ollama model it held goes (CON-190 point 11).
+            harness_provider_ollama::held::release_all(&harness_platform_native::NativeNet::default());
+            ran
+        }
         Command::Daemon { action: Some(DaemonAction::Restart), .. } => daemon_restart(true, None),
         Command::Daemon { action: Some(DaemonAction::Stop { pid }), .. } => daemon_restart(false, pid),
         Command::Daemon { status: true, .. } => {
@@ -575,6 +582,12 @@ fn main() -> Result<()> {
             }
             let daemon = started.or_else(|_| harness_daemon::Daemon::start_with(&dir, port, plugins::callback_handlers())).map_err(|e| anyhow!(e))?;
             daemon.telegram_from(std::sync::Arc::new(config::telegram));
+            // Ollama models a daemon before this one held when it died are unloaded, and this one's
+            // holds are kept in the same file from now on (CON-190 point 11). Only once this daemon
+            // has its place, so a second start never unloads what a live daemon holds.
+            for (url, model) in harness_provider_ollama::held::take_leftovers(&dir.join("ollama-held.json"), &harness_platform_native::NativeNet::default()) {
+                eprintln!("unloaded {model} at {url}: a daemon before this one held it");
+            }
             // The conversations run here, whichever window asks (ADR 0024).
             let make_host: harness_session::remote::MakeHost = std::sync::Arc::new(|settings, note, reload| host_for(note, reload, selection_summary(settings)));
             daemon.host_conversations(harness_session::remote::DaemonHost::new(&dir, make_host));
@@ -586,6 +599,8 @@ fn main() -> Result<()> {
             // A run still going holds its delegate, and its thread is not unwound at exit: end
             // them all, so none outlives this daemon (journal#1021).
             harness_platform_native::children::end_all(std::time::Duration::from_secs(3));
+            // Nor do its sessions let go of their Ollama models: unloaded now (CON-190 point 11).
+            harness_provider_ollama::held::release_all(&harness_platform_native::NativeNet::default());
             Ok(())
         }
         Command::Setup { graphics } => {
@@ -2642,6 +2657,7 @@ impl Live {
                     }
                 }
                 Outgoing::Stop { tab } => self.sessions.stop(tab),
+                Outgoing::CloseTab { tab } => self.sessions.close_tab(tab),
                 Outgoing::SaveTelegram { token, users } => {
                     let saved = config::load().and_then(|mut c| {
                         if let Some(token) = token {
