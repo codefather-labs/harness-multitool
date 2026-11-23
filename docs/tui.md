@@ -30,6 +30,11 @@ irm https://harness-multitool.dev/install.ps1 | iex   # the same on Windows, in 
 .\install.ps1 -Local -NoBuild    # Windows, in a Release's unpacked multitool-<version>-x86_64-pc-windows-msvc.zip:
                                 # install its multitool.exe without building (CON-194)
 multitool                       # from any folder: the start page, on the profile last chosen with Use in the settings
+```
+
+The download names its size and, in a terminal, shows its progress: GitHub can be slow (36.8 KB/s here once, five and a half minutes for 12 MB, journal#1666). A download that moves under 1 KB/s for a minute is a stall. It is tried again from where it stopped, and after five attempts the installer says where it stopped and installs nothing. The part already downloaded is kept in `~/.cache/harness-multitool/downloads`, so running the line again goes on from there (journal#1667). Nothing is installed unless the SHA-256 matches.
+
+```bash
 multitool --profile work        # on another profile for this run only, as autostart wants it (CON-127)
 multitool --dir ~/p --new         # a new session tab in that folder at once; --resume <id> opens that conversation (CON-167)
 multitool chat dump [id|name]   # a conversation, its Claude Code form and the project's journal with its maps, into multitool_dumps/ here (CON-171); named with the time of the dump, -2, -3… if taken; progress on stderr (CON-172)

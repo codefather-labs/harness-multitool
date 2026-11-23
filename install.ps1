@@ -294,6 +294,50 @@ if ($Uninstall) {
 # The prebuilt multitool of a GitHub Release (CON-195): its zip and checksum, checked, then the
 # zip's own install.ps1 -Local -NoBuild with the switches given. Nothing is installed when a
 # download or a check fails.
+# Downloads a release bundle (journal#1667): its size and where it comes from are said first, and
+# its progress shown, since GitHub can take minutes (journal#1666). With curl.exe (Windows 10 and
+# later), under 1 KB/s for a minute is a stall: it is tried again from where it stopped, five
+# times in all, and what came is kept under %LOCALAPPDATA%\harness-multitool\downloads until it
+# is checked, so running the line again goes on from there. MULTITOOL_STALL_SECONDS sets the
+# minute, for a test. Without curl.exe, Invoke-WebRequest with its own progress bar.
+function Get-Bundle([string]$Url, [string]$Name, [string]$Dest, [string]$What, [scriptblock]$Say) {
+    $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [IO.Path]::GetTempPath() }
+    $cache = Join-Path $base 'harness-multitool\downloads'
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
+    $part = Join-Path $cache "$Name.part"
+    $from = ([Uri]$Url).Authority
+    $mb = { param($n) '{0:N1} MB' -f ($n / 1MB) }
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $curl) {
+        & $Say "downloading $What, from $from"
+        $ProgressPreference = 'Continue'
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Dest
+        return
+    }
+    $tls = if ($Url -like 'https:*') { @('--proto', '=https', '--tlsv1.2') } else { @() }
+    $size = $null
+    $head = & $curl.Source @tls -sIL $Url 2>$null
+    foreach ($line in $head) { if ($line -match '^content-length:\s*(\d+)') { $size = [long]$Matches[1] } }
+    if ($size -and (Test-Path $part) -and (Get-Item $part).Length -gt $size) { Remove-Item $part -Force }
+    & $Say ("downloading $What" + $(if ($size) { ", $(& $mb $size)" }) + ", from $from")
+    if ((Test-Path $part) -and (Get-Item $part).Length -gt 0) { & $Say "going on from the $(& $mb (Get-Item $part).Length) downloaded before" }
+    $stall = if ($env:MULTITOOL_STALL_SECONDS) { $env:MULTITOOL_STALL_SECONDS } else { '60' }
+    $bar = if ([Console]::IsErrorRedirected) { '-sS' } else { '--progress-bar' }
+    for ($try = 1; ; $try++) {
+        $have = if (Test-Path $part) { (Get-Item $part).Length } else { 0 }
+        if ($size -and $have -eq $size) { break }
+        & $curl.Source @tls -fL $bar -C - --speed-limit 1024 --speed-time $stall -o $part $Url
+        $rc = $LASTEXITCODE
+        if ($rc -eq 0) { break }
+        $have = if (Test-Path $part) { (Get-Item $part).Length } else { 0 }
+        # 28: slower than the limit; 18, 56: the connection dropped. Anything else will not mend.
+        if ($rc -notin 18, 28, 56) { throw "no download of $Name from $from (curl $rc)" }
+        if ($try -ge 5) { throw ("the download from $from stalled at $(& $mb $have)" + $(if ($size) { " of $(& $mb $size)" }) + ': run the line again, it goes on from there') }
+        & $Say "the download stalled at $(& $mb $have); trying again from there ($try of 4)"
+    }
+    Move-Item -Force $part $Dest
+}
+
 function Install-Release {
     $releases = if ($env:MULTITOOL_RELEASES_URL) { $env:MULTITOOL_RELEASES_URL } else { 'https://github.com/codefather-labs/harness-multitool/releases' }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -319,10 +363,9 @@ function Install-Release {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("multitool-install-" + [Guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
-        Log-Info "downloading multitool $v for $target"
         $zip = Join-Path $tmp $name
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri $at -OutFile $zip
+            Get-Bundle -Url $at -Name $name -Dest $zip -What "multitool $v for $target" -Say { param($m) Log-Info $m }
             Invoke-WebRequest -UseBasicParsing -Uri "$at.sha256" -OutFile "$zip.sha256"
         } catch { Log-Error "no download of $name at ${at}: $_"; exit 1 }
         $want = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0]

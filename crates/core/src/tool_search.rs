@@ -37,7 +37,9 @@ pub fn spec(deferred: &[ToolSpec]) -> ToolSpec {
 pub fn search<'a>(deferred: &'a [ToolSpec], input: &Value) -> Vec<&'a ToolSpec> {
     let query = input["query"].as_str().unwrap_or_default().trim();
     if let Some(names) = query.strip_prefix("select:") {
-        let wanted: Vec<&str> = names.split(',').map(str::trim).filter(|n| !n.is_empty()).collect();
+        // A name as the description groups it, `mcp__rea__: tool`, is read as `mcp__rea__tool`: a
+        // small model copies the grouping (gemma4:e2b did, journal#1670).
+        let wanted: Vec<String> = names.split(',').map(|n| n.trim().replace("__:", "__").replace(' ', "")).filter(|n| !n.is_empty()).collect();
         return wanted.iter().filter_map(|w| deferred.iter().find(|t| t.name == *w).or_else(|| deferred.iter().find(|t| t.name.ends_with(&format!("__{w}"))))).collect();
     }
     let max = input["max_results"].as_u64().map_or(DEFAULT_RESULTS, |m| m.clamp(1, 50) as usize);
@@ -96,6 +98,7 @@ mod tests {
         assert!(s.description.contains("- mcp__rea__: list_architectures, open_binary") && s.description.contains("- mcp__web__: open_page"), "{}", s.description);
         let names = |input: Value| search(&deferred, &input).iter().map(|t| t.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(json!({"query": "select:mcp__web__open_page, list_architectures, nope"})), ["mcp__web__open_page", "mcp__rea__list_architectures"]);
+        assert_eq!(names(json!({"query": "select:mcp__rea__:list_architectures, mcp__web__: open_page"})), ["mcp__rea__list_architectures", "mcp__web__open_page"], "the description's grouping, copied");
         assert_eq!(names(json!({"query": "open browser"})), ["mcp__web__open_page", "mcp__rea__open_binary"], "a name and a description beat a name");
         assert_eq!(names(json!({"query": "open", "max_results": 1})).len(), 1);
         assert!(names(json!({"query": "zzz"})).is_empty());

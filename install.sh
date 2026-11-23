@@ -613,6 +613,52 @@ if [ "$UNINSTALL" = true ]; then
   exit 0
 fi
 
+# Downloads a release bundle (journal#1667): its size and where it comes from are said first and,
+# in a terminal, its progress shown, since GitHub can take minutes (journal#1666). Under 1 KB/s for
+# a minute is a stall: it is tried again from where it stopped, five times in all. What came is
+# kept under ~/.cache/harness-multitool/downloads until it is checked, so running the line again
+# goes on from there (MULTITOOL_STALL_SECONDS sets the minute, for a test). Arguments: the URL, the file's name, where to put it, what it is.
+fetch_bundle() {
+  f_url=$1
+  f_name=$2
+  f_dest=$3
+  f_what=$4
+  f_cache="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/harness-multitool/downloads"
+  mkdir -p "$f_cache" 2>/dev/null || f_cache="$(dirname "$f_dest")"
+  f_part="$f_cache/$f_name.part"
+  f_host="$(printf '%s' "$f_url" | sed 's#^[a-z]*://##; s#/.*##')"
+  f_size="$(fetch_curl -sIL "$f_url" 2>/dev/null | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')"
+  case "$f_size" in "" | *[!0-9]*) f_size="" ;; esac
+  if [ -s "$f_part" ] && [ -n "$f_size" ] && [ "$(bytes_of "$f_part")" -gt "$f_size" ]; then rm -f "$f_part"; fi
+  log_info "downloading $f_what${f_size:+, $(megabytes "$f_size")}, from $f_host"
+  [ -s "$f_part" ] && log_info "going on from the $(megabytes "$(bytes_of "$f_part")") downloaded before"
+  f_try=1
+  while :; do
+    f_have="$(bytes_of "$f_part")"
+    [ -n "$f_size" ] && [ "$f_have" = "$f_size" ] && break
+    if [ -t 2 ]; then f_bar=--progress-bar; else f_bar=-sS; fi
+    f_rc=0
+    fetch_curl "$f_bar" -C - --speed-limit 1024 --speed-time "${MULTITOOL_STALL_SECONDS:-60}" -o "$f_part" "$f_url" || f_rc=$?
+    [ "$f_rc" = 0 ] && break
+    f_have="$(bytes_of "$f_part")"
+    # 28: slower than the limit; 18, 56: the connection dropped. Anything else will not mend.
+    case "$f_rc" in
+      18 | 28 | 56) ;;
+      *) fail_install "no download of $f_name from $f_host (curl $f_rc)" ;;
+    esac
+    [ "$f_try" -lt 5 ] || fail_install "the download from $f_host stalled at $(megabytes "$f_have")${f_size:+ of $(megabytes "$f_size")}: run the line again, it goes on from there"
+    log_info "the download stalled at $(megabytes "$f_have"); trying again from there ($f_try of 4)"
+    f_try=$((f_try + 1))
+  done
+  mv "$f_part" "$f_dest"
+}
+bytes_of() { if [ -f "$1" ]; then wc -c <"$1" | tr -d ' '; else echo 0; fi; }
+megabytes() { awk -v n="$1" 'BEGIN { printf "%.1f MB", n / 1048576 }'; }
+fail_install() {
+  log_error "$1"
+  exit 1
+}
+
 # The prebuilt multitool of a release for this machine (CON-195): its bundle and checksum from
 # the GitHub Release, checked, then the bundle's own installer. Answers 1, having said why, when
 # there is no prebuilt build here; exits when a download or a check fails.
@@ -645,6 +691,11 @@ install_release() {
   command -v tar >/dev/null 2>&1 || { log_error "tar is needed to unpack multitool"; exit 1; }
   local get=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3)
   case "$RELEASES_URL" in http://127.0.0.1* | http://localhost*) get=(curl -fsSL) ;; esac
+  # The bundle's own download: no -s, so a terminal sees its progress (journal#1667).
+  case "$RELEASES_URL" in
+    http://127.0.0.1* | http://localhost*) fetch_curl() { curl -fL "$@"; } ;;
+    *) fetch_curl() { curl --proto '=https' --tlsv1.2 -fL "$@"; } ;;
+  esac
   local version="$WANT_VERSION"
   if [ -z "$version" ]; then
     # The latest release, from where GitHub's /releases/latest leads: no API, no rate limit.
@@ -661,8 +712,7 @@ install_release() {
   local tmp
   tmp="$(mktemp -d)"
   CLONE_DIR="$tmp"
-  log_info "downloading multitool $version for $target"
-  "${get[@]}" -o "$tmp/$name" "$at" || { log_error "no download of $name at $at"; exit 1; }
+  fetch_bundle "$at" "$name" "$tmp/$name" "multitool $version for $target"
   "${get[@]}" -o "$tmp/$name.sha256" "$at.sha256" || { log_error "no checksum for $name"; exit 1; }
   local want have
   want="$(cut -d' ' -f1 <"$tmp/$name.sha256")"
