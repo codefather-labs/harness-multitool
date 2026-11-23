@@ -300,6 +300,9 @@ pub struct SessionInfo {
     pub linked: bool,
     /// Not a session here yet: `id` is a conversation Claude Code keeps, to link when opened.
     pub foreign: bool,
+    /// The Claude Code conversations this session holds: the one it runs, or brought in
+    /// (journal#1649). None of them is foreign.
+    pub holds: Vec<String>,
 }
 
 /// Stores a conversation brought in from elsewhere as a session of this project, so it opens like
@@ -332,15 +335,44 @@ pub fn store_imported(data_dir: &str, root: &str, imported: &ImportedConversatio
     Ok(id)
 }
 
-/// The session of this project already linked to this conversation of a provider, if there is one:
-/// bringing it in again is opening it (INV-21).
+/// The Claude Code conversations a log's events hold: the one its run started (BackendSession),
+/// and those it keeps in step (FormSynced). A copy brought in before links holds none: that
+/// conversation may have gone on in Claude Code past it, and stays listed.
+fn claude_code_ids<'a>(events: impl Iterator<Item = &'a Event>) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for e in events {
+        let id = match e {
+            Event::BackendSession { id } => id,
+            Event::FormSynced { source, id, .. } if source == "claude-code" => id,
+            _ => continue,
+        };
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
+/// The session of this project that holds this conversation of a provider, if there is one:
+/// bringing it in again is opening it (INV-21). An import linked to it, or a session that runs it
+/// on Claude Code itself (journal#1649), whose copy would only be a cut-off second one.
 pub fn linked_session(data_dir: &str, root: &str, source: &str, id: &str) -> Option<String> {
     let short: String = id.chars().take(8).collect();
     let prefix = format!("imported-{short}-");
     let files = std::fs::read_dir(sessions_dir(data_dir, root)).ok()?;
-    let mut names: Vec<String> = files.flatten().filter_map(|f| f.file_name().to_str()?.strip_suffix(".jsonl").map(str::to_string)).filter(|n| n.starts_with(&prefix)).collect();
+    let mut names: Vec<String> = files.flatten().filter_map(|f| f.file_name().to_str()?.strip_suffix(".jsonl").map(str::to_string)).collect();
     names.sort();
-    names.into_iter().rev().find(|name| read_log(data_dir, root, name).iter().rev().any(|e| matches!(&e.event, Event::FormSynced { source: s, id: i, .. } if s == source && i == id)))
+    if let Some(found) = names.iter().rev().filter(|n| n.starts_with(&prefix)).find(|name| read_log(data_dir, root, name).iter().rev().any(|e| matches!(&e.event, Event::FormSynced { source: s, id: i, .. } if s == source && i == id))) {
+        return Some(found.clone());
+    }
+    if source != "claude-code" {
+        return None;
+    }
+    names.into_iter().rev().filter(|n| !n.starts_with("imported-")).find(|name| {
+        let mut held = false;
+        each_logged(data_dir, root, name, |e| held |= matches!(&e.event, Event::BackendSession { id: i } if i == id) || matches!(&e.event, Event::FormSynced { source: s, id: i, .. } if s == "claude-code" && i == id));
+        held
+    })
 }
 
 /// A stored session's entries one by one, as they are read, cut off at a damaged line (a crash can
@@ -424,7 +456,8 @@ pub fn recent(data_dir: &str, root: &str) -> Vec<SessionInfo> {
                 _ => None,
             });
             let linked = imported.is_some() && log.iter().rev().any(|e| matches!(&e.event, Event::FormSynced { .. }));
-            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms), imported, linked, foreign: false })
+            let holds = claude_code_ids(log.iter().map(|e| &e.event));
+            Some(SessionInfo { id, title, model: model.unwrap_or_default(), last_ms: log.last().map_or(0, |e| e.at_ms), imported, linked, foreign: false, holds })
         })
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.last_ms));
@@ -1527,6 +1560,29 @@ mod recent_title_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lines: Vec<String> = events.into_iter().enumerate().map(|(n, event)| harness_api::event::to_line(&LogEntry { seq: n as u64, at_ms: 1000 + n as u64, event })).collect();
         std::fs::write(format!("{dir}/{id}.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    /// journal#1649: a session that runs a Claude Code conversation of its own holds its id: the
+    /// start page lists it once, and opening that id opens this session, never a copy.
+    #[test]
+    fn a_session_holds_the_claude_code_conversation_it_runs() {
+        let dir = std::env::temp_dir().join(format!("mt-holds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data = dir.to_string_lossy().into_owned();
+        let root = "/home/u/proj";
+        write(&data, root, "1795-1", vec![Event::UserMessage { text: "hello".into() }, Event::BackendSession { id: "ca370892-b18e".into() }]);
+        write(&data, root, "imported-e30f0149-1", vec![Event::UserMessage { text: "x".into() }, Event::ConversationImported { source: "claude-code".into(), id: "e30f0149-cfa3".into(), title: "t".into() }, Event::FormSynced { source: "claude-code".into(), id: "e30f0149-cfa3".into(), cursor: String::new(), holds: Some(1), digest: None }]);
+        let held: std::collections::HashMap<String, Vec<String>> = recent(&data, root).into_iter().map(|s| (s.id, s.holds)).collect();
+        assert_eq!(held["1795-1"], ["ca370892-b18e"], "its own Claude Code conversation");
+        assert_eq!(held["imported-e30f0149-1"], ["e30f0149-cfa3"], "an import holds what it brought in");
+        assert_eq!(linked_session(&data, root, "claude-code", "ca370892-b18e").as_deref(), Some("1795-1"), "opening the id opens the session that runs it");
+        assert_eq!(linked_session(&data, root, "claude-code", "e30f0149-cfa3").as_deref(), Some("imported-e30f0149-1"), "an import is found as before");
+        assert_eq!(linked_session(&data, root, "claude-code", "ffffffff-0000"), None, "a conversation no session runs is foreign");
+        // A copy from before links holds nothing: its conversation may have gone on in Claude Code.
+        write(&data, root, "imported-aaaa1111-1", vec![Event::UserMessage { text: "y".into() }, Event::ConversationImported { source: "claude-code".into(), id: "aaaa1111-2222".into(), title: "t".into() }]);
+        let old = recent(&data, root).into_iter().find(|s| s.id == "imported-aaaa1111-1").unwrap();
+        assert!(old.holds.is_empty(), "{:?}", old.holds);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// journal#1254: a conversation brought in keeps the name /resume gave it; another is named by

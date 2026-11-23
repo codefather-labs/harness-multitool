@@ -210,23 +210,34 @@ pub fn splash(f: &mut Frame, area: Rect, v: &SplashView, t: &Theme, pictures: bo
     );
 }
 
+/// How many entries of a list fit in `height` rows (each takes a rule and two rows, and the last
+/// one's outline needs the rule below it), and the first one shown so that `selected` is in view
+/// (journal#1648).
+pub fn window(count: usize, height: u16, selected: Option<usize>) -> (usize, usize) {
+    let fit = (height.saturating_sub(1) / 3).max(1) as usize;
+    let first = selected.map_or(0, |s| (s + 1).saturating_sub(fit)).min(count.saturating_sub(fit));
+    (first, fit.min(count))
+}
+
 /// A list of two-line entries with a rule between them; the selected one is outlined, its
-/// outline drawn on the rule rows above and below it. Returns each entry's two-row rect.
-fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: &Theme, fill: Color) -> Vec<Rect> {
+/// outline drawn on the rule rows above and below it. Only what fits in `area` is drawn, scrolled
+/// so the selected one is in view (journal#1648). Returns each drawn entry's index and two-row rect.
+fn entries(f: &mut Frame, area: Rect, count: usize, selected: Option<usize>, t: &Theme, fill: Color) -> Vec<(usize, Rect)> {
+    let (first, shown) = window(count, area.height, selected);
     let mut rects = Vec::new();
-    for i in 0..count {
-        let sep = row(area, i as u16 * 3);
+    for (slot, i) in (first..first + shown).enumerate() {
+        let sep = row(area, slot as u16 * 3);
         f.render_widget(
             Paragraph::new("─".repeat(sep.width as usize)).style(Style::default().fg(t.border_subtle).bg(fill)),
             Rect { x: sep.x + 1, width: sep.width.saturating_sub(2), ..sep },
         );
-        rects.push(Rect { y: area.y + i as u16 * 3 + 1, height: 2, ..area });
+        rects.push((i, Rect { y: area.y + slot as u16 * 3 + 1, height: 2, ..area }));
     }
     // The selected entry: a rounded accent outline on the rule rows above and below it, with
     // nothing filled (operator, 2026-11-01). Inside stays the panel colour, so the line, which
     // runs through the middle of its cells, has no strip of another colour beside it.
-    if let Some(i) = selected.filter(|i| *i < count) {
-        let r = Rect { y: area.y + i as u16 * 3, height: 4, ..area };
+    if let Some(i) = selected.filter(|i| *i >= first && *i < first + shown) {
+        let r = Rect { y: area.y + (i - first) as u16 * 3, height: 4, ..area };
         boxed(f, r, t.accent_line, fill, fill);
     }
     rects
@@ -285,7 +296,8 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     // Only the focused panel shows its selection, so it is clear which one the keys move.
     let sel = (v.focus == StartupPanel::Sessions).then_some(v.selected_session);
     let rects = entries(f, list, v.sessions.len(), sel, t, fill);
-    for (i, (s, r)) in v.sessions.iter().zip(&rects).enumerate() {
+    for (i, r) in &rects {
+        let (i, s) = (*i, &v.sessions[*i]);
         let bg = fill;
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
         // Spare width is shared by the three gaps between the columns, like the mockup's
@@ -350,7 +362,8 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
     let list = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
     let sel = (v.focus == StartupPanel::Actions).then_some(v.selected_action);
     let rects = entries(f, list, v.actions.len(), sel, t, fill);
-    for (i, (a, r)) in v.actions.iter().zip(&rects).enumerate() {
+    for (i, r) in &rects {
+        let (i, a) = (*i, &v.actions[*i]);
         let on = sel == Some(i);
         let bg = fill;
         let r = Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..*r };
@@ -414,5 +427,46 @@ pub fn startup(f: &mut Frame, area: Rect, v: &StartupView, t: &Theme, pictures: 
             Paragraph::new(Span::styled(format!("{} / {} ", v.tip + 1, v.tips.len()), Style::default().fg(t.text_muted))).right_aligned(),
             inner,
         );
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use crate::model::Mode;
+
+    /// journal#1648: the list shows what fits, scrolled so the selected entry is in view.
+    #[test]
+    fn the_window_follows_the_selection() {
+        assert_eq!(window(20, 31, Some(0)), (0, 10), "ten fit in 31 rows");
+        assert_eq!(window(20, 31, Some(9)), (0, 10));
+        assert_eq!(window(20, 31, Some(10)), (1, 10), "one past the last scrolls by one");
+        assert_eq!(window(20, 31, Some(19)), (10, 10));
+        assert_eq!(window(3, 31, Some(2)), (0, 3), "a short list does not scroll");
+        assert_eq!(window(5, 2, Some(4)), (4, 1), "at least one is shown");
+    }
+
+    /// journal#1648: with more sessions than rows, the last one selected is drawn on screen, and
+    /// nothing of the list is drawn over the status line below it.
+    #[test]
+    fn the_last_session_is_in_view_and_the_status_line_stays_clear() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let t = crate::theme::Theme::builtin("dark").unwrap();
+        let mut s = crate::fixtures::startup();
+        let Mode::Startup(v) = &mut s.mode else { unreachable!() };
+        let base = v.sessions[0].clone();
+        v.sessions = (0..30).map(|i| crate::model::RecentSession { title: format!("session number {i}"), ..base.clone() }).collect();
+        v.selected_session = 29;
+        v.focus = crate::model::StartupPanel::Sessions;
+        let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        term.draw(|f| {
+            crate::draw(f, &s, &t);
+        })
+        .unwrap();
+        let screen: Vec<String> = (0..40).map(|y| (0..160).map(|x| term.backend().buffer()[(x, y)].symbol().to_string()).collect()).collect();
+        assert!(screen.iter().any(|l| l.contains("session number 29")), "the selected one is shown:\n{}", screen.join("\n"));
+        assert!(!screen.iter().any(|l| l.contains("session number 0 ")), "the first ones scrolled away");
+        let status = screen.iter().position(|l| l.contains("Tip:")).expect("the tip card");
+        assert!(!screen[status - 4..status].iter().any(|l| l.contains("session number")), "nothing of the list over the status rows");
     }
 }

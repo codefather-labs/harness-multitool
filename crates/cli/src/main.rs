@@ -2131,11 +2131,12 @@ impl Live {
         // Claude Code's conversations of this folder too, those not linked already, or that went on
         // in Claude Code past a copy from before links.
         if let Ok(conversations) = harness_session::conversation_source("claude-code") {
-            let linked: Vec<String> = self.recent.iter().filter(|s| s.linked).filter_map(|s| s.imported.clone()).collect();
+            // Held by a session of this folder: its own run's, or brought in; never a second row (journal#1649).
+            let linked: Vec<String> = self.recent.iter().filter(|s| s.linked).filter_map(|s| s.imported.clone()).chain(self.recent.iter().flat_map(|s| s.holds.iter().cloned())).collect();
             for c in conversations.list(&self.root).unwrap_or_default() {
                 if !linked.contains(&c.id) {
                     let title = if c.title.is_empty() { c.id.chars().take(8).collect() } else { c.title.clone() };
-                    self.recent.push(harness_session::SessionInfo { id: c.id, title, model: "claude-code".to_string(), last_ms: c.last_ms, imported: None, linked: false, foreign: true });
+                    self.recent.push(harness_session::SessionInfo { id: c.id, title, model: "claude-code".to_string(), last_ms: c.last_ms, imported: None, linked: false, foreign: true, holds: Vec::new() });
                 }
             }
             self.recent.sort_by_key(|s| std::cmp::Reverse(s.last_ms));
