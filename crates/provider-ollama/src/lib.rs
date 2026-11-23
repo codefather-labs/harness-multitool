@@ -43,12 +43,14 @@ pub struct Ollama {
     net: Rc<dyn Net>,
     base_url: String,
     context_window: u64,
-    keep_alive: Option<Value>,
+    /// How long Ollama keeps the model after a request: -1, until it stops, unless the row says
+    /// otherwise (CON-190 point 11). Ollama's own default would drop it after 5 idle minutes.
+    keep_alive: Value,
     facts: RefCell<HashMap<String, Facts>>,
 }
 
 impl Ollama {
-    /// Settings: `base_url` (Ollama's usual one), `context_window` (65536), `keep_alive`.
+    /// Settings: `base_url` (Ollama's usual one), `context_window` (65536), `keep_alive` (-1).
     pub fn new(name: &str, net: Rc<dyn Net>, settings: &Value) -> Self {
         let base = settings["base_url"].as_str().unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/');
         // A row written for /v1 still reaches the same server.
@@ -58,7 +60,7 @@ impl Ollama {
             net,
             base_url: base,
             context_window: settings["context_window"].as_u64().unwrap_or(DEFAULT_CONTEXT),
-            keep_alive: settings.get("keep_alive").filter(|v| !v.is_null()).cloned(),
+            keep_alive: settings.get("keep_alive").filter(|v| !v.is_null()).cloned().unwrap_or(json!(-1)),
             facts: RefCell::new(HashMap::new()),
         }
     }
@@ -127,9 +129,7 @@ impl Ollama {
         if facts.thinking {
             body["think"] = json!(true);
         }
-        if let Some(keep) = &self.keep_alive {
-            body["keep_alive"] = keep.clone();
-        }
+        body["keep_alive"] = self.keep_alive.clone();
         body
     }
 }
@@ -401,6 +401,22 @@ mod tests {
         assert_eq!(end.stop, StopReason::ToolUse);
         assert_eq!((end.usage.input, end.usage.cache_read, end.usage.output), (60, 8, 163), "the cached part is taken out of the input");
         assert_eq!(end.cost_micro_usd, Some(0));
+    }
+
+    /// CON-190 point 11 (journal#1679): with no keep_alive of the row's own, the model stays loaded
+    /// (-1), instead of Ollama's 5 idle minutes; a row's own value goes as it is.
+    #[test]
+    fn the_model_stays_loaded_unless_the_row_says_otherwise() {
+        let sent_keep_alive = |settings: Value| {
+            let net = Fake::new(show(&["completion"], 131_072), lines(RECORDED));
+            run(&Ollama::new("ollama", net.clone(), &settings), &request(), None).1.unwrap();
+            let sent = net.sent.borrow();
+            sent.iter().find(|(u, _)| u.ends_with("/api/chat")).unwrap().1["keep_alive"].clone()
+        };
+        assert_eq!(sent_keep_alive(json!({})), json!(-1), "kept until Ollama stops");
+        assert_eq!(sent_keep_alive(json!({"keep_alive": null})), json!(-1));
+        assert_eq!(sent_keep_alive(json!({"keep_alive": "30m"})), json!("30m"));
+        assert_eq!(sent_keep_alive(json!({"keep_alive": 0})), json!(0), "0 unloads at once");
     }
 
     #[test]

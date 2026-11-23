@@ -37,6 +37,7 @@ The `ollama` row reaches Ollama on its native `/api/chat`, not on its OpenAI-com
 
 - **The context.** Every request sends `options.num_ctx` equal to the row's `context_window`: 65 536 by default, never more than the model's own length from `/api/show`. The window the status line shows is the one Ollama loads.
 - **Capabilities.** Read from `/api/show` once per model. Tools go only to a model that has `tools`; a model without them talks only, which the model list in Settings says (`no tools: talks only`). A model with `thinking` gets `think: true`, and its reasoning is drawn apart from the answer, folded as 'Thought for Ns'.
+- **The model stays loaded.** Every request sends `keep_alive: -1`, so Ollama keeps the model in memory between messages instead of dropping it after its default 5 idle minutes; a big model would otherwise make the next answer wait for a reload (journal#1678). A row's own `keep_alive` (`"30m"`, a number of seconds, or `0` to unload at once) replaces it. `ollama stop <model>` frees the memory. The `Local` `/v1` row cannot send it: its model follows Ollama's own `OLLAMA_KEEP_ALIVE` (CON-190 point 11).
 - **Compaction** counts the whole prompt, the system prompt and the tool schemas as well as the messages (journal#1536): on a local model's window the tools alone are about 4.5k tokens.
 - **Usage.** From the last line of the stream: the prompt's count less its cached part, the cached part, and the answer's count. A local model costs nothing.
 - **When it fails:**

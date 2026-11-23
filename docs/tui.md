@@ -145,7 +145,8 @@ max_cost_usd = 5.0              # optional budget; max_turns too
 kind = "ollama"
 base_url = "http://127.0.0.1:11434"
 context_window = 65536          # sent to Ollama as num_ctx; never more than the model's own
-# keep_alive = "10m"            # optional: how long Ollama keeps the model loaded
+# keep_alive = "30m"            # optional: how long Ollama keeps the model loaded after a request;
+                                # -1 by default, kept until Ollama stops; 0 unloads it at once
 
 [session.auth.ollama]
 none = true                     # no key needed
