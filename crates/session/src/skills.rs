@@ -594,7 +594,7 @@ mod tests {
         }
         assert!(!root.join(".harness/skills/deploy-app").join(MARKER).exists(), "the source is no copy");
         let marker: Value = serde_json::from_str(&std::fs::read_to_string(root.join(".claude/skills/deploy-app").join(MARKER)).unwrap()).unwrap();
-        assert!(marker["source"].as_str().unwrap().ends_with(".harness/skills/deploy-app") && marker["sha256"].as_str().unwrap().len() == 64);
+        assert!(marker["source"].as_str().unwrap().replace('\\', "/").ends_with(".harness/skills/deploy-app") && marker["sha256"].as_str().unwrap().len() == 64);
         assert!(said.contains("Claude Code:") && said.contains("Codex:"), "{said}");
         let found = skills(&root.to_string_lossy(), None);
         assert_eq!(found.iter().map(|s| (s.name.as_str(), s.from.as_str())).collect::<Vec<_>>(), [("deploy-app", "project")], "skill_list reads it");
@@ -648,7 +648,7 @@ mod tests {
         let t = temp("caps");
         let p = places(&t);
         let caps = SkillWrite { name: "skill_create", places: p.clone() }.capabilities(&json!({"name": "x", "scope": "project", "files": {"a/b.txt": "1"}})).unwrap();
-        let paths: Vec<String> = caps.iter().map(|c| match c { Capability::WritePath(p) => p.clone(), other => panic!("{other:?}") }).collect();
+        let paths: Vec<String> = caps.iter().map(|c| match c { Capability::WritePath(p) => p.replace('\\', "/"), other => panic!("{other:?}") }).collect();
         assert_eq!(paths.len(), 4, "{paths:?}");
         assert!(paths[0].ends_with(".harness/skills/x/SKILL.md") && paths[1].ends_with(".harness/skills/x/a/b.txt") && paths[2].ends_with(".claude/skills/x") && paths[3].ends_with(".agents/skills/x"), "{paths:?}");
         assert!(SkillWrite { name: "skill_create", places: p }.capabilities(&json!({"name": "x", "scope": "project", "files": {"../out": "1"}})).is_err(), "no path outside its folder");

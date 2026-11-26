@@ -2457,7 +2457,8 @@ fn an_agent_makes_a_skill_that_the_delegates_get_natively() {
         Event::ToolRequested { call, capabilities } if call.name == "skill_create" => Some(capabilities.clone()),
         _ => None,
     }).unwrap();
-    let paths: Vec<String> = caps.iter().map(|c| format!("{c:?}")).collect();
+    // As '/' paths, whatever the OS writes them with.
+    let paths: Vec<String> = caps.iter().map(|c| match c { Capability::WritePath(p) => p.replace('\\', "/"), other => format!("{other:?}") }).collect();
     assert!(paths.iter().any(|p| p.contains(".harness/skills/ship-it/SKILL.md")) && paths.iter().any(|p| p.contains(".claude/skills/ship-it")) && paths.iter().any(|p| p.contains(".agents/skills/ship-it")), "{paths:?}");
     for dir in [".harness/skills/ship-it", ".claude/skills/ship-it", ".agents/skills/ship-it"] {
         assert!(std::path::Path::new(&format!("{root}/{dir}/SKILL.md")).exists(), "{dir}");
