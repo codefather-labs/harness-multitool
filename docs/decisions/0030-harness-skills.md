@@ -40,6 +40,16 @@ The specification of the agent workflow gains a row: when a task matches a skill
 - `/skills` lists them.
 - A skill loaded in a turn shows as a card, `SKILL name`, folded.
 
+## Creating skills, and the delegates' copies (CON-204)
+
+The owner's word 2026-11-27 (journal#1705). An agent makes a skill with `skill_create {name, description, body, scope, files}`, changes it with `skill_edit` and removes it with `skill_delete`, on every adapter.
+
+- **The source is the harness's.** It lives in `<project>/.harness/skills/<name>/` for scope `project`, or `~/.harness/skills/<name>/` (MULTITOOL_HOME's) for `user`, in the format above.
+- **Each delegate gets a native copy by default.** Claude Code's goes in `<project>/.claude/skills/<name>/` or the user's own Claude Code folder's `skills/<name>/`. Codex's goes in `<project>/.agents/skills/<name>/` or `$CODEX_HOME/skills/<name>/` (`~/.codex/skills`). So each program finds the skill as its own, and Claude Code picks it up within its running session.
+- **A copy carries a marker**, `.multitool-skill`, with its source and sha256. Edit and delete touch only marked copies. A native skill of the same name with no marker is the user's: it is left alone, and the answer says so.
+- **Names and descriptions follow Anthropic's Agent Skills rules.** A name has at most 64 lowercase letters, digits and hyphens, without `anthropic` or `claude`. A description is non-empty, at most 1,024 characters, and has no XML tags.
+- **Every file written is asked for**, the delegates' too, as a WritePath.
+
 ## Open questions for the owner
 
 1. Should the harness also offer the delegates' own skills (`~/.claude/skills`) to the native loop and Codex, read-only? The draft says no; each program keeps its own, and only `.harness/skills` is portable.

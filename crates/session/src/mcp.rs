@@ -117,6 +117,12 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
     // The harness's own skills, the same on every adapter (ADR 0030).
     out.push(Rc::new(crate::skills::SkillList::default()));
     out.push(Rc::new(crate::skills::SkillLoad::default()));
+    // Skills made by agents, mirrored to the delegates natively (CON-204).
+    let sandboxed = (!crate::finds_users_servers(&serving.data_dir)).then(|| serving.data_dir.join("home"));
+    let places = std::sync::Arc::new(crate::skills::SkillPlaces::from_env(&|name| std::env::var(name).ok(), &serving.root, sandboxed.as_deref()));
+    for name in crate::skills::WRITE_TOOLS {
+        out.push(Rc::new(crate::skills::SkillWrite { name, places: places.clone() }));
+    }
     if let (Some(client), Some((window, tab))) = (client, &serving.window) {
         for name in crate::host_tools::DELEGATE_MODE_TOOLS.into_iter().chain(crate::host_tools::MODE_TOOLS) {
             out.push(Rc::new(crate::host_tools::ModeTool { name, client: client.clone(), window: window.clone(), tab: *tab }));

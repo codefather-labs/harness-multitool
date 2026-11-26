@@ -2438,3 +2438,29 @@ fn the_own_loop_finds_and_calls_an_mcp_servers_tool() {
     assert!(!requests.iter().any(|r| r.contains("mcp__other__")), "a server turned off is in no request");
     assert!(std::path::Path::new(&format!("{data}/mcp")).read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("fake-")), "its list is kept");
 }
+
+/// CON-204: an agent makes a skill on the own loop. It is asked once, with every path; then the
+/// skill is in the harness's skills and in Claude Code's and Codex's own folders.
+#[test]
+fn an_agent_makes_a_skill_that_the_delegates_get_natively() {
+    let root = temp_dir("skill-root");
+    let data = temp_dir("skill-data");
+    let (url, _) = fake_endpoint(vec![
+        anthropic_turn(Some(("t1", "skill_create", json!({"name": "ship-it", "description": "Ship this project", "body": "Run ./ship.", "scope": "project"}))), "Making it."),
+        anthropic_turn(Some(("t2", "skill_list", json!({}))), "Listing."),
+        anthropic_turn(None, "Done."),
+    ]);
+    let mut sessions = Sessions::new(with_host(settings(&url, "k"), root.clone(), data.clone().into(), Host::default()), root.clone());
+    let (entries, _, asked) = drive(&mut sessions, &["make a skill"], Answer::AllowOnce);
+    assert_eq!(asked, 1, "skill_create asks; skill_list does not");
+    let caps: Vec<Capability> = entries.iter().find_map(|e| match &e.event {
+        Event::ToolRequested { call, capabilities } if call.name == "skill_create" => Some(capabilities.clone()),
+        _ => None,
+    }).unwrap();
+    let paths: Vec<String> = caps.iter().map(|c| format!("{c:?}")).collect();
+    assert!(paths.iter().any(|p| p.contains(".harness/skills/ship-it/SKILL.md")) && paths.iter().any(|p| p.contains(".claude/skills/ship-it")) && paths.iter().any(|p| p.contains(".agents/skills/ship-it")), "{paths:?}");
+    for dir in [".harness/skills/ship-it", ".claude/skills/ship-it", ".agents/skills/ship-it"] {
+        assert!(std::path::Path::new(&format!("{root}/{dir}/SKILL.md")).exists(), "{dir}");
+    }
+    assert!(entries.iter().any(|e| matches!(&e.event, Event::ToolResult { output, is_error: false, .. } if output.contains("ship-it") && output.contains("Ship this project"))), "skill_list names it");
+}

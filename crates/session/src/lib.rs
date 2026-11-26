@@ -201,7 +201,7 @@ const MCP_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Whether this harness finds the user's own MCP servers: its own data dir does; another, a
 /// test's or a debug run's, is a harness of its own and starts only the servers it is given, as
 /// it keeps its journals in itself (CON-197).
-fn finds_users_servers(data_dir: &std::path::Path) -> bool {
+pub(crate) fn finds_users_servers(data_dir: &std::path::Path) -> bool {
     harness_memory_journal::project::home_for(data_dir) != data_dir.join("home")
 }
 
@@ -710,6 +710,14 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
         let agents_load = agents.clone();
         registry.tool("skill_list", move |_| Ok(Rc::new(skills::SkillList { agents: agents.clone() })));
         registry.tool("skill_load", move |_| Ok(Rc::new(skills::SkillLoad { agents: agents_load.clone() })));
+        // Skills made by agents, mirrored to the delegates natively (CON-204).
+        let sandboxed = (!finds_users_servers(&data_dir)).then(|| data_dir.join("home"));
+        let skill_places = Arc::new(skills::SkillPlaces::from_env(&|name| read(name), &root, sandboxed.as_deref()));
+        for name in skills::WRITE_TOOLS {
+            selection.tools.push(name.to_string());
+            let places = skill_places.clone();
+            registry.tool(name, move |_| Ok(Rc::new(skills::SkillWrite { name, places: places.clone() })));
+        }
         // What a session runs on its own loop can leave running; a delegate has its own.
         let background = (!settings.runs_delegate()).then(|| Rc::new(harness_tools_builtin::Background::new(&data_dir.join("background").to_string_lossy())));
         let shell_background = background.clone();
