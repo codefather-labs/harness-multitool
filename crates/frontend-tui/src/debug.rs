@@ -66,6 +66,19 @@ pub fn submit(w: &mut Workspace) -> Sent {
         return Sent::Quit;
     }
     w.view_mut().scroll = 0;
+    // A room's tab (CON-203): what is typed goes to every member of the room, as the user's.
+    if w.live && w.view().orchestra.as_deref() == Some("room") {
+        let tab = w.tabs[w.active].id;
+        if text == "/room close" {
+            w.outbox.push(Outgoing::RoomClose { tab });
+        } else if text.starts_with('/') {
+            let v = w.view_mut();
+            v.transcript.push(Item::Tips { label: "ROOM".into(), lines: vec!["In a room's tab, what you type goes to every member; /room close closes the room.".into()] });
+        } else {
+            w.outbox.push(Outgoing::RoomPost { tab, text });
+        }
+        return Sent::Done;
+    }
     if let Some(cmd) = text.strip_prefix('/') {
         command(w, cmd);
     } else if w.live {
@@ -807,6 +820,25 @@ mod tests {
         }
         w.view_mut().composer.text = String::new();
         assert_eq!(submit(&mut w), Sent::Nothing);
+    }
+
+    /// CON-203: in a room's tab, what the user types goes to the room; /room close closes it; other
+    /// commands are not sent to the agents.
+    #[test]
+    fn a_rooms_tab_posts_to_the_room() {
+        let mut w = workspace();
+        w.live = true;
+        w.view_mut().orchestra = Some("room".into());
+        let tab = w.tabs[w.active].id;
+        send(&mut w, "keep it simple");
+        assert!(matches!(w.outbox.last(), Some(Outgoing::RoomPost { tab: t, text }) if *t == tab && text == "keep it simple"), "{:?}", w.outbox);
+        assert!(!w.view().generating, "a room is no run of this tab");
+        send(&mut w, "/room close");
+        assert!(matches!(w.outbox.last(), Some(Outgoing::RoomClose { tab: t }) if *t == tab));
+        let before = w.outbox.len();
+        send(&mut w, "/plan");
+        assert_eq!(w.outbox.len(), before, "no command goes to the room's agents");
+        assert!(matches!(w.view().transcript.last(), Some(Item::Tips { label, .. }) if label == "ROOM"));
     }
 
     /// ADR 0030: /skills lists what the window was given, and says what to do when there is none.

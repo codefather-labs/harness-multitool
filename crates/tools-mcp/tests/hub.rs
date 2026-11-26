@@ -34,6 +34,11 @@ fn a_client_initializes_lists_every_page_and_calls() {
     assert!(roots.text.contains(&format!("file://{}", root.path().display())), "the server asked and got the project: {}", roots.text);
     assert!(matches!(c.call("sleep", &json!({}), Duration::from_millis(500)), Err(Failure::TimedOut(_))));
     assert!(matches!(c.call("die", &json!({}), Duration::from_secs(10)), Err(Failure::Gone(_))));
+    // Its stdout closes as it exits, a moment before the process is gone.
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while c.alive() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(!c.alive());
 }
 

@@ -926,7 +926,8 @@ fn inbound(width: u16, t: &Theme, m: &Inbound) -> Drawn {
             }
         }
         InboundKind::Agent { session, .. } => {
-            let from = format!("(from {session})  ");
+            // A room's message names its author in the head already (CON-203): no session id.
+            let from = if session.is_empty() { String::new() } else { format!("(from {session})  ") };
             let fw = from.chars().count() as u16;
             for (i, l) in wrap(&m.text, tw.saturating_sub(fw)).into_iter().enumerate() {
                 let lead = if i == 0 { Span::styled(from.clone(), plain(t.text_muted)) } else { Span::raw(" ".repeat(fw as usize)) };

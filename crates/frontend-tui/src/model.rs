@@ -216,6 +216,10 @@ pub enum Outgoing {
     /// Ctrl+W: the tab's session ends at once, a run in it stopped, so what it holds (an Ollama
     /// model) is let go (journal#1690).
     CloseTab { tab: u64 },
+    /// The user's message in a room's tab, to every member (CON-203).
+    RoomPost { tab: u64, text: String },
+    /// `/room close` in a room's tab.
+    RoomClose { tab: u64 },
     /// The Callbacks tab saved: each standard type's implementation, and what is switched off.
     SaveCallbacks { handlers: Vec<(String, String)>, disabled: Vec<String> },
     /// Rebuild and swap the binary (ADR 0015).

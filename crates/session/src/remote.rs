@@ -61,6 +61,7 @@ fn to_wire(message: &FromSession) -> Value {
     match message {
         FromSession::Spawn { tab, nick, provider, model, task } => json!({"kind": "spawn", "tab": tab, "nick": nick, "provider": provider, "model": model, "task": task}),
         FromSession::CloseTab { tab } => json!({"kind": "close_tab", "tab": tab}),
+        FromSession::Room { event, .. } => event.clone(),
         FromSession::Queued { tab, message } => json!({"kind": "queued", "tab": tab, "message": message}),
         FromSession::Entry { tab, entry } => json!({"kind": "entry", "tab": tab, "line": harness_api::event::to_line(entry)}),
         FromSession::Ask { tab, call, capabilities } => json!({"kind": "ask", "tab": tab, "call": call, "capabilities": capabilities}),
@@ -78,6 +79,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
         "queued" => Some(FromSession::Queued { tab, message: serde_json::from_value(value["message"].clone()).ok()? }),
         "spawn" => Some(FromSession::Spawn { tab, nick: value["nick"].as_str()?.to_string(), provider: value["provider"].as_str()?.to_string(), model: value["model"].as_str()?.to_string(), task: value["task"].as_u64()? }),
         "close_tab" => Some(FromSession::CloseTab { tab }),
+        "room_open" | "room_message" | "room_closed" => Some(FromSession::Room { tab, event: value.clone() }),
         "entry" => Some(FromSession::Entry { tab, entry: harness_api::event::from_line(value["line"].as_str()?).ok()? }),
         "ask" => Some(FromSession::Ask { tab, call: serde_json::from_value(value["call"].clone()).ok()?, capabilities: serde_json::from_value(value["capabilities"].clone()).ok()? }),
         "ended" => Some(FromSession::Ended { tab, end: end_from_json(&value["end"]) }),
@@ -92,7 +94,7 @@ fn from_wire(value: &Value) -> Option<FromSession> {
 fn tab_of(message: &FromSession) -> u64 {
     match message {
         FromSession::Queued { tab, .. } => *tab,
-        FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } => *tab,
+        FromSession::Spawn { tab, .. } | FromSession::CloseTab { tab } | FromSession::Room { tab, .. } => *tab,
         FromSession::Entry { tab, .. } | FromSession::Ask { tab, .. } | FromSession::Ended { tab, .. } | FromSession::Unavailable { tab, .. } | FromSession::Synced { tab, .. } | FromSession::Progress { tab, .. } | FromSession::AskWithdrawn { tab, .. } => *tab,
     }
 }
@@ -366,6 +368,8 @@ pub struct DaemonHost {
     a2a_sent: Mutex<HashMap<String, VecDeque<Instant>>>,
     /// Who masters whom (CON-100). Kept, since a slave stays one through a reload.
     orchestra: Mutex<Orchestra>,
+    /// Group chats of agents (CON-203).
+    rooms: Mutex<crate::rooms::Rooms>,
     wake: Condvar,
     data_dir: PathBuf,
     make_host: MakeHost,
@@ -641,6 +645,28 @@ impl DaemonHost {
                     let slave = self.own_slave(windows, &master, op["nick"].as_str().ok_or("nick is required")?)?;
                     Ok(json!({"close": slave}))
                 }
+                "mode__room_open" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let names: Vec<String> = op["members"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                    if names.len() > MAX_SLAVES {
+                        return Err(format!("at most {MAX_SLAVES} agents in a room"));
+                    }
+                    let mut members = Vec::new();
+                    for name in &names {
+                        let slave = self.own_slave(windows, &master, name)?;
+                        members.push(crate::rooms::Member { nick: self.name_of(window, &slave), session: slave });
+                    }
+                    let owner = crate::rooms::Member { nick: self.name_of(window, &master), session: master };
+                    let mut rooms = self.rooms.lock().expect("rooms");
+                    let room = rooms.open(owner, op["topic"].as_str().unwrap_or_default(), op["goal"].as_str().unwrap_or_default(), members, now_ms())?;
+                    Ok(json!({"room_open": room.summary()}))
+                }
+                "mode__room_close" => {
+                    let master = self.master_of_tab(window, tab)?;
+                    let summary = op["summary"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("summary is required: what the room came to, for the journal")?;
+                    let (room, topic, members) = self.rooms.lock().expect("rooms").close(&master, op["room"].as_str(), summary, now_ms())?;
+                    Ok(json!({"room_close": {"room": room, "topic": topic, "summary": summary, "members": members.iter().map(|m| json!({"session": m.session, "nick": m.nick})).collect::<Vec<_>>(), "root": window.root}}))
+                }
                 _ => Err(String::new()),
             }
         };
@@ -685,6 +711,23 @@ impl DaemonHost {
                     }
                 }
                 Err("it is not open".to_string())
+            }
+            Ok(reply) if reply.get("room_open").is_some() => {
+                let room = reply["room_open"].clone();
+                let (topic, goal) = (room["topic"].as_str().unwrap_or_default().to_string(), room["goal"].as_str().unwrap_or_default().to_string());
+                let members: Vec<String> = room["members"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                let joined = self.rooms.lock().expect("rooms").rooms.last().map(|r| r.members.iter().skip(1).map(|m| m.session.clone()).collect::<Vec<_>>()).unwrap_or_default();
+                let invitation = format!("You are invited to the room '{topic}' ({}), with {}.{}\n\n{}", room["room"].as_str().unwrap_or_default(), members.join(", "), if goal.is_empty() { String::new() } else { format!(" Its goal: {goal}") }, crate::rooms::MEMBER_RULES);
+                let deliveries: Vec<crate::rooms::Delivery> = joined.into_iter().map(|session| crate::rooms::Delivery { session, label: format!("room:{topic}"), text: invitation.clone(), as_user: false }).collect();
+                Self::deliver(windows, &deliveries);
+                if let Some(window) = windows.get_mut(id) {
+                    window.say(json!({"kind": "room_open", "tab": tab, "room": room}));
+                }
+                Ok(json!({"text": format!("Room {} is open with you and {}. Post in it with room_post; every member gets each message. Close it with mode__room_close and a summary for the journal.", room["room"].as_str().unwrap_or_default(), members.iter().skip(1).cloned().collect::<Vec<_>>().join(", "))}))
+            }
+            Ok(reply) if reply.get("room_close").is_some() => {
+                let closed = &reply["room_close"];
+                self.room_closed(windows, closed["room"].as_str().unwrap_or_default(), closed["topic"].as_str().unwrap_or_default(), closed["summary"].as_str(), closed["root"].as_str().unwrap_or_default(), &closed["members"])
             }
             Ok(reply) if reply.get("close").is_some() => {
                 let slave = reply["close"].as_str().unwrap_or_default().to_string();
@@ -884,6 +927,86 @@ impl DaemonHost {
     }
 
     /// A message to another agent, as data from outside (CON-99, INV-12).
+    /// Room messages to their members, wherever their tabs are (CON-203): the user's words as a
+    /// prompt, an agent's as data from outside. A busy member gets them at its next boundary.
+    fn deliver(windows: &mut HashMap<String, Window>, deliveries: &[crate::rooms::Delivery]) {
+        for delivery in deliveries {
+            for window in windows.values_mut().filter(|w| w.reachable()) {
+                if let Some((their_tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == delivery.session) {
+                    if delivery.as_user {
+                        window.sessions.prompt(their_tab, delivery.text.clone());
+                    } else {
+                        window.sessions.inbound(their_tab, delivery.label.clone(), delivery.text.clone());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The window that shows a room: its owner's.
+    fn show_room(windows: &mut HashMap<String, Window>, owner: &str, event: Value) {
+        for window in windows.values_mut().filter(|w| w.reachable()) {
+            if let Some((tab, _)) = window.sessions.open().into_iter().find(|(_, s)| *s == owner) {
+                let mut event = event.clone();
+                event["tab"] = json!(tab);
+                window.say(event);
+                return;
+            }
+        }
+    }
+
+    /// A room closed: its summary to the journal when there is one, and every member told.
+    fn room_closed(&self, windows: &mut HashMap<String, Window>, room: &str, topic: &str, summary: Option<&str>, root: &str, members: &Value) -> Result<Value, String> {
+        let names: Vec<String> = members.as_array().map(|a| a.iter().filter_map(|m| m["nick"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+        let mut text = format!("Room {room} is closed.");
+        if let Some(summary) = summary.filter(|s| !s.is_empty() && !root.is_empty()) {
+            let entry = harness_api::JournalEntry {
+                body: format!("Summary of the room '{topic}' ({room}; members {}), a group chat of agents (CON-203); its log is <data dir>/rooms/{room}.jsonl.\n{summary}", names.join(", ")),
+                category: "finding".into(),
+                tags: vec!["group-chat".into()],
+                flags: vec![],
+                salience: None,
+                feature: Some("CON-203".into()),
+                blocked_by: None,
+                proofs: vec![],
+            };
+            let memory = crate::project_memory(&self.data_dir.to_string_lossy(), root)?;
+            let record = pollster::block_on(memory.journal_add(entry)).map_err(|e| e.to_string())?;
+            text = format!("Room {room} is closed; its summary is journal#{}.", record.id);
+        }
+        let deliveries: Vec<crate::rooms::Delivery> = members.as_array().into_iter().flatten().skip(1).filter_map(|m| m["session"].as_str()).map(|session| crate::rooms::Delivery { session: session.to_string(), label: format!("room:{topic}"), text: text.clone(), as_user: false }).collect();
+        Self::deliver(windows, &deliveries);
+        if let Some(owner) = members.as_array().and_then(|a| a.first()).and_then(|m| m["session"].as_str()) {
+            Self::show_room(windows, owner, json!({"kind": "room_closed", "room": room, "text": text}));
+        }
+        Ok(json!({"text": text}))
+    }
+
+    /// room_post and room_read of a member, and the user's post or close from a room's tab.
+    fn room_op(&self, windows: &mut HashMap<String, Window>, id: &str, tab: u64, name: &str, op: &Value) -> Result<Value, String> {
+        let window = windows.get(id).ok_or("this window is not open here")?;
+        let by_user = name.starts_with("room_user_");
+        let session = if by_user { crate::rooms::USER.to_string() } else { window.sessions.session_of(tab).ok_or("this tab has no conversation yet")?.to_string() };
+        let root = window.root.clone();
+        let room = op["room"].as_str();
+        match name {
+            "room_read" => self.rooms.lock().expect("rooms").read(&session, room, op["since"].as_u64().unwrap_or(0)),
+            "room_user_close" => {
+                let (room, topic, members) = self.rooms.lock().expect("rooms").close(&session, room, "", now_ms())?;
+                let members = json!(members.iter().map(|m| json!({"session": m.session, "nick": m.nick})).collect::<Vec<_>>());
+                self.room_closed(windows, &room, &topic, None, &root, &members)
+            }
+            _ => {
+                let (room, message, deliveries) = self.rooms.lock().expect("rooms").post(&session, room, op["text"].as_str().unwrap_or_default(), op["reply_to"].as_str(), now_ms())?;
+                Self::deliver(windows, &deliveries);
+                let owner = self.rooms.lock().expect("rooms").rooms.iter().find(|r| r.id == room).map(|r| r.owner.clone()).unwrap_or_default();
+                Self::show_room(windows, &owner, json!({"kind": "room_message", "room": room, "message": message}));
+                Ok(json!({"text": format!("Posted #{} in {room}; {} members get it.", message.n, deliveries.len())}))
+            }
+        }
+    }
+
     fn agent_send(&self, windows: &mut HashMap<String, Window>, id: &str, tab: u64, op: &Value) -> Result<Value, String> {
         const MAX_SENDS: usize = 60;
         const SEND_WINDOW: Duration = Duration::from_secs(600);
@@ -966,7 +1089,7 @@ impl DaemonHost {
     }
 
     pub fn new(data_dir: &Path, make_host: MakeHost) -> Arc<DaemonHost> {
-        let host = Arc::new(DaemonHost { last_pump: Mutex::new(Instant::now()), ended_seq: Mutex::new(HashMap::new()), agent_checks: Mutex::new(HashMap::new()), agent_check_every: agent_check_every(std::env::var("MULTITOOL_AGENT_CHECK_SECS").ok()), program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
+        let host = Arc::new(DaemonHost { last_pump: Mutex::new(Instant::now()), ended_seq: Mutex::new(HashMap::new()), agent_checks: Mutex::new(HashMap::new()), agent_check_every: agent_check_every(std::env::var("MULTITOOL_AGENT_CHECK_SECS").ok()), program_words: Mutex::new(Vec::new()), next_ask: Default::default(), windows: Mutex::new(HashMap::new()), left: Mutex::new(HashMap::new()), nicks: Mutex::new(read_nicks(data_dir)), conversations: Mutex::new(read_conversations(data_dir)), a2a_sent: Mutex::default(), orchestra: Mutex::new(read_orchestra(data_dir)), rooms: Mutex::new(crate::rooms::Rooms::new(Some(&data_dir.join("rooms")))), wake: Condvar::new(), data_dir: data_dir.to_path_buf(), make_host });
         let pump = host.clone();
         std::thread::spawn(move || {
             loop {
@@ -995,6 +1118,16 @@ impl DaemonHost {
             }
         }
         let mut any = false;
+        // A room with no post for its idle time closes (CON-203); its orchestrator writes the summary.
+        let idle = std::env::var("MULTITOOL_ROOM_IDLE_SECS").ok().and_then(|s| s.parse::<u64>().ok()).map_or(crate::rooms::IDLE_MS, |s| s * 1000);
+        let idled = self.rooms.lock().expect("rooms").close_idle(now_ms(), idle);
+        for (room, topic, members) in idled {
+            let owner = members.first().map(|m| m.session.clone()).unwrap_or_default();
+            let members = json!(members.iter().map(|m| json!({"session": m.session, "nick": m.nick})).collect::<Vec<_>>());
+            let _ = self.room_closed(&mut windows, &room, &topic, None, "", &members);
+            Self::deliver(&mut windows, &[crate::rooms::Delivery { session: owner, label: format!("room:{topic}"), text: format!("Room {room} closed after its idle time with no post. If it came to something, write its summary to the journal."), as_user: false }]);
+            any = true;
+        }
         // A handed-over run speaks to the window that took it.
         let mut handed = Vec::new();
         // What a master is to be told of its agents.
@@ -1101,7 +1234,7 @@ impl DaemonHost {
                         }
                     }
                     FromSession::Queued { .. } => {},
-                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::AskWithdrawn { .. } => {}
+                    FromSession::Unavailable { .. } | FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Room { .. } | FromSession::AskWithdrawn { .. } => {}
                 }
             }
             if window.closed {
@@ -1165,6 +1298,7 @@ impl DaemonHost {
             FromSession::Progress { progress, .. } => FromSession::Progress { tab, progress },
             FromSession::Spawn { nick, provider, model, task, .. } => FromSession::Spawn { tab, nick, provider, model, task },
             FromSession::CloseTab { .. } => FromSession::CloseTab { tab },
+            FromSession::Room { event, .. } => FromSession::Room { tab, event },
             FromSession::AskWithdrawn { call_id, approved, .. } => FromSession::AskWithdrawn { tab, call_id, approved },
         };
         let mut said = false;
@@ -1608,6 +1742,11 @@ impl ConversationHost for DaemonHost {
         }
         if name == "agent_send" {
             let reply = self.agent_send(&mut windows, id, tab, op);
+            self.wake.notify_all();
+            return reply;
+        }
+        if matches!(name, "room_post" | "room_read" | "room_user_post" | "room_user_close") {
+            let reply = self.room_op(&mut windows, id, tab, name, op);
             self.wake.notify_all();
             return reply;
         }
@@ -2194,6 +2333,21 @@ impl SessionLink {
         }
     }
 
+    /// The user's word in a room's tab (CON-203): `room_user_post` {room, text} or
+    /// `room_user_close` {room}. Rooms are the daemon's: a window that runs its sessions itself has none.
+    pub fn room_user(&mut self, op: &str, tab: u64, rest: Value) -> Result<String, String> {
+        match self {
+            SessionLink::Local(_) => Err("rooms need the daemon".to_string()),
+            SessionLink::Remote(r) => {
+                let reply = r.call(op, tab, rest).ok_or("the daemon did not answer")?;
+                match reply.get("error").and_then(Value::as_str) {
+                    Some(error) => Err(error.to_string()),
+                    None => Ok(reply["text"].as_str().unwrap_or_default().to_string()),
+                }
+            }
+        }
+    }
+
     /// A tab closed (Ctrl+W): its session ends at once, a run in it stopped, so what it holds
     /// goes with it (journal#1690).
     pub fn close_tab(&mut self, tab: u64) {
@@ -2435,4 +2589,9 @@ mod wire_tests {
         let old = json!({"kind": "ask_withdrawn", "tab": 3, "call_id": "plan-ask-1"});
         assert!(matches!(from_wire(&old), Some(FromSession::AskWithdrawn { approved: true, .. })));
     }
+}
+
+/// Milliseconds since the epoch, for rooms (CON-203).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }

@@ -305,6 +305,48 @@ impl Tool for AgentSend {
     }
 }
 
+/// room_post and room_read, a member's tools in a room (CON-203): each a word to the daemon, which
+/// holds the rooms. Deferred on the own loop: a session in no room need not carry them.
+pub struct RoomTool {
+    pub name: &'static str,
+    pub client: harness_daemon::client::Client,
+    pub window: String,
+    pub tab: u64,
+}
+
+pub const ROOM_TOOLS: [&str; 2] = ["room_post", "room_read"];
+
+impl Tool for RoomTool {
+    fn spec(&self) -> ToolSpec {
+        let (description, schema) = if self.name == "room_post" {
+            ("Post in a room you are a member of: a group chat of agents (CON-203). Every member gets it. reply_to answers one member, by nick or message number, and everyone still sees it. Post what adds something; silence is fine.", json!({"type": "object", "properties": {"text": {"type": "string"}, "reply_to": {"type": "string", "description": "A member's nick, or a message number such as #3."}, "room": {"type": "string", "description": "Its id, when you are in several."}}, "required": ["text"]}))
+        } else {
+            ("Read a room you are a member of: who is in it, and its messages after `since`, numbered.", json!({"type": "object", "properties": {"since": {"type": "integer"}, "room": {"type": "string"}}}))
+        };
+        ToolSpec { name: self.name.into(), description: description.into(), schema }
+    }
+
+    fn capabilities(&self, _input: &Value) -> Result<Vec<Capability>, String> {
+        Ok(vec![])
+    }
+
+    fn execute<'a>(&'a self, input: &'a Value, _cx: &'a ToolContext) -> BoxFuture<'a, ToolOutput> {
+        let mut op = if input.is_object() { input.clone() } else { json!({}) };
+        op["window"] = json!(self.window);
+        op["tab"] = json!(self.tab);
+        op["op"] = json!(self.name);
+        let answer = match self.client.conversation_op(&op) {
+            Ok(reply) => ToolOutput::ok(reply["text"].as_str().map_or_else(|| reply.to_string(), str::to_string)),
+            Err(error) => ToolOutput::error(error),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+
+    fn deferred(&self) -> bool {
+        true
+    }
+}
+
 /// The game tools (ADR 0029): each a word to the daemon, which holds the tables.
 pub const GAME_TOOLS: [&str; 8] = ["game_invite", "game_tables", "game_join", "game_decline", "game_state", "game_history", "game_act", "game_leave"];
 
@@ -358,7 +400,7 @@ impl Tool for GameTool {
 }
 
 /// Orchestration mode's tools (CON-100). The daemon holds the orchestra, so each is a word to it.
-pub const MODE_TOOLS: [&str; 6] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close"];
+pub const MODE_TOOLS: [&str; 8] = ["mode__orchestrate", "mode__agent_models", "mode__agent_spawn", "mode__agent_read", "mode__agent_answer", "mode__agent_close", "mode__room_open", "mode__room_close"];
 
 /// ask_user for a delegate's program (CON-200), on the mode server: the own loop's engine has its
 /// own. The question is in the call itself, which the window shows as the own loop's; the call
@@ -488,6 +530,14 @@ impl Tool for ModeTool {
             "mode__agent_read" => (
                 "HARNESS MODE, orchestration only. Read what one of your agents has done: each message it got, each call it made in order with its arguments, and its last words. Use it to check its work against the agent workflow specification.",
                 json!({"type": "object", "properties": {"nick": {"type": "string"}}, "required": ["nick"]}),
+            ),
+            "mode__room_open" => (
+                "HARNESS MODE, orchestration only. Open a room: a group chat with agents of your orchestra, for a brainstorm, a plan or a problem taken apart together (CON-203). Every message in it reaches every member; each member is invited with how to take part. It shows to the user as a tab (R), where the user may write too. Post in it with room_post. Answers its id.",
+                json!({"type": "object", "properties": {"topic": {"type": "string"}, "members": {"type": "array", "items": {"type": "string"}, "description": "Nicks of your agents to invite, at most 8."}, "goal": {"type": "string", "description": "What the room is to come to."}}, "required": ["topic", "members"]}),
+            ),
+            "mode__room_close" => (
+                "HARNESS MODE, orchestration only. Close a room you opened, with its summary: what it came to, the ideas kept and dropped and why, open points. The summary becomes a journal entry naming the room, and every member is told.",
+                json!({"type": "object", "properties": {"summary": {"type": "string"}, "room": {"type": "string", "description": "Its id, when you have several open."}}, "required": ["summary"]}),
             ),
             _ => (
                 "HARNESS MODE, orchestration only. End one of your agents: its process stops and its tab closes. What it wrote to the journal and the project stays. Answers that it was closed.",

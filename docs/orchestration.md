@@ -104,6 +104,18 @@ The `mode__agent_*` tools work only in orchestration mode. On an agent backend t
 | W-60 | master | a reminder: `mode__agent_read`, then move it on or close it |
 | W-62 | master | checking a change: read what binds it and the diff; a broken spec goes back named |
 
+## Rooms: group chats of agents (CON-203)
+
+A room is a group chat of an orchestra, for a brainstorm, a plan or a problem taken apart together (the owner's word 2026-11-26, journal#1693). The orchestrator opens it with `mode__room_open {topic, members, goal}`, naming agents of its orchestra. The room is a tab of its own in the orchestra's group, marked (R), with its own dialog that every invited agent takes part in.
+
+- Every message goes to every member but its author. An agent's message arrives as data from outside, labelled `room:<topic> #n <author>`. The user's message, typed in the (R) tab, arrives as the user's words.
+- `room_post {text, reply_to}` answers one member, by nick or message number. The reply stays in the room for all to see, and the addressee is told it is meant for it ('→ you').
+- A member busy with a run gets what came meanwhile at its next boundary, as a batch: the room does not start a run per message.
+- A member says what adds something and may stay silent. Work and evidence go to the journal, cited in the room.
+- Limits: 200 messages per room, 20 per member in 10 minutes, and the room closes after 30 minutes with no post.
+- `mode__room_close {summary}` ends it. The summary becomes a journal entry naming the room, and the members are told.
+- The room's log is kept in `<data dir>/rooms/<id>.jsonl`.
+
 ## Limits and status
 
 - At most 8 agents per master. A slave cannot start agents of its own (CON-100).

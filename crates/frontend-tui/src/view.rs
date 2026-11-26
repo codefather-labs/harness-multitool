@@ -272,6 +272,7 @@ fn tabs(f: &mut Frame, head: Rect, w: &Workspace, t: &Theme, pictures: bool, out
         let place = match tab.view.orchestra.as_deref() {
             Some("master") => " (M)",
             Some("slave") => " (S)",
+            Some("room") => " (R)",
             _ => "",
         };
         let text = format!("{lead}{}{place}{mark} ", tab.title);

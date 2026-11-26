@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod skills;
 
 pub mod remote;
+pub mod rooms;
 pub mod chat_archive;
 pub mod chat_edit;
 
@@ -676,6 +677,12 @@ pub fn with_host(settings: Settings, root: String, data_dir: PathBuf, host: Host
             }
             let (list_client, list_window) = (client.clone(), window.clone());
             registry.tool("agent_list", move |_| Ok(Rc::new(host_tools::AgentList { client: list_client.clone(), window: list_window.clone() })));
+            // A room's member tools (CON-203), deferred: found when an invitation names them.
+            for name in host_tools::ROOM_TOOLS {
+                selection.tools.push(name.to_string());
+                let (client, window) = (client.clone(), window.clone());
+                registry.tool(name, move |_| Ok(Rc::new(host_tools::RoomTool { name, client: client.clone(), window: window.clone(), tab })));
+            }
             registry.tool("agent_send", move |_| Ok(Rc::new(host_tools::AgentSend { client: client.clone(), window: window.clone(), tab })));
         }
         // Offered only when the daemon's channel is on: a tool that cannot work is noise.
@@ -834,6 +841,9 @@ pub enum FromSession {
     Spawn { tab: u64, nick: String, provider: String, model: String, task: u64 },
     /// The daemon's word to a window: this tab's agent has been closed.
     CloseTab { tab: u64 },
+    /// A room of this tab's orchestrator (CON-203): opened, a message, or closed. `event` is the
+    /// daemon's word as it is: kind room_open, room_message or room_closed.
+    Room { tab: u64, event: serde_json::Value },
     Entry { tab: u64, entry: LogEntry },
     /// Outside message waiting in the same FIFO as typed messages.
     Queued { tab: u64, message: PendingMessage },
@@ -1612,7 +1622,7 @@ mod every_tool {
         let modes: Vec<&ToolSpec> = specs.iter().filter(|s| s.name.starts_with("mode__")).collect();
         let mut names: Vec<&str> = modes.iter().map(|s| s.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["mode__agent_answer", "mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__permission_ask", "mode__plan_enter", "mode__plan_exit"]);
+        assert_eq!(names, ["mode__agent_answer", "mode__agent_close", "mode__agent_models", "mode__agent_read", "mode__agent_spawn", "mode__debug", "mode__orchestrate", "mode__permission_ask", "mode__plan_enter", "mode__plan_exit", "mode__room_close", "mode__room_open"]);
         assert!(modes.iter().all(|s| s.description.starts_with("HARNESS MODE")), "an agent sees it is no utility");
         for old in ["plan_enter", "plan_exit", "debug_mode"] {
             assert!(!specs.iter().any(|s| s.name == old), "{old} is under mode__ now");

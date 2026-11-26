@@ -882,6 +882,8 @@ struct Live {
     /// The user chose the context window: what a model reports does not change it (CON-80).
     context_chosen: bool,
     feeds: std::collections::HashMap<u64, frontend_tui::live::Feed>,
+    /// A room's tab and the room it shows (CON-203).
+    room_tabs: std::collections::HashMap<u64, String>,
     /// Permission prompts waiting for the one on screen to be answered.
     asks: std::collections::VecDeque<frontend_tui::model::PermissionView>,
     context_window: u64,
@@ -1362,7 +1364,7 @@ impl Live {
                 }
             }
         };
-        let live = Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), chat_job_next: 1, plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None };
+        let live = Live { sessions: remote.map_or(harness_session::remote::SessionLink::Local(local), harness_session::remote::SessionLink::Remote), syncing: Default::default(), previous_adapter: None, linking: None, reload_by_user: false, reload_for: None, shown_up_to: Default::default(), held_inbound: Vec::new(), context_chosen, checks_shown: None, plan_cost: Default::default(), rebind_after: Default::default(), toast_shown: None, login_cancel: None, login_events: std::sync::mpsc::channel(), journal_checks: std::sync::mpsc::channel(), chat_jobs: std::sync::mpsc::channel(), chat_job_next: 1, plan_models: std::sync::mpsc::channel(), step_debug_tabs: Default::default(), window_ids: Default::default(), prompt_opened: None, first_start_done: false, feeds: Default::default(), room_tabs: Default::default(), asks: Default::default(), context_window, root, real: script.is_none(), recent: Vec::new(), provider, model, budget, urls, windows: Default::default(), window_events: std::sync::mpsc::channel(), registered: Default::default(), reload_asked, reloading: None, ready_to_swap: false, swap_tried: None, voice_download: None, voice_test: None, voice_devices: None, terminal_wanted: None, local_env: None, installed_swap: false, connection: None };
         // What its conversations do if this window is lost (CON-181): the daemon holds it.
         live.sessions.set_on_loss(behaviour_now().loss().0);
         Ok(live)
@@ -1828,6 +1830,64 @@ impl Live {
         let rows = harness_session::mcp_rows(&settings, &self.root, &data, &|name| std::env::var(name).ok());
         let servers = rows.into_iter().map(|r| frontend_tui::model::McpServerRow { name: r.name, source: r.source, on: r.on, tools: r.tools }).collect();
         frontend_tui::model::ToolsPage { servers, status, cursor: 0 }
+    }
+
+    /// What the daemon says of a room of the orchestrator in `master` (CON-203): opened, a
+    /// message, closed. A room is a tab of the orchestra's group, marked (R), that shows its feed.
+    fn room_event(&mut self, w: &mut frontend_tui::model::Workspace, master: u64, event: &serde_json::Value) {
+        use frontend_tui::model::{Inbound, InboundKind, Item};
+        match event["kind"].as_str() {
+            Some("room_open") => {
+                let room = &event["room"];
+                let (id, topic) = (room["room"].as_str().unwrap_or_default().to_string(), room["topic"].as_str().unwrap_or("room").to_string());
+                let was = w.tabs[w.active].id;
+                frontend_tui::debug::open_tab(w, &topic);
+                let Some(mut opened) = w.tabs.pop() else { return };
+                opened.view.orchestra = Some("room".to_string());
+                opened.view.background.clear();
+                let members: Vec<String> = room["members"].as_array().map(|a| a.iter().filter_map(|m| m.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                let mut lines = vec![format!("Room {id}: a group chat of agents (CON-203). Every message reaches every member."), format!("Members: {}", members.join(", "))];
+                if let Some(goal) = room["goal"].as_str().filter(|g| !g.is_empty()) {
+                    lines.push(format!("Goal: {goal}"));
+                }
+                lines.push("What you type here goes to every member as your words. /room close closes the room.".into());
+                opened.view.transcript = vec![Item::Tips { label: format!("ROOM · {topic}"), lines }];
+                self.room_tabs.insert(opened.id, id);
+                let mut at = w.tabs.iter().position(|t| t.id == master).map_or(w.tabs.len(), |i| i + 1);
+                while w.tabs.get(at).is_some_and(|t| matches!(t.view.orchestra.as_deref(), Some("slave" | "room"))) {
+                    at += 1;
+                }
+                w.tabs.insert(at, opened);
+                w.active = w.tabs.iter().position(|t| t.id == was).unwrap_or(0);
+            }
+            Some("room_message") => {
+                let room = event["room"].as_str().unwrap_or_default();
+                let Some(tab) = self.room_tabs.iter().find(|(_, r)| r.as_str() == room).map(|(t, _)| *t) else { return };
+                let active = w.tabs[w.active].id;
+                let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab) else { return };
+                let m = &event["message"];
+                let author = m["author_nick"].as_str().unwrap_or_default();
+                let to = m["to_nick"].as_str().map(|to| format!(" → {to}")).unwrap_or_default();
+                let from = format!("#{} {}{to}", m["n"], if author == harness_session::rooms::USER { "you" } else { author });
+                let time = chrono::Local::now().format("%H:%M").to_string();
+                t.view.transcript.push(Item::Inbound(Inbound { kind: InboundKind::Agent { session: String::new(), route: None }, from, time, text: m["text"].as_str().unwrap_or_default().to_string() }));
+                if active != tab {
+                    t.mark = frontend_tui::model::TabMark::Unread(match t.mark {
+                        frontend_tui::model::TabMark::Unread(n) => n + 1,
+                        _ => 1,
+                    });
+                }
+            }
+            Some("room_closed") => {
+                let room = event["room"].as_str().unwrap_or_default();
+                if let Some(tab) = self.room_tabs.iter().find(|(_, r)| r.as_str() == room).map(|(t, _)| *t)
+                    && let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab)
+                {
+                    t.view.transcript.push(Item::Tips { label: "ROOM CLOSED".into(), lines: vec![event["text"].as_str().unwrap_or("The room is closed.").to_string()] });
+                }
+            }
+            _ => {}
+        }
     }
 
     fn memory_page(&self) -> frontend_tui::model::MemoryPage {
@@ -2657,7 +2717,27 @@ impl Live {
                     }
                 }
                 Outgoing::Stop { tab } => self.sessions.stop(tab),
+                // A room's tab is only a view: closing it leaves the room as it is (CON-203).
+                Outgoing::CloseTab { tab } if self.room_tabs.contains_key(&tab) => {
+                    self.room_tabs.remove(&tab);
+                }
                 Outgoing::CloseTab { tab } => self.sessions.close_tab(tab),
+                Outgoing::RoomPost { tab, text } => {
+                    let Some(room) = self.room_tabs.get(&tab).cloned() else { continue };
+                    if let Err(why) = self.sessions.room_user("room_user_post", tab, serde_json::json!({"room": room, "text": text}))
+                        && let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab)
+                    {
+                        t.view.transcript.push(frontend_tui::model::Item::Tips { label: "NOT SENT".into(), lines: vec![why] });
+                    }
+                }
+                Outgoing::RoomClose { tab } => {
+                    let Some(room) = self.room_tabs.get(&tab).cloned() else { continue };
+                    if let Err(why) = self.sessions.room_user("room_user_close", tab, serde_json::json!({"room": room}))
+                        && let Some(t) = w.tabs.iter_mut().find(|t| t.id == tab)
+                    {
+                        t.view.transcript.push(frontend_tui::model::Item::Tips { label: "ROOM".into(), lines: vec![why] });
+                    }
+                }
                 Outgoing::SaveTelegram { token, users } => {
                     let saved = config::load().and_then(|mut c| {
                         if let Some(token) = token {
@@ -2882,6 +2962,7 @@ impl Live {
                         w.view_mut().transcript.push(frontend_tui::model::Item::Tips { label: "ORCHESTRA".into(), lines: vec![why] });
                     }
                 }
+                FromSession::Room { tab: master, event } => self.room_event(w, master, &event),
                 FromSession::CloseTab { tab } => {
                     if let Some(at) = w.tabs.iter().position(|t| t.id == tab)
                         && w.tabs.len() > 1
@@ -3427,7 +3508,7 @@ fn run_once(prompt: &str, yes: bool, plan: bool, step_debug: bool, task: Option<
             }
             FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
             FromSession::Unavailable { message, .. } => bail!("{message}"),
-            FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Queued { .. } => {}
+            FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Room { .. } | FromSession::Queued { .. } => {}
         }
     }
 }

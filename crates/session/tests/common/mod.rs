@@ -120,7 +120,7 @@ pub fn drive(sessions: &mut Sessions, prompts: &[&str], answer: Answer) -> (Vec<
                 FromSession::Unavailable { message, .. } => panic!("{message}"),
                 FromSession::Synced { .. } | FromSession::Progress { .. } | FromSession::AskWithdrawn { .. } => {}
                 FromSession::Queued { .. } => {}
-                FromSession::Spawn { .. } | FromSession::CloseTab { .. } => {}
+                FromSession::Spawn { .. } | FromSession::CloseTab { .. } | FromSession::Room { .. } => {}
             }
         }
     }

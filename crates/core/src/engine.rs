@@ -32,6 +32,8 @@ const MAX_NICK: usize = 32;
 const ORCHESTRATE_TOOL: &str = "mode__orchestrate";
 /// What only a master has: absent from everyone else's tools (CON-100).
 const MASTER_TOOLS: &str = "mode__agent_";
+/// An orchestrator's room tools (CON-203), shown to a master alone as its agent tools are.
+const ROOM_MASTER_TOOLS: &str = "mode__room_";
 /// The shortest words of the user that count as saying to go.
 const MIN_QUOTE: usize = 2;
 const APPROVED: &str = "The user approved the plan. Plan mode is off. A fix: call mode__debug with on true now, reproduce it before changing anything, verify after. A feature: build it, run it, then call mode__debug with on true and debug it.";
@@ -461,7 +463,7 @@ impl Engine {
     fn tool_specs(&self) -> Vec<ToolSpec> {
         let is_master = self.state.borrow().orchestra_role.as_deref() == Some("master");
         let is_slave = self.state.borrow().orchestra_role.as_deref() == Some("slave");
-        let mut specs: Vec<ToolSpec> = self.parts.tools.values().filter(|t| !t.deferred()).map(|t| t.spec()).filter(|s| (is_master || !s.name.starts_with(MASTER_TOOLS)) && !(is_slave && (s.name == ORCHESTRATE_TOOL || s.name == "plugins_reload"))).collect();
+        let mut specs: Vec<ToolSpec> = self.parts.tools.values().filter(|t| !t.deferred()).map(|t| t.spec()).filter(|s| (is_master || !(s.name.starts_with(MASTER_TOOLS) || s.name.starts_with(ROOM_MASTER_TOOLS))) && !(is_slave && (s.name == ORCHESTRATE_TOOL || s.name == "plugins_reload"))).collect();
         // Deferred tools come once found or called; tool_search finds the rest (CON-201).
         let deferred = self.deferred_specs();
         if !deferred.is_empty() {

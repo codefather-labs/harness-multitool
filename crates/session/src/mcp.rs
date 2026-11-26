@@ -131,6 +131,9 @@ fn tools(serving: &Serving) -> Result<Vec<Rc<dyn Tool>>, String> {
         for name in crate::host_tools::GAME_TOOLS {
             out.push(Rc::new(crate::host_tools::GameTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
         }
+        for name in crate::host_tools::ROOM_TOOLS {
+            out.push(Rc::new(crate::host_tools::RoomTool { name, client: client.clone(), window: window.clone(), tab: *tab }));
+        }
         out.push(Rc::new(Reload { client, window: window.clone(), tab: *tab }));
     }
     // Of the two servers, each offers its own.
