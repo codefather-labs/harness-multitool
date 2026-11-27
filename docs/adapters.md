@@ -66,6 +66,8 @@ A delegate gets the harness's own tools over MCP: `multitool mcp` serves the jou
 
 What the user set up in Claude Code and Codex reaches a delegate on every profile: MCP servers, plugins, skills, agents, commands, hooks, rules and instructions. A sign-in is never shared between profiles (CON-145).
 
+MCP servers that sign in with OAuth (an HTTP server such as djinni) keep their tokens in Claude Code's `.credentials.json`, which is each profile's own. Before a Claude Code delegate starts on a profile, the harness copies the user's MCP authorizations there (CON-205). Only the `mcpOAuth` entries move, each where the profile has none, has an unfinished one, or has one that expires sooner. The profile's own Claude login is kept as it is, and the user's is never copied. So a server authorized once in the user's own `claude` works in every profile. The user's servers go to each delegate in a file of its own project (`harness-user-mcp-<hash>.json` in the profile's folder). macOS keeps credentials in the Keychain, so nothing is copied there: authorize a server in the profile itself.
+
 Each delegate process runs in a systemd user scope of its own under `multitool-agents.slice` on Linux, so its memory is counted apart from the daemon's (CON-166).
 
 Codex runs in Codex's own sandbox, `workspace-write` unless its row sets another, and `read-only` while plan mode is on (`crates/backend-codex/src/lib.rs`).

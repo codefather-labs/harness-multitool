@@ -1051,6 +1051,7 @@ dependencies = [
  "harness-platform-native",
  "pollster",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

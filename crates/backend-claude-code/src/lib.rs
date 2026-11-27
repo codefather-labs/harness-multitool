@@ -237,6 +237,61 @@ pub fn user_servers(claude_json: &str, root: &str) -> serde_json::Map<String, se
     servers
 }
 
+/// A short, stable name for a project root.
+fn root_key(root: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(root.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Where the user's own Claude Code keeps its credentials, from where their `.claude.json` is:
+/// `<dir>/.credentials.json` when that file lives in their CLAUDE_CONFIG_DIR, else
+/// `~/.claude/.credentials.json` beside a `~/.claude.json`.
+pub fn users_credentials(users_claude_json: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = users_claude_json.parent()?;
+    let beside = dir.join(".credentials.json");
+    Some(if beside.exists() { beside } else { dir.join(".claude").join(".credentials.json") })
+}
+
+/// The user's MCP server authorizations, into a profile's credentials (CON-205): the entries of
+/// `mcpOAuth` alone, each where the profile has none, has one with no accessToken (a sign-in
+/// begun and never finished), or has one that expires sooner. Every other key of the profile's
+/// file, its own Claude login above all, is kept as it was, and nothing else of the user's is
+/// taken. Answers the keys brought in.
+pub fn merge_mcp_oauth(users: &std::path::Path, profile: &std::path::Path) -> Result<Vec<String>, String> {
+    let read = |path: &std::path::Path| -> Result<Option<serde_json::Map<String, Value>>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str::<Value>(&text).ok().and_then(|v| v.as_object().cloned()).map(Some).ok_or_else(|| format!("{} is not a JSON object", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    };
+    let Some(theirs) = read(users)? else { return Ok(Vec::new()) };
+    let Some(their_mcp) = theirs.get("mcpOAuth").and_then(Value::as_object).filter(|m| !m.is_empty()) else { return Ok(Vec::new()) };
+    let mut ours = read(profile)?.unwrap_or_default();
+    let mut mcp = ours.get("mcpOAuth").and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut brought = Vec::new();
+    for (key, entry) in their_mcp {
+        if entry.get("accessToken").and_then(Value::as_str).is_none_or(str::is_empty) {
+            continue;
+        }
+        let take = match mcp.get(key) {
+            None => true,
+            Some(have) if have.get("accessToken").and_then(Value::as_str).is_none_or(str::is_empty) => true,
+            Some(have) => entry.get("expiresAt").and_then(Value::as_u64).unwrap_or(0) > have.get("expiresAt").and_then(Value::as_u64).unwrap_or(0),
+        };
+        if take {
+            mcp.insert(key.clone(), entry.clone());
+            brought.push(key.clone());
+        }
+    }
+    if brought.is_empty() {
+        return Ok(brought);
+    }
+    ours.insert("mcpOAuth".into(), Value::Object(mcp));
+    write_private(profile, &Value::Object(ours).to_string()).map_err(|e| format!("{}: {e}", profile.display()))?;
+    Ok(brought)
+}
+
 /// A file only its owner can read, written whole.
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     let staging = path.with_extension("partial");
@@ -387,13 +442,36 @@ impl ClaudeCode {
             return None;
         }
         let servers = user_servers(&std::fs::read_to_string(&users).ok()?, &self.root);
-        let path = dir.join("harness-user-mcp.json");
+        // One file per project: a start elsewhere never rewrites what this one reads (CON-205).
+        let path = dir.join(format!("harness-user-mcp-{}.json", root_key(&self.root)));
         write_private(&path, &serde_json::json!({ "mcpServers": servers }).to_string()).ok()?;
         Some(path)
     }
 
+    /// The user's MCP server authorizations, into this profile's credentials before its Claude
+    /// Code starts (CON-205). Nothing for an isolated run or the user's own folder; a failure is
+    /// said and the start goes on.
+    pub fn bring_mcp_authorizations(&self) -> Vec<String> {
+        if !self.own_environment {
+            return Vec::new();
+        }
+        let (Some(users), Some(dir)) = (self.var(USERS_CLAUDE_JSON_VAR).map(std::path::PathBuf::from), self.var("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from)) else { return Vec::new() };
+        if users == dir.join(".claude.json") {
+            return Vec::new();
+        }
+        let Some(theirs) = users_credentials(&users) else { return Vec::new() };
+        match merge_mcp_oauth(&theirs, &dir.join(".credentials.json")) {
+            Ok(brought) => brought,
+            Err(why) => {
+                eprintln!("claude-code: the user's MCP authorizations did not reach the profile: {why}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Its process for this run: the one it has if that can go on, or a new one from its form.
     fn start(&self, request: &BackendRequest<'_>) -> PluginResult<Live> {
+        self.bring_mcp_authorizations();
         // In a scope of its own where systemd can make one (CON-166).
         let mut command = harness_platform_native::scope::agent_command(&self.binary, "claude");
         let mut args = self.args(request);
@@ -824,6 +902,73 @@ mod tests {
         assert!(isolated.user_servers_file().is_none(), "an isolated run keeps --strict-mcp-config alone");
         let users_own = ClaudeCode::new("m", "/p", &serde_json::json!({"environment": "user"})).with_environment(env(&[(USERS_CLAUDE_JSON_VAR, &profile.join(".claude.json")), ("CLAUDE_CONFIG_DIR", &profile)]));
         assert!(users_own.user_servers_file().is_none(), "the user's own folder: Claude Code reads its servers itself");
+    }
+
+    /// CON-205: the user's MCP authorizations reach a profile's credentials; the profile's
+    /// Claude login and everything else stay as they were, and the user's login never moves.
+    #[test]
+    fn the_users_mcp_authorizations_reach_the_profile_and_nothing_else_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let (users, profile) = (dir.path().join("users.json"), dir.path().join("profile.json"));
+        let entry = |token: &str, expires: u64| serde_json::json!({"serverName": "s", "serverUrl": "https://s", "accessToken": token, "refreshToken": "r", "expiresAt": expires});
+        std::fs::write(&users, serde_json::json!({
+            "claudeAiOauth": {"accessToken": "USERS-CLAUDE-LOGIN"},
+            "mcpOAuth": {"djinni|af": entry("U1", 2000), "fresh|aa": entry("U2", 2000), "stale|bb": entry("U3", 1000), "missing|cc": entry("U4", 2000), "begun|dd": {"serverName": "x", "discoveryState": {}}}
+        }).to_string()).unwrap();
+        let profiles_login = serde_json::json!({"accessToken": "PROFILE-LOGIN", "expiresAt": 7});
+        std::fs::write(&profile, serde_json::json!({
+            "claudeAiOauth": profiles_login, "other": [1, 2],
+            "mcpOAuth": {"djinni|af": {"serverName": "djinni", "discoveryState": {"x": 1}}, "fresh|aa": entry("P2", 1000), "stale|bb": entry("P3", 3000)}
+        }).to_string()).unwrap();
+        let mut brought = merge_mcp_oauth(&users, &profile).unwrap();
+        brought.sort();
+        assert_eq!(brought, ["djinni|af", "fresh|aa", "missing|cc"], "no token, expires sooner, absent; not a newer one of the profile's, not one begun and never finished");
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&profile).unwrap()).unwrap();
+        assert_eq!(after["claudeAiOauth"], profiles_login, "the profile's Claude login as it was");
+        assert_eq!(after["other"], serde_json::json!([1, 2]));
+        assert_eq!(after["mcpOAuth"]["djinni|af"]["accessToken"], "U1");
+        assert_eq!(after["mcpOAuth"]["fresh|aa"]["accessToken"], "U2");
+        assert_eq!(after["mcpOAuth"]["stale|bb"]["accessToken"], "P3", "the profile's newer one stays");
+        assert!(after["mcpOAuth"].get("begun|dd").is_none());
+        assert!(!std::fs::read_to_string(&profile).unwrap().contains("USERS-CLAUDE-LOGIN"), "the user's Claude login never reaches the profile");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&profile).unwrap().permissions()) & 0o777, 0o600);
+        // Nothing new: the file is not rewritten.
+        assert!(merge_mcp_oauth(&users, &profile).unwrap().is_empty());
+        // A broken or missing file changes nothing.
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ not json").unwrap();
+        let before = std::fs::read_to_string(&profile).unwrap();
+        assert!(merge_mcp_oauth(&broken, &profile).is_err());
+        assert!(merge_mcp_oauth(&dir.path().join("none.json"), &profile).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&profile).unwrap(), before);
+        std::fs::write(&broken, "{ not json").unwrap();
+        assert!(merge_mcp_oauth(&users, &broken).is_err(), "a profile file that does not parse is left alone");
+        assert_eq!(std::fs::read_to_string(&broken).unwrap(), "{ not json");
+    }
+
+    /// CON-205: where the user's credentials are, and one servers' file per project.
+    #[test]
+    fn each_project_gets_its_own_servers_file_and_the_users_credentials_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        assert_eq!(users_credentials(&home.join(".claude.json")).unwrap(), home.join(".claude/.credentials.json"));
+        let own = dir.path().join("own");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join(".credentials.json"), "{}").unwrap();
+        assert_eq!(users_credentials(&own.join(".claude.json")).unwrap(), own.join(".credentials.json"));
+        let users = dir.path().join("user.json");
+        std::fs::write(&users, serde_json::json!({"projects": {"/a": {"mcpServers": {"alpha": {"command": "a"}}}, "/b": {"mcpServers": {"beta": {"command": "b"}}}}}).to_string()).unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let env = std::sync::Arc::new([(USERS_CLAUDE_JSON_VAR.to_string(), users.to_string_lossy().into_owned()), ("CLAUDE_CONFIG_DIR".to_string(), profile.to_string_lossy().into_owned())].into_iter().collect::<std::collections::BTreeMap<_, _>>());
+        let a = ClaudeCode::new("m", "/a", &serde_json::json!({"environment": "user"})).with_environment(env.clone()).user_servers_file().unwrap();
+        let b = ClaudeCode::new("m", "/b", &serde_json::json!({"environment": "user"})).with_environment(env).user_servers_file().unwrap();
+        assert_ne!(a, b);
+        assert!(std::fs::read_to_string(&a).unwrap().contains("alpha") && !std::fs::read_to_string(&a).unwrap().contains("beta"));
+        assert!(std::fs::read_to_string(&b).unwrap().contains("beta"), "b's start did not rewrite a's file");
+        assert!(std::fs::read_to_string(&a).unwrap().contains("alpha"));
     }
 
     fn map(lines: &[Value]) -> Vec<Mapped> {
